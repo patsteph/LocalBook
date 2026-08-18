@@ -126,12 +126,19 @@ async def warm_embedding_model() -> bool:
         else:
             # Use rag_embeddings module directly (model lives there, not on rag_engine)
             from services.rag_embeddings import load_embedding_model, encode
-            
-            # This will load the model if not already loaded
-            load_embedding_model()
-            
-            # Encode a short text to keep it warm
-            encode("warmup")
+
+            # OFF THE EVENT LOOP. `load_embedding_model()` and `encode()` are both SYNCHRONOUS, and
+            # on a machine without the MLX arctic model cached the load is a ~1.1 GB HuggingFace
+            # DOWNLOAD — which, called directly from this `async def`, froze the entire backend
+            # until it finished. Fresh installs hide it because install.sh pre-caches the model;
+            # the UPGRADE path has no such block, so upgrading users hit it for real.
+            # (Same class as the 2026-06-25 soak finding: blocking-on-loop is a CLASS of bug, not
+            # one site — see COLLABORATION_NOTES "Background scheduling + event-loop safety".)
+            def _warm_sync() -> None:
+                load_embedding_model()
+                encode("warmup")
+
+            await asyncio.to_thread(_warm_sync)
             return True
     except Exception as e:
         print(f"⚠️ Embedding warmup failed: {e}")
@@ -145,7 +152,10 @@ async def warm_reranker_model() -> bool:
             return True  # Reranker disabled, skip
         
         from services import rag_search
-        rag_search._get_reranker()
+
+        # Off the loop for the same reason as the embedding warmup above: `_get_reranker()` loads
+        # the FlashRank cross-encoder synchronously (and downloads it on first use).
+        await asyncio.to_thread(rag_search._get_reranker)
         return True
     except Exception as e:
         print(f"⚠️ Reranker warmup failed: {e}")
