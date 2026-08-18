@@ -136,6 +136,12 @@ async def generate_text(
         if _nc:
             options["num_ctx"] = _nc
     # P4: cap output to what the resolved window can hold (small-RAM cap-bound case).
+    # ⚠️ This clamp is OLLAMA-SPECIFIC: `num_ctx` above comes from the OLLAMA model's cap
+    # (`effective_num_ctx_cap` — 16384 for gemma, 8192 for phi). MLX ignores `num_ctx`
+    # entirely and uses the MLX model's own window, so applying an Ollama-derived clamp to an
+    # MLX generation silently shortens long-form output for no reason. Keep the caller's
+    # request for the MLX branch below.
+    _requested_num_predict = options.get("num_predict")
     if options.get("num_predict") and options.get("num_ctx"):
         from services.ollama_service import clamp_num_predict
         options["num_predict"] = clamp_num_predict(
@@ -194,7 +200,8 @@ async def generate_text(
             _res = await mlx_engine.generate(
                 prompt, model=_mlx_id, system=system_prompt,
                 temperature=options.get("temperature", 0.3),
-                num_predict=options.get("num_predict", num_predict),
+                # The caller's request, NOT the Ollama-window-clamped value (see above).
+                num_predict=_requested_num_predict or num_predict,
                 num_ctx=options.get("num_ctx"),
                 stop=rag_profile.get("stop_sequences"),
             )
@@ -394,6 +401,8 @@ async def stream_text(
         from services.ollama_service import compute_num_ctx, clamp_num_predict
         effective_num_ctx = compute_num_ctx(model, f"{system_prompt}\n\n{prompt}", effective_num_predict) or 8192
         # P4: cap output to what the resolved window can hold (small-RAM cap-bound case).
+        # Ollama-specific — see the note on the non-streaming path. MLX gets the unclamped value.
+        _requested_num_predict = effective_num_predict
         effective_num_predict = clamp_num_predict(
             f"{system_prompt}\n\n{prompt}", effective_num_predict, effective_num_ctx
         ) or effective_num_predict
@@ -460,7 +469,8 @@ async def stream_text(
                 async for _chunk in mlx_engine.stream_generate(
                     prompt, model=_mlx_id, system=system_prompt,
                     temperature=stream_options.get("temperature", 0.3),
-                    num_predict=effective_num_predict,
+                    # The caller's request, NOT the Ollama-window-clamped value.
+                    num_predict=_requested_num_predict,
                     num_ctx=stream_options.get("num_ctx"),
                     stop=stop_sequences or None,
                 ):
