@@ -40,6 +40,17 @@ foundation, and a decoupled tag-pinned install model.
 - Canvas node ids are now **stable across populates** (`uuid5(notebook:ref_type:ref_id)`); they were
   regenerated every time, orphaning `canvas_recall` review history and elicited intents.
 
+### Removed — Cursor Style notebooks
+- The external-`.db` + `AGENTS.md`-governed notebook type is **gone** (~3,900 LOC across 13 files,
+  plus `sqlglot`). Its hard analytical queries are subsumed by the general **Python tier**
+  (`py_compute`), and as one of the heaviest LLM callers it was deleted ahead of the Ollama excise
+  to shrink that surface. The shared spreadsheet path (xlsx/csv → typed SQLite → text-to-SQL) is
+  **untouched** — `tabular_store.py` has a zero-line diff.
+- A one-shot startup migration purges the residue. Orphaned `cursor:%` rows in `_tabular_catalog`
+  would otherwise keep routing every aggregate question in an ex-cursor notebook into the
+  structured engine, spending a model call on a phantom schema before falling back to vector RAG.
+  Ex-cursor notebooks become standard notebooks; their ingested `.md` sources stay chattable.
+
 ### Added — Next-gen Infographic system
 - **Four lanes** behind one `json:infographic` artifact + a **content-shape router** with an explicit
   phrasing **boost** (poster→L4, chart→L1, diagram→L2, scene→L3): **L1** annotated charts, **L2**
