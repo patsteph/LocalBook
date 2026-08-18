@@ -28,6 +28,17 @@ foundation, and a decoupled tag-pinned install model.
   `/source-derivations/{source_id}`), wired into infographic / document / quiz generation. The
   **user-drawn-edge feedback loop:** a hand-drawn edge → curator event bus + a user-authored
   knowledge-graph link + a Quality Signal.
+- **Round 3 — depth under the surface** *(built-app verified 2026-08-18)*: provenance rows are now
+  **drawn as edges** (a pure `canvas_provenance.derive_edges` joined at populate — the rows existed
+  for weeks with nothing rendering them); real source ids ride through `BuiltContext` so provenance
+  no longer resolves identity by filename-matching (silently lossy for duplicate/renamed/`Unknown`
+  filenames) and **video** is wired; **sequence numbers** (`3/7`) and **open-loop badges** put the
+  journey's direction of travel and its unanswered questions on the nodes; topic cards show the
+  **icons of what they hold**; and every thread **opens in a floating, resizable window** — podcast
+  and video keep playing while you explore, documents/quizzes/visuals/infographics open sized to
+  their content (infographics at 820px: the L2 design system lays out up to 5 columns).
+- Canvas node ids are now **stable across populates** (`uuid5(notebook:ref_type:ref_id)`); they were
+  regenerated every time, orphaning `canvas_recall` review history and elicited intents.
 
 ### Added — Next-gen Infographic system
 - **Four lanes** behind one `json:infographic` artifact + a **content-shape router** with an explicit
