@@ -455,13 +455,21 @@ async def populate(notebook_id: str, limit: int = 50):
     try:
         from services.curator_brain import curator_brain
         from services import canvas_tension
+        from storage import contradiction_store
+
+        taken = {(e.get("source"), e.get("target")) for e in kept_edges + prov_edges}
+        # DETECTED conflicts first — a real pairwise LLM judgment beats inferring disagreement
+        # from two sources' stances toward the thesis, so it claims the pair.
+        detected = canvas_tension.derive_from_contradictions(
+            final_nodes, contradiction_store.source_pairs(notebook_id), skip_pairs=taken,
+        )
+        prov_edges += detected
+        taken |= {(e["source"], e["target"]) for e in detected}
+        taken |= {(e["target"], e["source"]) for e in detected}
+
         stances = curator_brain.list_stances(notebook_id)
         if stances:
-            prov_edges += canvas_tension.derive_edges(
-                final_nodes,
-                stances,
-                skip_pairs={(e.get("source"), e.get("target")) for e in kept_edges + prov_edges},
-            )
+            prov_edges += canvas_tension.derive_edges(final_nodes, stances, skip_pairs=taken)
     except Exception as e:
         import logging
         logging.getLogger(__name__).debug(f"[canvas] tension edges skipped ({notebook_id}): {e}")

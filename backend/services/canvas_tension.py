@@ -8,15 +8,19 @@ plan assumed `topic_perspectives`. It is the WEAKEST of the three candidates:
   * its `contested` label is unreachable for any cluster with >=3 sources (branch-order bug,
     `topic_perspectives.py:326-329`), and
   * its "conflict" test is a regex negation XOR that the file's own docstring disclaims.
-`contradiction_detector` gives real LLM judgment with both source ids, type and severity — but
-its `_contradiction_cache` is an in-process dict (`:50`), so nothing survives a restart and it
-cannot seed a map.
+So there are TWO sources here, strongest first:
 
-So this reads `curator_brain.source_stances`: the only DURABLE disagreement data in the
-codebase. Each source carries a stance toward the notebook thesis
-(supports / contradicts / tangential / off_topic) with a confidence and a rationale, upserted
-one row per (source, notebook). A source that CONTRADICTS the thesis is in tension with each
-source that SUPPORTS it — that pair is the edge.
+1. `derive_from_contradictions` — DETECTED conflicts from `contradiction_store.source_pairs`:
+   a real pairwise LLM judgment with both source ids, a type and a severity. Unusable until
+   2026-08-18, when contradiction reports gained a store; they had lived in an in-process dict
+   that died on every restart, so a map could never be seeded from them.
+2. `derive_edges` — INFERRED conflict from `curator_brain.source_stances`, the disagreement
+   data that was already durable. Each source carries a stance toward the notebook thesis
+   (supports / contradicts / tangential / off_topic) with a confidence and a rationale. A
+   source that CONTRADICTS the thesis is in tension with each source that SUPPORTS it.
+
+The populate endpoint runs (1) first and lets it claim a pair, so a measured conflict always
+beats an inferred one for the same two sources.
 
 Pure (no I/O) so it unit-tests in CI, matching the canvas_populate / canvas_provenance
 convention. Derived, never trusted-and-persisted: re-derived on every populate.
@@ -48,6 +52,59 @@ def edge_id(a: str, b: str) -> str:
     the same edge whichever source is scanned first."""
     lo, hi = (a, b) if a <= b else (b, a)
     return str(uuid.uuid5(_EDGE_NS, f"{EDGE_STATE}:{lo}:{hi}"))
+
+
+# Severity → how loud the edge should be. `contradiction_detector` grades every conflict.
+_SEVERITY_RANK = {"high": 3, "medium": 2, "low": 1}
+
+
+def derive_from_contradictions(
+    nodes: List[Dict[str, Any]],
+    pairs: List[Dict[str, Any]],
+    *,
+    skip_pairs: Optional[set] = None,
+) -> List[Dict[str, Any]]:
+    """Edges from DETECTED contradictions — `contradiction_store.source_pairs` rows
+    (`{source_a_id, source_b_id, severity, contradiction_type, explanation}`).
+
+    Stronger than the stance signal below: a real LLM judgment that two specific claims
+    conflict, with both source ids and a severity, rather than an inference from each source's
+    stance toward the thesis. It became usable only once contradiction reports were persisted —
+    they previously lived in an in-process dict that died on every restart.
+    """
+    by_source: Dict[str, str] = {}
+    for n in nodes or []:
+        if n.get("ref_type") == "source" and n.get("ref_id") and n.get("id"):
+            by_source.setdefault(str(n["ref_id"]), str(n["id"]))
+
+    edges: List[Dict[str, Any]] = []
+    seen: set = set(skip_pairs or ())
+    for p in pairs or []:
+        a = by_source.get(str(p.get("source_a_id") or ""))
+        b = by_source.get(str(p.get("source_b_id") or ""))
+        if not a or not b or a == b:
+            continue
+        key = (a, b) if a <= b else (b, a)
+        if key in seen:
+            continue
+        seen.add(key)
+        sev = str(p.get("severity") or "").lower()
+        edges.append({
+            "id": edge_id(a, b),
+            "source": a,
+            "target": b,
+            "state": EDGE_STATE,
+            "label": "",
+            "meta": {
+                "derived": True,
+                "severity": sev,
+                "kind": p.get("contradiction_type") or "",
+                # Why these two disagree — shown on hover.
+                "rationale": str(p.get("explanation") or "")[:280],
+                "weight": _SEVERITY_RANK.get(sev, 1),
+            },
+        })
+    return edges
 
 
 def derive_edges(

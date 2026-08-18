@@ -8,9 +8,12 @@ from typing import List, Dict, Optional
 from datetime import datetime
 import hashlib
 import json
+import logging
 
 from pydantic import BaseModel
 from storage.source_store import source_store
+
+logger = logging.getLogger(__name__)
 
 
 class Claim(BaseModel):
@@ -46,8 +49,20 @@ class ContradictionReport(BaseModel):
     sources_analyzed: int
 
 
-# In-memory storage for detected contradictions
+# In-memory cache is now a FAST PATH ONLY — `storage.contradiction_store` is the source of
+# truth. This dict used to BE the storage, so an expensive LLM scan (claim extraction +
+# pairwise checks) died on every restart and a user's dismissal was forgotten with it.
 _contradiction_cache: Dict[str, ContradictionReport] = {}
+
+
+def _remember(report: "ContradictionReport") -> None:
+    """Cache in memory AND persist. Never raises — storage must not break a scan."""
+    _contradiction_cache[report.notebook_id] = report
+    try:
+        from storage import contradiction_store
+        contradiction_store.save_report(report.notebook_id, report.model_dump())
+    except Exception as e:
+        logger.warning(f"[Contradictions] persist failed (in-memory only): {e}")
 
 
 class ContradictionDetector:
@@ -230,9 +245,14 @@ If they do NOT contradict (they agree, are unrelated, or compatible), respond:
     async def scan_notebook(self, notebook_id: str, force_rescan: bool = False) -> ContradictionReport:
         """Scan a notebook for contradictions."""
         
-        # Check cache unless force rescan
-        if not force_rescan and notebook_id in _contradiction_cache:
-            return _contradiction_cache[notebook_id]
+        # Cache, then disk, unless force-rescanning. Reading through to the store is what
+        # makes a scan survive a restart instead of silently re-running.
+        if not force_rescan:
+            if notebook_id in _contradiction_cache:
+                return _contradiction_cache[notebook_id]
+            stored = await self.get_cached_report(notebook_id)
+            if stored:
+                return stored
         
         sources = await source_store.list(notebook_id)
         if not sources:
@@ -305,29 +325,54 @@ If they do NOT contradict (they agree, are unrelated, or compatible), respond:
             sources_analyzed=len(sources)
         )
         
-        # Cache the report
-        _contradiction_cache[notebook_id] = report
-        
+        _remember(report)
         return report
     
     async def get_cached_report(self, notebook_id: str) -> Optional[ContradictionReport]:
-        """Get cached contradiction report if available."""
-        return _contradiction_cache.get(notebook_id)
+        """The last scan for a notebook — memory first, then the store (survives restarts)."""
+        hit = _contradiction_cache.get(notebook_id)
+        if hit:
+            return hit
+        try:
+            from storage import contradiction_store
+            raw = contradiction_store.load_report(notebook_id)
+            if not raw:
+                return None
+            report = ContradictionReport(**raw)
+            _contradiction_cache[notebook_id] = report
+            return report
+        except Exception as e:
+            logger.warning(f"[Contradictions] load failed: {e}")
+            return None
     
     async def dismiss_contradiction(self, notebook_id: str, contradiction_id: str) -> bool:
-        """Mark a contradiction as dismissed."""
-        if notebook_id in _contradiction_cache:
-            report = _contradiction_cache[notebook_id]
+        """Mark a contradiction as dismissed. PERSISTED — the user's judgment must outlive the
+        process, or the same rejected conflict comes back on the next launch."""
+        ok = False
+        report = await self.get_cached_report(notebook_id)
+        if report:
             for c in report.contradictions:
                 if c.id == contradiction_id:
                     c.dismissed = True
-                    return True
-        return False
+                    ok = True
+                    break
+        try:
+            from storage import contradiction_store
+            if contradiction_store.set_flag(notebook_id, contradiction_id, "dismissed", True):
+                ok = True
+        except Exception as e:
+            logger.warning(f"[Contradictions] dismiss persist failed: {e}")
+        return ok
     
     async def clear_cache(self, notebook_id: str):
-        """Clear cached report for a notebook."""
+        """Clear a notebook's report from memory AND disk."""
         if notebook_id in _contradiction_cache:
             del _contradiction_cache[notebook_id]
+        try:
+            from storage import contradiction_store
+            contradiction_store.clear(notebook_id)
+        except Exception as e:
+            logger.warning(f"[Contradictions] clear failed: {e}")
 
 
 # Singleton instance
