@@ -390,7 +390,6 @@ python -W ignore -m PyInstaller \
     --hidden-import=aiohttp \
     --collect-all=langchain_core \
     --collect-all=langgraph \
-    --collect-all=sqlglot \
     --hidden-import=pymupdf4llm \
     --hidden-import=pillow_heif \
     --hidden-import=olefile \
