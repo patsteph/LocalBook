@@ -787,24 +787,25 @@ print('Reranker model cached and validated successfully')
         else
             info "Downloading Kokoro TTS model (~330MB) — text-to-speech engine..."
             python -c "
-import os, signal, requests
-from requests.adapters import HTTPAdapter
+import os, sys, signal
 def _alarm(*_): raise SystemExit('Download timed out')
 signal.signal(signal.SIGALRM, _alarm)
-signal.alarm(900)  # 15-minute hard timeout
-class _T(HTTPAdapter):
-    def send(self, *a, **kw):
-        kw.setdefault('timeout', (30, 120))
-        return super().send(*a, **kw)
-from huggingface_hub import configure_http_backend
-def _f():
-    s = requests.Session()
-    s.mount('http://', _T(max_retries=3))
-    s.mount('https://', _T(max_retries=3))
-    if os.environ.get('LOCALBOOK_SSL_NOVERIFY') == '1':
-        s.verify = False
-    return s
-configure_http_backend(backend_factory=_f)
+signal.alarm(900)
+# ONE transport implementation (backend/services/hf_transport.py). This block used to call
+# huggingface_hub's configure_http_backend, REMOVED in hf_hub 1.x — it raised ImportError on
+# every run, so the SSL bypass never applied and these downloads failed on any machine needing it.
+# Derive the backend dir from the running interpreter — these blocks execute inside
+# <backend>/.venv, so this is correct on BOTH the fresh and upgrade paths (INSTALL_DIR is
+# empty during a fresh install) and independent of cwd.
+for _cand in (os.path.dirname(os.path.dirname(os.path.dirname(sys.executable))),
+              os.path.join(os.getcwd(), 'backend'), os.getcwd()):
+    if os.path.isfile(os.path.join(_cand, 'services', 'hf_transport.py')):
+        sys.path.insert(0, _cand); break
+try:
+    from services.hf_transport import install_hf_transport
+    install_hf_transport()
+except Exception as _e:
+    print(f'[install] hf transport not configured ({_e}); using library defaults')
 from huggingface_hub import snapshot_download
 local_dir = snapshot_download(
     repo_id='mlx-community/Kokoro-82M-bf16',
@@ -826,24 +827,25 @@ print(f'Kokoro model cached at: {local_dir}')
         else
             info "Downloading Whisper transcription model (~150MB) — audio/video transcription..."
             python -c "
-import os, signal, requests
-from requests.adapters import HTTPAdapter
+import os, sys, signal
 def _alarm(*_): raise SystemExit('Download timed out')
 signal.signal(signal.SIGALRM, _alarm)
-signal.alarm(600)  # 10-minute hard timeout
-class _T(HTTPAdapter):
-    def send(self, *a, **kw):
-        kw.setdefault('timeout', (30, 120))
-        return super().send(*a, **kw)
-from huggingface_hub import configure_http_backend
-def _f():
-    s = requests.Session()
-    s.mount('http://', _T(max_retries=3))
-    s.mount('https://', _T(max_retries=3))
-    if os.environ.get('LOCALBOOK_SSL_NOVERIFY') == '1':
-        s.verify = False
-    return s
-configure_http_backend(backend_factory=_f)
+signal.alarm(600)
+# ONE transport implementation (backend/services/hf_transport.py). This block used to call
+# huggingface_hub's configure_http_backend, REMOVED in hf_hub 1.x — it raised ImportError on
+# every run, so the SSL bypass never applied and these downloads failed on any machine needing it.
+# Derive the backend dir from the running interpreter — these blocks execute inside
+# <backend>/.venv, so this is correct on BOTH the fresh and upgrade paths (INSTALL_DIR is
+# empty during a fresh install) and independent of cwd.
+for _cand in (os.path.dirname(os.path.dirname(os.path.dirname(sys.executable))),
+              os.path.join(os.getcwd(), 'backend'), os.getcwd()):
+    if os.path.isfile(os.path.join(_cand, 'services', 'hf_transport.py')):
+        sys.path.insert(0, _cand); break
+try:
+    from services.hf_transport import install_hf_transport
+    install_hf_transport()
+except Exception as _e:
+    print(f'[install] hf transport not configured ({_e}); using library defaults')
 from huggingface_hub import snapshot_download
 local_dir = snapshot_download(
     repo_id='mlx-community/whisper-base-mlx',
@@ -871,24 +873,25 @@ print(f'Whisper model cached at: {local_dir}')
             else
                 info "Downloading MLX embedding model (~2.3GB) — in-process embeddings engine..."
                 python -c "
-import os, signal, requests
-from requests.adapters import HTTPAdapter
+import os, sys, signal
 def _alarm(*_): raise SystemExit('Download timed out')
 signal.signal(signal.SIGALRM, _alarm)
-signal.alarm(1200)  # 20-minute hard timeout (2.3GB)
-class _T(HTTPAdapter):
-    def send(self, *a, **kw):
-        kw.setdefault('timeout', (30, 180))
-        return super().send(*a, **kw)
-from huggingface_hub import configure_http_backend
-def _f():
-    s = requests.Session()
-    s.mount('http://', _T(max_retries=3))
-    s.mount('https://', _T(max_retries=3))
-    if os.environ.get('LOCALBOOK_SSL_NOVERIFY') == '1':
-        s.verify = False
-    return s
-configure_http_backend(backend_factory=_f)
+signal.alarm(1200)
+# ONE transport implementation (backend/services/hf_transport.py). This block used to call
+# huggingface_hub's configure_http_backend, REMOVED in hf_hub 1.x — it raised ImportError on
+# every run, so the SSL bypass never applied and these downloads failed on any machine needing it.
+# Derive the backend dir from the running interpreter — these blocks execute inside
+# <backend>/.venv, so this is correct on BOTH the fresh and upgrade paths (INSTALL_DIR is
+# empty during a fresh install) and independent of cwd.
+for _cand in (os.path.dirname(os.path.dirname(os.path.dirname(sys.executable))),
+              os.path.join(os.getcwd(), 'backend'), os.getcwd()):
+    if os.path.isfile(os.path.join(_cand, 'services', 'hf_transport.py')):
+        sys.path.insert(0, _cand); break
+try:
+    from services.hf_transport import install_hf_transport
+    install_hf_transport()
+except Exception as _e:
+    print(f'[install] hf transport not configured ({_e}); using library defaults')
 from huggingface_hub import snapshot_download
 local_dir = snapshot_download(
     repo_id='mlx-community/snowflake-arctic-embed-l-v2.0-bf16',
@@ -1336,24 +1339,25 @@ print('Reranker cached and validated')
         else
             info "Downloading Kokoro TTS model (~330MB)..."
             python -c "
-import os, signal, requests
-from requests.adapters import HTTPAdapter
+import os, sys, signal
 def _alarm(*_): raise SystemExit('Download timed out')
 signal.signal(signal.SIGALRM, _alarm)
 signal.alarm(900)
-class _T(HTTPAdapter):
-    def send(self, *a, **kw):
-        kw.setdefault('timeout', (30, 120))
-        return super().send(*a, **kw)
-from huggingface_hub import configure_http_backend
-def _f():
-    s = requests.Session()
-    s.mount('http://', _T(max_retries=3))
-    s.mount('https://', _T(max_retries=3))
-    if os.environ.get('LOCALBOOK_SSL_NOVERIFY') == '1':
-        s.verify = False
-    return s
-configure_http_backend(backend_factory=_f)
+# ONE transport implementation (backend/services/hf_transport.py). This block used to call
+# huggingface_hub's configure_http_backend, REMOVED in hf_hub 1.x — it raised ImportError on
+# every run, so the SSL bypass never applied and these downloads failed on any machine needing it.
+# Derive the backend dir from the running interpreter — these blocks execute inside
+# <backend>/.venv, so this is correct on BOTH the fresh and upgrade paths (INSTALL_DIR is
+# empty during a fresh install) and independent of cwd.
+for _cand in (os.path.dirname(os.path.dirname(os.path.dirname(sys.executable))),
+              os.path.join(os.getcwd(), 'backend'), os.getcwd()):
+    if os.path.isfile(os.path.join(_cand, 'services', 'hf_transport.py')):
+        sys.path.insert(0, _cand); break
+try:
+    from services.hf_transport import install_hf_transport
+    install_hf_transport()
+except Exception as _e:
+    print(f'[install] hf transport not configured ({_e}); using library defaults')
 from huggingface_hub import snapshot_download
 local_dir = snapshot_download(
     repo_id='mlx-community/Kokoro-82M-bf16',
@@ -1372,24 +1376,25 @@ print(f'Kokoro cached at: {local_dir}')
         else
             info "Downloading Whisper transcription model (~150MB)..."
             python -c "
-import os, signal, requests
-from requests.adapters import HTTPAdapter
+import os, sys, signal
 def _alarm(*_): raise SystemExit('Download timed out')
 signal.signal(signal.SIGALRM, _alarm)
 signal.alarm(600)
-class _T(HTTPAdapter):
-    def send(self, *a, **kw):
-        kw.setdefault('timeout', (30, 120))
-        return super().send(*a, **kw)
-from huggingface_hub import configure_http_backend
-def _f():
-    s = requests.Session()
-    s.mount('http://', _T(max_retries=3))
-    s.mount('https://', _T(max_retries=3))
-    if os.environ.get('LOCALBOOK_SSL_NOVERIFY') == '1':
-        s.verify = False
-    return s
-configure_http_backend(backend_factory=_f)
+# ONE transport implementation (backend/services/hf_transport.py). This block used to call
+# huggingface_hub's configure_http_backend, REMOVED in hf_hub 1.x — it raised ImportError on
+# every run, so the SSL bypass never applied and these downloads failed on any machine needing it.
+# Derive the backend dir from the running interpreter — these blocks execute inside
+# <backend>/.venv, so this is correct on BOTH the fresh and upgrade paths (INSTALL_DIR is
+# empty during a fresh install) and independent of cwd.
+for _cand in (os.path.dirname(os.path.dirname(os.path.dirname(sys.executable))),
+              os.path.join(os.getcwd(), 'backend'), os.getcwd()):
+    if os.path.isfile(os.path.join(_cand, 'services', 'hf_transport.py')):
+        sys.path.insert(0, _cand); break
+try:
+    from services.hf_transport import install_hf_transport
+    install_hf_transport()
+except Exception as _e:
+    print(f'[install] hf transport not configured ({_e}); using library defaults')
 from huggingface_hub import snapshot_download
 local_dir = snapshot_download(
     repo_id='mlx-community/whisper-base-mlx',

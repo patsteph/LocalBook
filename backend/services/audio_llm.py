@@ -530,44 +530,17 @@ class AudioLLMService:
     @staticmethod
     def _disable_hf_ssl_verify():
         """Disable SSL verification for HuggingFace Hub downloads.
-        
-        Uses configure_http_backend to create requests Sessions with
-        verify=False AND retries + timeouts. Without retries and timeouts,
-        downloads hang forever in PyInstaller bundles.
-        
-        The model weights have their own checksums verified by HuggingFace Hub,
-        so disabling SSL verification for the download is acceptable.
+
+        Delegates to `services.hf_transport`, which configures retries + timeouts as well —
+        without them downloads hang forever in PyInstaller bundles. The model weights have
+        their own checksums verified by HuggingFace Hub, so an unverified transport is
+        acceptable for the download itself.
         """
-        import requests
-        from requests.adapters import HTTPAdapter
-        from huggingface_hub import configure_http_backend
-        try:
-            from huggingface_hub.utils._http import reset_sessions
-        except ImportError:
-            reset_sessions = lambda: None
-        
-        class _TimeoutAdapter(HTTPAdapter):
-            def send(self, *a, **kw):
-                kw.setdefault('timeout', (30, 120))
-                return super().send(*a, **kw)
-        
-        def robust_no_ssl_factory() -> requests.Session:
-            session = requests.Session()
-            session.verify = False
-            session.mount('http://', _TimeoutAdapter(max_retries=3))
-            session.mount('https://', _TimeoutAdapter(max_retries=3))
-            return session
-        
-        # Clear cert env vars that override session.verify in requests
-        for key in ("REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE", "SSL_CERT_FILE"):
-            os.environ.pop(key, None)
-        
-        configure_http_backend(backend_factory=robust_no_ssl_factory)
-        reset_sessions()
-        
-        # Suppress urllib3 InsecureRequestWarning
-        import urllib3
-        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+        # ONE implementation, in services/hf_transport. This block used to call
+        # `configure_http_backend`, which huggingface_hub 1.x REMOVED — so on the shipped
+        # 1.23.0 it raised ImportError and the TTS download SSL bypass never worked at all.
+        from services.hf_transport import install_hf_transport
+        install_hf_transport(force=True)
     
     @staticmethod
     def _save_wav(path: str, audio_data, sample_rate: int = SAMPLE_RATE):
