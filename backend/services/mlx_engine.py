@@ -596,6 +596,100 @@ class MLXEngine:
             logger.info(f"[mlx-engine] loaded {model_id} in {time.perf_counter() - t0:.1f}s")
             return pair
 
+    # -- unload / eviction (Stage 3.1) -------------------------------------------
+    def resident(self) -> Dict[str, Any]:
+        """What is currently held in memory, and what MLX says it costs.
+
+        The MLX twin of Ollama's `/api/ps`. Without it neither the resident budget nor any
+        eviction sweep is falsifiable — you cannot prove a free happened.
+        """
+        out: Dict[str, Any] = {
+            "text": sorted(self._resident.keys()),
+            "embed": sorted(self._embed_resident.keys()),
+        }
+        try:
+            import mlx.core as mx
+            out["active_gb"] = round(mx.get_active_memory() / 1024 ** 3, 3)
+            out["peak_gb"] = round(mx.get_peak_memory() / 1024 ** 3, 3)
+            try:
+                out["cache_gb"] = round(mx.get_cache_memory() / 1024 ** 3, 3)
+            except Exception:
+                pass
+        except Exception:
+            pass
+        return out
+
+    async def unload(self, model_id: str, *, wait: float = 2.0) -> bool:
+        """Drop one model's weights and reclaim the memory. Returns True if it was freed.
+
+        MEASURED JUSTIFICATION (2026-08-19): an evaluation run ended holding **7.64 GB** of MLX
+        weights — exactly the sum of gemma 4.793 + phi 2.010 + arctic 1.058 GiB — because
+        nothing ever cleared `_resident`. KV and activations churn normally; the WEIGHTS never
+        came back until the process exited. On a 16 GB box that is most of the working set.
+
+        Safety, per the ecosystem prior art:
+        · NEVER free weights out from under a live generation — take that model's lock, and
+          SKIP (return False) rather than block forever if it is busy. A skipped eviction is a
+          missed optimisation; a freed-mid-stream model is a crash.
+        · Free on the MLX thread (`_exec`), the same thread that allocated.
+        · `gc.collect()` BEFORE `clear_cache()` — the buffers are only reclaimable once the
+          last Python reference is gone, and dropping the dict entry is not enough on its own.
+        · Short-circuit when nothing is loaded: touching Metal to free nothing still costs.
+        """
+        if model_id not in self._resident and model_id not in self._embed_resident:
+            return False
+
+        lock = self._model_locks.setdefault(model_id, asyncio.Lock())
+        try:
+            await asyncio.wait_for(lock.acquire(), timeout=wait)
+        except asyncio.TimeoutError:
+            logger.info(f"[mlx-engine] unload({model_id}) SKIPPED — model busy "
+                        f"(a live generation outranks reclaiming memory)")
+            return False
+        try:
+            before = self._active_gb()
+            self._resident.pop(model_id, None)
+            self._embed_resident.pop(model_id, None)
+            self._vlm_config.pop(model_id, None)
+
+            def _free() -> None:
+                import gc
+                gc.collect()          # must precede clear_cache — see docstring
+                try:
+                    import mlx.core as mx
+                    mx.clear_cache()
+                except Exception:
+                    pass
+
+            await self._run(_free)
+            after = self._active_gb()
+            freed = None if (before is None or after is None) else round(before - after, 3)
+            logger.info(f"[mlx-engine] unloaded {model_id} — active {before} → {after} GB "
+                        f"(freed {freed})")
+            return True
+        finally:
+            lock.release()
+
+    async def unload_all(self, *, keep: Optional[List[str]] = None, wait: float = 2.0) -> List[str]:
+        """Unload every resident model except `keep`. Returns what was actually freed."""
+        keep_set = set(keep or [])
+        targets = [m for m in list(self._resident) + list(self._embed_resident)
+                   if m not in keep_set]
+        if not targets:
+            return []
+        freed: List[str] = []
+        for m in targets:
+            if await self.unload(m, wait=wait):
+                freed.append(m)
+        return freed
+
+    def _active_gb(self) -> Optional[float]:
+        try:
+            import mlx.core as mx
+            return round(mx.get_active_memory() / 1024 ** 3, 3)
+        except Exception:
+            return None
+
     # -- text / structured (fast 9.1 · main 9.2 · structured 9.2b) ---------------
     async def generate(
         self, prompt: str, *, model: str, system: Optional[str] = None,

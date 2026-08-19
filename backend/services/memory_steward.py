@@ -358,6 +358,34 @@ async def free_for_pipeline(
     keep_norm = _normalize_set(keep)
     evicted: List[str] = []
 
+    # MLX FIRST (2026-08-19). Six pipelines call this expecting an unload, and until Stage 3.1
+    # there was none for MLX — so on an MLX-configured machine a scan/podcast/video would ask
+    # for memory and get nothing back, while ~7.6 GB of weights sat resident. Measured: an eval
+    # run ended holding exactly the sum of the three models' weights.
+    #
+    # `keep` holds OLLAMA names (the callers' vocabulary), so translate through the same role
+    # mapping the llm_service seam uses before deciding what may be freed. A model whose Ollama
+    # twin is in `keep` must survive.
+    try:
+        from services.mlx_engine import mlx_engine, mlx_model_for_role
+        mlx_keep = {mlx_model_for_role(n) for n in (keep or []) if n}
+        mlx_keep.discard(None)
+        try:
+            from config import settings as _st
+            if getattr(_st, "embed_engine", "ollama") == "mlx":
+                # The embedder is cheap to keep and expensive to reload on the next search.
+                mlx_keep.add(getattr(_st, "mlx_embedding_model", None))
+                mlx_keep.discard(None)
+        except Exception:
+            pass
+        freed_mlx = await mlx_engine.unload_all(keep=sorted(mlx_keep))
+        if freed_mlx:
+            evicted.extend(freed_mlx)
+            logger.info(f"[memory-steward] {reason}: freed MLX {freed_mlx} "
+                        f"(kept {sorted(mlx_keep)})")
+    except Exception as e:
+        logger.debug(f"[memory-steward] {reason}: MLX eviction skipped: {e}")
+
     async with _lock:
         loaded = await loaded_ollama_models()
         if not loaded:
