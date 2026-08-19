@@ -532,6 +532,11 @@ async def run_full_evaluation() -> ComboEvalSummary:
 
         # Collect warnings
         for cat_name, cat in category_results.items():
+            # A skipped/timed-out category is EXCLUDED from the score, so reporting it as
+            # "scored F (0)" contradicts the exclusion warning in the same list. It reads as
+            # two failures where there is one absence.
+            if cat.skipped:
+                continue
             if cat.score < 40:
                 summary.warnings.append(f"{cat.display_name} scored F ({cat.score:.0f})")
             elif cat.score < 60:
