@@ -560,6 +560,12 @@ class ComboEvalSummary:
             "overall_grade": self.overall_grade,
             "avg_tokens_per_sec": round(self.avg_tokens_per_sec, 1),
             "perf_samples": self.perf_samples,
+            # These were added to the dataclass but not to to_dict, so the first real A/B run
+            # persisted neither — the memory trace and the fallback count were computed,
+            # logged, and then dropped on the floor at serialisation.
+            "memory": self.memory,
+            "engine_fallbacks": self.engine_fallbacks,
+            "engine_fallback_detail": self.engine_fallback_detail,
             "tps_p50": self.tps_p50, "tps_p05": self.tps_p05,
             "ttft_p50": self.ttft_p50, "ttft_p95": self.ttft_p95,
             "avg_ttft_ms": round(self.avg_ttft_ms, 1),
