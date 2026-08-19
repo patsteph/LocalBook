@@ -85,6 +85,30 @@ def _get_ollama_embedding_sync(text: str) -> List[float]:
     return embs[0] if embs else []
 
 
+
+def _report_zero_fill(where: str, count: int, total: int) -> None:
+    """A zero vector is UNRETRIEVABLE — it matches nothing, forever, and nothing surfaces it.
+
+    The zero-fill below was written so "retrieval gaps stay visible rather than silently
+    corrupting the index", but nothing ever made them visible: a 2026-08-19 scan of this
+    install found **104 zero vectors in 7,302** (1.42%) already in the index. Emitting a
+    Quality Signal is what makes the docstring's intent true — it surfaces in the Health
+    panel's Rough Edges and feeds the field-edge → Evaluator promotion path.
+    """
+    if count <= 0:
+        return
+    try:
+        from services.quality_signals import record_signal
+        record_signal(
+            "degraded", "rag_embeddings",
+            f"{count}/{total} embeddings zero-filled in {where} — those chunks are unretrievable",
+            severity="warn", key="zero_vector",
+        )
+    except Exception:
+        pass
+    print(f"[RAG] ⚠️ {count}/{total} embeddings ZERO-FILLED in {where} — unretrievable chunks")
+
+
 def _get_ollama_embeddings_batch_sync(texts: List[str]) -> List[List[float]]:
     """Get embeddings for many texts in ONE /api/embed call per sub-batch.
 
@@ -102,7 +126,9 @@ def _get_ollama_embeddings_batch_sync(texts: List[str]) -> List[List[float]]:
 
     _mlx = _mlx_embed_sync_or_none(texts)
     if _mlx is not None:
-        return [v if (v and len(v) == settings.embedding_dim) else zero for v in _mlx]
+        out = [v if (v and len(v) == settings.embedding_dim) else zero for v in _mlx]
+        _report_zero_fill("mlx sync batch", sum(1 for v in out if not any(v)), len(out))
+        return out
 
     batch = 64
     out: List[List[float]] = []
@@ -117,12 +143,14 @@ def _get_ollama_embeddings_batch_sync(texts: List[str]) -> List[List[float]]:
             response.raise_for_status()
             embs = response.json().get("embeddings") or []
             if len(embs) == len(sub):
-                out.extend(e if (e and len(e) == settings.embedding_dim) else zero for e in embs)
+                good = [e if (e and len(e) == settings.embedding_dim) else zero for e in embs]
+                out.extend(good)
+                _report_zero_fill("ollama sync batch", sum(1 for v in good if not any(v)), len(good))
             else:
-                print(f"[RAG] ⚠️ sync embed shape mismatch {len(embs)}≠{len(sub)} — zero-filling")
+                _report_zero_fill(f"ollama shape mismatch {len(embs)}!={len(sub)}", len(sub), len(sub))
                 out.extend(zero for _ in sub)
         except Exception as e:
-            print(f"[RAG] ⚠️ sync batch embed failed for slice @{start}: {e}")
+            _report_zero_fill(f"ollama batch failed @{start}: {type(e).__name__}", len(sub), len(sub))
             out.extend(zero for _ in sub)
     return out
 
@@ -183,8 +211,12 @@ async def _get_ollama_embeddings_batch_async(texts: List[str], max_concurrent: i
         sub = texts[start:start + batch]
         embs = await ollama_service.embed_batch(sub, timeout=60.0, max_batch=batch)
         if len(embs) == len(sub):
-            results.extend(e if (e and len(e) == settings.embedding_dim) else zero for e in embs)
+            good = [e if (e and len(e) == settings.embedding_dim) else zero for e in embs]
+            results.extend(good)
+            # THE INGEST PATH — this is where the 104 zero vectors already in the index came from.
+            _report_zero_fill("async batch (ingest)", sum(1 for v in good if not any(v)), len(good))
         else:
+            _report_zero_fill(f"async shape mismatch {len(embs)}!={len(sub)}", len(sub), len(sub))
             results.extend(zero for _ in sub)
     return results
 

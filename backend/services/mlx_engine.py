@@ -439,6 +439,39 @@ def _embed_on_thread(engine, texts, model_id, batch_size, max_length):
 
 
 # ─── The engine ──────────────────────────────────────────────────────────────────
+# The embedding model's REAL context, not a guess. arctic-embed-l-v2.0 supports 8194 while the
+# old hardcoded default truncated at 2048 — an asymmetry with the Ollama path, which applies no
+# client cap. Currently LATENT: 0 of 5,366 real chunks measured on 2026-08-19 exceed 2048
+# (max ~1512), so this bites long queries or a larger chunk_size, not today's index.
+_EMBED_MAXLEN_CACHE: Dict[str, int] = {}
+
+
+def _embed_max_length(model_id: str) -> int:
+    env = os.environ.get("LOCALBOOK_MLX_EMBED_MAX_LENGTH")
+    if env:
+        try:
+            return int(env)
+        except ValueError:
+            pass
+    hit = _EMBED_MAXLEN_CACHE.get(model_id)
+    if hit:
+        return hit
+    val = 2048
+    try:
+        import json as _json
+        from huggingface_hub import try_to_load_from_cache
+        p = try_to_load_from_cache(model_id, "config.json")
+        if isinstance(p, str):
+            cfg = _json.load(open(p))
+            mp = cfg.get("max_position_embeddings")
+            if isinstance(mp, int) and mp > 0:
+                val = mp
+    except Exception:
+        pass
+    _EMBED_MAXLEN_CACHE[model_id] = val
+    return val
+
+
 class MLXEngine:
     def __init__(self) -> None:
         self._resident: Dict[str, Any] = {}              # model_id -> (model, tokenizer/processor)
@@ -768,12 +801,13 @@ class MLXEngine:
     # consistency. Both entrypoints RAISE on any failure so callers fall back to
     # Ollama embeddings (retrieval never breaks). Prefix discipline (arctic is
     # asymmetric) is the CALLER's job — embed() embeds text exactly as given.
+
     async def embed(self, texts: List[str], *, model: str,
                     batch_size: int = 32, max_length: Optional[int] = None,
                     **kwargs: Any) -> List[List[float]]:
         if not texts:
             return []
-        ml = max_length or int(os.environ.get("LOCALBOOK_MLX_EMBED_MAX_LENGTH", "2048"))
+        ml = max_length or _embed_max_length(model)
         return await self._run(_embed_on_thread, self, list(texts), model, batch_size, ml)
 
     def embed_sync(self, texts: List[str], *, model: str,
@@ -783,7 +817,7 @@ class MLXEngine:
         already have. Must NOT be called from the MLX thread itself."""
         if not texts:
             return []
-        ml = max_length or int(os.environ.get("LOCALBOOK_MLX_EMBED_MAX_LENGTH", "2048"))
+        ml = max_length or _embed_max_length(model)
         return self._exec.submit(_embed_on_thread, self, list(texts), model, batch_size, ml).result()
 
 

@@ -101,11 +101,18 @@ class Settings(BaseSettings):
     mlx_fast_model: str = "mlx-community/Phi-4-mini-instruct-4bit"
     mlx_vision_model: str = "mlx-community/gemma-4-e4b-it-4bit"
     mlx_image_model: str = "Runpod/FLUX.2-klein-4B-mflux-4bit"
-    # arctic-embed-l-v2.0 = exactly the Ollama `snowflake-arctic-embed2` (1024-dim). With CLS
-    # pooling (see _embed_on_thread) the bf16 build is bit-identical to the stored Ollama-fp16
-    # vectors (cosine 1.0000) → ZERO drift, same vector space, NO re-index. ~2.3 GB weights that
-    # download from HF on first use (offline-first embed falls back to Ollama until cached). The
-    # 8-bit build (`…-8bit`) is smaller + retrieval-equivalent (cosine ~0.9997) if bundle/RAM matters.
+    # arctic-embed-l-v2.0 = exactly the Ollama `snowflake-arctic-embed2` (1024-dim), same vector
+    # space, NO re-index. Weights are 1.1 GB (not the ~2.3 GB previously claimed here); they
+    # download from HF on first use, and embed falls back to Ollama until cached.
+    #
+    # MEASURED 2026-08-19 (`backend/scripts/embedding_equivalence.py`, 500 real chunks + 50 real
+    # queries) — the previous "bit-identical, cosine 1.0000" claim was an unverified assertion:
+    #   bf16 vs a fresh Ollama embedding : mean 0.999940, p1 0.999816 · top-5 overlap 0.992,
+    #                                      0/50 top-1 changes   → PASSES the cutover gate
+    #   8-bit                            : mean 0.999437, p1 0.999187 · top-5 overlap 0.980,
+    #                                      1/50 top-1 changes   → FAILS (gate allows zero)
+    # Hence bf16 is the pin despite costing ~0.5 GB more than the 8-bit build. Do not switch to
+    # 8-bit to save memory without re-running that script and accepting a retrieval change.
     mlx_embedding_model: str = "mlx-community/snowflake-arctic-embed-l-v2.0-bf16"
 
     # Embedding settings
