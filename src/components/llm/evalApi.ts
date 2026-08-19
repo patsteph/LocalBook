@@ -166,7 +166,46 @@ async function postJSON<T>(path: string): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+// ── Run comparison (2026-08-19) ──────────────────────────────────────────────
+// The /results/compare endpoint has existed with NO frontend caller. It is the surface the
+// MLX-vs-Ollama A/B is judged on, so it needs one.
+export interface MetricDelta { a: number | null; b: number | null; delta: number | null; pct: number | null; }
+
+export interface CompareSide {
+  run_id: string;
+  combo?: Record<string, unknown>;
+  hardware?: Record<string, unknown>;
+  overall_score: number;
+  overall_grade: string;
+  category_scores: Record<string, number>;
+  timestamp: string;
+  engines?: Record<string, string>;
+  engine_fallbacks?: number;
+  perf?: Record<string, number | null>;
+  memory?: Record<string, number | null>;
+}
+
+export interface CompareValidity {
+  comparable: boolean;
+  problems: string[];
+  same_engines: boolean;
+  engine_diff: Record<string, { a?: string; b?: string }>;
+  same_hardware: boolean;
+}
+
+export interface CompareResponse {
+  run_a: CompareSide;
+  run_b: CompareSide;
+  differences: Record<string, { score_a: number; score_b: number; delta: number }>;
+  perf_deltas: Record<string, MetricDelta>;
+  memory_deltas: Record<string, MetricDelta>;
+  validity: CompareValidity;
+}
+
 export const evalApi = {
+  compare: (runA: string, runB: string) =>
+    postJSON<CompareResponse>(
+      `/evaluator/results/compare?run_a=${encodeURIComponent(runA)}&run_b=${encodeURIComponent(runB)}`),
   getHardware: () => getJSON<HardwareResponse>('/evaluator/hardware'),
   getResults: () => getJSON<{ runs: RunSummary[]; count: number }>('/evaluator/results'),
   getResult: (runId: string) => getJSON<{ result: EvalResult }>(`/evaluator/results/${runId}`),

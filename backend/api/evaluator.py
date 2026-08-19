@@ -211,6 +211,13 @@ async def compare_results(run_a: str, run_b: str):
             "overall_grade": result_a.get("overall_grade", ""),
             "category_scores": result_a.get("category_scores", {}),
             "timestamp": result_a.get("timestamp", ""),
+            # ENGINE PROVENANCE — without this a reader cannot tell which runtime produced
+            # these numbers, and an engine A/B is exactly what this endpoint is for.
+            "engines": _engines_of(result_a),
+            "engine_fallbacks": result_a.get("engine_fallbacks", 0),
+            # Perf + memory, so a comparison covers speed and footprint, not just quality.
+            "perf": {k: result_a.get(k) for k in _PERF_KEYS},
+            "memory": result_a.get("memory", {}),
         },
         "run_b": {
             "run_id": run_b,
@@ -220,6 +227,13 @@ async def compare_results(run_a: str, run_b: str):
             "overall_grade": result_b.get("overall_grade", ""),
             "category_scores": result_b.get("category_scores", {}),
             "timestamp": result_b.get("timestamp", ""),
+            # ENGINE PROVENANCE — without this a reader cannot tell which runtime produced
+            # these numbers, and an engine A/B is exactly what this endpoint is for.
+            "engines": _engines_of(result_b),
+            "engine_fallbacks": result_b.get("engine_fallbacks", 0),
+            # Perf + memory, so a comparison covers speed and footprint, not just quality.
+            "perf": {k: result_b.get(k) for k in _PERF_KEYS},
+            "memory": result_b.get("memory", {}),
         },
         "differences": {},
     }
@@ -235,7 +249,78 @@ async def compare_results(run_a: str, run_b: str):
             "delta": round(score_b - score_a, 1),
         }
 
+    # Perf + memory deltas, and the validity verdict.
+    comparison["perf_deltas"] = {
+        k: _delta(result_a.get(k), result_b.get(k)) for k in _PERF_KEYS
+    }
+    comparison["memory_deltas"] = {
+        k: _delta((result_a.get("memory") or {}).get(k), (result_b.get("memory") or {}).get(k))
+        for k in _MEMORY_KEYS
+    }
+    comparison["validity"] = _validity(result_a, result_b)
     return comparison
+
+
+# Keys surfaced for a perf comparison. `perf_samples` is deliberately included: a delta
+# computed from one sample per side is not a measurement, and the reader has to be able to see
+# that (runs before 2026-08-19 sampled the Streaming phase only).
+_PERF_KEYS = ("avg_tokens_per_sec", "tps_p50", "tps_p05",
+              "avg_ttft_ms", "ttft_p50", "ttft_p95",
+              "total_run_time_seconds", "perf_samples")
+
+_MEMORY_KEYS = ("peak_rss_gb", "peak_system_used_gb", "min_system_available_gb",
+                "mlx_peak_gb", "mlx_active_end_gb", "swap_out_delta")
+
+
+def _delta(a, b):
+    """b − a, tolerating missing/non-numeric values rather than inventing zeros."""
+    try:
+        if a is None or b is None:
+            return {"a": a, "b": b, "delta": None, "pct": None}
+        a_f, b_f = float(a), float(b)
+        pct = round((b_f - a_f) / a_f * 100, 1) if a_f else None
+        return {"a": a_f, "b": b_f, "delta": round(b_f - a_f, 3), "pct": pct}
+    except (TypeError, ValueError):
+        return {"a": a, "b": b, "delta": None, "pct": None}
+
+
+def _engines_of(result: dict) -> dict:
+    """Per-role engines, from the combo snapshot."""
+    combo = result.get("combo") or {}
+    return {k.replace("_engine", ""): combo.get(k)
+            for k in ("main_engine", "fast_engine", "vision_engine", "embed_engine")
+            if combo.get(k)}
+
+
+def _validity(a: dict, b: dict) -> dict:
+    """Can these two runs legitimately be compared?
+
+    A comparison that silently averages an invalid run is worse than no comparison — this
+    names the reasons rather than leaving them for a reader to notice.
+    """
+    problems = []
+    for label, r in (("a", a), ("b", b)):
+        if r.get("engine_fallbacks"):
+            problems.append(
+                f"run_{label} recorded {r['engine_fallbacks']} engine fallback(s) — its "
+                f"results are not attributable to a single engine")
+        if (r.get("perf_samples") or 0) < 5:
+            problems.append(
+                f"run_{label} has only {r.get('perf_samples', 0)} perf sample(s) — too few "
+                f"for a throughput judgement (runs before 2026-08-19 sampled one phase)")
+        if ((r.get("memory") or {}).get("sustained_swap")):
+            problems.append(f"run_{label} swapped during the run — its timings are not representative")
+    ea, eb = _engines_of(a), _engines_of(b)
+    return {
+        "comparable": not problems,
+        "problems": problems,
+        "same_engines": ea == eb,
+        # The A/B case: same hardware, different engines, is what we WANT here.
+        "engine_diff": {r: {"a": ea.get(r), "b": eb.get(r)}
+                        for r in set(ea) | set(eb) if ea.get(r) != eb.get(r)},
+        "same_hardware": (a.get("hardware") or {}).get("fingerprint")
+                          == (b.get("hardware") or {}).get("fingerprint"),
+    }
 
 
 @router.post("/cleanup")

@@ -2,13 +2,15 @@ import { useState } from 'react';
 import { LLMSelector } from '../LLMSelector';
 import { EvaluatorPanel } from './EvaluatorPanel';
 import { EvalHistoryPanel } from './EvalHistoryPanel';
+import { EvalComparePanel } from './EvalComparePanel';
 
-type StudioTab = 'locker' | 'evaluator' | 'history';
+type StudioTab = 'locker' | 'evaluator' | 'history' | 'compare';
 
 const TABS: { id: StudioTab; label: string }[] = [
   { id: 'locker',    label: '🧠 Locker' },
   { id: 'evaluator', label: '🧪 Evaluator' },
   { id: 'history',   label: '📊 History' },
+  { id: 'compare',   label: '⚖️ Compare' },
 ];
 
 interface LLMStudioProps {
@@ -50,6 +52,7 @@ export function LLMStudio({ selectedProvider, onProviderChange }: LLMStudioProps
       )}
       {tab === 'evaluator' && <EvaluatorPanel />}
       {tab === 'history' && <EvalHistoryPanel />}
+      {tab === 'compare' && <EvalComparePanel />}
     </div>
   );
 }
