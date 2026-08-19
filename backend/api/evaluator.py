@@ -217,6 +217,7 @@ async def compare_results(run_a: str, run_b: str):
             "engine_fallbacks": result_a.get("engine_fallbacks", 0),
             # Perf + memory, so a comparison covers speed and footprint, not just quality.
             "perf": {k: result_a.get(k) for k in _PERF_KEYS},
+            "throughput": result_a.get("throughput", {}),
             "memory": result_a.get("memory", {}),
         },
         "run_b": {
@@ -233,6 +234,7 @@ async def compare_results(run_a: str, run_b: str):
             "engine_fallbacks": result_b.get("engine_fallbacks", 0),
             # Perf + memory, so a comparison covers speed and footprint, not just quality.
             "perf": {k: result_b.get(k) for k in _PERF_KEYS},
+            "throughput": result_b.get("throughput", {}),
             "memory": result_b.get("memory", {}),
         },
         "differences": {},
@@ -253,6 +255,11 @@ async def compare_results(run_a: str, run_b: str):
     comparison["perf_deltas"] = {
         k: _delta(result_a.get(k), result_b.get(k)) for k in _PERF_KEYS
     }
+    comparison["throughput_deltas"] = {
+        k: _delta((result_a.get("throughput") or {}).get(k),
+                  (result_b.get("throughput") or {}).get(k))
+        for k in _THROUGHPUT_KEYS
+    }
     comparison["memory_deltas"] = {
         k: _delta((result_a.get("memory") or {}).get(k), (result_b.get("memory") or {}).get(k))
         for k in _MEMORY_KEYS
@@ -267,6 +274,9 @@ async def compare_results(run_a: str, run_b: str):
 _PERF_KEYS = ("avg_tokens_per_sec", "tps_p50", "tps_p05",
               "avg_ttft_ms", "ttft_p50", "ttft_p95",
               "total_run_time_seconds", "perf_samples")
+
+_THROUGHPUT_KEYS = ("tokens_per_sec", "tps_p50", "tps_p05", "tps_p95",
+                    "generations", "completion_tokens", "generation_seconds")
 
 _MEMORY_KEYS = ("peak_rss_gb", "peak_system_used_gb", "min_system_available_gb",
                 "mlx_peak_gb", "mlx_active_end_gb", "swap_out_delta")
@@ -304,10 +314,14 @@ def _validity(a: dict, b: dict) -> dict:
             problems.append(
                 f"run_{label} recorded {r['engine_fallbacks']} engine fallback(s) — its "
                 f"results are not attributable to a single engine")
-        if (r.get("perf_samples") or 0) < 5:
+        # Prefer the seam-level meter when the run has it; fall back to the old per-test
+        # counter for runs recorded before it existed.
+        gens = (r.get("throughput") or {}).get("generations")
+        n = gens if gens is not None else (r.get("perf_samples") or 0)
+        if n < 5:
+            src = "generations" if gens is not None else "perf samples"
             problems.append(
-                f"run_{label} has only {r.get('perf_samples', 0)} perf sample(s) — too few "
-                f"for a throughput judgement (runs before 2026-08-19 sampled one phase)")
+                f"run_{label} has only {n} {src} — too few for a throughput judgement")
         if ((r.get("memory") or {}).get("sustained_swap")):
             problems.append(f"run_{label} swapped during the run — its timings are not representative")
         if r.get("timed_out_phases"):

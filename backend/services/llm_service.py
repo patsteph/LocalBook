@@ -64,6 +64,11 @@ def _record_ollama_tokens(data: dict):
         if prompt_tokens > 0 or completion_tokens > 0:
             from services.rag_metrics import rag_metrics
             rag_metrics.record_tokens(prompt_tokens, completion_tokens, eval_duration_ns)
+            # Run-scoped throughput. Both engines reach here with Ollama-shaped fields
+            # (mlx_engine emits eval_count/eval_duration deliberately), so ONE hook makes
+            # every generation a speed sample instead of the 2 that time themselves.
+            from services.throughput_meter import record as _tp_record
+            _tp_record(completion_tokens, eval_duration_ns, prompt_tokens)
     except Exception:
         pass  # Never let metrics recording break LLM calls
 

@@ -245,6 +245,12 @@ async def run_full_evaluation() -> ComboEvalSummary:
             hardware=hw.to_dict(),
         )
         try:
+            from services import throughput_meter as _tp
+            _tp.start(f"{combo.main_engine}:{combo.main_model}")
+        except Exception as _tp_e:
+            print(f"[EVALUATOR] throughput meter unavailable (non-fatal): {_tp_e}")
+
+        try:
             from evaluator.memory_sampler import MemorySampler, default_path
             _mem_sampler = MemorySampler(
                 default_path(summary.run_id, "eval"), interval_s=1.0,
@@ -466,6 +472,17 @@ async def run_full_evaluation() -> ComboEvalSummary:
         # whether an "MLX run" was actually served by MLX end-to-end. A non-zero count does
         # not mean the app misbehaved — it means these numbers cannot be attributed to one
         # engine, which is exactly what an A/B needs to know.
+        try:
+            from services import throughput_meter as _tp
+            summary.throughput = _tp.stop()
+            _t = summary.throughput
+            if _t.get("generations"):
+                print(f"[EVALUATOR] throughput: {_t['generations']} generations, "
+                      f"{_t['tokens_per_sec']} tok/s aggregate "
+                      f"(p50 {_t['tps_p50']}, p05 {_t['tps_p05']})")
+        except Exception as _tp_e:
+            print(f"[EVALUATOR] throughput summary failed: {_tp_e}")
+
         if _mem_sampler is not None:
             try:
                 summary.memory = _mem_sampler.stop()
