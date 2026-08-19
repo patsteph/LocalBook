@@ -859,7 +859,8 @@ print(f'Whisper model cached at: {local_dir}')
             fi
         fi
 
-        # MLX embedding model (~2.3GB) — in-process embeddings via MLX (arctic-embed-l-v2.0 bf16).
+        # MLX embedding model (~1.1GB) — in-process embeddings via MLX (arctic-embed-l-v2.0 bf16).
+        # Size MEASURED 2026-08-19 (1.058 GiB on disk); the old ~2.3GB figure was ~2x over.
         # Same model + 1024 dim as the Ollama `snowflake-arctic-embed2` → same vector space, no re-index.
         # Pre-download here (with the SSL-tolerant session below) so the frozen app never has to fetch it
         # at first use, where OpenSSL can't verify the HF cert. Skip for Ollama-embed users
@@ -871,7 +872,7 @@ print(f'Whisper model cached at: {local_dir}')
             if [ -d "$embed_hf_cache" ]; then
                 success "MLX embedding model (already cached)"
             else
-                info "Downloading MLX embedding model (~2.3GB) — in-process embeddings engine..."
+                info "Downloading MLX embedding model (~1.1GB) — in-process embeddings engine..."
                 python -c "
 import os, sys, signal
 def _alarm(*_): raise SystemExit('Download timed out')

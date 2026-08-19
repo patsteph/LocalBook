@@ -143,17 +143,23 @@ async def run_full_evaluation() -> ComboEvalSummary:
     # paths (rag_engine etc. don't take a combo arg) so a mid-run swap
     # WILL affect later phases; the snapshot's job is to make the
     # corruption legible in the report rather than invisible.
-    from evaluator.model_registry import model_registry as _mr
+    # Built from ModelCombo.from_config, which is ENGINE-AWARE and already resolves the model
+    # that actually serves each role. Hand-building this from `settings.ollama_model` recorded
+    # Ollama names even on an all-MLX run — so a persisted result was mislabelled and an
+    # engine A/B would have silently compared Ollama against Ollama.
+    from evaluator.models import ModelCombo as _MC
+    _combo = _MC.from_config(settings)
     combo_snapshot = {
-        "ollama_model": getattr(settings, "ollama_model", "") or "",
-        "ollama_fast_model": getattr(settings, "ollama_fast_model", "") or "",
-        # Record the RESOLVED vision model (what the runners actually test), so the
-        # report matches reality instead of a configured granite that isn't used.
-        "vision_model": _mr.resolve_vision_model(
-            getattr(settings, "ollama_model", "") or "",
-            getattr(settings, "vision_model", "") or "",
-        ),
-        "embedding_model": getattr(settings, "embedding_model", "") or "",
+        "ollama_model": _combo.main_model,
+        "ollama_fast_model": _combo.fast_model,
+        "vision_model": _combo.vision_model,
+        "embedding_model": _combo.embedding_model,
+        # The engines are what make the snapshot falsifiable — without them a reader cannot
+        # tell which runtime produced these numbers.
+        "main_engine": _combo.main_engine,
+        "fast_engine": _combo.fast_engine,
+        "vision_engine": _combo.vision_engine,
+        "embed_engine": _combo.embed_engine,
     }
 
     # Build C (2026-07-07): derive the tested model's RunProfile ONCE and make the
@@ -164,9 +170,13 @@ async def run_full_evaluation() -> ComboEvalSummary:
     try:
         from evaluator.run_profile import derive_run_profile
         from evaluator import scoring as _scoring
-        _rp = derive_run_profile(combo_snapshot["ollama_model"])
+        # provider must match the engine actually serving the main role, or an MLX run is
+        # profiled with Ollama's template/stop assumptions.
+        _rp = derive_run_profile(combo_snapshot["ollama_model"],
+                                 provider=combo_snapshot.get("main_engine", "ollama"))
         _scoring.set_active_run_profile(_rp)
         print(f"[EVALUATOR] RunProfile: {combo_snapshot['ollama_model']} "
+              f"engine={combo_snapshot.get('main_engine')} "
               f"thinking_capable={_rp.thinking_capable} stops={len(_rp.stop_sequences)} "
               f"filters={_rp.normalize_filters}")
     except Exception as _e:

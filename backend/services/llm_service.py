@@ -480,6 +480,22 @@ async def stream_text(
                         yield _t
                     if _chunk.get("done"):
                         _record_ollama_tokens(_chunk)
+                        # The streaming guard ABORTED on degeneration. Nothing consumed this
+                        # flag, so a truncated answer looked like a short one — invisible to
+                        # the user, to the logs, and (critically) to any quality measurement.
+                        # With no Ollama fallback after the cutover this guard IS the safety
+                        # system, so its firing has to be recorded.
+                        if _chunk.get("degenerate"):
+                            try:
+                                from services.quality_signals import record_signal
+                                record_signal(
+                                    "degraded", "mlx_engine",
+                                    f"streaming aborted on degeneration ({model}→{_mlx_id}) after "
+                                    f"{_chunk.get('eval_count', 0)} tokens — output truncated",
+                                    severity="warn", key="streaming_degeneration",
+                                )
+                            except Exception:
+                                pass
                 print(f"[mlx-engine] {model}→{_mlx_id} stream OK")
                 return
             except Exception as _mlx_e:

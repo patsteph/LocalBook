@@ -338,7 +338,7 @@ class LLMLocker:
         # first time they're used the model is already on disk instead of stalling on a lazy
         # first-use fetch mid-session (user requests 2026-07-17 image, 2026-07-22 embeddings):
         #   • image generation (klein/mflux, ~4 GB) — else "Klein model not installed"
-        #   • embeddings (arctic-embed-l-v2.0, ~0.6 GB) — else the first RAG search / @curator
+        #   • embeddings (arctic-embed-l-v2.0 bf16, 1.1 GB measured) — else the first RAG search / @curator
         #     routing / constellation clustering / memory recall blocks on the download.
         # Embeddings run the SAME arctic model at the SAME 1024 dim as Ollama → NO re-index; both
         # hooks are fallback-safe (a failed download just falls back to the Ollama path).

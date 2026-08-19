@@ -264,6 +264,20 @@ class MLXCapabilityProbe:
     provider = "mlx"
 
     def probe(self, model: str) -> Optional[ProbedCapabilities]:
+        # Cache like the Ollama probe does. Reading + parsing config.json on every
+        # Locker render is pure waste, and the Locker renders often.
+        if not model:
+            return None
+        key = f"mlx::{model}"
+        cached = _cache_get(key)
+        if cached is not None:
+            return cached
+        caps = self._probe_uncached(model)
+        if caps is not None:
+            _cache_put(key, caps)
+        return caps
+
+    def _probe_uncached(self, model: str) -> Optional[ProbedCapabilities]:
         if not model:
             return None
         try:
