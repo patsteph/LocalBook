@@ -89,21 +89,10 @@ def get_hardware_profile() -> HardwareProfile:
     profile.os_version = platform.mac_ver()[0] or platform.platform()
 
     # ── Ollama version ───────────────────────────────────────────────────
-    try:
-        ollama_v = subprocess.run(
-            ["ollama", "version"],
-            capture_output=True, text=True, timeout=5
-        )
-        if ollama_v.returncode == 0:
-            # Output: "ollama version is 0.6.2" or just "0.6.2"
-            ver_text = ollama_v.stdout.strip()
-            ver_match = re.search(r"(\d+\.\d+\.\d+)", ver_text)
-            if ver_match:
-                profile.ollama_version = ver_match.group(1)
-            else:
-                profile.ollama_version = ver_text
-    except Exception:
-        profile.ollama_version = "unknown"
+    # The `ollama version` subprocess is gone: it cost ~5 s on a cold profile when Ollama is
+    # absent (the timeout), and the value is meaningless on an MLX-only machine. The FIELD
+    # stays — historical eval runs carry it and the fingerprint reads it.
+    profile.ollama_version = ""
 
     # ── Derive tier from RAM ─────────────────────────────────────────────
     profile.derive_tier()

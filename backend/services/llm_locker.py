@@ -7,10 +7,11 @@ import logging
 from typing import Tuple, Dict, Any, Optional
 from config import settings
 from evaluator.hardware_profiler import get_hardware_profile
-from evaluator.model_registry import ModelRegistry
+# The shared singleton, NOT a second instance. Two registries meant two caches, two
+# refresh cycles, and a swap that updated one while the Locker UI read the other.
+from evaluator.model_registry import model_registry as registry
 
 logger = logging.getLogger(__name__)
-registry = ModelRegistry()
 
 
 def _get_default_vision_model() -> str:
