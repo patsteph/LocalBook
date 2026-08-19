@@ -539,3 +539,89 @@ async def get_notebook_schedule(notebook_id: str):
     except Exception as e:
         logger.debug(f"[system.schedule/nb] community snapshot failed: {e}")
     return out
+
+
+@router.get("/engine-truth")
+async def engine_truth():
+    """Which engine is ACTUALLY serving each role, right now.
+
+    Exists because `config.py` defaults are not the truth: `user_preferences.json`'s
+    `default_combo` is re-applied over them on every launch (`main.py:103-110`, truthy check),
+    so a saved `"ollama"` silently beats a config default of `"mlx"`. Any engine A/B, gate day,
+    or "we're on MLX now" claim can be falsified by a stale prefs file — this is the endpoint
+    that settles it rather than inferring from config.
+
+    Also reports whether the resolved model is actually present on disk, since a role can be
+    configured for MLX and still fall back at runtime because nothing was ever downloaded.
+    """
+    from config import settings
+
+    def _role(engine_attr: str, ollama_attr: str, mlx_attr: str) -> dict:
+        engine = getattr(settings, engine_attr, "ollama") or "ollama"
+        model = (getattr(settings, mlx_attr, "") if engine == "mlx"
+                 else getattr(settings, ollama_attr, ""))
+        present = None
+        if engine == "mlx" and model:
+            try:
+                from services.model_sizing import exact_weight_gb
+                present = exact_weight_gb(model) is not None
+            except Exception:
+                present = None
+        return {"engine": engine, "model": model, "present_on_disk": present}
+
+    roles = {
+        "main": _role("main_engine", "ollama_model", "mlx_main_model"),
+        "fast": _role("fast_engine", "ollama_fast_model", "mlx_fast_model"),
+        "vision": _role("vision_engine", "vision_model", "mlx_vision_model"),
+        "embed": _role("embed_engine", "embedding_model", "mlx_embedding_model"),
+        "image": _role("image_engine", "image_model", "mlx_image_model"),
+    }
+    engines = {r: v["engine"] for r, v in roles.items()}
+    distinct = sorted(set(engines.values()))
+    prefs = _prefs_override_summary()
+
+    # Name the disagreements explicitly. Leaving a reader to diff two dicts is how this gets
+    # missed — and being missed is the entire failure mode this endpoint exists for.
+    conflicts = []
+    for role, resolved in engines.items():
+        want = (prefs.get("engines") or {}).get(f"{role}_engine")
+        if want and want != resolved:
+            conflicts.append({
+                "role": role, "resolved": resolved, "prefs_say": want,
+                "note": "user_preferences.json is re-applied at every launch and wins — "
+                        "expect the prefs value in the running app",
+            })
+    # A role pointed at MLX with nothing downloaded will fall back at runtime, so the reported
+    # engine would be a lie the moment it is used.
+    missing = [r for r, v in roles.items()
+               if v["engine"] == "mlx" and v["present_on_disk"] is False]
+
+    return {
+        "roles": roles,
+        "all_mlx": distinct == ["mlx"],
+        "all_ollama": distinct == ["ollama"],
+        "mixed": len(distinct) > 1,
+        "prefs_override_active": prefs,
+        "conflicts": conflicts,
+        "mlx_roles_missing_on_disk": missing,
+        # The one field a measurement harness should assert on.
+        "trustworthy": not conflicts and not missing,
+    }
+
+
+def _prefs_override_summary() -> dict:
+    """Which engine values user_preferences.json is forcing over the config defaults."""
+    try:
+        import json
+        from pathlib import Path
+        from config import settings
+        p = Path(settings.data_dir) / "user_preferences.json"
+        if not p.is_file():
+            return {"present": False}
+        combo = (json.loads(p.read_text()) or {}).get("default_combo") or {}
+        return {
+            "present": True,
+            "engines": {k: v for k, v in combo.items() if k.endswith("_engine")},
+        }
+    except Exception:
+        return {"present": None}

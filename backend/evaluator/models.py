@@ -301,6 +301,27 @@ class EvalResult:
         duplicating the routing logic.
         """
         try:
+            # RESOLVE THE ROLE FIRST. Runners pass the OLLAMA name because that is the key the
+            # llm_service seam routes on — correct for invocation, wrong for provenance: on an
+            # all-MLX run every result was stamped provider="ollama" with an Ollama model name,
+            # so a persisted run was mislabelled and an engine A/B would compare Ollama to
+            # Ollama. Ask the same decision point the seam asks.
+            try:
+                from services.mlx_engine import mlx_model_for_role
+                _mlx_id = mlx_model_for_role(model_name)
+                if _mlx_id:
+                    model_name = _mlx_id
+            except Exception:
+                pass
+            # The embed role has no mlx_model_for_role entry (it is not an llm_service role).
+            try:
+                from config import settings as _st
+                if (model_name == getattr(_st, "embedding_model", None)
+                        and getattr(_st, "embed_engine", "ollama") == "mlx"):
+                    model_name = getattr(_st, "mlx_embedding_model", model_name)
+            except Exception:
+                pass
+
             from evaluator.capabilities import capabilities_for
             caps = capabilities_for(model_name)
             self.model_used = model_name
@@ -504,6 +525,13 @@ class ComboEvalSummary:
     # show "Ran on Ollama + llama-server (Bonsai-8B)" at a glance.
     providers_used: dict = field(default_factory=dict)   # {role: {provider, backend_url, model}}
     skipped_categories: list = field(default_factory=list)  # [{category, reason}]
+
+    # ENGINE FALLBACKS during this run (2026-08-19). A silent MLX→Ollama fallback makes an MLX
+    # run partly an Ollama run, so its numbers are not what they claim to be — and the failure
+    # is invisible because the answers still arrive. A non-zero count INVALIDATES the run for
+    # engine comparison; it does not mean the app misbehaved.
+    engine_fallbacks: int = 0
+    engine_fallback_detail: list = field(default_factory=list)  # [{detail, key, ts}]
     # v1.8.3: Production readiness — the "will this combo actually work in
     # the app?" verdict, compressed from raw scores into pass/degraded/fail
     # per user-facing feature plus a single-headline rollup.

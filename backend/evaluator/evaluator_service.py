@@ -85,6 +85,30 @@ def _load_config() -> dict:
 _PHASE_TIMEOUT_SECONDS = 180  # 3 min max per test phase — prevents indefinite hangs
 
 
+
+def _count_engine_fallbacks() -> int:
+    """How many engine-fallback signals exist right now (a monotonic watermark)."""
+    try:
+        from services.quality_signals import quality_signals
+        return sum(1 for s in quality_signals.get_recent(days=1)
+                   if s.get("type") == "fallback" and s.get("component") == "llm_service")
+    except Exception:
+        return 0
+
+
+def _engine_fallbacks_since(watermark: int) -> tuple:
+    """(count, detail) of engine fallbacks recorded since the watermark."""
+    try:
+        from services.quality_signals import quality_signals
+        rows = [s for s in quality_signals.get_recent(days=1)
+                if s.get("type") == "fallback" and s.get("component") == "llm_service"]
+        fresh = rows[watermark:] if len(rows) > watermark else []
+        return len(fresh), [{"detail": r.get("detail", ""), "key": r.get("key", ""),
+                             "ts": r.get("ts", "")} for r in fresh[:20]]
+    except Exception:
+        return 0, []
+
+
 async def _run_phase_with_timeout(coro, phase_name: str, timeout: int = _PHASE_TIMEOUT_SECONDS):
     """Run a test phase with a hard timeout. Returns results or empty list on timeout."""
     try:
@@ -147,6 +171,11 @@ async def run_full_evaluation() -> ComboEvalSummary:
     # that actually serves each role. Hand-building this from `settings.ollama_model` recorded
     # Ollama names even on an all-MLX run — so a persisted result was mislabelled and an
     # engine A/B would have silently compared Ollama against Ollama.
+    # Watermark the engine-fallback log so we can count ONLY this run's fallbacks. A silent
+    # MLX→Ollama fallback makes an "MLX run" partly an Ollama run — invisible, because the
+    # answers still arrive, and fatal to any engine comparison built on the result.
+    _fallback_watermark = _count_engine_fallbacks()
+
     from evaluator.models import ModelCombo as _MC
     _combo = _MC.from_config(settings)
     combo_snapshot = {
@@ -418,6 +447,19 @@ async def run_full_evaluation() -> ComboEvalSummary:
         )
         summary.overall_score = overall_score
         summary.overall_grade = overall_grade
+
+        # Engine fallbacks during THIS run. Recorded on the summary so a reader can tell
+        # whether an "MLX run" was actually served by MLX end-to-end. A non-zero count does
+        # not mean the app misbehaved — it means these numbers cannot be attributed to one
+        # engine, which is exactly what an A/B needs to know.
+        _fb_n, _fb_detail = _engine_fallbacks_since(_fallback_watermark)
+        summary.engine_fallbacks = _fb_n
+        summary.engine_fallback_detail = _fb_detail
+        if _fb_n:
+            summary.warnings.append(
+                f"{_fb_n} engine fallback(s) during this run — results are NOT attributable "
+                f"to a single engine and must not be used for an A/B comparison")
+            print(f"[EVALUATOR] ⚠️ {_fb_n} engine fallback(s) — run is not engine-pure")
 
         # v1.8.3: production readiness synthesis — compresses raw scores into
         # a pass/degraded/fail verdict per user-facing feature so the UI shows
