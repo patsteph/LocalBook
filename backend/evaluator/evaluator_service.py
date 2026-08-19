@@ -524,21 +524,31 @@ async def run_full_evaluation() -> ComboEvalSummary:
         # landed during the eval — surface this loudly so the user knows
         # the report is mixed.
         drifted = []
-        for k, snap_v in combo_snapshot.items():
-            # Compare LIKE-FOR-LIKE. The snapshot stored the RESOLVED vision model (what the
-            # runners actually test); reading raw settings.vision_model here compared a resolved
-            # value against a raw one, so vision phantom-drifted every run where the raw setting
-            # (e.g. granite3.2-vision:2b) differs from the resolved main (gemma4:e4b) — a false
-            # "swap detected" (user report 2026-07-24). Re-resolve vision the same way.
-            if k == "vision_model":
-                cur_v = _mr.resolve_vision_model(
-                    getattr(settings, "ollama_model", "") or "",
-                    getattr(settings, "vision_model", "") or "",
-                )
-            else:
-                cur_v = getattr(settings, k, "") or ""
-            if cur_v != snap_v:
-                drifted.append(f"{k}: started with '{snap_v}', ended on '{cur_v}'")
+        # Compare LIKE-FOR-LIKE by re-building the combo the same way the snapshot was built.
+        # Two bugs lived here: `_mr` was undefined (crashing every run at the finish line), and
+        # comparing the snapshot's RESOLVED values against raw `settings.*` reported phantom
+        # drift on every MLX run — the snapshot holds an HF id while `settings.ollama_model`
+        # holds the Ollama name, so they can never be equal. Rebuilding from ModelCombo makes
+        # both sides resolved, which is the only comparison that means anything.
+        try:
+            _now_combo = _MC.from_config(settings)
+            _now = {
+                "ollama_model": _now_combo.main_model,
+                "ollama_fast_model": _now_combo.fast_model,
+                "vision_model": _now_combo.vision_model,
+                "embedding_model": _now_combo.embedding_model,
+                "main_engine": _now_combo.main_engine,
+                "fast_engine": _now_combo.fast_engine,
+                "vision_engine": _now_combo.vision_engine,
+                "embed_engine": _now_combo.embed_engine,
+            }
+            for k, snap_v in combo_snapshot.items():
+                cur_v = _now.get(k, "")
+                if cur_v != snap_v:
+                    drifted.append(f"{k}: started with '{snap_v}', ended on '{cur_v}'")
+        except Exception as _drift_e:
+            print(f"[EVALUATOR] drift check skipped (non-fatal): {_drift_e}")
+
         if drifted:
             warn_msg = (
                 "Model swap detected DURING eval — results mix two configurations. "
