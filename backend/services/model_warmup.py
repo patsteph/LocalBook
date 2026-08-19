@@ -270,6 +270,65 @@ async def _warmup_loop_periodic():
         # Only warm models that have been used recently
         await warmup_cycle(force_all=False)
 
+        # Stage 3.10 — IDLE EVICTION. Warming keeps hot models resident; nothing ever released
+        # cold ones, so an MLX machine ended every session holding ~7.6 GB of weights (measured
+        # 2026-08-19: an eval run's end state was exactly gemma+phi+arctic). Load-time budgeting
+        # (3.2) cannot fix that — it only acts when something new is loading, and a session ends
+        # after work, not before it.
+        await _evict_idle_mlx()
+
+
+async def _evict_idle_mlx() -> None:
+    """Unload MLX models idle longer than MODEL_IDLE_TIMEOUT. Never raises.
+
+    Three guards, each protecting against a way this could hurt more than it helps:
+      · NEVER while the user is in the foreground — a reload costs ~20 s for gemma, and paying
+        that because a sweep fired mid-session is worse than holding the memory.
+      · NEVER a model used within the timeout, tracked by the SAME `mark_*_used` stamps the
+        warmup loop reads, so warming and evicting cannot disagree about what is hot.
+      · `unload()` itself skips a busy model, so a generation in flight is safe regardless.
+    """
+    try:
+        from config import settings
+        if not any(getattr(settings, f"{r}_engine", "ollama") == "mlx"
+                   for r in ("main", "fast", "vision", "embed")):
+            return
+
+        from services.presence import system_busy
+        if system_busy():
+            return
+
+        from services.mlx_engine import mlx_engine
+        held = mlx_engine.resident()
+        loaded = list(held.get("text", [])) + list(held.get("embed", []))
+        if not loaded:
+            return
+
+        now = time.time()
+        # Map each MLX model back to the role stamp that tracks its use.
+        stamps = {
+            getattr(settings, "mlx_main_model", None): _last_main_model_use,
+            getattr(settings, "mlx_fast_model", None): _last_fast_model_use,
+            getattr(settings, "mlx_vision_model", None): _last_main_model_use,
+            getattr(settings, "mlx_embedding_model", None): _last_embedding_use,
+        }
+        idle = [m for m in loaded
+                if (now - (stamps.get(m) or 0)) > MODEL_IDLE_TIMEOUT]
+        if not idle:
+            return
+
+        before = held.get("active_gb")
+        freed = []
+        for mid in idle:
+            if await mlx_engine.unload(mid, wait=1.0):
+                freed.append(mid)
+        if freed:
+            after = mlx_engine.resident().get("active_gb")
+            print(f"[model-warmup] idle-evicted {len(freed)} MLX model(s) after "
+                  f"{MODEL_IDLE_TIMEOUT}s idle — active {before} → {after} GB")
+    except Exception as e:
+        logger.debug(f"[model-warmup] idle eviction skipped: {e}")
+
 
 async def initial_warmup():
     """Run initial warmup synchronously at startup - blocks until models are ready"""
