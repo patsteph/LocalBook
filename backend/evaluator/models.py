@@ -516,6 +516,13 @@ class ComboEvalSummary:
     avg_tokens_per_sec: float = 0.0
     avg_ttft_ms: float = 0.0
     total_run_time_seconds: float = 0.0
+    # Distribution + sample count (2026-08-19). The means above were computed from the Streaming
+    # phase alone — one query — so they could not support a regression judgement.
+    perf_samples: int = 0
+    tps_p50: float = 0.0
+    tps_p05: float = 0.0
+    ttft_p50: float = 0.0
+    ttft_p95: float = 0.0
 
     # Verdict
     warnings: list = field(default_factory=list)
@@ -530,6 +537,7 @@ class ComboEvalSummary:
     # run partly an Ollama run, so its numbers are not what they claim to be — and the failure
     # is invisible because the answers still arrive. A non-zero count INVALIDATES the run for
     # engine comparison; it does not mean the app misbehaved.
+    memory: dict = field(default_factory=dict)   # evaluator.memory_sampler summary
     engine_fallbacks: int = 0
     engine_fallback_detail: list = field(default_factory=list)  # [{detail, key, ts}]
     # v1.8.3: Production readiness — the "will this combo actually work in
@@ -551,6 +559,9 @@ class ComboEvalSummary:
             "overall_score": round(self.overall_score, 1),
             "overall_grade": self.overall_grade,
             "avg_tokens_per_sec": round(self.avg_tokens_per_sec, 1),
+            "perf_samples": self.perf_samples,
+            "tps_p50": self.tps_p50, "tps_p05": self.tps_p05,
+            "ttft_p50": self.ttft_p50, "ttft_p95": self.ttft_p95,
             "avg_ttft_ms": round(self.avg_ttft_ms, 1),
             "total_run_time_seconds": round(self.total_run_time_seconds, 1),
             "warnings": self.warnings,

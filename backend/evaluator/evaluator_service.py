@@ -176,6 +176,10 @@ async def run_full_evaluation() -> ComboEvalSummary:
     # answers still arrive, and fatal to any engine comparison built on the result.
     _fallback_watermark = _count_engine_fallbacks()
 
+    # Memory sampling for the whole run, appending to disk as it goes — a run that dies from
+    # memory pressure is exactly the one whose trace we must not lose.
+    _mem_sampler = None
+
     from evaluator.models import ModelCombo as _MC
     _combo = _MC.from_config(settings)
     combo_snapshot = {
@@ -233,6 +237,14 @@ async def run_full_evaluation() -> ComboEvalSummary:
             combo=combo.to_dict(),
             hardware=hw.to_dict(),
         )
+        try:
+            from evaluator.memory_sampler import MemorySampler, default_path
+            _mem_sampler = MemorySampler(
+                default_path(summary.run_id, "eval"), interval_s=1.0,
+                label=f"{combo.main_engine}:{combo.main_model}",
+            ).start()
+        except Exception as _ms_e:
+            print(f"[EVALUATOR] memory sampling unavailable (non-fatal): {_ms_e}")
         # v1.8.2: record which backend served which role so the summary
         # shows "Ran on Ollama + llama-server (Bonsai-8B)" at a glance.
         summary.providers_used = providers_used_summary(settings)
@@ -255,8 +267,7 @@ async def run_full_evaluation() -> ComboEvalSummary:
 
         # ── Test Phases 4-13 ─────────────────────────────────────────────
         category_results = {}
-        all_tps = []
-        all_ttft = []
+        _reset_perf()
 
         # Phase 4: RAG Chat
         _update_progress(4, "RAG Chat Q&A")
@@ -273,11 +284,6 @@ async def run_full_evaluation() -> ComboEvalSummary:
         cat = _build_category("streaming", "Streaming Generation", stream_results)
         category_results["streaming"] = cat
         _progress.results_so_far["streaming"] = {"score": cat.score, "grade": cat.grade}
-        for r in stream_results:
-            if r.tokens_per_second > 0:
-                all_tps.append(r.tokens_per_second)
-            if r.time_to_first_token_ms > 0:
-                all_ttft.append(r.time_to_first_token_ms)
 
         # Phase 6: Fast Follow-Up
         _update_progress(6, "Fast Follow-Up")
@@ -452,6 +458,21 @@ async def run_full_evaluation() -> ComboEvalSummary:
         # whether an "MLX run" was actually served by MLX end-to-end. A non-zero count does
         # not mean the app misbehaved — it means these numbers cannot be attributed to one
         # engine, which is exactly what an A/B needs to know.
+        if _mem_sampler is not None:
+            try:
+                summary.memory = _mem_sampler.stop()
+                _mem = summary.memory
+                print(f"[EVALUATOR] memory: peak_rss={_mem.get('peak_rss_gb')}GB "
+                      f"mlx_peak={_mem.get('mlx_peak_gb')}GB "
+                      f"mlx_active_end={_mem.get('mlx_active_end_gb')}GB "
+                      f"swap_delta={_mem.get('swap_out_delta')}")
+                if _mem.get("sustained_swap"):
+                    summary.warnings.append(
+                        "sustained swap-out during this run — the machine was over-committed, "
+                        "so timing numbers are not representative")
+            except Exception as _ms_e:
+                print(f"[EVALUATOR] memory summary failed: {_ms_e}")
+
         _fb_n, _fb_detail = _engine_fallbacks_since(_fallback_watermark)
         summary.engine_fallbacks = _fb_n
         summary.engine_fallback_detail = _fb_detail
@@ -478,8 +499,16 @@ async def run_full_evaluation() -> ComboEvalSummary:
             summary.preflight = {}
 
         # Performance profile
-        summary.avg_tokens_per_sec = sum(all_tps) / len(all_tps) if all_tps else 0
-        summary.avg_ttft_ms = sum(all_ttft) / len(all_ttft) if all_ttft else 0
+        _tps, _ttft = _PERF["tps"], _PERF["ttft"]
+        summary.avg_tokens_per_sec = sum(_tps) / len(_tps) if _tps else 0
+        summary.avg_ttft_ms = sum(_ttft) / len(_ttft) if _ttft else 0
+        # Distribution, not just a mean: a p95 TTFT regression is what a user notices, and a
+        # sample count is what tells a reader whether the mean means anything.
+        summary.perf_samples = len(_tps)
+        summary.tps_p50 = _pctl(_tps, 50)
+        summary.tps_p05 = _pctl(_tps, 5)          # the slow tail
+        summary.ttft_p50 = _pctl(_ttft, 50)
+        summary.ttft_p95 = _pctl(_ttft, 95)
         summary.total_run_time_seconds = time.time() - run_start
 
         # Collect warnings
@@ -564,6 +593,33 @@ async def run_full_evaluation() -> ComboEvalSummary:
         _progress.elapsed_seconds = time.time() - run_start
 
 
+# Perf samples across EVERY phase. Previously only Phase 5 (Streaming) contributed, so
+# `avg_tokens_per_sec` was effectively a single query's throughput — far too thin to detect a
+# regression, and not comparable between runs whose one sampled query happened to differ.
+_PERF: dict = {"tps": [], "ttft": []}
+
+
+def _reset_perf() -> None:
+    _PERF["tps"], _PERF["ttft"] = [], []
+
+
+def _collect_perf(results: list) -> None:
+    for r in results or []:
+        if getattr(r, "tokens_per_second", 0) > 0:
+            _PERF["tps"].append(r.tokens_per_second)
+        if getattr(r, "time_to_first_token_ms", 0) > 0:
+            _PERF["ttft"].append(r.time_to_first_token_ms)
+
+
+def _pctl(values: list, p: float) -> float:
+    """p-th percentile. p95 TTFT is the number a user actually feels; a mean hides the tail."""
+    if not values:
+        return 0.0
+    v = sorted(values)
+    k = max(0, min(len(v) - 1, int(round((p / 100.0) * (len(v) - 1)))))
+    return round(float(v[k]), 1)
+
+
 def _build_category(name: str, display_name: str, results: list[EvalResult]) -> CategoryResult:
     """Build a CategoryResult from individual test results.
 
@@ -571,6 +627,7 @@ def _build_category(name: str, display_name: str, results: list[EvalResult]) -> 
     text-only model), mark the whole category as skipped so it can be excluded
     from the overall weighted average rather than scored as zero.
     """
+    _collect_perf(results)
     score, grade = scoring.compute_category_score(results)
     all_skipped = bool(results) and all(r.skipped for r in results)
     # Strict verdict — the SINGLE source of truth for every view (breakdown table, feature-parity
