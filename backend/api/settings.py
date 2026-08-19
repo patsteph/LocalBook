@@ -493,13 +493,12 @@ async def get_ollama_models():
         if _mlx_ok:
             try:
                 from evaluator.capability_probe import probe_capabilities as _mprobe
-                from evaluator import ram_fit as _ramfit_mod
                 from huggingface_hub import try_to_load_from_cache as _tlfc
-                try:
-                    from services.hardware_profiler import get_hardware_profile as _ghp
-                    _total_ram_mlx = float(_ghp().memory_gb)
-                except Exception:
-                    _total_ram_mlx = 0.0
+                # `services.hardware_profiler` NEVER EXISTED — this import raised on every
+                # call, so the whole fit block below was dead and no MLX card was ever
+                # size-checked. `services.model_sizing` reads exact weight bytes + real KV
+                # geometry and derives the budget from the GPU's addressable working set.
+                from services import model_sizing as _sizing
                 _seen = {e.get("name") for e in enriched}
                 _mlx_ids = dict.fromkeys(
                     getattr(app_settings, k, None)
@@ -547,16 +546,20 @@ async def get_ollama_models():
                         "installed": _installed,
                         "in_registry": False, "eval_score": 0, "modified_at": "",
                     }
-                    if _total_ram_mlx > 0 and _c.param_count_b > 0:
-                        try:
-                            _f = _ramfit_mod.ram_fit(_c.param_count_b, _c.quantization,
-                                                     _total_ram_mlx, _c.native_ctx or 8192)
-                            _card["ram_fit"] = {"fits": _f["fits"], "recommendation": _f["recommendation"]}
-                            # Prefer the fit calc's total (weights+KV) for the RAM figure.
-                            if _f.get("total_needed_gb"):
-                                _card["ram_required_gb"] = round(float(_f["total_needed_gb"]), 1)
-                        except Exception:
-                            pass
+                    try:
+                        # Size against the DEPLOYED window, not the native one: gemma's native
+                        # 131k costs 1.78 GiB of KV where its deployed 16k costs 0.25 GiB, and
+                        # judging a card by a context it will never run at is how a usable model
+                        # gets marked "over".
+                        _ctx = min(int(_c.native_ctx or 8192), 16384)
+                        _f = _sizing.fit(_mid, _ctx)
+                        if _f.get("fits") is not None:
+                            _card["ram_fit"] = {"fits": _f["fits"],
+                                                "recommendation": _f["recommendation"]}
+                        if _f.get("total_needed_gb"):
+                            _card["ram_required_gb"] = round(float(_f["total_needed_gb"]), 1)
+                    except Exception as _fit_e:
+                        logger.debug(f"[settings] fit calc failed for {_mid}: {_fit_e}")
                     enriched.append(_card)
             except Exception as _mlx_e:
                 logger.debug(f"[settings] MLX model enumeration failed: {_mlx_e}")

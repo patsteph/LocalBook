@@ -511,9 +511,26 @@ class MLXEngine:
         self._mem_limit_set = True
         try:
             import mlx.core as mx
-            limit_gb = float(os.environ.get("LOCALBOOK_MLX_MEMORY_LIMIT_GB", "12"))
+            # HARDWARE-DERIVED, not a flat constant. The old default was 12 GB on every
+            # machine — on this 16 GB M4 that is ABOVE Apple's own recommended working set
+            # (11.84 GiB), so the "limit" could never bind before the system was already past
+            # the ceiling: an inert guardrail. On a 64 GB machine the same constant needlessly
+            # capped MLX at 12. Derive from the GPU's addressable working set instead; the env
+            # var remains an explicit override.
+            _env = os.environ.get("LOCALBOOK_MLX_MEMORY_LIMIT_GB")
+            if _env:
+                limit_gb = float(_env)
+                _src = "env override"
+            else:
+                from services.model_sizing import working_set_gb
+                _ws = working_set_gb()
+                # 90 % of the working set: mlx-lm warns above this, and the ecosystem's
+                # posture is to refuse rather than warn (mlx-lm#883 — wired memory blocks
+                # Jetsam, so exhaustion panics the driver instead of killing the process).
+                limit_gb = round(_ws * 0.90, 2) if _ws > 0 else 12.0
+                _src = f"90% of {_ws:.2f} GiB working set" if _ws > 0 else "fallback"
             mx.set_memory_limit(int(limit_gb * 1024 ** 3))
-            logger.info(f"[mlx-engine] memory limit set to {limit_gb} GB")
+            logger.info(f"[mlx-engine] memory limit {limit_gb} GB ({_src})")
         except Exception as e:
             logger.debug(f"[mlx-engine] could not set memory limit: {e}")
 
