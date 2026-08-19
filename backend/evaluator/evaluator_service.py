@@ -109,12 +109,19 @@ def _engine_fallbacks_since(watermark: int) -> tuple:
         return 0, []
 
 
+# Phases that timed out during THIS run. A timeout is "no data", not "scored zero" — see
+# _build_category. Keyed by the display name passed to _run_phase_with_timeout.
+_TIMED_OUT: set = set()
+
+
 async def _run_phase_with_timeout(coro, phase_name: str, timeout: int = _PHASE_TIMEOUT_SECONDS):
-    """Run a test phase with a hard timeout. Returns results or empty list on timeout."""
+    """Run a test phase with a hard timeout. Returns results, or [] and records the timeout."""
     try:
         return await asyncio.wait_for(coro, timeout=timeout)
     except asyncio.TimeoutError:
-        print(f"[EVALUATOR] ⚠️ Phase '{phase_name}' timed out after {timeout}s — skipping")
+        print(f"[EVALUATOR] ⚠️ Phase '{phase_name}' timed out after {timeout}s — recorded as "
+              f"NO DATA (not a zero score)")
+        _TIMED_OUT.add(phase_name)
         return []
 
 
@@ -268,6 +275,7 @@ async def run_full_evaluation() -> ComboEvalSummary:
         # ── Test Phases 4-13 ─────────────────────────────────────────────
         category_results = {}
         _reset_perf()
+        _TIMED_OUT.clear()
 
         # Phase 4: RAG Chat
         _update_progress(4, "RAG Chat Q&A")
@@ -473,6 +481,17 @@ async def run_full_evaluation() -> ComboEvalSummary:
             except Exception as _ms_e:
                 print(f"[EVALUATOR] memory summary failed: {_ms_e}")
 
+        # A timed-out phase is excluded from the score, so it MUST be loud — otherwise a run
+        # with half its phases missing reports a healthy number. The timeout firing is itself
+        # a finding: it means a single query took longer than 3 minutes.
+        if _TIMED_OUT:
+            summary.timed_out_phases = sorted(_TIMED_OUT)
+            summary.warnings.append(
+                f"{len(_TIMED_OUT)} phase(s) timed out and were EXCLUDED from the score "
+                f"({', '.join(sorted(_TIMED_OUT))}) — coverage is incomplete, and a phase "
+                f"exceeding {_PHASE_TIMEOUT_SECONDS}s is itself a performance signal")
+            print(f"[EVALUATOR] ⚠️ timed-out phases excluded: {sorted(_TIMED_OUT)}")
+
         _fb_n, _fb_detail = _engine_fallbacks_since(_fallback_watermark)
         summary.engine_fallbacks = _fb_n
         summary.engine_fallback_detail = _fb_detail
@@ -639,7 +658,13 @@ def _build_category(name: str, display_name: str, results: list[EvalResult]) -> 
     """
     _collect_perf(results)
     score, grade = scoring.compute_category_score(results)
-    all_skipped = bool(results) and all(r.skipped for r in results)
+    # A phase that produced NO results did not fail — it never reported. Previously this scored
+    # 0/F and dragged the overall score down, which is wrong in general and actively misleading
+    # for an engine A/B: on a memory-constrained machine whichever run happened to hit the 180s
+    # phase timeout would score arbitrarily worse, and the delta would be attributed to the
+    # engine. Excluded from the weighted average, exactly like a capability-based skip.
+    no_data = not results
+    all_skipped = (bool(results) and all(r.skipped for r in results)) or no_data
     # Strict verdict — the SINGLE source of truth for every view (breakdown table, feature-parity
     # list, top-line counts). Matches feature_parity._verdict_for so a 69 can't be "Pass" in the
     # table and "degraded" in the parity list (user report 2026-07-24).
@@ -661,7 +686,10 @@ def _build_category(name: str, display_name: str, results: list[EvalResult]) -> 
         verdict=verdict,
         total_time_ms=sum(r.total_time_ms for r in results),
         skipped=all_skipped,
-        skip_reason=(results[0].skip_reason if all_skipped and results else ""),
+        skip_reason=(
+            results[0].skip_reason if all_skipped and results
+            else ("phase timed out — no data recorded, excluded from the score" if no_data else "")
+        ),
     )
     # Add warnings for failed tests
     for r in results:

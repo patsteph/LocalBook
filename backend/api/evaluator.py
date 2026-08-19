@@ -310,6 +310,11 @@ def _validity(a: dict, b: dict) -> dict:
                 f"for a throughput judgement (runs before 2026-08-19 sampled one phase)")
         if ((r.get("memory") or {}).get("sustained_swap")):
             problems.append(f"run_{label} swapped during the run — its timings are not representative")
+        if r.get("timed_out_phases"):
+            problems.append(
+                f"run_{label} timed out on {len(r['timed_out_phases'])} phase(s) "
+                f"({', '.join(r['timed_out_phases'])}) — those were excluded, so the two runs "
+                f"do not cover the same tests")
     ea, eb = _engines_of(a), _engines_of(b)
     return {
         "comparable": not problems,

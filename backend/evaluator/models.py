@@ -538,6 +538,7 @@ class ComboEvalSummary:
     # is invisible because the answers still arrive. A non-zero count INVALIDATES the run for
     # engine comparison; it does not mean the app misbehaved.
     memory: dict = field(default_factory=dict)   # evaluator.memory_sampler summary
+    timed_out_phases: list = field(default_factory=list)
     engine_fallbacks: int = 0
     engine_fallback_detail: list = field(default_factory=list)  # [{detail, key, ts}]
     # v1.8.3: Production readiness — the "will this combo actually work in
@@ -564,6 +565,7 @@ class ComboEvalSummary:
             # persisted neither — the memory trace and the fallback count were computed,
             # logged, and then dropped on the floor at serialisation.
             "memory": self.memory,
+            "timed_out_phases": self.timed_out_phases,
             "engine_fallbacks": self.engine_fallbacks,
             "engine_fallback_detail": self.engine_fallback_detail,
             "tps_p50": self.tps_p50, "tps_p05": self.tps_p05,
