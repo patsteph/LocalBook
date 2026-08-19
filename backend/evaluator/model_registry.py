@@ -157,11 +157,15 @@ class ModelRegistry:
         try:
             import urllib.request
             import json
-            # Fallback to default port if not in config
+            # `from backend.config import get_settings` was a BROKEN IMPORT — there is no
+            # `backend` package from inside backend/, and config exposes `settings`, not
+            # `get_settings()`. It raised on every call and silently fell back to the
+            # hardcoded URL, so LOCALBOOK_OLLAMA_BASE_URL / a non-default port was ignored
+            # here (same failure shape as `services.hardware_profiler`, fixed 2026-08-19).
             base_url = "http://localhost:11434"
             try:
-                from backend.config import get_settings
-                base_url = get_settings().ollama_base_url
+                from config import settings as _st
+                base_url = getattr(_st, "ollama_base_url", base_url) or base_url
             except Exception as _e:
                 logger.debug(f"[model-registry] {type(_e).__name__}: {_e}")
 
@@ -175,6 +179,17 @@ class ModelRegistry:
                     print(f"[MODEL-REGISTRY] Ollama /api/tags returned {response.getcode()}")
         except Exception as e:
             print(f"[MODEL-REGISTRY] Failed to refresh Ollama install status: {e}")
+
+        # ── 1b. MLX models in the HF cache (Stage 3.3) ──
+        # Presence for MLX is a FILESYSTEM question, not an Ollama one. Without this,
+        # `GET /evaluator/models` is empty on a machine with no Ollama and the Evaluator has
+        # nothing to run — one of the four blocker-class cutover gaps.
+        installed_mlx: set = set()
+        try:
+            from services.model_presence import enumerate_cached
+            installed_mlx = {m["model_id"] for m in enumerate_cached()}
+        except Exception as _e:
+            logger.debug(f"[model-registry] MLX cache scan failed: {_e}")
 
         # ── 2. llama-server sidecar health (cheap, cached) ──
         sidecar_healthy = False
@@ -192,6 +207,10 @@ class ModelRegistry:
             # Exact tag match, or ":latest" equivalence for a tag-less registry
             # name. A DIFFERENT explicit tag is a different model — gemma4:12b
             # must NOT mark gemma4:e4b installed.
+            # An HF id (org/repo) is an MLX model — presence comes from the cache scan.
+            if "/" in name:
+                model.is_installed = name in installed_mlx
+                continue
             model.is_installed = (
                 name in installed_ollama
                 or (":" not in name and f"{name}:latest" in installed_ollama)

@@ -8,15 +8,24 @@
       "vendor": "Allen AI (AI2)",
       "origin_country": "US",
       "license": "Apache-2.0",
-      "supported_roles": ["main_model"],
+      "supported_roles": [
+        "main_model"
+      ],
       "context_window": 65536,
       "supports_json_mode": false,
       "supports_vision": false,
       "disk_size_gb": 4.5,
       "min_ram_gb": 8,
       "recommended_ram_gb": 16,
-      "policy_tags": ["us-origin", "open-source", "research"],
-      "ollama_options": {"temperature": 0.7, "top_p": 0.95},
+      "policy_tags": [
+        "us-origin",
+        "open-source",
+        "research"
+      ],
+      "ollama_options": {
+        "temperature": 0.7,
+        "top_p": 0.95
+      },
       "rag_profile": {
         "temperature": 0.3,
         "repeat_penalty": 1.1,
@@ -24,19 +33,44 @@
         "use_chat_endpoint": false,
         "aggressive_repetition_cleanup": true,
         "stop_sequences": [
-          "\n\nReferences", "\nReferences", "\n\n**References", "\n**References",
-          "\n\nSources:", "\nSources:", "\n\nSources\n", "\n\n**Sources", "\n**Sources",
-          "\n\nCitations:", "\nCitations:", "\n\nCitations\n",
-          "\nSupporting Citations", "\n\nSupporting Citations", "\nSupporting citations",
-          "\n\nBibliography", "\nBibliography",
-          "\n\nCited Sources", "\nCited Sources",
-          "\n\nKey References", "\nKey References",
-          "\n\nFootnotes", "\nFootnotes",
-          "\n\n---\n[", "\n\n[1]:", "\n\n*Note", "\n*Note:"
+          "\n\nReferences",
+          "\nReferences",
+          "\n\n**References",
+          "\n**References",
+          "\n\nSources:",
+          "\nSources:",
+          "\n\nSources\n",
+          "\n\n**Sources",
+          "\n**Sources",
+          "\n\nCitations:",
+          "\nCitations:",
+          "\n\nCitations\n",
+          "\nSupporting Citations",
+          "\n\nSupporting Citations",
+          "\nSupporting citations",
+          "\n\nBibliography",
+          "\nBibliography",
+          "\n\nCited Sources",
+          "\nCited Sources",
+          "\n\nKey References",
+          "\nKey References",
+          "\n\nFootnotes",
+          "\nFootnotes",
+          "\n\n---\n[",
+          "\n\n[1]:",
+          "\n\n*Note",
+          "\n*Note:"
         ]
       },
-      "audio_profile": {"multi_pass_word_tolerance": 1.1, "repeat_penalty": 1.1, "temperature": 0.7},
-      "structured_profile": {"prefer_json_mode": false, "max_repair_attempts": 2}
+      "audio_profile": {
+        "multi_pass_word_tolerance": 1.1,
+        "repeat_penalty": 1.1,
+        "temperature": 0.7
+      },
+      "structured_profile": {
+        "prefer_json_mode": false,
+        "max_repair_attempts": 2
+      }
     },
     {
       "ollama_name": "phi4-mini:latest",
@@ -46,25 +80,46 @@
       "vendor": "Microsoft",
       "origin_country": "US",
       "license": "MIT",
-      "supported_roles": ["fast_model", "main_model"],
+      "supported_roles": [
+        "fast_model",
+        "main_model"
+      ],
       "context_window": 131072,
       "supports_json_mode": true,
       "supports_vision": false,
       "disk_size_gb": 2.5,
       "min_ram_gb": 4,
       "recommended_ram_gb": 8,
-      "policy_tags": ["us-origin", "open-source", "enterprise-ok"],
-      "ollama_options": {"temperature": 0.7, "top_p": 0.9},
+      "policy_tags": [
+        "us-origin",
+        "open-source",
+        "enterprise-ok"
+      ],
+      "ollama_options": {
+        "temperature": 0.7,
+        "top_p": 0.9
+      },
       "rag_profile": {
         "temperature": 0.3,
         "repeat_penalty": 1.05,
         "num_ctx_cap": 8192,
         "use_chat_endpoint": false,
         "aggressive_repetition_cleanup": false,
-        "stop_sequences": ["\n\nReferences", "\n\nBibliography", "\n\n[1]:"]
+        "stop_sequences": [
+          "\n\nReferences",
+          "\n\nBibliography",
+          "\n\n[1]:"
+        ]
       },
-      "audio_profile": {"multi_pass_word_tolerance": 1.15, "repeat_penalty": 1.05, "temperature": 0.7},
-      "structured_profile": {"prefer_json_mode": true, "max_repair_attempts": 2}
+      "audio_profile": {
+        "multi_pass_word_tolerance": 1.15,
+        "repeat_penalty": 1.05,
+        "temperature": 0.7
+      },
+      "structured_profile": {
+        "prefer_json_mode": true,
+        "max_repair_attempts": 2
+      }
     },
     {
       "ollama_name": "snowflake-arctic-embed2:latest",
@@ -74,12 +129,18 @@
       "vendor": "Snowflake",
       "origin_country": "US",
       "license": "Apache-2.0",
-      "supported_roles": ["embedding_model"],
+      "supported_roles": [
+        "embedding_model"
+      ],
       "embedding_dim": 1024,
       "disk_size_gb": 1.2,
       "min_ram_gb": 2,
       "recommended_ram_gb": 4,
-      "policy_tags": ["us-origin", "open-source", "enterprise-ok"]
+      "policy_tags": [
+        "us-origin",
+        "open-source",
+        "enterprise-ok"
+      ]
     },
     {
       "ollama_name": "nomic-embed-text:latest",
@@ -89,12 +150,18 @@
       "vendor": "Nomic AI",
       "origin_country": "US",
       "license": "Apache-2.0",
-      "supported_roles": ["embedding_model"],
+      "supported_roles": [
+        "embedding_model"
+      ],
       "embedding_dim": 768,
       "disk_size_gb": 0.274,
       "min_ram_gb": 1,
       "recommended_ram_gb": 2,
-      "policy_tags": ["us-origin", "open-source", "enterprise-ok"]
+      "policy_tags": [
+        "us-origin",
+        "open-source",
+        "enterprise-ok"
+      ]
     },
     {
       "ollama_name": "granite3.2-vision:2b",
@@ -104,15 +171,25 @@
       "vendor": "IBM",
       "origin_country": "US",
       "license": "Apache-2.0",
-      "supported_roles": ["vision_model"],
+      "supported_roles": [
+        "vision_model"
+      ],
       "context_window": 16384,
       "supports_vision": true,
       "vision_api_style": "generate",
       "disk_size_gb": 2.4,
       "min_ram_gb": 4,
       "recommended_ram_gb": 8,
-      "policy_tags": ["us-origin", "open-source", "enterprise-ok"],
-      "vision_profile": {"num_predict": 1500, "num_ctx": 4096, "temperature": 0.2}
+      "policy_tags": [
+        "us-origin",
+        "open-source",
+        "enterprise-ok"
+      ],
+      "vision_profile": {
+        "num_predict": 1500,
+        "num_ctx": 4096,
+        "temperature": 0.2
+      }
     },
     {
       "ollama_name": "gemma3:4b",
@@ -122,26 +199,49 @@
       "vendor": "Google",
       "origin_country": "US",
       "license": "Gemma Terms of Use",
-      "supported_roles": ["fast_model", "vision_model"],
+      "supported_roles": [
+        "fast_model",
+        "vision_model"
+      ],
       "context_window": 131072,
       "supports_vision": true,
       "vision_api_style": "chat",
       "disk_size_gb": 3.3,
       "min_ram_gb": 6,
       "recommended_ram_gb": 12,
-      "policy_tags": ["us-origin", "open-source"],
-      "ollama_options": {"temperature": 0.2, "top_p": 0.9},
+      "policy_tags": [
+        "us-origin",
+        "open-source"
+      ],
+      "ollama_options": {
+        "temperature": 0.2,
+        "top_p": 0.9
+      },
       "rag_profile": {
         "temperature": 0.3,
         "repeat_penalty": 1.0,
         "num_ctx_cap": 16384,
         "use_chat_endpoint": true,
         "aggressive_repetition_cleanup": false,
-        "stop_sequences": ["<|channel>thought", "<|channel|>"]
+        "stop_sequences": [
+          "<|channel>thought",
+          "<|channel|>"
+        ]
       },
-      "vision_profile": {"num_predict": 2000, "num_ctx": 8192, "temperature": 0.2},
-      "audio_profile": {"multi_pass_word_tolerance": 1.3, "repeat_penalty": 1.0, "temperature": 0.7},
-      "structured_profile": {"prefer_json_mode": true, "max_repair_attempts": 2}
+      "vision_profile": {
+        "num_predict": 2000,
+        "num_ctx": 8192,
+        "temperature": 0.2
+      },
+      "audio_profile": {
+        "multi_pass_word_tolerance": 1.3,
+        "repeat_penalty": 1.0,
+        "temperature": 0.7
+      },
+      "structured_profile": {
+        "prefer_json_mode": true,
+        "max_repair_attempts": 2
+      }
     },
     {
       "ollama_name": "llama3.1:8b",
@@ -151,24 +251,43 @@
       "vendor": "Meta",
       "origin_country": "US",
       "license": "Llama 3.1",
-      "supported_roles": ["main_model"],
+      "supported_roles": [
+        "main_model"
+      ],
       "context_window": 131072,
       "supports_json_mode": true,
       "disk_size_gb": 4.9,
       "min_ram_gb": 8,
       "recommended_ram_gb": 16,
-      "policy_tags": ["us-origin", "open-source"],
-      "ollama_options": {"temperature": 0.7, "top_p": 0.9},
+      "policy_tags": [
+        "us-origin",
+        "open-source"
+      ],
+      "ollama_options": {
+        "temperature": 0.7,
+        "top_p": 0.9
+      },
       "rag_profile": {
         "temperature": 0.3,
         "repeat_penalty": 1.1,
         "num_ctx_cap": 32768,
         "use_chat_endpoint": false,
         "aggressive_repetition_cleanup": false,
-        "stop_sequences": ["\n\nReferences", "\n\nBibliography", "<|eot_id|>"]
+        "stop_sequences": [
+          "\n\nReferences",
+          "\n\nBibliography",
+          "<|eot_id|>"
+        ]
       },
-      "audio_profile": {"multi_pass_word_tolerance": 1.2, "repeat_penalty": 1.1, "temperature": 0.7},
-      "structured_profile": {"prefer_json_mode": true, "max_repair_attempts": 2}
+      "audio_profile": {
+        "multi_pass_word_tolerance": 1.2,
+        "repeat_penalty": 1.1,
+        "temperature": 0.7
+      },
+      "structured_profile": {
+        "prefer_json_mode": true,
+        "max_repair_attempts": 2
+      }
     },
     {
       "ollama_name": "llama3.2:3b",
@@ -178,24 +297,44 @@
       "vendor": "Meta",
       "origin_country": "US",
       "license": "Llama 3.2",
-      "supported_roles": ["fast_model", "main_model"],
+      "supported_roles": [
+        "fast_model",
+        "main_model"
+      ],
       "context_window": 131072,
       "supports_json_mode": true,
       "disk_size_gb": 2.0,
       "min_ram_gb": 4,
       "recommended_ram_gb": 8,
-      "policy_tags": ["us-origin", "open-source"],
-      "ollama_options": {"temperature": 0.7, "top_p": 0.9},
+      "policy_tags": [
+        "us-origin",
+        "open-source"
+      ],
+      "ollama_options": {
+        "temperature": 0.7,
+        "top_p": 0.9
+      },
       "rag_profile": {
         "temperature": 0.3,
         "repeat_penalty": 1.1,
         "num_ctx_cap": 16384,
         "use_chat_endpoint": false,
         "aggressive_repetition_cleanup": false,
-        "stop_sequences": ["\n\nReferences", "\n\nBibliography", "<|eot_id|>"]
+        "stop_sequences": [
+          "\n\nReferences",
+          "\n\nBibliography",
+          "<|eot_id|>"
+        ]
       },
-      "audio_profile": {"multi_pass_word_tolerance": 1.2, "repeat_penalty": 1.1, "temperature": 0.7},
-      "structured_profile": {"prefer_json_mode": true, "max_repair_attempts": 2}
+      "audio_profile": {
+        "multi_pass_word_tolerance": 1.2,
+        "repeat_penalty": 1.1,
+        "temperature": 0.7
+      },
+      "structured_profile": {
+        "prefer_json_mode": true,
+        "max_repair_attempts": 2
+      }
     },
     {
       "ollama_name": "mistral:7b",
@@ -205,24 +344,43 @@
       "vendor": "Mistral AI",
       "origin_country": "FR",
       "license": "Apache-2.0",
-      "supported_roles": ["main_model"],
+      "supported_roles": [
+        "main_model"
+      ],
       "context_window": 32768,
       "supports_json_mode": true,
       "disk_size_gb": 4.1,
       "min_ram_gb": 8,
       "recommended_ram_gb": 16,
-      "policy_tags": ["eu-origin", "open-source"],
-      "ollama_options": {"temperature": 0.7, "top_p": 0.9},
+      "policy_tags": [
+        "eu-origin",
+        "open-source"
+      ],
+      "ollama_options": {
+        "temperature": 0.7,
+        "top_p": 0.9
+      },
       "rag_profile": {
         "temperature": 0.3,
         "repeat_penalty": 1.1,
         "num_ctx_cap": 32768,
         "use_chat_endpoint": false,
         "aggressive_repetition_cleanup": false,
-        "stop_sequences": ["\n\nReferences", "\n\nBibliography", "</s>"]
+        "stop_sequences": [
+          "\n\nReferences",
+          "\n\nBibliography",
+          "</s>"
+        ]
       },
-      "audio_profile": {"multi_pass_word_tolerance": 1.2, "repeat_penalty": 1.1, "temperature": 0.7},
-      "structured_profile": {"prefer_json_mode": true, "max_repair_attempts": 2}
+      "audio_profile": {
+        "multi_pass_word_tolerance": 1.2,
+        "repeat_penalty": 1.1,
+        "temperature": 0.7
+      },
+      "structured_profile": {
+        "prefer_json_mode": true,
+        "max_repair_attempts": 2
+      }
     },
     {
       "ollama_name": "llava:7b",
@@ -232,15 +390,24 @@
       "vendor": "UW-Madison / Microsoft",
       "origin_country": "US",
       "license": "Apache-2.0",
-      "supported_roles": ["vision_model"],
+      "supported_roles": [
+        "vision_model"
+      ],
       "context_window": 4096,
       "supports_vision": true,
       "vision_api_style": "generate",
       "disk_size_gb": 4.5,
       "min_ram_gb": 8,
       "recommended_ram_gb": 16,
-      "policy_tags": ["us-origin", "open-source"],
-      "vision_profile": {"num_predict": 1500, "num_ctx": 4096, "temperature": 0.2}
+      "policy_tags": [
+        "us-origin",
+        "open-source"
+      ],
+      "vision_profile": {
+        "num_predict": 1500,
+        "num_ctx": 4096,
+        "temperature": 0.2
+      }
     },
     {
       "ollama_name": "moondream2:latest",
@@ -250,15 +417,24 @@
       "vendor": "vikhyat",
       "origin_country": "US",
       "license": "Apache-2.0",
-      "supported_roles": ["vision_model"],
+      "supported_roles": [
+        "vision_model"
+      ],
       "context_window": 2048,
       "supports_vision": true,
       "vision_api_style": "generate",
       "disk_size_gb": 1.7,
       "min_ram_gb": 4,
       "recommended_ram_gb": 8,
-      "policy_tags": ["us-origin", "open-source"],
-      "vision_profile": {"num_predict": 1200, "num_ctx": 2048, "temperature": 0.2}
+      "policy_tags": [
+        "us-origin",
+        "open-source"
+      ],
+      "vision_profile": {
+        "num_predict": 1200,
+        "num_ctx": 2048,
+        "temperature": 0.2
+      }
     },
     {
       "ollama_name": "mxbai-embed-large:latest",
@@ -268,12 +444,18 @@
       "vendor": "mixedbread.ai",
       "origin_country": "DE",
       "license": "Apache-2.0",
-      "supported_roles": ["embedding_model"],
+      "supported_roles": [
+        "embedding_model"
+      ],
       "embedding_dim": 1024,
       "disk_size_gb": 0.67,
       "min_ram_gb": 2,
       "recommended_ram_gb": 4,
-      "policy_tags": ["eu-origin", "open-source", "enterprise-ok"]
+      "policy_tags": [
+        "eu-origin",
+        "open-source",
+        "enterprise-ok"
+      ]
     },
     {
       "ollama_name": "granite4:7b-a1b-h",
@@ -283,24 +465,43 @@
       "vendor": "IBM",
       "origin_country": "US",
       "license": "Apache-2.0",
-      "supported_roles": ["main_model"],
+      "supported_roles": [
+        "main_model"
+      ],
       "context_window": 131072,
       "supports_json_mode": true,
       "disk_size_gb": 4.2,
       "min_ram_gb": 8,
       "recommended_ram_gb": 16,
-      "policy_tags": ["us-origin", "open-source", "enterprise-ok"],
-      "ollama_options": {"temperature": 0.7, "top_p": 0.9},
+      "policy_tags": [
+        "us-origin",
+        "open-source",
+        "enterprise-ok"
+      ],
+      "ollama_options": {
+        "temperature": 0.7,
+        "top_p": 0.9
+      },
       "rag_profile": {
         "temperature": 0.3,
         "repeat_penalty": 1.1,
         "num_ctx_cap": 32768,
         "use_chat_endpoint": false,
         "aggressive_repetition_cleanup": false,
-        "stop_sequences": ["\n\nReferences", "\n\nBibliography"]
+        "stop_sequences": [
+          "\n\nReferences",
+          "\n\nBibliography"
+        ]
       },
-      "audio_profile": {"multi_pass_word_tolerance": 1.2, "repeat_penalty": 1.1, "temperature": 0.7},
-      "structured_profile": {"prefer_json_mode": true, "max_repair_attempts": 2}
+      "audio_profile": {
+        "multi_pass_word_tolerance": 1.2,
+        "repeat_penalty": 1.1,
+        "temperature": 0.7
+      },
+      "structured_profile": {
+        "prefer_json_mode": true,
+        "max_repair_attempts": 2
+      }
     },
     {
       "ollama_name": "granite4:1b",
@@ -310,24 +511,43 @@
       "vendor": "IBM",
       "origin_country": "US",
       "license": "Apache-2.0",
-      "supported_roles": ["fast_model"],
+      "supported_roles": [
+        "fast_model"
+      ],
       "context_window": 131072,
       "supports_json_mode": true,
       "disk_size_gb": 3.3,
       "min_ram_gb": 4,
       "recommended_ram_gb": 8,
-      "policy_tags": ["us-origin", "open-source", "enterprise-ok"],
-      "ollama_options": {"temperature": 0.7, "top_p": 0.9},
+      "policy_tags": [
+        "us-origin",
+        "open-source",
+        "enterprise-ok"
+      ],
+      "ollama_options": {
+        "temperature": 0.7,
+        "top_p": 0.9
+      },
       "rag_profile": {
         "temperature": 0.3,
         "repeat_penalty": 1.05,
         "num_ctx_cap": 16384,
         "use_chat_endpoint": false,
         "aggressive_repetition_cleanup": false,
-        "stop_sequences": ["\n\nReferences", "\n\nBibliography"]
+        "stop_sequences": [
+          "\n\nReferences",
+          "\n\nBibliography"
+        ]
       },
-      "audio_profile": {"multi_pass_word_tolerance": 1.2, "repeat_penalty": 1.05, "temperature": 0.7},
-      "structured_profile": {"prefer_json_mode": true, "max_repair_attempts": 2}
+      "audio_profile": {
+        "multi_pass_word_tolerance": 1.2,
+        "repeat_penalty": 1.05,
+        "temperature": 0.7
+      },
+      "structured_profile": {
+        "prefer_json_mode": true,
+        "max_repair_attempts": 2
+      }
     },
     {
       "ollama_name": "llama3.2-vision:11b",
@@ -337,7 +557,10 @@
       "vendor": "Meta",
       "origin_country": "US",
       "license": "Llama 3.2",
-      "supported_roles": ["main_model", "vision_model"],
+      "supported_roles": [
+        "main_model",
+        "vision_model"
+      ],
       "context_window": 131072,
       "supports_json_mode": true,
       "supports_vision": true,
@@ -345,19 +568,40 @@
       "disk_size_gb": 7.9,
       "min_ram_gb": 16,
       "recommended_ram_gb": 24,
-      "policy_tags": ["us-origin", "open-source"],
-      "ollama_options": {"temperature": 0.7, "top_p": 0.9},
+      "policy_tags": [
+        "us-origin",
+        "open-source"
+      ],
+      "ollama_options": {
+        "temperature": 0.7,
+        "top_p": 0.9
+      },
       "rag_profile": {
         "temperature": 0.3,
         "repeat_penalty": 1.1,
         "num_ctx_cap": 32768,
         "use_chat_endpoint": false,
         "aggressive_repetition_cleanup": false,
-        "stop_sequences": ["\n\nReferences", "\n\nBibliography", "<|eot_id|>"]
+        "stop_sequences": [
+          "\n\nReferences",
+          "\n\nBibliography",
+          "<|eot_id|>"
+        ]
       },
-      "vision_profile": {"num_predict": 2000, "num_ctx": 8192, "temperature": 0.2},
-      "audio_profile": {"multi_pass_word_tolerance": 1.2, "repeat_penalty": 1.1, "temperature": 0.7},
-      "structured_profile": {"prefer_json_mode": true, "max_repair_attempts": 2}
+      "vision_profile": {
+        "num_predict": 2000,
+        "num_ctx": 8192,
+        "temperature": 0.2
+      },
+      "audio_profile": {
+        "multi_pass_word_tolerance": 1.2,
+        "repeat_penalty": 1.1,
+        "temperature": 0.7
+      },
+      "structured_profile": {
+        "prefer_json_mode": true,
+        "max_repair_attempts": 2
+      }
     },
     {
       "ollama_name": "llama3.2:1b",
@@ -367,23 +611,37 @@
       "vendor": "Meta",
       "origin_country": "US",
       "license": "Llama 3.2",
-      "supported_roles": ["fast_model"],
+      "supported_roles": [
+        "fast_model"
+      ],
       "context_window": 131072,
       "supports_json_mode": true,
       "disk_size_gb": 1.3,
       "min_ram_gb": 2,
       "recommended_ram_gb": 4,
-      "policy_tags": ["us-origin", "open-source"],
-      "ollama_options": {"temperature": 0.7, "top_p": 0.9},
+      "policy_tags": [
+        "us-origin",
+        "open-source"
+      ],
+      "ollama_options": {
+        "temperature": 0.7,
+        "top_p": 0.9
+      },
       "rag_profile": {
         "temperature": 0.3,
         "repeat_penalty": 1.05,
         "num_ctx_cap": 8192,
         "use_chat_endpoint": false,
         "aggressive_repetition_cleanup": false,
-        "stop_sequences": ["\n\nReferences", "<|eot_id|>"]
+        "stop_sequences": [
+          "\n\nReferences",
+          "<|eot_id|>"
+        ]
       },
-      "structured_profile": {"prefer_json_mode": true, "max_repair_attempts": 2}
+      "structured_profile": {
+        "prefer_json_mode": true,
+        "max_repair_attempts": 2
+      }
     },
     {
       "ollama_name": "mistral-nemo:12b",
@@ -393,24 +651,44 @@
       "vendor": "Mistral AI / NVIDIA",
       "origin_country": "FR/US",
       "license": "Apache-2.0",
-      "supported_roles": ["main_model"],
+      "supported_roles": [
+        "main_model"
+      ],
       "context_window": 128000,
       "supports_json_mode": true,
       "disk_size_gb": 7.1,
       "min_ram_gb": 16,
       "recommended_ram_gb": 24,
-      "policy_tags": ["eu-origin", "open-source", "enterprise-ok"],
-      "ollama_options": {"temperature": 0.7, "top_p": 0.9},
+      "policy_tags": [
+        "eu-origin",
+        "open-source",
+        "enterprise-ok"
+      ],
+      "ollama_options": {
+        "temperature": 0.7,
+        "top_p": 0.9
+      },
       "rag_profile": {
         "temperature": 0.3,
         "repeat_penalty": 1.1,
         "num_ctx_cap": 32768,
         "use_chat_endpoint": false,
         "aggressive_repetition_cleanup": false,
-        "stop_sequences": ["\n\nReferences", "\n\nBibliography", "</s>"]
+        "stop_sequences": [
+          "\n\nReferences",
+          "\n\nBibliography",
+          "</s>"
+        ]
       },
-      "audio_profile": {"multi_pass_word_tolerance": 1.2, "repeat_penalty": 1.1, "temperature": 0.7},
-      "structured_profile": {"prefer_json_mode": true, "max_repair_attempts": 2}
+      "audio_profile": {
+        "multi_pass_word_tolerance": 1.2,
+        "repeat_penalty": 1.1,
+        "temperature": 0.7
+      },
+      "structured_profile": {
+        "prefer_json_mode": true,
+        "max_repair_attempts": 2
+      }
     },
     {
       "ollama_name": "command-r:35b",
@@ -420,13 +698,18 @@
       "vendor": "Cohere",
       "origin_country": "CA",
       "license": "CC-BY-NC-4.0",
-      "supported_roles": ["main_model"],
+      "supported_roles": [
+        "main_model"
+      ],
       "context_window": 131072,
       "supports_json_mode": true,
       "disk_size_gb": 20.4,
       "min_ram_gb": 24,
       "recommended_ram_gb": 64,
-      "policy_tags": ["ca-origin", "research-only"]
+      "policy_tags": [
+        "ca-origin",
+        "research-only"
+      ]
     },
     {
       "ollama_name": "aya:8b",
@@ -436,14 +719,22 @@
       "vendor": "Cohere",
       "origin_country": "CA",
       "license": "Apache-2.0",
-      "supported_roles": ["main_model"],
+      "supported_roles": [
+        "main_model"
+      ],
       "context_window": 8192,
       "supports_json_mode": true,
       "disk_size_gb": 4.8,
       "min_ram_gb": 8,
       "recommended_ram_gb": 16,
-      "policy_tags": ["ca-origin", "open-source"],
-      "ollama_options": {"temperature": 0.7, "top_p": 0.9}
+      "policy_tags": [
+        "ca-origin",
+        "open-source"
+      ],
+      "ollama_options": {
+        "temperature": 0.7,
+        "top_p": 0.9
+      }
     },
     {
       "ollama_name": "smollm2:1.7b",
@@ -453,14 +744,22 @@
       "vendor": "Hugging Face",
       "origin_country": "US/EU",
       "license": "Apache-2.0",
-      "supported_roles": ["fast_model"],
+      "supported_roles": [
+        "fast_model"
+      ],
       "context_window": 8192,
       "supports_json_mode": false,
       "disk_size_gb": 1.8,
       "min_ram_gb": 4,
       "recommended_ram_gb": 8,
-      "policy_tags": ["open-source", "edge"],
-      "ollama_options": {"temperature": 0.7, "top_p": 0.9}
+      "policy_tags": [
+        "open-source",
+        "edge"
+      ],
+      "ollama_options": {
+        "temperature": 0.7,
+        "top_p": 0.9
+      }
     },
     {
       "ollama_name": "lfm2.5-thinking:latest",
@@ -470,14 +769,23 @@
       "vendor": "Liquid AI",
       "origin_country": "US",
       "license": "Apache-2.0",
-      "supported_roles": ["fast_model"],
+      "supported_roles": [
+        "fast_model"
+      ],
       "context_window": 128000,
       "supports_json_mode": false,
       "disk_size_gb": 0.7,
       "min_ram_gb": 2,
       "recommended_ram_gb": 2,
-      "policy_tags": ["us-origin", "open-source", "edge"],
-      "ollama_options": {"temperature": 0.1, "top_k": 50}
+      "policy_tags": [
+        "us-origin",
+        "open-source",
+        "edge"
+      ],
+      "ollama_options": {
+        "temperature": 0.1,
+        "top_k": 50
+      }
     },
     {
       "ollama_name": "sam860/lfm2.5:350m",
@@ -487,14 +795,23 @@
       "vendor": "Liquid AI (sam860)",
       "origin_country": "US",
       "license": "LFM-Open-1.0",
-      "supported_roles": ["fast_model"],
+      "supported_roles": [
+        "fast_model"
+      ],
       "context_window": 128000,
       "supports_json_mode": false,
       "disk_size_gb": 0.45,
       "min_ram_gb": 2,
       "recommended_ram_gb": 4,
-      "policy_tags": ["us-origin", "open-source", "edge"],
-      "ollama_options": {"temperature": 0.7, "top_p": 0.9}
+      "policy_tags": [
+        "us-origin",
+        "open-source",
+        "edge"
+      ],
+      "ollama_options": {
+        "temperature": 0.7,
+        "top_p": 0.9
+      }
     },
     {
       "ollama_name": "gemma4:e4b",
@@ -504,7 +821,10 @@
       "vendor": "Google DeepMind",
       "origin_country": "US",
       "license": "Apache-2.0",
-      "supported_roles": ["main_model", "vision_model"],
+      "supported_roles": [
+        "main_model",
+        "vision_model"
+      ],
       "context_window": 131072,
       "supports_json_mode": true,
       "supports_vision": true,
@@ -512,8 +832,15 @@
       "disk_size_gb": 4.0,
       "min_ram_gb": 8,
       "recommended_ram_gb": 16,
-      "policy_tags": ["us-origin", "open-source"],
-      "ollama_options": {"temperature": 0.85, "top_k": 64, "top_p": 0.95},
+      "policy_tags": [
+        "us-origin",
+        "open-source"
+      ],
+      "ollama_options": {
+        "temperature": 0.85,
+        "top_k": 64,
+        "top_p": 0.95
+      },
       "rag_profile": {
         "think": false,
         "repeat_penalty": 1.0,
@@ -521,11 +848,25 @@
         "num_ctx_cap": 16384,
         "temperature": 0.3,
         "aggressive_repetition_cleanup": false,
-        "stop_sequences": ["<|channel>thought", "<|channel|>"]
+        "stop_sequences": [
+          "<|channel>thought",
+          "<|channel|>"
+        ]
       },
-      "vision_profile": {"num_predict": 2000, "num_ctx": 8192, "temperature": 0.2},
-      "audio_profile": {"multi_pass_word_tolerance": 1.3, "repeat_penalty": 1.0, "temperature": 0.7},
-      "structured_profile": {"prefer_json_mode": true, "max_repair_attempts": 2}
+      "vision_profile": {
+        "num_predict": 2000,
+        "num_ctx": 8192,
+        "temperature": 0.2
+      },
+      "audio_profile": {
+        "multi_pass_word_tolerance": 1.3,
+        "repeat_penalty": 1.0,
+        "temperature": 0.7
+      },
+      "structured_profile": {
+        "prefer_json_mode": true,
+        "max_repair_attempts": 2
+      }
     },
     {
       "ollama_name": "gemma4:e2b",
@@ -535,15 +876,25 @@
       "vendor": "Google DeepMind",
       "origin_country": "US",
       "license": "Gemma",
-      "supported_roles": ["fast_model", "vision_model"],
+      "supported_roles": [
+        "fast_model",
+        "vision_model"
+      ],
       "context_window": 131072,
       "supports_vision": true,
       "vision_api_style": "chat",
       "disk_size_gb": 7.2,
       "min_ram_gb": 8,
       "recommended_ram_gb": 12,
-      "policy_tags": ["us-origin", "open-source"],
-      "ollama_options": {"temperature": 0.85, "top_k": 64, "top_p": 0.95},
+      "policy_tags": [
+        "us-origin",
+        "open-source"
+      ],
+      "ollama_options": {
+        "temperature": 0.85,
+        "top_k": 64,
+        "top_p": 0.95
+      },
       "rag_profile": {
         "think": false,
         "repeat_penalty": 1.0,
@@ -551,11 +902,25 @@
         "num_ctx_cap": 16384,
         "temperature": 0.3,
         "aggressive_repetition_cleanup": false,
-        "stop_sequences": ["<|channel>thought", "<|channel|>"]
+        "stop_sequences": [
+          "<|channel>thought",
+          "<|channel|>"
+        ]
       },
-      "vision_profile": {"num_predict": 2000, "num_ctx": 8192, "temperature": 0.2},
-      "audio_profile": {"multi_pass_word_tolerance": 1.3, "repeat_penalty": 1.0, "temperature": 0.7},
-      "structured_profile": {"prefer_json_mode": true, "max_repair_attempts": 2}
+      "vision_profile": {
+        "num_predict": 2000,
+        "num_ctx": 8192,
+        "temperature": 0.2
+      },
+      "audio_profile": {
+        "multi_pass_word_tolerance": 1.3,
+        "repeat_penalty": 1.0,
+        "temperature": 0.7
+      },
+      "structured_profile": {
+        "prefer_json_mode": true,
+        "max_repair_attempts": 2
+      }
     },
     {
       "ollama_name": "bonsai-8b",
@@ -565,25 +930,168 @@
       "vendor": "PrismML",
       "origin_country": "US",
       "license": "Apache-2.0",
-      "supported_roles": ["main_model"],
+      "supported_roles": [
+        "main_model"
+      ],
       "context_window": 65536,
       "supports_json_mode": false,
       "supports_vision": false,
       "disk_size_gb": 1.16,
       "min_ram_gb": 4,
       "recommended_ram_gb": 6,
-      "policy_tags": ["us-origin", "open-source", "experimental", "sidecar"],
-      "ollama_options": {"temperature": 0.5, "top_p": 0.85, "top_k": 20, "repeat_penalty": 1.1},
+      "policy_tags": [
+        "us-origin",
+        "open-source",
+        "experimental",
+        "sidecar"
+      ],
+      "ollama_options": {
+        "temperature": 0.5,
+        "top_p": 0.85,
+        "top_k": 20,
+        "repeat_penalty": 1.1
+      },
       "rag_profile": {
         "temperature": 0.3,
         "repeat_penalty": 1.1,
         "num_ctx_cap": 8192,
         "use_chat_endpoint": false,
         "aggressive_repetition_cleanup": true,
-        "stop_sequences": ["\n\nReferences", "\n\nBibliography"]
+        "stop_sequences": [
+          "\n\nReferences",
+          "\n\nBibliography"
+        ]
       },
-      "structured_profile": {"prefer_json_mode": false, "max_repair_attempts": 3},
+      "structured_profile": {
+        "prefer_json_mode": false,
+        "max_repair_attempts": 3
+      },
       "provider": "llama_server"
+    },
+    {
+      "ollama_name": "mlx-community/gemma-4-e4b-it-4bit",
+      "display_name": "Gemma 4 e4b (MLX)",
+      "family": "gemma",
+      "parameter_count": "4B-effective",
+      "vendor": "Google DeepMind",
+      "origin_country": "US",
+      "license": "Apache-2.0",
+      "supported_roles": [
+        "main_model",
+        "vision_model"
+      ],
+      "context_window": 131072,
+      "supports_json_mode": true,
+      "supports_vision": true,
+      "vision_api_style": "chat",
+      "disk_size_gb": 4.79,
+      "min_ram_gb": 8,
+      "recommended_ram_gb": 16,
+      "policy_tags": [
+        "us-origin",
+        "open-source"
+      ],
+      "ollama_options": {
+        "temperature": 0.85,
+        "top_k": 64,
+        "top_p": 0.95
+      },
+      "rag_profile": {
+        "think": false,
+        "repeat_penalty": 1.0,
+        "use_chat_endpoint": true,
+        "num_ctx_cap": 16384,
+        "temperature": 0.3,
+        "aggressive_repetition_cleanup": false,
+        "stop_sequences": [
+          "<|channel>thought",
+          "<|channel|>"
+        ]
+      },
+      "vision_profile": {
+        "num_predict": 2000,
+        "num_ctx": 8192,
+        "temperature": 0.2
+      },
+      "audio_profile": {
+        "multi_pass_word_tolerance": 1.3,
+        "repeat_penalty": 1.0,
+        "temperature": 0.7
+      },
+      "structured_profile": {
+        "prefer_json_mode": true,
+        "max_repair_attempts": 2
+      }
+    },
+    {
+      "ollama_name": "mlx-community/Phi-4-mini-instruct-4bit",
+      "display_name": "Phi-4 Mini 3.8B (MLX)",
+      "family": "phi",
+      "parameter_count": "3.8B",
+      "vendor": "Microsoft",
+      "origin_country": "US",
+      "license": "MIT",
+      "supported_roles": [
+        "fast_model",
+        "main_model"
+      ],
+      "context_window": 131072,
+      "supports_json_mode": true,
+      "supports_vision": false,
+      "disk_size_gb": 2.01,
+      "min_ram_gb": 4,
+      "recommended_ram_gb": 8,
+      "policy_tags": [
+        "us-origin",
+        "open-source",
+        "enterprise-ok"
+      ],
+      "ollama_options": {
+        "temperature": 0.7,
+        "top_p": 0.9
+      },
+      "rag_profile": {
+        "temperature": 0.3,
+        "repeat_penalty": 1.05,
+        "num_ctx_cap": 8192,
+        "use_chat_endpoint": false,
+        "aggressive_repetition_cleanup": false,
+        "stop_sequences": [
+          "\n\nReferences",
+          "\n\nBibliography",
+          "\n\n[1]:"
+        ]
+      },
+      "audio_profile": {
+        "multi_pass_word_tolerance": 1.15,
+        "repeat_penalty": 1.05,
+        "temperature": 0.7
+      },
+      "structured_profile": {
+        "prefer_json_mode": true,
+        "max_repair_attempts": 2
+      }
+    },
+    {
+      "ollama_name": "mlx-community/snowflake-arctic-embed-l-v2.0-bf16",
+      "display_name": "Snowflake Arctic Embed 2 (MLX)",
+      "family": "arctic",
+      "parameter_count": "568M",
+      "vendor": "Snowflake",
+      "origin_country": "US",
+      "license": "Apache-2.0",
+      "supported_roles": [
+        "embedding_model"
+      ],
+      "embedding_dim": 1024,
+      "disk_size_gb": 1.06,
+      "min_ram_gb": 2,
+      "recommended_ram_gb": 4,
+      "policy_tags": [
+        "us-origin",
+        "open-source",
+        "enterprise-ok"
+      ]
     }
   ]
 }

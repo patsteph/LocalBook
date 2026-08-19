@@ -1,10 +1,14 @@
 """Settings API endpoints"""
+import logging
+
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import Optional, List
 import json
 import threading
 from config import settings
+
+logger = logging.getLogger(__name__)
 from services.keychain_manager import (
     get_api_key as _km_get,
     get_api_key_async as _km_get_async,
@@ -178,12 +182,22 @@ async def get_ollama_models():
     base_url = app_settings.ollama_base_url
 
     async def _fetch_tags(client: httpx.AsyncClient) -> list:
+        """Ollama's model list — BEST EFFORT, never fatal.
+
+        This used to raise 503 when Ollama was unreachable, which killed the whole endpoint
+        BEFORE it reached its own MLX enumeration block further down. So on an MLX-only
+        machine the Locker rendered empty — including its MLX cards — and a user could not
+        see, let alone change, the models the app was actually running. One of the four
+        blocker-class gaps for the cutover.
+        """
         try:
             r = await client.get(f"{base_url}/api/tags", timeout=5.0)
             r.raise_for_status()
             return r.json().get("models", [])
         except Exception as e:
-            raise HTTPException(status_code=503, detail=f"Ollama not reachable: {e}")
+            logger.info(f"[settings] Ollama not reachable ({type(e).__name__}); "
+                        f"returning MLX models only")
+            return []
 
     async def _fetch_show(client: httpx.AsyncClient, name: str) -> dict:
         try:
