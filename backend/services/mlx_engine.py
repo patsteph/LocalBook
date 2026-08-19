@@ -420,6 +420,7 @@ def _embed_on_thread(engine, texts, model_id, batch_size, max_length):
         _t0 = time.perf_counter()
         pair = _eload(model_id)
         engine._embed_resident[model_id] = pair
+        engine._last_used[model_id] = time.monotonic()
         logger.info(f"[mlx-engine] loaded embedding model {model_id} in {time.perf_counter() - _t0:.1f}s")
     model, tokenizer = pair
     out: List[List[float]] = []
@@ -476,6 +477,7 @@ class MLXEngine:
     def __init__(self) -> None:
         self._resident: Dict[str, Any] = {}              # model_id -> (model, tokenizer/processor)
         self._embed_resident: Dict[str, Any] = {}        # embedding model_id -> (model, tokenizer)
+        self._last_used: Dict[str, float] = {}           # model_id -> monotonic ts (LRU order)
         self._vlm_config: Dict[str, Any] = {}            # model_id -> config (vlm only)
         self._kind: Dict[str, str] = {}                  # model_id -> "lm" | "vlm"
         self._model_locks: Dict[str, asyncio.Lock] = {}  # per-model serialization
@@ -568,6 +570,95 @@ class MLXEngine:
         except Exception as e:
             logger.debug(f"[mlx-engine] evict twin skipped: {e}")
 
+    # -- resident budget (Stage 3.2) ---------------------------------------------
+    def _resident_cost_gb(self) -> float:
+        """What the currently-resident set costs — weights only, exactly.
+
+        Deliberately NOT an estimate: `model_sizing.exact_weight_gb` reads
+        `metadata.total_size` from the checkpoint index. The old estimator was wrong by −17 %
+        to +89 %, and reported 0.00 GB for both arctic builds, which `ram_fit` read as
+        "fits" — a guardrail that was disabled rather than merely inaccurate.
+        """
+        try:
+            from services.model_sizing import exact_weight_gb
+        except Exception:
+            return 0.0
+        total = 0.0
+        for mid in list(self._resident) + list(self._embed_resident):
+            w = exact_weight_gb(mid)
+            if w:
+                total += w
+        return round(total, 3)
+
+    def _budget_gb(self) -> float:
+        """The ceiling for resident weights + the incoming model's KV.
+
+        Derived from Apple's own per-device `max_recommended_working_set_size`, not a constant
+        and not a fraction of total RAM — on this 16 GB M4 the working set is 11.84 GiB, so
+        "60 % of RAM" and "75 % of the working set" are different numbers and only the latter
+        tracks what the GPU can address on any given machine.
+        """
+        try:
+            from services.model_sizing import budget_gb
+            return budget_gb()
+        except Exception:
+            return 0.0
+
+    async def _make_room_for(self, model_id: str) -> None:
+        """Evict LRU models until the incoming one fits the budget. Never raises.
+
+        Counts the incoming model's KV at its DEPLOYED context, not its native one: phi
+        declares a 262144 window it cannot use and costs ~8× gemma per token of KV (32 kv-head
+        layers vs 7), so judging by weights alone under-counts the model that actually hurts.
+        """
+        try:
+            from services.model_sizing import exact_weight_gb, kv_cache_gb, load_config
+            budget = self._budget_gb()
+            if budget <= 0:
+                return
+            incoming_w = exact_weight_gb(model_id) or 0.0
+            if incoming_w <= 0:
+                return          # unknown size — do not evict on a guess
+            cfg = load_config(model_id)
+            ctx = int(os.environ.get("LOCALBOOK_MLX_BUDGET_CTX", "16384"))
+            incoming_kv = (kv_cache_gb(cfg, ctx) if cfg else None) or 0.0
+            need = incoming_w * 1.2 + incoming_kv        # ×1.2 for activations/scratch
+
+            resident = self._resident_cost_gb()
+            if resident + need <= budget:
+                return
+
+            # LRU first — the model used longest ago is the cheapest to lose.
+            order = sorted(
+                (m for m in list(self._resident) + list(self._embed_resident) if m != model_id),
+                key=lambda m: self._last_used.get(m, 0.0),
+            )
+            logger.info(f"[mlx-engine] budget: resident {resident} GB + incoming {round(need,2)} GB "
+                        f"> {budget} GB — evicting LRU to make room")
+            for victim in order:
+                if await self.unload(victim, wait=1.0):
+                    self._last_used.pop(victim, None)
+                    resident = self._resident_cost_gb()
+                    if resident + need <= budget:
+                        return
+            if resident + need > budget:
+                # Proceed anyway rather than refuse the user's request — but say so, because
+                # this is the condition that precedes swap-death on a tight machine.
+                logger.warning(
+                    f"[mlx-engine] budget EXCEEDED after eviction: resident {resident} GB + "
+                    f"incoming {round(need,2)} GB > {budget} GB. Loading anyway; expect "
+                    f"memory pressure.")
+                try:
+                    from services.quality_signals import record_signal
+                    record_signal("degraded", "mlx_engine",
+                                  f"resident budget exceeded loading {model_id} "
+                                  f"({resident}+{round(need,2)} > {budget} GB)",
+                                  severity="warn", key="mlx_budget_exceeded")
+                except Exception:
+                    pass
+        except Exception as e:
+            logger.debug(f"[mlx-engine] budget check skipped: {e}")
+
     async def _load(self, model_id: str) -> Tuple[Any, Any]:
         """Load (cache) an MLX model — mlx-vlm for gemma, mlx-lm for phi. Loads run
         one-at-a-time; gemma load evicts the Ollama twin first."""
@@ -578,6 +669,7 @@ class MLXEngine:
             if model_id in self._resident:
                 return self._resident[model_id]
             self._ensure_memory_limit()
+            await self._make_room_for(model_id)
             logger.info(f"[mlx-engine] loading {model_id} ({kind}) …")
             t0 = time.perf_counter()
 
@@ -593,6 +685,7 @@ class MLXEngine:
 
             pair = await self._run(_load)
             self._resident[model_id] = pair
+            self._last_used[model_id] = time.monotonic()
             logger.info(f"[mlx-engine] loaded {model_id} in {time.perf_counter() - t0:.1f}s")
             return pair
 
@@ -701,6 +794,7 @@ class MLXEngine:
         kind = self._model_kind(model)
         pair = await self._load(model)
         lock = self._model_locks.setdefault(model, asyncio.Lock())
+        self._last_used[model] = time.monotonic()   # LRU: real usage, not load order
         # Grammar-constrained JSON (Path B): force schema-compliant JSON via llguidance — but ONLY
         # when the caller passes an explicit `json_schema`. A permissive `{"type":"object"}` grammar
         # is a trap: the model can satisfy it with an empty `{}` and skip every field, which broke the
@@ -788,6 +882,7 @@ class MLXEngine:
         kind = self._model_kind(model)
         pair = await self._load(model)
         lock = self._model_locks.setdefault(model, asyncio.Lock())
+        self._last_used[model] = time.monotonic()   # LRU: real usage, not load order
         loop = asyncio.get_running_loop()
         q: asyncio.Queue = asyncio.Queue()
         _SENTINEL = object()
@@ -889,6 +984,7 @@ class MLXEngine:
         cfg = self._vlm_config.get(model)
         img = _resolve_image(image_path_or_b64)
         lock = self._model_locks.setdefault(model, asyncio.Lock())
+        self._last_used[model] = time.monotonic()   # LRU: real usage, not load order
         lps = None
         if format == "json":
             if json_schema:
