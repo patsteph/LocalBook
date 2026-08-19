@@ -625,3 +625,71 @@ def _prefs_override_summary() -> dict:
         }
     except Exception:
         return {"present": None}
+
+
+@router.get("/model-readiness")
+async def model_readiness():
+    """Can the app actually answer right now, and if not, what is missing?
+
+    Stage 3.9. With Ollama gone, a role pointed at a model that was never downloaded fails at
+    FIRST USE — today that means a multi-GB stall inside the user's first chat message with no
+    UI and no explanation. `mark_models_ready()` is called unconditionally at startup
+    (main.py:408,413), including on failure, so "ready" has meant "we got to the end of
+    startup" rather than "the models exist".
+
+    Reports per-role presence plus a `blocking` list. Vision is deliberately NOT blocking — the
+    app degrades to text-only rather than failing.
+    """
+    from config import settings
+
+    def _model_for(role: str) -> str:
+        eng = getattr(settings, f"{role}_engine", "ollama") or "ollama"
+        if eng == "mlx":
+            return getattr(settings, f"mlx_{role}_model" if role != "embed"
+                           else "mlx_embedding_model", "") or ""
+        return {
+            "main": getattr(settings, "ollama_model", ""),
+            "fast": getattr(settings, "ollama_fast_model", ""),
+            "vision": getattr(settings, "vision_model", ""),
+            "embed": getattr(settings, "embedding_model", ""),
+        }.get(role, "")
+
+    roles = {r: _model_for(r) for r in ("main", "fast", "vision", "embed")}
+    engines = {r: (getattr(settings, f"{r}_engine", "ollama") or "ollama") for r in roles}
+
+    out = {"roles": {}, "blocking": [], "ready": True}
+    for role, model in roles.items():
+        eng = engines[role]
+        present: object = True          # an Ollama model's presence is Ollama's problem
+        if eng == "mlx":
+            try:
+                from services.model_presence import is_present
+                present = is_present(model)
+            except Exception:
+                present = None
+        out["roles"][role] = {"engine": eng, "model": model, "present": present}
+        if present is False and role in ("main", "fast", "embed"):
+            out["blocking"].append(role)
+
+    out["ready"] = not out["blocking"]
+    try:
+        from services.model_presence import engine_ok
+        out["engine_ok"] = engine_ok()
+        if any(e == "mlx" for e in engines.values()) and not out["engine_ok"]:
+            out["ready"] = False
+            out["blocking"].append("mlx_engine_unavailable")
+    except Exception:
+        pass
+    # What a first-run UI would need to offer: the exact ids to download, largest first so the
+    # user sees the long pole rather than discovering it after two quick ones.
+    if out["blocking"]:
+        try:
+            from services.model_sizing import exact_weight_gb
+            missing = [roles[r] for r in out["blocking"] if r in roles and roles[r]]
+            out["download"] = sorted(
+                ({"model_id": m, "gb": exact_weight_gb(m)} for m in dict.fromkeys(missing)),
+                key=lambda d: -(d["gb"] or 0),
+            )
+        except Exception:
+            pass
+    return out

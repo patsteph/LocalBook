@@ -307,6 +307,50 @@ class LLMLocker:
             "AITRADER/", "themindstudio/"))
 
     @classmethod
+    def _check_mlx_swap_safe(cls, mlx_model: str, role: str) -> None:
+        """Refuse a swap that cannot run on this machine. Raises ModelSwapError.
+
+        Two failure modes, both silent before this existed:
+          · the model is not on disk — the swap "succeeds" and the app then stalls on a
+            multi-GB download inside the user's first request, or fails outright offline;
+          · the model does not fit — on a 16 GB box that means swap-death or, at the extreme
+            documented in mlx-lm#883, a GPU watchdog reboot, because wired memory blocks
+            Jetsam so the driver panics instead of the process being killed.
+
+        Deliberately permissive where the data is missing: an unknown SIZE warns rather than
+        refuses. Refusing on a guess is how the old estimator's 0.00 GB for arctic would have
+        blocked a model that runs fine.
+        """
+        try:
+            from services.model_presence import is_present
+            if not is_present(mlx_model):
+                raise ModelSwapError(
+                    f"{mlx_model} is not downloaded. Download it first — swapping now would "
+                    f"stall your next request on a multi-GB download (or fail offline).")
+        except ModelSwapError:
+            raise
+        except Exception as e:
+            logger.debug(f"[locker] MLX presence check skipped: {e}")
+
+        try:
+            from services.model_sizing import fit
+            f = fit(mlx_model, 16384)
+            if f.get("fits") is False:
+                raise ModelSwapError(
+                    f"{mlx_model} needs ~{f.get('total_needed_gb')} GB (weights + KV at 16k) "
+                    f"but this machine's budget is {f.get('budget_gb')} GB. "
+                    f"Loading it risks swap-death on a {round(f.get('working_set_gb', 0))} GB "
+                    f"working set. Choose a smaller model or quantization.")
+            if f.get("recommendation") == "tight":
+                logger.warning(f"[locker] {mlx_model} is a TIGHT fit "
+                               f"({f.get('total_needed_gb')} of {f.get('budget_gb')} GB) — "
+                               f"expect memory pressure with other models resident")
+        except ModelSwapError:
+            raise
+        except Exception as e:
+            logger.debug(f"[locker] MLX fit check skipped: {e}")
+
+    @classmethod
     def _execute_mlx_swap(cls, mlx_model: str, role: str) -> str:
         """Flip a role to the MLX engine + set its mlx model id. Persisted + in-memory."""
         role_map = {
@@ -318,6 +362,13 @@ class LLMLocker:
         if role not in role_map:
             raise ModelSwapError(f"MLX engine swap is not supported for role '{role}'")
         eng_attr, model_attr = role_map[role]
+
+        # SAFETY (Stage 3.8). `execute_swap` short-circuits here BEFORE `analyze_swap`, so
+        # every guardrail — RAM fit, headroom, min_ram refusal — applied only to Ollama
+        # targets. MLX swaps had NONE, and deleting the Ollama half would have deleted the
+        # Locker's only safety layer rather than half of it.
+        cls._check_mlx_swap_safe(mlx_model, role)
+
         changes = {eng_attr: "mlx", model_attr: mlx_model}
         # Option A — a vision-capable MLX MAIN model absorbs the vision slot too (one gemma
         # load serves text + vision; the memory win depends on NOT loading it twice). Mirrors

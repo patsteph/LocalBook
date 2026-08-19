@@ -908,6 +908,60 @@ print(f'MLX embedding model cached at: {local_dir}')
             fi
         fi
 
+        # MLX MAIN + FAST models (~6.8GB total) — Stage 3.7 of the MLX cutover.
+        # Once Ollama is removed these are the ONLY way the app can answer anything, so a cold
+        # HF cache means a machine that cannot chat at all. Pre-download here rather than
+        # letting a ~4.8GB fetch land inside the user's first message, where there is no UI,
+        # no progress and (in the frozen app) an OpenSSL that cannot verify the HF cert.
+        # Non-fatal per model, but the MAIN model gets escalated copy — losing it is not a
+        # degraded install, it is a non-functional one.
+        for _mlx_pair in "mlx-community/gemma-4-e4b-it-4bit:4.8GB:main chat + vision" \
+                         "mlx-community/Phi-4-mini-instruct-4bit:2.0GB:fast/background"; do
+            _mlx_id="${_mlx_pair%%:*}"
+            _mlx_rest="${_mlx_pair#*:}"
+            _mlx_size="${_mlx_rest%%:*}"
+            _mlx_role="${_mlx_rest#*:}"
+            _mlx_cache="$HOME/.cache/huggingface/hub/models--$(echo "$_mlx_id" | sed 's|/|--|')"
+            if [ -d "$_mlx_cache" ]; then
+                success "MLX $_mlx_role model (already cached)"
+                continue
+            fi
+            info "Downloading MLX $_mlx_role model ($_mlx_size) — $_mlx_id ..."
+            MLX_TARGET_ID="$_mlx_id" python -c "
+import os, sys, signal
+def _alarm(*_): raise SystemExit('Download timed out')
+signal.signal(signal.SIGALRM, _alarm)
+signal.alarm(2700)   # 45 min — a 4.8GB fetch on a slow link
+for _cand in (os.path.dirname(os.path.dirname(os.path.dirname(sys.executable))),
+              os.path.join(os.getcwd(), 'backend'), os.getcwd()):
+    if os.path.isfile(os.path.join(_cand, 'services', 'hf_transport.py')):
+        sys.path.insert(0, _cand); break
+try:
+    from services.hf_transport import install_hf_transport
+    install_hf_transport()
+except Exception as _e:
+    print(f'[install] hf transport not configured ({_e}); using library defaults')
+from huggingface_hub import snapshot_download
+# allow_patterns matters: a wrong set yields a snapshot that loads on mlx-lm but NOT mlx-vlm
+# (gemma needs its processor/preprocessor config for the vision path).
+local_dir = snapshot_download(
+    repo_id=os.environ['MLX_TARGET_ID'],
+    allow_patterns=['*.json', '*.safetensors', 'tokenizer*', '*.txt', '*.model', '*.jinja'],
+    max_workers=1,
+)
+signal.alarm(0)
+print(f'cached at: {local_dir}')
+" || {
+                if [ "$_mlx_role" = "main chat + vision" ]; then
+                    warn "MAIN MLX model download FAILED — the app cannot chat until this is"
+                    warn "  downloaded. Re-run the installer, or fetch it in-app from LLM Studio."
+                else
+                    warn "MLX $_mlx_role model download failed (non-fatal — retry from LLM Studio)"
+                fi
+            }
+            [ -d "$_mlx_cache" ] && success "MLX $_mlx_role model downloaded"
+        done
+
         # Playwright Chromium browser — video slides, Mermaid diagrams, social features
         local pw_cache="$HOME/Library/Caches/ms-playwright"
         if [ -d "$pw_cache" ] && ls "$pw_cache"/chromium-* >/dev/null 2>&1; then

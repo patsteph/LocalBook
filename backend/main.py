@@ -131,6 +131,15 @@ if settings.use_sqlite:
         print(f"⚠️ SQLite migration failed, falling back to JSON: {e}")
         settings.use_sqlite = False
 
+# Prefs schema v2 — make the saved role combo survive the MLX cutover. Backs up first,
+# never deletes a key, idempotent, never raises. Must run BEFORE the SafeStart restore loop
+# reads default_combo (it runs earlier in this file), so v2 data is available to it.
+try:
+    from storage.migrate_prefs_v2 import run as _migrate_prefs
+    _migrate_prefs()
+except Exception as e:
+    print(f"⚠️ prefs v2 migration skipped: {e}")
+
 # One-shot: purge Cursor Style residue (feature removed in v2.3.0). Must run AFTER the SQLite
 # migration (it reads those tables) and BEFORE the stores cache anything. Marker-guarded and
 # never-raises — see the module docstring for why the catalog rows are actively harmful.
