@@ -22,7 +22,7 @@ from pydantic import BaseModel, Field
 from storage.memory_store import memory_store, AgentNamespace
 from storage.notebook_store import notebook_store
 from models.memory import ArchivalMemoryEntry, MemorySourceType, MemoryImportance
-from services.ollama_service import ollama_service
+from services.llm_runtime import llm_runtime
 from config import settings
 from utils.tasks import safe_create_task
 

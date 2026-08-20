@@ -306,7 +306,7 @@ async def generate_activity_insights(
     their engagement patterns, and any notable trends.
     """
     try:
-        from services.ollama_service import ollama_service
+        from services.llm_runtime import llm_runtime
         from config import settings
 
         # Build context from activity data
@@ -347,7 +347,7 @@ async def generate_activity_insights(
 
 Be specific and actionable. Write in third person. Do not use bullet points — just flowing sentences."""
 
-        response = await ollama_service.generate(
+        response = await llm_runtime.generate(
             prompt=prompt,
             system="You are a concise professional analyst. Provide brief activity insights.",
             model=settings.ollama_fast_model,

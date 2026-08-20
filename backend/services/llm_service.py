@@ -8,8 +8,8 @@ text port (and any future engine) plugs in here, invisible to callers.
 History: this file IS the former services/rag_llm.py (git-mv'd, S3/C1
 2026-07-03) — call_ollama→generate_text, stream_ollama→stream_text, plus the
 two vision seam functions. Logic is byte-preserved from rag_llm; the deeper
-options-builder unification with ollama_service is deferred to Wave 9 (it
-needs live-Ollama runtime testing). ollama_service remains the Ollama-engine
+options-builder unification with llm_runtime is deferred to Wave 9 (it
+needs live-Ollama runtime testing). llm_runtime remains the Ollama-engine
 client (lanes, num_ctx math, embeddings); this module is the task router.
 """
 import json
@@ -132,11 +132,11 @@ async def generate_text(
     # num_ctx sizing via the shared helper so chat/RAG and every structured caller
     # share ONE cap-aware, RAM-tier-aware rule (compute_num_ctx also applies the
     # per-model cap, so the old rag_profile cap line is folded in). Lazy import
-    # avoids a circular dependency with ollama_service.
+    # avoids a circular dependency with llm_runtime.
     if num_ctx is not None:
         options["num_ctx"] = num_ctx
     else:
-        from services.ollama_service import compute_num_ctx
+        from services.llm_runtime import compute_num_ctx
         _nc = compute_num_ctx(use_model, f"{system_prompt}\n\n{prompt}", num_predict)
         if _nc:
             options["num_ctx"] = _nc
@@ -148,7 +148,7 @@ async def generate_text(
     # request for the MLX branch below.
     _requested_num_predict = options.get("num_predict")
     if options.get("num_predict") and options.get("num_ctx"):
-        from services.ollama_service import clamp_num_predict
+        from services.llm_runtime import clamp_num_predict
         options["num_predict"] = clamp_num_predict(
             f"{system_prompt}\n\n{prompt}", options["num_predict"], options["num_ctx"]
         )
@@ -243,14 +243,14 @@ async def generate_text(
         _use_chat = rag_profile.get("use_chat_endpoint", False) and _route.api_style == "ollama"
 
         # PB-2d / D4 (2026-06-23): join the shared per-model lane so this raw-httpx
-        # call serializes on the SAME limiter as ollama_service.generate/chat/embed
+        # call serializes on the SAME limiter as llm_runtime.generate/chat/embed
         # and stream_ollama — it can't run as a 2nd concurrent call to the heavy
         # model, and user-facing callers (priority=FOREGROUND) preempt background
         # ingest. Mirrors stream_ollama, which already joins the lane. call_ollama
         # keeps its own bespoke coherence tuning (num_ctx auto-size / repeat_penalty
         # / Mirostat) that generate()/chat() don't replicate, so it lane-joins
         # rather than migrating. Lane held only around the network dispatch.
-        from services.ollama_service import model_lane, PRIORITY_NORMAL
+        from services.llm_runtime import model_lane, PRIORITY_NORMAL
         _priority = priority if priority is not None else PRIORITY_NORMAL
         async with model_lane(use_model, _priority):
             if _use_chat:
@@ -303,9 +303,9 @@ async def generate_text(
             mark_main_model_used()
         # Record token usage for Health Portal token economy stats
         _record_ollama_tokens(result)
-        # Visibility: this httpx path does NOT go through ollama_service, so log the
+        # Visibility: this httpx path does NOT go through llm_runtime, so log the
         # ctx here too — otherwise doc/RAG/needle generations are invisible in the
-        # ctx logs (only the small phi4 ollama_service calls show up).
+        # ctx logs (only the small phi4 llm_runtime calls show up).
         logger.info(
             f"[llm_service] generate OK model={use_model} caller=call_ollama "
             f"ctx={options.get('num_ctx', 'def')} num_predict={options.get('num_predict')} "
@@ -403,7 +403,7 @@ async def stream_text(
         
         # Auto-size context window via the shared helper (one sizing rule app-wide);
         # floor at 8192 for streaming (chat) exactly as before.
-        from services.ollama_service import compute_num_ctx, clamp_num_predict
+        from services.llm_runtime import compute_num_ctx, clamp_num_predict
         effective_num_ctx = compute_num_ctx(model, f"{system_prompt}\n\n{prompt}", effective_num_predict) or 8192
         # P4: cap output to what the resolved window can hold (small-RAM cap-bound case).
         # Ollama-specific — see the note on the non-streaming path. MLX gets the unclamped value.
@@ -442,7 +442,7 @@ async def stream_text(
         if extra_options:
             stream_options.update(extra_options)
 
-        # Visibility: streaming also bypasses ollama_service — log the ctx so the
+        # Visibility: streaming also bypasses llm_runtime — log the ctx so the
         # streamed chat/doc answer shows its window (otherwise it's invisible).
         logger.info(
             f"[llm_service] stream start model={model} "
@@ -531,8 +531,8 @@ async def stream_text(
         # against background work — the thrash the lane prevents — and (b) jump
         # ahead of background ingest. This is the rag_llm half of PB-2d: it owns
         # its own httpx streaming + stop-sequence logic, so it joins the lane
-        # via model_lane() rather than migrating to ollama_service.stream_generate.
-        from services.ollama_service import model_lane, PRIORITY_FOREGROUND
+        # via model_lane() rather than migrating to llm_runtime.stream_generate.
+        from services.llm_runtime import model_lane, PRIORITY_FOREGROUND
         async with model_lane(model, PRIORITY_FOREGROUND):
             if _use_chat:
                 chat_payload = {
@@ -627,13 +627,13 @@ async def stream_text(
 async def generate_with_vision(image_b64: str, prompt: str, **kwargs):
     """Engine-routed vision generation (currently Ollama; resolve_vision_model
     picks gemma4 on Option-A boxes, the configured fallback otherwise)."""
-    from services.ollama_service import ollama_service
-    return await ollama_service.vision_describe(image_b64, prompt, **kwargs)
+    from services.llm_runtime import llm_runtime
+    return await llm_runtime.vision_describe(image_b64, prompt, **kwargs)
 
 
 async def ocr_backend(image_b64: str, prompt: str, **kwargs):
     """Engine-routed OCR slice (currently Apple Vision with Ollama fallback,
     via vision_describe's ocr_mode routing)."""
-    from services.ollama_service import ollama_service
+    from services.llm_runtime import llm_runtime
     kwargs.setdefault("ocr_mode", True)
-    return await ollama_service.vision_describe(image_b64, prompt, **kwargs)
+    return await llm_runtime.vision_describe(image_b64, prompt, **kwargs)

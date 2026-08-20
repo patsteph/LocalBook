@@ -5,7 +5,7 @@ a coarse presence TIER from signals that already exist:
 
   - foreground guard held       (memory_steward) — an explicit user op is running
   - seconds since user activity  (memory_steward) — bumped on every non-GET request
-  - seconds since Ollama work    (ollama_service) — is the ingest flood still draining?
+  - seconds since Ollama work    (llm_runtime) — is the ingest flood still draining?
   - wall clock                   — the "night" window for deep sleep work
 
 Tiers (IntEnum, higher = more freedom for background work):
@@ -92,7 +92,7 @@ def system_busy(quiet_s: float = 8.0) -> bool:
     (embeds + whatever else) is still draining. The worker waits for this to go
     quiet before starting a job, so enrichment never stacks onto a live flood
     (the 2026-06-23 failure mode)."""
-    from services.ollama_service import seconds_since_ollama_activity
+    from services.llm_runtime import seconds_since_ollama_activity
 
     return seconds_since_ollama_activity() < quiet_s
 

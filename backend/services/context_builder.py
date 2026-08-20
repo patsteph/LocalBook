@@ -141,11 +141,11 @@ CONTEXT_PROFILES: Dict[str, ContextProfile] = {
 def _window_char_budget(output_reserve_tokens: int = 7000, chars_per_token: int = 3) -> int:
     """Max context chars that fit the main model's effective num_ctx window while
     leaving room for the system prompt + generated output. Tier-aware — scales with
-    RAM via ollama_service.effective_num_ctx_cap — so bigger Macs assemble more.
+    RAM via llm_runtime.effective_num_ctx_cap — so bigger Macs assemble more.
     Uses the same conservative 3-chars/token ratio as compute_num_ctx so the two
     reconcile (assembly never over-fills the window the model is given)."""
     try:
-        from services.ollama_service import effective_num_ctx_cap
+        from services.llm_runtime import effective_num_ctx_cap
         from config import settings
         cap_tokens = effective_num_ctx_cap(settings.ollama_model)
         usable = max(4000, cap_tokens - output_reserve_tokens)
@@ -239,7 +239,7 @@ class ContextBuilder:
         # makes a scaled COPY (never mutate the shared CONTEXT_PROFILES singleton).
         # All still bounded by the window budget + actual available content.
         try:
-            from services.ollama_service import _ram_ctx_multiplier
+            from services.llm_runtime import _ram_ctx_multiplier
             ram_mult = _ram_ctx_multiplier()
         except Exception:
             ram_mult = 1.0

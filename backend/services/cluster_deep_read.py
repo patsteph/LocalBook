@@ -83,7 +83,7 @@ async def synthesize(
       2. What the web adds today
       3. What I'd read next
     """
-    from services.ollama_service import ollama_service
+    from services.llm_runtime import llm_runtime
     from config import settings
 
     # Compose article block
@@ -139,7 +139,7 @@ async def synthesize(
     )
 
     try:
-        result = await ollama_service.generate(
+        result = await llm_runtime.generate(
             prompt=user_prompt,
             system=system_prompt,
             # User picked gemma4 (main model) for this synthesis.

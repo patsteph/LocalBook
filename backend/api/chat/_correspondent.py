@@ -34,7 +34,7 @@ async def _stream_correspondent(chat_query: ChatQuery, injected_action: Optional
     the canonical function matrix.
     """
     from services.intent_classifier import classify_intent
-    from services.ollama_service import ollama_service
+    from services.llm_runtime import llm_runtime
     from services.credential_locker import list_imap_accounts, update_imap_state
     from agents.correspondent import (
         correspondent_agent, _load_sender_routing, _save_sender_routing,

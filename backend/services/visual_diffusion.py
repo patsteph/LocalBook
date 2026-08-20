@@ -29,7 +29,7 @@ from typing import Optional
 import httpx
 
 from config import settings
-from services.ollama_service import ollama_service
+from services.llm_runtime import llm_runtime
 from services.visual_capability import VisualCapability, get_capability
 
 logger = logging.getLogger(__name__)
@@ -428,8 +428,8 @@ async def write_klein_brief(
         f"Write the Klein prompt now. Front-load art direction. Drop any "
         f"label/caption/annotation text requests."
     )
-    from services.ollama_service import PRIORITY_FOREGROUND
-    result = await ollama_service.generate(
+    from services.llm_runtime import PRIORITY_FOREGROUND
+    result = await llm_runtime.generate(
         prompt=user_msg,
         system=KLEIN_BRIEF_SYSTEM,
         model=model,
@@ -467,8 +467,8 @@ async def write_klein_prompt(
     # Gemma 4 burns tokens on internal channel/thinking output before the
     # final answer; with num_predict too low (<1500) the visible response
     # ends up empty because the model never reached the final-message stage.
-    from services.ollama_service import PRIORITY_FOREGROUND
-    result = await ollama_service.generate(
+    from services.llm_runtime import PRIORITY_FOREGROUND
+    result = await llm_runtime.generate(
         prompt=user,
         system=PROMPT_WRITER_SYSTEM,
         model=model,

@@ -273,16 +273,16 @@ class StructuredLLMService:
         except Exception as _e:
             logger.debug(f"[StructuredLLM] structured_profile lookup failed: {_e}")
 
-        # Route through ollama_service so structured generation rides the
+        # Route through llm_runtime so structured generation rides the
         # per-model priority lane. Studio output (quiz / visual / doc /
         # comparison) is user-initiated foreground work, so it runs at
         # FOREGROUND priority and jumps ahead of background ingest fan-out
         # (PDF vision, community summaries) on the single-wide gemma4 lane.
-        # ollama_service handles provider routing (Ollama vs sidecar) and
+        # llm_runtime handles provider routing (Ollama vs sidecar) and
         # JSON mode internally. respect_rag_profile=False keeps structured
         # JSON free of chat stop-sequences (mirrors the old raw path).
-        from services.ollama_service import ollama_service, PRIORITY_FOREGROUND
-        result = await ollama_service.generate(
+        from services.llm_runtime import llm_runtime, PRIORITY_FOREGROUND
+        result = await llm_runtime.generate(
             prompt=f"User request:\n{user_prompt}",
             system=system_prompt,
             model=active_model,
@@ -2091,8 +2091,8 @@ Return JSON with themes, sequence, and dates:
 Extract the main themes/concepts from the topic."""
 
         try:
-            from services.ollama_service import ollama_service
-            _resp = await ollama_service.generate(
+            from services.llm_runtime import llm_runtime
+            _resp = await llm_runtime.generate(
                 prompt=prompt,
                 model=settings.ollama_fast_model,  # phi4-mini - FAST
                 temperature=0.3,

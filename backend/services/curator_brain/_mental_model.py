@@ -332,7 +332,7 @@ class MentalModelMixin:
             # an upload, exactly when the user is likely to chat. Deadlock-proof.
             from services.memory_steward import await_background_clearance
             await await_background_clearance()
-            result = await ollama_service.generate(
+            result = await llm_runtime.generate(
                 prompt=prompt,
                 system="You output only valid JSON for mental model inference.",
                 model=_settings.ollama_fast_model,

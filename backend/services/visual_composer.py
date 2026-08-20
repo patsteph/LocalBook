@@ -53,7 +53,7 @@ from services.visual_intent import (
     obvious_illustration_intent,
     is_user_directed_svg,
 )
-from services.ollama_service import ollama_service
+from services.llm_runtime import llm_runtime
 from services.svg_renderer import render_svg_to_png
 from services.visual_skeletons import HERO_IDIOMS
 
@@ -701,7 +701,7 @@ class VisualComposer:
             return None
 
         try:
-            result = await ollama_service.generate(
+            result = await llm_runtime.generate(
                 prompt=f"USER SPECIFICATION:\n{topic}\n\nProduce the SVG.",
                 system=USER_DIRECTED_SVG_SYSTEM,
                 model=model,

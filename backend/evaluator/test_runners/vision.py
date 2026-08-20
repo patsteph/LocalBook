@@ -74,13 +74,13 @@ async def run(notebook_id: str, config: dict, combo_name: str, hw_fingerprint: s
         # The chart prompt is short and the answer should be too — cap at 300
         # tokens unless the profile explicitly wants something longer.
         eval_num_predict = min(int(vp.get("num_predict", 300)), 300)
-        eval_num_ctx = vp.get("num_ctx")  # None lets ollama_service pick its default
+        eval_num_ctx = vp.get("num_ctx")  # None lets llm_runtime pick its default
         eval_temperature = vp.get("temperature", 0.3)
 
         start = time.time()
 
-        from services.ollama_service import ollama_service
-        description = await ollama_service.vision_describe(
+        from services.llm_runtime import llm_runtime
+        description = await llm_runtime.vision_describe(
             image_b64=b64_image,
             prompt="Describe this chart in detail. What data does it show? What are the values?",
             model=vision_model,

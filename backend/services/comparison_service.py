@@ -57,7 +57,7 @@ class ComparisonService:
         # (previously the ENTIRE contents were passed → context overflow / silent
         # truncation on large sources). Window-aware, so bigger Macs compare more.
         try:
-            from services.ollama_service import effective_num_ctx_cap
+            from services.llm_runtime import effective_num_ctx_cap
             from config import settings as _s
             _per_doc = max(4000, int(effective_num_ctx_cap(_s.ollama_model) * 3 * 0.55 / 2))
         except Exception:

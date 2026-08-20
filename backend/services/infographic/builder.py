@@ -24,7 +24,7 @@ import uuid
 from typing import Any, Optional
 
 from config import settings
-from services.ollama_service import ollama_service
+from services.llm_runtime import llm_runtime
 from services.artifact_spec import json_artifact
 from services.visual_slotfill import _apply_slot_fill, _has_unfilled_slots
 from utils.json_repair import robust_json_parse
@@ -113,7 +113,7 @@ async def _run_slotfill(system: str, content: str, model: str, topic: str = "") 
             "Fill in every slot from the schema based on the source content. Return JSON only."
         )
     try:
-        result = await ollama_service.generate(
+        result = await llm_runtime.generate(
             prompt=prompt,
             system=system,
             model=model,
@@ -657,7 +657,7 @@ async def _poster_title(content: str, model: str) -> str:
     if not text:
         return ""
     try:
-        r = await ollama_service.generate(
+        r = await llm_runtime.generate(
             prompt=(f"Source request: {text[:500]}\n\n"
                     "Write a punchy 2-4 word cover title in Title Case. "
                     "Title only — no quotes, no trailing punctuation, no explanation."),

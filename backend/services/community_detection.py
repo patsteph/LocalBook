@@ -358,18 +358,18 @@ Format:
 NAME: [group name]
 SUMMARY: [2-3 sentence summary]"""
 
-        # Route through ollama_service so we get the shared client, model
+        # Route through llm_runtime so we get the shared client, model
         # registry defaults, token tracking, and warmup mark — instead of
         # an ephemeral httpx client per call (violated the centralization
         # rule and contributed to the 2026-06-15 background-task overload).
         try:
-            from services.ollama_service import ollama_service, PRIORITY_BACKGROUND
+            from services.llm_runtime import llm_runtime, PRIORITY_BACKGROUND
             # Yield to any in-progress foreground generation — this summary
             # storm is the heaviest background flood and must not thrash the
             # machine while the user is waiting on a visual/doc.
             from services.memory_steward import await_background_clearance
             await await_background_clearance()
-            result = await ollama_service.generate(
+            result = await llm_runtime.generate(
                 prompt=prompt,
                 model=settings.ollama_fast_model,
                 temperature=0.3,

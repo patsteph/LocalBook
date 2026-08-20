@@ -120,7 +120,7 @@ async def _title_synthesis(member_titles: List[str]) -> Tuple[str, str]:
     if not titles:
         return fallback, ""
     try:
-        from services.ollama_service import ollama_service
+        from services.llm_runtime import llm_runtime
         from config import settings
         listed = "\n".join(f"- {t}" for t in titles)
         prompt = (
@@ -129,7 +129,7 @@ async def _title_synthesis(member_titles: List[str]) -> Tuple[str, str]:
             f"Items:\n{listed}\n\n"
             "Respond EXACTLY as:\nNAME: <3-5 word topic name>\nSUMMARY: <one sentence>"
         )
-        res = await ollama_service.generate(
+        res = await llm_runtime.generate(
             prompt=prompt, model=settings.ollama_fast_model, temperature=0.3,
             num_predict=80, think=False, timeout=20.0)
         text = (res or {}).get("response", "") or ""
@@ -162,8 +162,8 @@ async def reassign_one(notebook_id: str, node: Dict[str, Any],
         text = f"{snapshot_text(node)}\n{extra_text}".strip()
         if not text:
             return out
-        from services.ollama_service import ollama_service
-        vecs = await ollama_service.embed_batch([text])
+        from services.llm_runtime import llm_runtime
+        vecs = await llm_runtime.embed_batch([text])
         vec = list(vecs[0]) if vecs and vecs[0] else []
         if not vec:
             return out
@@ -207,8 +207,8 @@ async def assign_and_persist(notebook_id: str, nodes: List[Dict[str, Any]]) -> L
         texts = [snapshot_text(n) for n in nodes]
         vecs: List[List[float]] = []
         try:
-            from services.ollama_service import ollama_service
-            vecs = await ollama_service.embed_batch(texts)
+            from services.llm_runtime import llm_runtime
+            vecs = await llm_runtime.embed_batch(texts)
         except Exception as e:
             logger.warning(f"[canvas_subtopics] embedding failed ({notebook_id}): {e}")
             return []

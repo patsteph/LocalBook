@@ -243,7 +243,7 @@ async def await_idle(
     await_background_clearance); loop-agnostic and never raises."""
     if _in_foreground.get():
         return
-    from services.ollama_service import seconds_since_ollama_activity
+    from services.llm_runtime import seconds_since_ollama_activity
     deadline = time.monotonic() + timeout
     while True:
         # Never run while a foreground generation holds the guard.

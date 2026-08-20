@@ -254,7 +254,7 @@ class LLMLocker:
 
         # Context extraction (P7: informational only). This is the model's NATIVE
         # window shown in the swap summary. The window the app actually uses at
-        # runtime is set by ollama_service.effective_num_ctx_cap (RAM-tier-aware) +
+        # runtime is set by llm_runtime.effective_num_ctx_cap (RAM-tier-aware) +
         # compute_num_ctx per call — NOT by this value. No code reads
         # LOCALBOOK_MAX_RAG_CONTEXT; it's a display/record field, so keep it as the
         # native ceiling and let the runtime cap govern.

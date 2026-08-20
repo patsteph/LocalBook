@@ -18,7 +18,7 @@ Design rules:
     sensitive output with prose-tone instructions.
 
 Wired in:
-  - services/ollama_service.generate / chat (every agent call)
+  - services/llm_runtime.generate / chat (every agent call)
   - services/llm_service.generate_text / stream_text (RAG + content gen)
 
 Family modifiers are keyed by registry `family` field, so adding a new

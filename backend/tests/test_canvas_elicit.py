@@ -14,7 +14,7 @@ from fastapi.testclient import TestClient
 from storage import canvas_layout_store as cl
 from storage import canvas_topics_store as ts
 from services import canvas_subtopics
-from services.ollama_service import ollama_service
+from services.llm_runtime import llm_runtime
 from api import canvas as canvas_api
 
 
@@ -30,7 +30,7 @@ def ctx(monkeypatch):
     # Deterministic embedding: the elicited thread embeds to [1, 0] (aligned with topic "T1").
     async def _fake_embed(texts, *a, **k):
         return [[1.0, 0.0] for _ in texts]
-    monkeypatch.setattr(ollama_service, "embed_batch", _fake_embed)
+    monkeypatch.setattr(llm_runtime, "embed_batch", _fake_embed)
 
     # Capture enqueued research jobs instead of running the worker.
     jobs = []

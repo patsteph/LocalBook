@@ -533,7 +533,7 @@ def test_router_phrasing_boost_overrides_weak_content(monkeypatch):
     out = asyncio.run(ic.classify_infographic_lane(
         content_summary="A comparison of runtime retrieval vs compile-time RAG.",
         request_text="make a poster on RAG architecture",
-        ollama_service=_FakeOllama("L2", 0.7),   # content-shape wants L2 but not certain
+        llm_runtime=_FakeOllama("L2", 0.7),   # content-shape wants L2 but not certain
     ))
     assert out["lane"] == "L4"          # 'poster' wins
     assert out["stage"].endswith("+kw")
@@ -545,7 +545,7 @@ def test_router_confident_content_beats_phrasing(monkeypatch):
     out = asyncio.run(ic.classify_infographic_lane(
         content_summary="Runtime vs compile-time RAG comparison.",
         request_text="make a poster on RAG architecture",
-        ollama_service=_FakeOllama("L2", 0.95),  # >0.9 → Boost loses
+        llm_runtime=_FakeOllama("L2", 0.95),  # >0.9 → Boost loses
     ))
     assert out["lane"] == "L2"
     assert "+kw" not in out["stage"]
@@ -555,7 +555,7 @@ def test_router_phrasing_reinforces_agreement(monkeypatch):
     monkeypatch.setattr(ic, "_record_misroute", lambda *a, **k: None)
     out = asyncio.run(ic.classify_infographic_lane(
         content_summary="whatever", request_text="a decorative poster",
-        ollama_service=_FakeOllama("L4", 0.6),
+        llm_runtime=_FakeOllama("L4", 0.6),
     ))
     assert out["lane"] == "L4" and out["confidence"] >= 0.9
 
@@ -565,7 +565,7 @@ def test_router_vague_request_uses_content_shape(monkeypatch):
     out = asyncio.run(ic.classify_infographic_lane(
         content_summary="token usage growing across 10 iterations",
         request_text="make an infographic",
-        ollama_service=_FakeOllama("L1", 0.8),
+        llm_runtime=_FakeOllama("L1", 0.8),
     ))
     assert out["lane"] == "L1" and "+kw" not in out["stage"]
 
@@ -577,7 +577,7 @@ def test_router_growth_over_sequence_routes_L1(monkeypatch):
     out = asyncio.run(ic.classify_infographic_lane(
         content_summary="agent loop token usage vs a single-shot chatbot answer",
         request_text="show how cumulative token usage grows over a 10-step loop vs single-shot",
-        ollama_service=_FakeOllama("L2", 0.7),
+        llm_runtime=_FakeOllama("L2", 0.7),
     ))
     assert out["lane"] == "L1" and out["stage"].endswith("+kw")
 
@@ -589,7 +589,7 @@ def test_router_before_after_facts_stays_L2(monkeypatch):
     out = asyncio.run(ic.classify_infographic_lane(
         content_summary="messy raw chunks vs a clean facts table: Revenue $10.2B, Net Income $4.5B",
         request_text="before and after: raw chunks vs a clean structured facts table",
-        ollama_service=_FakeOllama("L2", 0.7),
+        llm_runtime=_FakeOllama("L2", 0.7),
     ))
     assert out["lane"] == "L2"
 
@@ -633,7 +633,7 @@ def test_router_card_badge_layout_routes_L2(monkeypatch):
     out = asyncio.run(ic.classify_infographic_lane(
         content_summary="an agent loop that plans, retrieves, then synthesizes",
         request_text="show it as three cards with state badges and a feedback loop",
-        ollama_service=_FakeOllama("L3", 0.9),
+        llm_runtime=_FakeOllama("L3", 0.9),
     ))
     assert out["lane"] == "L2" and out["stage"].endswith("+kw")
 

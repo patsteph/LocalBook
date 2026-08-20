@@ -146,7 +146,7 @@ Generate ONE helpful follow-up question or suggestion. Examples:
 
 Keep it conversational and short (1-2 sentences). Return just the message, no JSON."""
 
-            response = await ollama_service.generate(
+            response = await llm_runtime.generate(
                 prompt=prompt,
                 system=f"You are {self.name}. Personality: {self.personality}",
                 model=settings.ollama_fast_model,
@@ -192,7 +192,7 @@ Respond with JSON only:
 }}"""
 
         try:
-            response = await ollama_service.generate(
+            response = await llm_runtime.generate(
                 prompt=prompt,
                 system=f"You are {self.name}. Analyze research content and suggest configuration. Respond with valid JSON only.",
                 model=settings.ollama_fast_model,

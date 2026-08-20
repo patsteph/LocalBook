@@ -149,12 +149,12 @@ def capabilities_for(model_name: str) -> ModelCapabilities:
     # bigger Macs correctly show more). Native ceiling is kept separately for context.
     native_ctx = getattr(info, "context_window", 4096) if info else 4096
     ctx = native_ctx
-    # Ollama models run through ollama_service, which caps num_ctx at the RAM-scaled
+    # Ollama models run through llm_runtime, which caps num_ctx at the RAM-scaled
     # effective_num_ctx_cap — so THAT is the true deployed window. (llama_server sidecar
     # models set their own window at launch, so keep their native value there.)
     if provider_str == "ollama":
         try:
-            from services.ollama_service import effective_num_ctx_cap
+            from services.llm_runtime import effective_num_ctx_cap
             _eff = effective_num_ctx_cap(model_name)
             if _eff:
                 ctx = _eff

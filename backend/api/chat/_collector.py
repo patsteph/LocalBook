@@ -276,7 +276,7 @@ async def _stream_collector(chat_query: ChatQuery, injected_action: Optional[Dic
     import re as _re
     from storage.source_store import source_store
     from agents.collector import get_collector, CollectionMode, ApprovalMode
-    from services.ollama_service import ollama_service
+    from services.llm_runtime import llm_runtime
     from services.intent_classifier import classify_intent
 
     collector_agent = get_collector(chat_query.notebook_id)
@@ -1022,7 +1022,7 @@ async def _stream_collector(chat_query: ChatQuery, injected_action: Optional[Dic
                 )
                 synthesized = ""
                 try:
-                    resp = await ollama_service.generate(
+                    resp = await llm_runtime.generate(
                         prompt=synth_prompt,
                         model=getattr(settings, "ollama_fast_model", None) or settings.ollama_model,
                         temperature=0.3,

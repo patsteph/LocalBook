@@ -648,11 +648,11 @@ class VisualGenerator:
     
     async def _call_llm(self, system_prompt: str, content: str) -> Dict[str, Any]:
         """Call LLM with JSON output."""
-        # D4 (2026-06-23): routed through ollama_service for token metrics +
+        # D4 (2026-06-23): routed through llm_runtime for token metrics +
         # model options + lane scheduling. Behavior preserved (main model, JSON
         # mode, temp 0.7, num_predict 2000, same 6000-char content budget).
-        from services.ollama_service import ollama_service
-        result = await ollama_service.generate(
+        from services.llm_runtime import llm_runtime
+        result = await llm_runtime.generate(
             prompt=f"{system_prompt}\n\nCONTENT TO VISUALIZE:\n{content[:6000]}",
             model=self.model,
             temperature=0.7,

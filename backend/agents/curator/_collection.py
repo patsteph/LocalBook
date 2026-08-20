@@ -53,11 +53,11 @@ Return a JSON object with:
 Return ONLY valid JSON, no explanation."""
 
         try:
-            from services.ollama_service import ollama_service
+            from services.llm_runtime import llm_runtime
             from config import settings
             import json
 
-            response = await ollama_service.generate(
+            response = await llm_runtime.generate(
                 prompt=prompt,
                 system="You extract research themes from notes and suggest collector search keywords. Return only valid JSON.",
                 model=settings.ollama_fast_model,
@@ -240,7 +240,7 @@ Return ONLY valid JSON, no explanation."""
         Returns:
             List of 3-5 adjacent/tangential search queries
         """
-        from services.ollama_service import ollama_service
+        from services.llm_runtime import llm_runtime
         from config import settings
         
         subject = config.subject.strip() if hasattr(config, 'subject') else ""
@@ -310,7 +310,7 @@ Respond with ONLY a JSON array of strings, no other text:
         try:
             import asyncio as _asyncio
             response = await _asyncio.wait_for(
-                ollama_service.generate(
+                llm_runtime.generate(
                     prompt=prompt,
                     system="You are a creative research librarian specializing in cross-disciplinary discovery. Respond only with a valid JSON array of search query strings.",
                     model=settings.ollama_model,
@@ -493,7 +493,7 @@ Respond with ONLY a JSON array of strings, no other text:
 
             import asyncio as _asyncio
             response = await _asyncio.wait_for(
-                ollama_service.generate(
+                llm_runtime.generate(
                     prompt=prompt,
                     system="You are a research librarian. Respond only with a valid JSON array of search query strings.",
                     model=settings.ollama_model,  # Main model — this is the strategic brain

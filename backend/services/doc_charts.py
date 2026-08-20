@@ -88,7 +88,7 @@ async def compute_chart_fences(
     Returns `[]` on ANY failure so the caller can fall back to the LLM-JSON path. Never raises."""
     try:
         from config import settings
-        from services.ollama_service import ollama_service
+        from services.llm_runtime import llm_runtime
         from services import py_compute
 
         instructions = (f"{chart_brief}\n\n" if chart_brief else "") + _INSTRUCTIONS.format(n=n_charts)
@@ -100,9 +100,9 @@ async def compute_chart_fences(
             "Python:"
         )
 
-        # ollama_service routes to in-process MLX when enabled and falls back to Ollama — the
+        # llm_runtime routes to in-process MLX when enabled and falls back to Ollama — the
         # dual-engine seam, per the MLX-first hedge. No new Ollama coupling.
-        result = await ollama_service.generate(
+        result = await llm_runtime.generate(
             prompt=prompt,
             system=_SYSTEM,
             model=settings.ollama_model,

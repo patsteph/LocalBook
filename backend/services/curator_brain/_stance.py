@@ -283,7 +283,7 @@ class StanceMixin:
         from config import settings as _settings
         try:
             from utils.json_repair import robust_json_parse
-            result = await ollama_service.generate(
+            result = await llm_runtime.generate(
                 prompt=prompt,
                 system="You output only valid JSON for stance classification.",
                 model=_settings.ollama_fast_model,

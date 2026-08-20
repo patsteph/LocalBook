@@ -348,11 +348,11 @@ RULES:
 - Return ONLY the JSON, no other text"""
 
     try:
-        from services.ollama_service import ollama_service
-        # D4 (2026-06-23): routed through ollama_service for token metrics +
+        from services.llm_runtime import llm_runtime
+        # D4 (2026-06-23): routed through llm_runtime for token metrics +
         # model options + lane scheduling. Native JSON mode (format="json") since
         # the prompt demands a JSON object.
-        _resp = await ollama_service.generate(
+        _resp = await llm_runtime.generate(
             prompt=extraction_prompt,
             model=settings.ollama_fast_model,
             temperature=0,

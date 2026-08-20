@@ -18,7 +18,7 @@ import re
 from typing import Any, Dict, List, Optional
 
 from config import settings
-from services.ollama_service import ollama_service
+from services.llm_runtime import llm_runtime
 from storage import tabular_store
 
 logger = logging.getLogger(__name__)
@@ -480,7 +480,7 @@ async def _gen_sql(prompt: str, model: str, timeout: float,
     call)."""
     extra = {"keep_alive": keep_alive} if keep_alive else {}
     try:
-        result = await ollama_service.generate(
+        result = await llm_runtime.generate(
             prompt=prompt, model=model, temperature=0.1, num_predict=400,
             think=False, timeout=timeout, **extra,
         )

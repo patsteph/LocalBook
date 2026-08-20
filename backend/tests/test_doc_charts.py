@@ -14,7 +14,7 @@ from services import doc_charts as dc
 
 
 class _FakeOllama:
-    """Stands in for ollama_service.generate — returns canned model output."""
+    """Stands in for llm_runtime.generate — returns canned model output."""
 
     def __init__(self, response):
         self._response = response
@@ -29,8 +29,8 @@ class _FakeOllama:
 def patch_model(monkeypatch):
     def _apply(response):
         fake = _FakeOllama(response)
-        import services.ollama_service as os_mod
-        monkeypatch.setattr(os_mod, "ollama_service", fake)
+        import services.llm_runtime as os_mod
+        monkeypatch.setattr(os_mod, "llm_runtime", fake)
         return fake
 
     return _apply

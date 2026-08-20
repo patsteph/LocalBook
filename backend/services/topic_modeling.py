@@ -557,7 +557,7 @@ Theme name:"""
 
         try:
             # NOTE: this runs inside `_enhance_names_background`, which spins its
-            # OWN event loop (`asyncio.new_event_loop()` above). ollama_service's
+            # OWN event loop (`asyncio.new_event_loop()` above). llm_runtime's
             # priority lane / clearance Event bind to the main loop and crash
             # cross-loop ("bound to a different event loop"), so this one caller
             # stays on loop-agnostic raw httpx. (D4 exception, documented.)

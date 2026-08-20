@@ -176,7 +176,7 @@ async def _warm_text_model(model_name: str, role: str = "main", display_name: st
     Used for any text-completion model — `role` only affects the check name
     and log messages; the warmup payload is identical across roles to keep
     cross-role comparisons fair. `model_name` is the ROLE name used for routing
-    (ollama_service maps it to MLX when that role's engine is mlx); `display_name`
+    (llm_runtime maps it to MLX when that role's engine is mlx); `display_name`
     (when given) is what the message shows, so the label matches the engine that
     actually runs instead of always citing the Ollama name.
     """
@@ -187,10 +187,10 @@ async def _warm_text_model(model_name: str, role: str = "main", display_name: st
         return PreflightCheck(name=check_name, status="warn", message=f"No {role} model configured")
     try:
         import asyncio as _asyncio
-        from services.ollama_service import ollama_service
+        from services.llm_runtime import llm_runtime
         t0 = _time.time()
         resp = await _asyncio.wait_for(
-            ollama_service.generate(
+            llm_runtime.generate(
                 prompt="ping",
                 model=model_name,
                 temperature=0.0,
@@ -237,7 +237,7 @@ async def _warm_vision_model(model_name: str) -> PreflightCheck:
         return PreflightCheck(name=check_name, status="warn", message="No vision model configured")
     try:
         import asyncio as _asyncio
-        from services.ollama_service import ollama_service
+        from services.llm_runtime import llm_runtime
         from evaluator.model_registry import model_registry as _registry
         # 1×1 white PNG via PIL — already a project dep.
         try:
@@ -256,7 +256,7 @@ async def _warm_vision_model(model_name: str) -> PreflightCheck:
         api_style = info.vision_api_style if info else "generate"
         t0 = _time.time()
         resp = await _asyncio.wait_for(
-            ollama_service.vision_describe(
+            llm_runtime.vision_describe(
                 image_b64=tiny_png,
                 prompt="ok",
                 model=model_name,
@@ -350,7 +350,7 @@ async def run_preflight(settings_obj) -> PreflightReport:
     )
 
     # Engine + DISPLAY model per role (Wave 9.6). The *_model vars above stay the Ollama role
-    # names so warmup ROUTING works (ollama_service maps them to MLX internally); the checks
+    # names so warmup ROUTING works (llm_runtime maps them to MLX internally); the checks
     # below report the engine-aware id so preflight matches Providers-used on an MLX run.
     def _role_engine_disp(engine_attr: str, mlx_attr: str, ollama_name: str):
         eng = getattr(settings_obj, engine_attr, "ollama") or "ollama"

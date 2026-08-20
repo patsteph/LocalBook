@@ -124,7 +124,7 @@ def _render_text_png(text: str, width: int = 480, height: int = 360) -> str | No
 async def run(notebook_id: str, config: dict, combo_name: str, hw_fingerprint: str) -> list[EvalResult]:
     """Run the per-mode coverage suite. Returns one EvalResult per mode."""
     from config import settings
-    from services.ollama_service import ollama_service
+    from services.llm_runtime import llm_runtime
     from services.vision_prompts import MODE_PROMPTS
     from evaluator.model_registry import model_registry
 
@@ -179,7 +179,7 @@ async def run(notebook_id: str, config: dict, combo_name: str, hw_fingerprint: s
 
         try:
             start = time.time()
-            output = await ollama_service.vision_describe(
+            output = await llm_runtime.vision_describe(
                 image_b64=b64,
                 prompt=prompt,
                 model=vision_model,

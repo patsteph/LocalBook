@@ -84,7 +84,7 @@ def test_layout_topics_and_threads():
 
 def test_assign_and_persist_stamps_topic_ids(monkeypatch):
     from storage import canvas_topics_store as ts
-    from services.ollama_service import ollama_service
+    from services.llm_runtime import llm_runtime
 
     store: list = []
     monkeypatch.setattr(ts, "list_topics", lambda nb: list(store))
@@ -94,7 +94,7 @@ def test_assign_and_persist_stamps_topic_ids(monkeypatch):
     async def _fake_embed(texts):
         # node 0,1 similar (a topic); node 2 distinct (orphan)
         return [[1.0, 0.0], [0.98, 0.02], [0.0, 1.0]]
-    monkeypatch.setattr(ollama_service, "embed_batch", _fake_embed)
+    monkeypatch.setattr(llm_runtime, "embed_batch", _fake_embed)
 
     async def _fake_title(titles):
         return ("Synth Topic", "one line")

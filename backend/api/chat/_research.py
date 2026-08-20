@@ -22,7 +22,7 @@ async def _stream_research(chat_query: ChatQuery, injected_action: Optional[Dict
     Results are streamed as a narrative summary followed by a structured
     'research_results' event so the frontend can render approval cards.
     """
-    from services.ollama_service import ollama_service
+    from services.llm_runtime import llm_runtime
     from services.intent_classifier import classify_intent
     from services.research_engine import research_engine, DeepDiveFilters
 

@@ -308,7 +308,7 @@ Respond ONLY with a JSON array: ["query1", "query2", ...]"""
         try:
             import asyncio as _asyncio
             response = await _asyncio.wait_for(
-                ollama_service.generate(
+                llm_runtime.generate(
                     prompt=prompt,
                     system="You are a research assistant. Respond only with a JSON array.",
                     model=settings.ollama_fast_model,

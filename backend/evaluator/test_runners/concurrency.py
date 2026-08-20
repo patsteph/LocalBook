@@ -9,7 +9,7 @@ logger = logging.getLogger(__name__)
 
 async def run(notebook_id: str, config: dict, combo_name: str, hw_fingerprint: str) -> list[EvalResult]:
     """Execute multiple identical requests concurrently and measure processing efficiency."""
-    from services.ollama_service import ollama_service
+    from services.llm_runtime import llm_runtime
     from config import settings
     
     main_model = getattr(settings, 'ollama_model', 'gemma4:e4b')
@@ -29,7 +29,7 @@ async def run(notebook_id: str, config: dict, combo_name: str, hw_fingerprint: s
     
     # Pre-warm model to ensure cold-start doesn't skew concurrency math
     try:
-        await ollama_service.generate(prompt="hi", model=main_model, num_predict=1)
+        await llm_runtime.generate(prompt="hi", model=main_model, num_predict=1)
     except Exception as _e:
         logger.debug(f"[concurrency] {type(_e).__name__}: {_e}")
 
@@ -41,7 +41,7 @@ async def run(notebook_id: str, config: dict, combo_name: str, hw_fingerprint: s
     
     for _ in range(num_queries):
         tasks.append(
-            ollama_service.generate(
+            llm_runtime.generate(
                 prompt=prompt,
                 model=main_model,
                 temperature=0.4,

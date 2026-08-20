@@ -25,7 +25,7 @@ import time
 from dataclasses import dataclass
 from typing import Optional
 
-from services.ollama_service import ollama_service
+from services.llm_runtime import llm_runtime
 from services.visual_capability import VisualCapability, get_capability
 from services.visual_idioms import (
     CATEGORIES,
@@ -311,7 +311,7 @@ class SkeletonGenerator:
                            "required": _all_ph, "additionalProperties": False}
         except Exception as _se:
             logger.debug(f"[visual_freeform] slotfill schema build skipped: {_se}")
-        result = await ollama_service.generate(
+        result = await llm_runtime.generate(
             prompt=(
                 f"SOURCE CONTENT:\n{content}\n\n"
                 f"Already populated (do NOT override):\n"

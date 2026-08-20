@@ -48,7 +48,7 @@ def load_embedding_model():
 def _mlx_embed_sync_or_none(texts: List[str]) -> Optional[List[List[float]]]:
     """When embed_engine==mlx, embed via the in-process MLX engine synchronously (same
     arctic model + 1024 dim → no re-index). Returns None (→ Ollama fallback) on flag-off,
-    unavailable engine, shape mismatch, or ANY error. Mirrors ollama_service._mlx_embed_or_none
+    unavailable engine, shape mismatch, or ANY error. Mirrors llm_runtime._mlx_embed_or_none
     for the sync `requests`-based paths so query and doc encoders stay consistent."""
     if getattr(settings, "embed_engine", "ollama") != "mlx":
         return None
@@ -179,8 +179,8 @@ def encode(texts: Union[str, List[str]]) -> np.ndarray:
 
 async def _get_ollama_embedding(text: str) -> List[float]:
     """Get embedding from Ollama asynchronously (via the canonical service)."""
-    from services.ollama_service import ollama_service
-    data = await ollama_service.embed(text, timeout=60.0)
+    from services.llm_runtime import llm_runtime
+    data = await llm_runtime.embed(text, timeout=60.0)
     embs = data.get("embeddings") or []
     if embs:
         return embs[0]
@@ -192,7 +192,7 @@ async def _get_ollama_embeddings_batch_async(texts: List[str], max_concurrent: i
 
     P0a (2026-06-26): replaced the per-chunk fan-out (one HTTP call per chunk →
     thousands per big ingest, which monopolised Ollama and froze the loop) with one
-    batched ``/api/embed`` call per sub-batch via ``ollama_service.embed_batch``. We
+    batched ``/api/embed`` call per sub-batch via ``llm_runtime.embed_batch``. We
     still ``await_background_clearance()`` between sub-batches so a bulk/background
     ingest yields to any active FOREGROUND op (deadlock-proof: a no-op when this runs
     inside a foreground task tree, e.g. a chat's own embed). ``max_concurrent`` is
@@ -200,7 +200,7 @@ async def _get_ollama_embeddings_batch_async(texts: List[str], max_concurrent: i
     """
     if not texts:
         return []
-    from services.ollama_service import ollama_service
+    from services.llm_runtime import llm_runtime
     from services.memory_steward import await_background_clearance
 
     zero = [0.0] * settings.embedding_dim
@@ -209,7 +209,7 @@ async def _get_ollama_embeddings_batch_async(texts: List[str], max_concurrent: i
     for start in range(0, len(texts), batch):
         await await_background_clearance()
         sub = texts[start:start + batch]
-        embs = await ollama_service.embed_batch(sub, timeout=60.0, max_batch=batch)
+        embs = await llm_runtime.embed_batch(sub, timeout=60.0, max_batch=batch)
         if len(embs) == len(sub):
             good = [e if (e and len(e) == settings.embedding_dim) else zero for e in embs]
             results.extend(good)

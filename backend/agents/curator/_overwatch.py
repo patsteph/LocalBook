@@ -463,7 +463,7 @@ class CuratorOverwatchMixin:
             )
 
             try:
-                result = await ollama_service.generate(
+                result = await llm_runtime.generate(
                     prompt=prompt,
                     system=f"You are {self.name}, drafting pre-emptive Studio content.",
                     model=settings.ollama_model,  # main model — quality matters here

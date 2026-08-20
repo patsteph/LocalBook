@@ -260,7 +260,7 @@ class ReflectionsMixin:
                 f"Write 1-2 sentences only."
             )
 
-            response = await ollama_service.generate(
+            response = await llm_runtime.generate(
                 prompt=prompt,
                 model=settings.ollama_fast_model,
                 temperature=0.5,

@@ -1,6 +1,6 @@
 # Slim dependency set for the CI unit tier (backend/tests/) — 2.2.0 Wave 1.
 # Intentionally minimal: just enough to IMPORT the modules the CI-pure tests touch
-# (evaluator.*, services.llm_provider / ollama_service / rag_embeddings / entity_extractor,
+# (evaluator.*, services.llm_provider / llm_runtime / rag_embeddings / entity_extractor,
 # and the enrichment_worker/loop_monitor import surface). Deliberately EXCLUDES the
 # Apple-Silicon-only stack (mlx-lm, mlx-vlm, kokoro-mlx, pyobjc) which cannot install on
 # the ubuntu CI runner, and the heavy ML/agent stack (torch, lancedb, langgraph) which the

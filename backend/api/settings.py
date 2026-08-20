@@ -409,7 +409,7 @@ async def get_ollama_models():
                         # a 16GB Mac, so a native-ctx KV estimate would falsely say
                         # "over" for every large-window model.
                         try:
-                            from services.ollama_service import effective_num_ctx_cap
+                            from services.llm_runtime import effective_num_ctx_cap
                             _deployed_ctx = effective_num_ctx_cap(name) or 8192
                         except Exception:
                             _deployed_ctx = 8192

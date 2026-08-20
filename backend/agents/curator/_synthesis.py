@@ -66,7 +66,7 @@ Provide a synthesis that:
 
 Be concise and cite which notebook each insight comes from."""
 
-            response = await ollama_service.generate(
+            response = await llm_runtime.generate(
                 prompt=prompt,
                 system=f"You are {self.name}, a research curator. Personality: {self.personality}",
                 model=settings.ollama_model,
@@ -426,7 +426,7 @@ Rules:
             prompt = f"Conversation so far:{history_text}\n\nUSER: {message}"
         
         try:
-            response = await ollama_service.generate(
+            response = await llm_runtime.generate(
                 prompt=prompt,
                 system=system_prompt,
                 model=settings.ollama_model,

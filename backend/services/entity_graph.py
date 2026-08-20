@@ -220,14 +220,14 @@ Output as JSON array. Example:
 JSON (only output relationships you find, empty array if none):"""
 
         try:
-            from services.ollama_service import ollama_service
+            from services.llm_runtime import llm_runtime
             # WS1 (2026-06-23): yield to an active foreground op (chat/visual) so
             # this ingest-time relationship extraction can't compete with the
             # user's gemma query for GPU/RAM. Passes through (no-op) inside a
             # foreground task tree; deadlock-proof / never raises.
             from services.memory_steward import await_background_clearance
             await await_background_clearance()
-            _resp = await ollama_service.generate(
+            _resp = await llm_runtime.generate(
                 prompt=prompt,
                 model=settings.ollama_fast_model,
                 num_predict=300,

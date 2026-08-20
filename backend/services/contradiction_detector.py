@@ -68,7 +68,7 @@ def _remember(report: "ContradictionReport") -> None:
 class ContradictionDetector:
     """Service for detecting contradictions in notebook sources.
 
-    All LLM/embedding calls route through the canonical `ollama_service`
+    All LLM/embedding calls route through the canonical `llm_runtime`
     (priority lane + token tracking + configured models) — no hardcoded URL
     or model. Claim extraction + contradiction checks use the fast model.
     """
@@ -92,13 +92,13 @@ Example output:
 If no clear claims, return: []"""
 
         try:
-            from services.ollama_service import ollama_service
+            from services.llm_runtime import llm_runtime
             from config import settings
             # NB: no format="json" here — this prompt asks for a bare JSON
             # ARRAY, but Ollama's JSON mode forces an OBJECT, which makes phi4
             # jam the array into a key ({"[{...}]": false}). robust_json_parse
             # extracts the [...] from plain output reliably.
-            _resp = await ollama_service.generate(
+            _resp = await llm_runtime.generate(
                 prompt=prompt,
                 model=settings.ollama_fast_model,
                 temperature=0.1,
@@ -159,9 +159,9 @@ If they do NOT contradict (they agree, are unrelated, or compatible), respond:
 {{"contradicts": false}}"""
 
         try:
-            from services.ollama_service import ollama_service
+            from services.llm_runtime import llm_runtime
             from config import settings
-            _resp = await ollama_service.generate(
+            _resp = await llm_runtime.generate(
                 prompt=prompt,
                 model=settings.ollama_fast_model,
                 temperature=0.1,
@@ -215,13 +215,13 @@ If they do NOT contradict (they agree, are unrelated, or compatible), respond:
     
     async def _get_embeddings(self, texts: List[str]) -> List[List[float]]:
         """Get embeddings for texts using Ollama (via the canonical service)."""
-        from services.ollama_service import ollama_service
+        from services.llm_runtime import llm_runtime
         from config import settings
 
         embeddings = []
         for text in texts:
             try:
-                data = await ollama_service.embed(text[:1000])
+                data = await llm_runtime.embed(text[:1000])
                 if data.get("embeddings"):
                     embeddings.append(data["embeddings"][0])
                 elif data.get("embedding"):

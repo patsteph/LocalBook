@@ -26,14 +26,14 @@ async def _embed(text: str, model: str) -> list[float]:
     model on its backend, callers should skip the test via capabilities.
 
     Wave 9.6: when MLX embeddings are adopted (embed_engine==mlx), embed through the app's
-    real seam (`ollama_service.embed`, which dispatches to the in-process MLX arctic engine
+    real seam (`llm_runtime.embed`, which dispatches to the in-process MLX arctic engine
     with an Ollama fallback) so the Evaluator measures exactly what RAG runs — not Ollama.
     """
     from config import settings
     if getattr(settings, "embed_engine", "ollama") == "mlx":
         try:
-            from services.ollama_service import ollama_service
-            res = await ollama_service.embed(text)
+            from services.llm_runtime import llm_runtime
+            res = await llm_runtime.embed(text)
             embs = (res or {}).get("embeddings") or []
             return embs[0] if embs else []
         except Exception as e:

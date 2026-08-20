@@ -529,7 +529,7 @@ async def generate_chunk_questions(chunks: List[str]) -> List[str]:
     if not chunks:
         return []
 
-    from services.ollama_service import ollama_service
+    from services.llm_runtime import llm_runtime
 
     results: List[str] = [""] * len(chunks)
     eligible = min(len(chunks), _HYDE_MAX_CHUNKS)
@@ -557,7 +557,7 @@ async def generate_chunk_questions(chunks: List[str]) -> List[str]:
             from services.memory_steward import await_idle
             await await_idle()
             try:
-                _resp = await ollama_service.generate(
+                _resp = await llm_runtime.generate(
                     prompt=prompt,
                     model=settings.ollama_fast_model,
                     temperature=0.3,
@@ -663,8 +663,8 @@ Content:
 Summary:"""
 
     try:
-        from services.ollama_service import ollama_service
-        _resp = await ollama_service.generate(
+        from services.llm_runtime import llm_runtime
+        _resp = await llm_runtime.generate(
             prompt=prompt,
             model=settings.ollama_fast_model,
             temperature=0.3,

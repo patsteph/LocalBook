@@ -110,8 +110,8 @@ Output as a JSON array of strings. Example:
 JSON array:"""
 
         try:
-            from services.ollama_service import ollama_service
-            _resp = await ollama_service.generate(
+            from services.llm_runtime import llm_runtime
+            _resp = await llm_runtime.generate(
                 prompt=prompt,
                 model=settings.ollama_fast_model,
                 num_predict=200,

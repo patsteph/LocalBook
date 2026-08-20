@@ -174,7 +174,7 @@ Rules:
 async def classify_intent(
     message: str,
     agent_type: str,
-    ollama_service=None,
+    llm_runtime=None,
 ) -> Dict[str, Any]:
     """
     Classify user intent using the local LLM.
@@ -182,14 +182,14 @@ async def classify_intent(
     Args:
         message: The user's message
         agent_type: 'curator' or 'collector'
-        ollama_service: LLM service instance (defaults to the canonical ollama_service)
+        llm_runtime: LLM service instance (defaults to the canonical llm_runtime)
 
     Returns:
         Dict with 'intent', 'params', and 'confidence' keys
     """
-    if ollama_service is None:
-        from services.ollama_service import ollama_service as _default
-        ollama_service = _default
+    if llm_runtime is None:
+        from services.llm_runtime import llm_runtime as _default
+        llm_runtime = _default
 
     if agent_type == "curator":
         intents = CURATOR_INTENTS
@@ -241,7 +241,7 @@ async def classify_intent(
         # → empty response → fallback intent → misrouted @curator/@collector commands
         # (e.g. "Morning brief" → cross_notebook_search). phi4-mini is fast, always
         # warm, and is the model prescribed for intent classification.
-        result = await ollama_service.generate(
+        result = await llm_runtime.generate(
             prompt=prompt,
             system=system,
             model=settings.ollama_fast_model,
@@ -454,14 +454,14 @@ def _normalize_lane(lane: Optional[str]) -> str:
 
 
 async def _run_lane_stage(content_summary: str, request_text: str, model: str,
-                          ollama_service) -> Dict[str, Any]:
+                          llm_runtime) -> Dict[str, Any]:
     lane_lines = [f'- {i["id"]}: {i["desc"]}' for i in INFOGRAPHIC_LANE_INTENTS]
     system = _INFOGRAPHIC_SYSTEM.format(lane_list="\n".join(lane_lines))
     prompt = (
         f'Request (may be vague): "{request_text}"\n\n'
         f"Content to visualize (this is the real signal):\n{content_summary[:2500]}"
     )
-    result = await ollama_service.generate(
+    result = await llm_runtime.generate(
         prompt=prompt, system=system, model=model,
         temperature=0.0, format="json", timeout=15.0,
     )
@@ -479,7 +479,7 @@ async def _run_lane_stage(content_summary: str, request_text: str, model: str,
 async def classify_infographic_lane(
     content_summary: str,
     request_text: str = "",
-    ollama_service=None,
+    llm_runtime=None,
 ) -> Dict[str, Any]:
     """Pick a visual lane for the given content (plan §3.3).
 
@@ -487,13 +487,13 @@ async def classify_infographic_lane(
     main model (Stage B). Returns {'lane', 'confidence', 'raw_lane', 'stage'}.
     Never raises — falls open to the volume lane (L2).
     """
-    if ollama_service is None:
-        from services.ollama_service import ollama_service as _default
-        ollama_service = _default
+    if llm_runtime is None:
+        from services.llm_runtime import llm_runtime as _default
+        llm_runtime = _default
 
     try:
         stage_a = await _run_lane_stage(
-            content_summary, request_text, settings.ollama_fast_model, ollama_service
+            content_summary, request_text, settings.ollama_fast_model, llm_runtime
         )
         raw_lane, conf, stage = stage_a["lane"], stage_a["confidence"], "A"
 
@@ -501,7 +501,7 @@ async def classify_infographic_lane(
         if raw_lane is None or conf < _INFOGRAPHIC_STAGE_B_THRESHOLD:
             try:
                 stage_b = await _run_lane_stage(
-                    content_summary, request_text, settings.ollama_model, ollama_service
+                    content_summary, request_text, settings.ollama_model, llm_runtime
                 )
                 if stage_b["lane"] is not None:
                     raw_lane, conf, stage = stage_b["lane"], stage_b["confidence"], "B"

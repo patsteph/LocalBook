@@ -17,7 +17,7 @@ import re
 from dataclasses import dataclass
 from typing import List, Optional
 
-from services.ollama_service import ollama_service
+from services.llm_runtime import llm_runtime
 from services.visual_skeletons import HERO_IDIOMS, ALL_IDIOMS as _SKELETON_IDIOMS
 
 logger = logging.getLogger(__name__)
@@ -306,7 +306,7 @@ Return ONLY valid JSON:
 async def pick_category_and_meta(content: str, model: str, num_predict: int) -> Optional[dict]:
     """Stage 1: category + title + subtitle."""
     logger.info(f"[visual_freeform] stage 1 (category) model={model}")
-    result = await ollama_service.generate(
+    result = await llm_runtime.generate(
         prompt=f"SOURCE CONTENT:\n{content}\n\nClassify and return JSON only.",
         system=_build_category_pick_system(),
         model=model,
@@ -340,7 +340,7 @@ async def pick_idiom_in_category(
 ) -> Optional[str]:
     """Stage 2: idiom within category."""
     logger.info(f"[visual_freeform] stage 2 (idiom in {category}) model={model}")
-    result = await ollama_service.generate(
+    result = await llm_runtime.generate(
         prompt=f"SOURCE CONTENT:\n{content}\n\nPick the best idiom within {category} and return JSON only.",
         system=_build_idiom_pick_system(category, allow_hero_klein=allow_hero_klein),
         model=model,

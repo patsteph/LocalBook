@@ -144,8 +144,8 @@ Respond ONLY with the JSON, no other text."""
     
     async def _call_llm_for_extraction(self, prompt: str) -> Optional[Dict]:
         """Call LLM to extract memories"""
-        from services.ollama_service import ollama_service
-        _resp = await ollama_service.generate(
+        from services.llm_runtime import llm_runtime
+        _resp = await llm_runtime.generate(
             prompt=prompt,
             model=self.extraction_model,
             temperature=0.1,  # Low temperature for consistent extraction
@@ -553,8 +553,8 @@ Rules:
 - critical_context should capture details that would be hard to re-derive"""
 
         try:
-            from services.ollama_service import ollama_service
-            _resp = await ollama_service.generate(
+            from services.llm_runtime import llm_runtime
+            _resp = await llm_runtime.generate(
                 prompt=prompt,
                 model=self.extraction_model,
                 temperature=0.1,

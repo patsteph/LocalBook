@@ -326,7 +326,7 @@ class ResearchEngine:
         filters: DeepDiveFilters,
     ) -> List[ResearchResult]:
         """Use LLM to evaluate topic-specific quality criteria on each result."""
-        from services.ollama_service import ollama_service
+        from services.llm_runtime import llm_runtime
 
         qualifiers_text = "\n".join(f"- {q}" for q in filters.topic_qualifiers)
 
@@ -357,7 +357,7 @@ Respond with ONLY valid JSON:
 {{"relevance": <0-1>, "depth": <0-1>, "criteria_match": <0-1>, "reasoning": "<one sentence>"}}"""
 
             try:
-                resp = await ollama_service.generate(
+                resp = await llm_runtime.generate(
                     prompt=prompt,
                     system="You are a research quality evaluator. Respond only with JSON.",
                     temperature=0.0,

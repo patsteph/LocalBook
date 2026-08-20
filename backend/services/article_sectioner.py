@@ -73,7 +73,7 @@ async def classify_section(
 ) -> Dict[str, Any]:
     """Return: {match_existing_id, proposed_new_section, confidence, reason}.
     Defaults to all-None on failure (caller persists no section)."""
-    from services.ollama_service import ollama_service
+    from services.llm_runtime import llm_runtime
     from storage.article_section_store import article_section_store
     from config import settings
 
@@ -88,7 +88,7 @@ async def classify_section(
         f"NEW ARTICLE:\nTITLE: {title or '(no title)'}\nSUMMARY: {text[:400]}"
     )
     try:
-        result = await ollama_service.generate(
+        result = await llm_runtime.generate(
             prompt=user_prompt,
             system=_SECTIONER_SYSTEM,
             model=settings.ollama_fast_model,

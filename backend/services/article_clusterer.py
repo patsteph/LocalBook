@@ -82,7 +82,7 @@ def _avg_embedding(vectors: List[List[float]]) -> List[float]:
 async def _label_cluster(article_titles: List[str], article_summaries: List[str]) -> str:
     """phi4-mini one-liner labeling a cluster of articles by their shared theme.
     Fallback: longest common subject token or '(unlabeled)'."""
-    from services.ollama_service import ollama_service
+    from services.llm_runtime import llm_runtime
     from config import settings
 
     items = []
@@ -95,7 +95,7 @@ async def _label_cluster(article_titles: List[str], article_summaries: List[str]
         "Output ONLY the theme name — no quotes, no markdown, no prefix."
     )
     try:
-        result = await ollama_service.generate(
+        result = await llm_runtime.generate(
             prompt=user_prompt,
             system="You produce short topic labels. 5 words max. No quotes or punctuation.",
             model=settings.ollama_fast_model,

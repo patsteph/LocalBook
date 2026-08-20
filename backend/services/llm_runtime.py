@@ -22,8 +22,8 @@ httpx.AsyncClient for Ollama API calls. Provides:
 Migration guide:
   OLD:  async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.post(f"{settings.ollama_base_url}/api/generate", ...)
-  NEW:  from services.ollama_service import ollama_service
-        result = await ollama_service.generate(prompt=..., model=..., temperature=...)
+  NEW:  from services.llm_runtime import llm_runtime
+        result = await llm_runtime.generate(prompt=..., model=..., temperature=...)
 """
 import asyncio
 import heapq
@@ -198,7 +198,7 @@ def _semaphore_for_model(model: str) -> PriorityLane:
     if bucket not in _MODEL_SEMAPHORES:
         cap = _main_lane_cap() if bucket == "main" else _SEMAPHORE_CAPS[bucket]
         if bucket == "main":
-            logger.info(f"[OllamaService] gemma lane cap={cap} (memory-aware)")
+            logger.info(f"[LLMRuntime] gemma lane cap={cap} (memory-aware)")
         _MODEL_SEMAPHORES[bucket] = PriorityLane(cap)
     return _MODEL_SEMAPHORES[bucket]
 
@@ -226,13 +226,13 @@ async def model_lane(model: str, priority: int = PRIORITY_NORMAL):
 
 
 def _get_caller() -> str:
-    """Return 'file:function' of the external caller (skip ollama_service frames)."""
+    """Return 'file:function' of the external caller (skip llm_runtime frames)."""
     for frame in traceback.extract_stack():
-        if "ollama_service" not in frame.filename:
+        if "llm_runtime" not in frame.filename:
             continue
     # Walk backwards to find the first frame NOT in this file
     for frame in reversed(traceback.extract_stack()):
-        if "ollama_service" not in frame.filename and frame.name != "<module>":
+        if "llm_runtime" not in frame.filename and frame.name != "<module>":
             fname = frame.filename.rsplit("/", 1)[-1]
             return f"{fname}:{frame.name}"
     return "unknown"
@@ -264,7 +264,7 @@ def _get_model_options(model_name: str) -> dict:
 #
 # FEATURE FLAG (A/B for PB-2a/2c, droppable once 2c settles): default ON
 # (flipped 2026-06-19, after the no-op path validated + the 2c-generate callers
-# migrated onto ollama_service). KILL-SWITCH: LOCALBOOK_OLLAMA_RAG_PROFILE=0
+# migrated onto llm_runtime). KILL-SWITCH: LOCALBOOK_OLLAMA_RAG_PROFILE=0
 # reverts to the old no-overlay behavior for instant rollback. Audit: 10_plan PB-2a.
 _RAG_PROFILE_ENABLED = os.getenv("LOCALBOOK_OLLAMA_RAG_PROFILE", "1") != "0"
 
@@ -295,7 +295,7 @@ def _apply_rag_profile(
 
 
 # ── num_ctx sizing (2026-07-01) — ONE source of truth for the context window ──
-# Root fix for the "~2048 default" clog: callers through ollama_service never set
+# Root fix for the "~2048 default" clog: callers through llm_runtime never set
 # num_ctx, so Ollama fell back to its small default and truncated large prompts /
 # long JSON output (the quiz "1090-token" truncation, empty-SVG diagrams, choked
 # ingest). This mirrors llm_service's auto-size formula and is shared by both wrappers.
@@ -375,7 +375,7 @@ def clamp_num_predict(prompt_text: str, num_predict: Optional[int], num_ctx: Opt
     available = max(256, num_ctx - est_prompt_tokens - 128)  # floor + small safety margin
     if num_predict > available:
         logger.debug(
-            f"[OllamaService] clamped num_predict {num_predict}→{available} to fit num_ctx={num_ctx}"
+            f"[LLMRuntime] clamped num_predict {num_predict}→{available} to fit num_ctx={num_ctx}"
         )
         return available
     return num_predict
@@ -411,7 +411,7 @@ def _keep_alive_for(model: str):
     return "5m"
 
 
-class OllamaService:
+class LLMRuntime:
     """Shared Ollama API client with connection pooling and cross-cutting concerns.
 
     All LLM calls in the application should go through this service.
@@ -552,11 +552,11 @@ class OllamaService:
                         temperature=options.get("temperature", 0.3))
                     _record_tokens(_res)
                     _mark_model_used(use_model)
-                    logger.info(f"[OllamaService→MLX] vision generate OK model={use_model}→{_mlx_vid} "
+                    logger.info(f"[LLMRuntime→MLX] vision generate OK model={use_model}→{_mlx_vid} "
                                 f"format={format} tokens={_res.get('eval_count', '?')}")
                     return _res
                 except Exception as _mlx_ve:
-                    logger.warning(f"[OllamaService→MLX] vision generate failed (→{_mlx_vid}); "
+                    logger.warning(f"[LLMRuntime→MLX] vision generate failed (→{_mlx_vid}); "
                                    f"Ollama fallback: {_mlx_ve}")
 
         # Wave 9.2b — MLX engine route for text + STRUCTURED (dual-engine). structured_llm's
@@ -579,11 +579,11 @@ class OllamaService:
                         json_schema=json_schema)  # grammar-constrained JSON when a schema is given
                     _record_tokens(_res)
                     _mark_model_used(use_model)
-                    logger.info(f"[OllamaService→MLX] generate OK model={use_model}→{_mlx_id} "
+                    logger.info(f"[LLMRuntime→MLX] generate OK model={use_model}→{_mlx_id} "
                                 f"format={format} tokens={_res.get('eval_count', '?')}")
                     return _res
                 except Exception as _mlx_e:
-                    logger.warning(f"[OllamaService→MLX] generate failed ({use_model}→{_mlx_id}); "
+                    logger.warning(f"[LLMRuntime→MLX] generate failed ({use_model}→{_mlx_id}); "
                                    f"Ollama fallback: {_mlx_e}")
 
         client = self._get_client()
@@ -625,19 +625,19 @@ class OllamaService:
             _record_tokens(result)
             _mark_model_used(use_model)
             _elapsed = time.time() - _t0
-            logger.info(f"[OllamaService] generate OK model={use_model} provider={route.provider.value} caller={_caller} {_elapsed:.1f}s tokens={result.get('eval_count', '?')} ctx={options.get('num_ctx', 'def')}")
+            logger.info(f"[LLMRuntime] generate OK model={use_model} provider={route.provider.value} caller={_caller} {_elapsed:.1f}s tokens={result.get('eval_count', '?')} ctx={options.get('num_ctx', 'def')}")
             return result
         except httpx.TimeoutException:
             _elapsed = time.time() - _t0
-            logger.error(f"[OllamaService] generate TIMEOUT model={use_model} caller={_caller} {_elapsed:.1f}s")
+            logger.error(f"[LLMRuntime] generate TIMEOUT model={use_model} caller={_caller} {_elapsed:.1f}s")
             return {"response": ""}
         except httpx.HTTPStatusError as e:
             _elapsed = time.time() - _t0
-            logger.error(f"[OllamaService] generate HTTP {e.response.status_code} model={use_model} caller={_caller} {_elapsed:.1f}s: {e.response.text[:200]}")
+            logger.error(f"[LLMRuntime] generate HTTP {e.response.status_code} model={use_model} caller={_caller} {_elapsed:.1f}s: {e.response.text[:200]}")
             return {"response": ""}
         except Exception as e:
             _elapsed = time.time() - _t0
-            logger.error(f"[OllamaService] generate FAILED model={use_model} caller={_caller} {_elapsed:.1f}s: {e}")
+            logger.error(f"[LLMRuntime] generate FAILED model={use_model} caller={_caller} {_elapsed:.1f}s: {e}")
             return {"response": ""}
         finally:
             if sem is not None:
@@ -761,15 +761,15 @@ class OllamaService:
             _record_tokens(result)
             _mark_model_used(use_model)
             _elapsed = time.time() - _t0
-            logger.info(f"[OllamaService] chat OK model={use_model} provider={route.provider.value} caller={_caller} {_elapsed:.1f}s tokens={result.get('eval_count', '?')} ctx={options.get('num_ctx', 'def')}")
+            logger.info(f"[LLMRuntime] chat OK model={use_model} provider={route.provider.value} caller={_caller} {_elapsed:.1f}s tokens={result.get('eval_count', '?')} ctx={options.get('num_ctx', 'def')}")
             return result
         except httpx.TimeoutException:
             _elapsed = time.time() - _t0
-            logger.error(f"[OllamaService] chat TIMEOUT model={use_model} caller={_caller} {_elapsed:.1f}s")
+            logger.error(f"[LLMRuntime] chat TIMEOUT model={use_model} caller={_caller} {_elapsed:.1f}s")
             return {"message": {"content": ""}}
         except Exception as e:
             _elapsed = time.time() - _t0
-            logger.error(f"[OllamaService] chat FAILED model={use_model} caller={_caller} {_elapsed:.1f}s: {e}")
+            logger.error(f"[LLMRuntime] chat FAILED model={use_model} caller={_caller} {_elapsed:.1f}s: {e}")
             return {"message": {"content": ""}}
         finally:
             if sem is not None:
@@ -809,7 +809,7 @@ class OllamaService:
                 from services.apple_vision_ocr import recognize_text as _av_ocr
                 _txt = await _av_ocr(image_b64)
                 if _txt is not None:  # "" (no text found) still counts as success
-                    logger.info(f"[OllamaService] vision OCR via Apple Vision ({len(_txt)} chars, no model load)")
+                    logger.info(f"[LLMRuntime] vision OCR via Apple Vision ({len(_txt)} chars, no model load)")
                     return _txt
             except Exception as _e:
                 logger.debug(f"[apple-vision] fast-path skipped: {_e}")
@@ -839,10 +839,10 @@ class OllamaService:
                     image_b64, prompt, model=_mlx_vid, num_predict=num_predict or 400)
                 _mark_model_used(_mlx_vid)
                 _desc = _res.get("response", "")
-                logger.info(f"[OllamaService→MLX] vision OK model→{_mlx_vid} ({len(_desc)} chars)")
+                logger.info(f"[LLMRuntime→MLX] vision OK model→{_mlx_vid} ({len(_desc)} chars)")
                 return _desc
             except Exception as _mlx_e:
-                logger.warning(f"[OllamaService→MLX] vision failed (→{_mlx_vid}); Ollama fallback: {_mlx_e}")
+                logger.warning(f"[LLMRuntime→MLX] vision failed (→{_mlx_vid}); Ollama fallback: {_mlx_e}")
 
         profile: Dict[str, Any] = {}
         try:
@@ -891,7 +891,7 @@ class OllamaService:
                 )
                 return result.get("response") or result.get("thinking") or "" 
         except Exception as e:
-            logger.error(f"[OllamaService] vision_describe FAILED model={model}: {e}")
+            logger.error(f"[LLMRuntime] vision_describe FAILED model={model}: {e}")
             return f"Error: {str(e)}"
 
     # ── Embeddings (/api/embed) ───────────────────────────────────────
@@ -911,10 +911,10 @@ class OllamaService:
             if vecs and len(vecs) == len(texts):
                 return vecs
             logger.warning(
-                f"[OllamaService→MLX] embed shape {len(vecs) if vecs else 0}≠{len(texts)} — Ollama fallback")
+                f"[LLMRuntime→MLX] embed shape {len(vecs) if vecs else 0}≠{len(texts)} — Ollama fallback")
             return None
         except Exception as e:
-            logger.warning(f"[OllamaService→MLX] embed failed ({e}) — Ollama fallback")
+            logger.warning(f"[LLMRuntime→MLX] embed failed ({e}) — Ollama fallback")
             return None
 
     async def embed(
@@ -939,7 +939,7 @@ class OllamaService:
 
         _mlx = await self._mlx_embed_or_none([text])
         if _mlx is not None:
-            logger.info(f"[OllamaService→MLX] embed OK model={settings.mlx_embedding_model} caller={_get_caller()}")
+            logger.info(f"[LLMRuntime→MLX] embed OK model={settings.mlx_embedding_model} caller={_get_caller()}")
             return {"embeddings": _mlx}
 
         payload = {
@@ -963,11 +963,11 @@ class OllamaService:
             )
             response.raise_for_status()
             _elapsed = time.time() - _t0
-            logger.info(f"[OllamaService] embed OK model={use_model} caller={_caller} {_elapsed:.1f}s")
+            logger.info(f"[LLMRuntime] embed OK model={use_model} caller={_caller} {_elapsed:.1f}s")
             return response.json()
         except Exception as e:
             _elapsed = time.time() - _t0
-            logger.error(f"[OllamaService] embed FAILED model={use_model} caller={_caller} {_elapsed:.1f}s: {e}")
+            logger.error(f"[LLMRuntime] embed FAILED model={use_model} caller={_caller} {_elapsed:.1f}s: {e}")
             return {}
         finally:
             sem.release()
@@ -997,7 +997,7 @@ class OllamaService:
         _mlx = await self._mlx_embed_or_none(texts)
         if _mlx is not None:
             logger.info(
-                f"[OllamaService→MLX] embed_batch OK model={settings.mlx_embedding_model} n={len(texts)}")
+                f"[LLMRuntime→MLX] embed_batch OK model={settings.mlx_embedding_model} n={len(texts)}")
             return [v if (v and len(v) == settings.embedding_dim) else zero for v in _mlx]
 
         read_timeout = timeout or 120.0
@@ -1023,20 +1023,20 @@ class OllamaService:
                 embs = response.json().get("embeddings") or []
                 _elapsed = time.time() - _t0
                 logger.info(
-                    f"[OllamaService] embed_batch OK model={use_model} n={len(sub)} "
+                    f"[LLMRuntime] embed_batch OK model={use_model} n={len(sub)} "
                     f"caller={_caller} {_elapsed:.1f}s"
                 )
                 if len(embs) == len(sub):
                     out.extend(e if (e and len(e) == settings.embedding_dim) else zero for e in embs)
                 else:
                     logger.error(
-                        f"[OllamaService] embed_batch shape mismatch {len(embs)}≠{len(sub)} — zero-filling"
+                        f"[LLMRuntime] embed_batch shape mismatch {len(embs)}≠{len(sub)} — zero-filling"
                     )
                     out.extend(zero for _ in sub)
             except Exception as e:
                 _elapsed = time.time() - _t0
                 logger.error(
-                    f"[OllamaService] embed_batch FAILED model={use_model} n={len(sub)} "
+                    f"[LLMRuntime] embed_batch FAILED model={use_model} n={len(sub)} "
                     f"caller={_caller} {_elapsed:.1f}s: {e}"
                 )
                 out.extend(zero for _ in sub)
@@ -1142,7 +1142,7 @@ class OllamaService:
                             if data.get("done"):
                                 _record_tokens(data)
                                 _elapsed = time.time() - _t0
-                                logger.info(f"[OllamaService] stream OK model={use_model} provider={route.provider.value} caller={_caller} {_elapsed:.1f}s tokens={data.get('eval_count', '?')}")
+                                logger.info(f"[LLMRuntime] stream OK model={use_model} provider={route.provider.value} caller={_caller} {_elapsed:.1f}s tokens={data.get('eval_count', '?')}")
             else:
                 openai_payload = ollama_to_openai_payload(payload, is_chat=False)
                 async with client.stream(
@@ -1168,14 +1168,14 @@ class OllamaService:
                         if translated.get("done"):
                             _record_tokens(translated)
                             _elapsed = time.time() - _t0
-                            logger.info(f"[OllamaService] stream OK model={use_model} provider={route.provider.value} caller={_caller} {_elapsed:.1f}s tokens={translated.get('eval_count', '?')}")
+                            logger.info(f"[LLMRuntime] stream OK model={use_model} provider={route.provider.value} caller={_caller} {_elapsed:.1f}s tokens={translated.get('eval_count', '?')}")
         except httpx.TimeoutException:
             _elapsed = time.time() - _t0
-            logger.error(f"[OllamaService] stream TIMEOUT model={use_model} caller={_caller} {_elapsed:.1f}s")
+            logger.error(f"[LLMRuntime] stream TIMEOUT model={use_model} caller={_caller} {_elapsed:.1f}s")
             raise
         except Exception as e:
             _elapsed = time.time() - _t0
-            logger.error(f"[OllamaService] stream FAILED model={use_model} caller={_caller} {_elapsed:.1f}s: {e}")
+            logger.error(f"[LLMRuntime] stream FAILED model={use_model} caller={_caller} {_elapsed:.1f}s: {e}")
             raise
         finally:
             if sem is not None:
@@ -1207,8 +1207,8 @@ class OllamaService:
             response.raise_for_status()
             return response.json().get("models", [])
         except Exception as e:
-            logger.error(f"[OllamaService] list_models failed: {e}")
+            logger.error(f"[LLMRuntime] list_models failed: {e}")
             return []
 
 
-ollama_service = OllamaService()
+llm_runtime = LLMRuntime()

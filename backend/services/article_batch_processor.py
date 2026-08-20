@@ -105,7 +105,7 @@ async def batch_analyze_article(
     null section/summary — so downstream gracefully treats failures as
     "include but don't auto-act."
     """
-    from services.ollama_service import ollama_service, PRIORITY_BACKGROUND
+    from services.llm_runtime import llm_runtime, PRIORITY_BACKGROUND
     from config import settings
 
     body = (body_text or "")[:2500]
@@ -129,7 +129,7 @@ async def batch_analyze_article(
         # Yield to any in-progress foreground generation (see foreground_guard).
         from services.memory_steward import await_background_clearance
         await await_background_clearance()
-        result = await ollama_service.generate(
+        result = await llm_runtime.generate(
             prompt=user_prompt,
             system=_BATCH_SYSTEM,
             model=settings.ollama_fast_model,

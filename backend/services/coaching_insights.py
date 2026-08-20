@@ -84,9 +84,9 @@ class CoachingInsightGenerator:
             system_base = f"{system_base}\n\n{user_coaching_context}"
 
         try:
-            from services.ollama_service import ollama_service
+            from services.llm_runtime import llm_runtime
 
-            response = await ollama_service.generate(
+            response = await llm_runtime.generate(
                 prompt=prompt,
                 system=system_base,
                 model=settings.ollama_model,

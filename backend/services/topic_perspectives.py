@@ -101,8 +101,8 @@ async def _embed(text: str) -> List[float]:
     if not text or not text.strip():
         return []
     try:
-        from services.ollama_service import ollama_service
-        result = await ollama_service.embed(text=text[:2000])
+        from services.llm_runtime import llm_runtime
+        result = await llm_runtime.embed(text=text[:2000])
     except Exception as e:
         logger.debug(f"[topic_perspectives] embed failed: {e}")
         return []
@@ -232,7 +232,7 @@ Rules:
 
 
 async def _perspective_for_source(query: str, source: Dict[str, Any]) -> Optional[SourcePerspective]:
-    from services.ollama_service import ollama_service
+    from services.llm_runtime import llm_runtime
     from config import settings
 
     chunks = source.get("chunks") or []
@@ -245,7 +245,7 @@ async def _perspective_for_source(query: str, source: Dict[str, Any]) -> Optiona
         f"EXCERPTS:\n{excerpts}"
     )
     try:
-        result = await ollama_service.generate(
+        result = await llm_runtime.generate(
             prompt=user_prompt,
             system=_PERSPECTIVE_SYSTEM,
             model=settings.ollama_model,

@@ -367,11 +367,11 @@ RULES:
             # is no longer used here — robust_json_parse handles parsing.)
             # Stage 1: Extract content structure using FAST model for speed.
             # This runs in background after query - speed is critical.
-            # D4 (2026-06-23): routed through ollama_service (token metrics +
+            # D4 (2026-06-23): routed through llm_runtime (token metrics +
             # model options + lane scheduling). Behavior preserved - fast model,
             # num_predict 1200, temp 0, prompt-driven JSON + robust parse below.
-            from services.ollama_service import ollama_service
-            _resp = await ollama_service.generate(
+            from services.llm_runtime import llm_runtime
+            _resp = await llm_runtime.generate(
                 prompt=extraction_prompt,
                 model=settings.ollama_fast_model,
                 temperature=0,

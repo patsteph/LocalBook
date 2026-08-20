@@ -376,8 +376,8 @@ Only return the JSON array, no other text."""
     
     async def _call_llm(self, prompt: str) -> str:
         """Call the LLM via the canonical Ollama service."""
-        from services.ollama_service import ollama_service
-        _resp = await ollama_service.generate(
+        from services.llm_runtime import llm_runtime
+        _resp = await llm_runtime.generate(
             prompt=prompt,
             model=self._model,
             temperature=0.1,

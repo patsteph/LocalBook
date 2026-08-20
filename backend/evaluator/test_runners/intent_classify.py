@@ -8,7 +8,7 @@ from evaluator.models import EvalResult
 async def run(notebook_id: str, config: dict, combo_name: str, hw_fingerprint: str) -> list[EvalResult]:
     """Run intent classification tests against known expected intents."""
     from services.intent_classifier import classify_intent
-    from services.ollama_service import ollama_service
+    from services.llm_runtime import llm_runtime
     from config import settings
 
     tests = config.get("intent_classification_tests", [])

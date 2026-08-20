@@ -1,4 +1,4 @@
-"""Functional smoke test for the PB-2d / D4 httpx→ollama_service migrations.
+"""Functional smoke test for the PB-2d / D4 httpx→llm_runtime migrations.
 
 Dev artifact (not shipped) — run against a LIVE Ollama to prove migrated
 services actually work end-to-end, not just compile. Usage:
@@ -13,7 +13,7 @@ import asyncio
 
 async def _run():
     from config import settings
-    from services.ollama_service import ollama_service
+    from services.llm_runtime import llm_runtime
 
     checks = []
 
@@ -28,12 +28,12 @@ async def _run():
     DIM = settings.embedding_dim
 
     # ── core primitives ──
-    await check("ollama_service.generate(phi4)",
-                ollama_service.generate(prompt="Say hello", model=settings.ollama_fast_model,
+    await check("llm_runtime.generate(phi4)",
+                llm_runtime.generate(prompt="Say hello", model=settings.ollama_fast_model,
                                         num_predict=10, timeout=60.0),
                 lambda r: bool(r.get("response", "").strip()))
-    await check("ollama_service.embed (1024)",
-                ollama_service.embed("embedding text"),
+    await check("llm_runtime.embed (1024)",
+                llm_runtime.embed("embedding text"),
                 lambda e: len((e.get("embeddings") or [[]])[0]) == DIM)
 
     # ── migrated background-inference services ──
@@ -132,7 +132,7 @@ async def _run():
         _buf = _io.BytesIO(); _img.save(_buf, "PNG")
         _ob64 = _b64.b64encode(_buf.getvalue()).decode()
         await check("apple_vision_ocr via vision_describe(ocr_mode)",
-                    ollama_service.vision_describe(image_b64=_ob64, prompt="transcribe", ocr_mode=True),
+                    llm_runtime.vision_describe(image_b64=_ob64, prompt="transcribe", ocr_mode=True),
                     lambda v: isinstance(v, str) and "7788" in v)
     except Exception as _e:
         checks.append(("apple_vision_ocr", False, f"setup error: {_e}"))

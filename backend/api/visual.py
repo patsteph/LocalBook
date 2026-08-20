@@ -1168,13 +1168,13 @@ Return ONLY a JSON object:
 CRITICAL: Preserve the diagram type (flowchart, mindmap, etc). Only modify structure/content."""
 
     try:
-        # D4 (2026-06-23): routed through ollama_service for token metrics +
+        # D4 (2026-06-23): routed through llm_runtime for token metrics +
         # model options + lane scheduling. Behavior preserved (main model,
         # num_predict 1000, temp 0.3, regex JSON extraction — no native JSON
         # mode, matching the original prose+JSON response handling).
-        from services.ollama_service import ollama_service
+        from services.llm_runtime import llm_runtime
         from config import settings
-        _resp = await ollama_service.generate(
+        _resp = await llm_runtime.generate(
             prompt=refinement_prompt,
             model=settings.ollama_model,
             temperature=0.3,

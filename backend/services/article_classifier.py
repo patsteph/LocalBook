@@ -52,7 +52,7 @@ async def classify_article(title: str, body_text: str) -> Dict[str, Any]:
     on any error — conservative bias toward including. Better to ingest a sponsor
     than to silently drop a real article.
     """
-    from services.ollama_service import ollama_service
+    from services.llm_runtime import llm_runtime
     from config import settings
 
     body = (body_text or "")[:2000]  # phi4-mini handles 2KB fine
@@ -61,7 +61,7 @@ async def classify_article(title: str, body_text: str) -> Dict[str, Any]:
 
     user_prompt = f"TITLE: {title or '(no title)'}\n\nBODY:\n{body}"
     try:
-        result = await ollama_service.generate(
+        result = await llm_runtime.generate(
             prompt=user_prompt,
             system=_CLASSIFIER_SYSTEM,
             model=settings.ollama_fast_model,
