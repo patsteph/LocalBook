@@ -175,3 +175,54 @@ def test_engine_neutral_helpers_survived_the_excise(name):
     import services.llm_runtime as m
 
     assert hasattr(m, name)
+
+
+# ── Batching (migrated from _wave1_embed_test.py, 2026-08-20) ───────────────────
+# Its raise/zero-fill assertions duplicated the ones above verbatim — both were written the
+# same day for the same contract. What was NOT covered anywhere in pytest is the batching
+# shape, so only that came across.
+
+def test_embed_batch_makes_one_in_process_call_for_the_whole_list(monkeypatch):
+    """The old Ollama path sliced by `max_batch` to cap HTTP round-trips — the 2026-06-26
+    loop-freeze came from one request per chunk. In-process there are no round-trips to cap,
+    so slicing would only add overhead."""
+    from config import settings
+
+    calls = []
+
+    async def _fake(texts):
+        calls.append(len(texts))
+        return [[0.1] * settings.embedding_dim for _ in texts]
+
+    monkeypatch.setattr(llm_runtime, "_mlx_embed_or_none", _fake)
+    out = asyncio.run(llm_runtime.embed_batch([f"t{i}" for i in range(100)], max_batch=64))
+    assert len(out) == 100
+    assert calls == [100], f"expected one call for the whole list, got {calls}"
+
+
+def test_encode_async_sub_batches_rather_than_fanning_out_per_text(monkeypatch):
+    """`rag_embeddings.encode_async` is the ingest entry point. Its 64-item sub-batching is
+    what keeps a large ingest from issuing one embed per chunk — the original loop-freeze.
+    It yields to foreground work between sub-batches, which is why the batching stays."""
+    from config import settings
+    from services import rag_embeddings
+
+    seen = []
+
+    async def fake_embed_batch(texts, **kw):
+        seen.append(len(texts))
+        return [[0.2] * settings.embedding_dim for _ in texts]
+
+    monkeypatch.setattr(llm_runtime, "embed_batch", fake_embed_batch)
+    monkeypatch.setattr(rag_embeddings, "_use_ollama", True)
+
+    import services.memory_steward as ms
+
+    async def _noop():
+        return None
+
+    monkeypatch.setattr(ms, "await_background_clearance", _noop)
+
+    arr = asyncio.run(rag_embeddings.encode_async([f"x{i}" for i in range(150)]))
+    assert arr.shape == (150, settings.embedding_dim)
+    assert seen == [64, 64, 22], f"expected 64/64/22 sub-batches, got {seen}"

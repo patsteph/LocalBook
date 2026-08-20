@@ -62,17 +62,6 @@ class RunProfile:
 _STOP_RE = re.compile(r'^\s*stop\s+"?(.*?)"?\s*$', re.MULTILINE)
 
 
-def _parse_stops(parameters: str) -> list[str]:
-    if not parameters:
-        return []
-    seen: list[str] = []
-    for m in _STOP_RE.finditer(parameters):
-        val = m.group(1)
-        if val and val not in seen:
-            seen.append(val)
-    return seen
-
-
 def derive_run_profile(model: str, provider: str = "ollama", caps=None) -> RunProfile:
     """Derive a RunProfile by asking the engine. `caps` (a ProbedCapabilities) may
     be passed to avoid a redundant probe. Never raises — falls back to a safe
