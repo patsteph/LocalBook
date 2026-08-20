@@ -36,7 +36,7 @@ installs are unaffected.
   (`main` / `fast` / `embed`) is served in-process by MLX, mirroring the llm_service runtime decision
   (`{role}_engine == "mlx"` AND `mlx_engine.available()`). Fallback-safe: if MLX is configured but
   unavailable, calls fall back to Ollama and its model is still warmed. Also reconciles the legacy
-  `use_ollama_embeddings` flag with `embed_engine`. Net effect on an all-MLX box: Ollama no longer
+  the legacy embeddings flag with the engine selection. Net effect on an all-MLX box: Ollama no longer
   holds a redundant ~4 GB resident and the periodic memory-pressure log lines stop.
 
 ---
@@ -162,14 +162,14 @@ See [CHANGELOG.md](CHANGELOG.md) for full release history.
 | **Python** | 3.12+ required |
 | **RAM** | 16GB+ recommended (8GB minimum) |
 | **Storage** | ~20GB for models and app |
-| **Ollama** | Local LLM runtime ([ollama.ai](https://ollama.ai)) |
+| **Engine** | Apple MLX — runs in-process, no separate server to install or start |
 
 ### System Dependencies
 
 The build script installs these automatically, or install manually:
 
 ```bash
-brew install ollama ffmpeg tesseract espeak-ng python@3.12 node
+brew install ffmpeg tesseract espeak-ng python@3.12 node
 ```
 
 ---
@@ -213,13 +213,16 @@ Build takes ~15-20 minutes on first run (downloads models, installs dependencies
 
 Pre-download AI models before launching:
 
-```bash
-# The one-line installer pulls these for you; to pre-pull manually:
-ollama pull gemma4:e4b              # Main model — chat + native vision (~9.6GB)
-ollama pull phi4-mini               # Fast model for quick responses
-ollama pull snowflake-arctic-embed2 # Embeddings (1024 dims)
-ollama pull granite3.2-vision:2b    # Vision fallback
-```
+Models are MLX checkpoints from Hugging Face, managed in-app from **LLM Studio**. The
+installer fetches them on first run; nothing is downloaded at launch, so a fresh start never
+stalls behind a multi-GB pull.
+
+| Role | Model | Size |
+|---|---|---|
+| Main + Vision | `mlx-community/gemma-4-e4b-it-4bit` | 4.8 GB |
+| Fast | `mlx-community/Phi-4-mini-instruct-4bit` | 2.0 GB |
+| Embeddings | `mlx-community/snowflake-arctic-embed-l-v2.0-bf16` | 1.1 GB |
+| Image | `Runpod/FLUX.2-klein-4B-mflux-4bit` | 4.3 GB |
 
 The Kokoro-82M TTS model (~348MB) downloads automatically on first use. If the automatic download fails (e.g. SSL certificate issues on macOS), you can download it manually:
 
@@ -299,10 +302,10 @@ Automatically extract dates and events from documents, visualized on an interact
 ## Configuration
 
 ### In-App Settings
-- **LLM Provider** — Choose between Ollama, OpenAI, or Anthropic
-- **API Keys** — Brave Search (for web search), OpenAI, Anthropic
+- **LLM Studio** — pick the model for each role (main, fast, vision, embeddings) from the
+  models downloaded on this Mac. Everything runs in-process on Apple MLX.
+- **API Keys** — Brave Search (for web search)
 - **Memory** — View, edit, and manage AI memory
-- **Embeddings** — Choose embedding model
 
 ### Environment Variables (`backend/.env`)
 ```bash
@@ -386,17 +389,18 @@ curl -sL https://raw.githubusercontent.com/patsteph/LocalBook/master/migrate_dat
 
 ## Troubleshooting
 
-### Ollama Not Running
+### Models Not Loading
+The engine runs in-process — there is no server to start. Check which models the app can
+actually see:
 ```bash
-ollama serve          # Start Ollama
-ollama list           # Verify models installed
+curl -s localhost:8000/system/model-readiness | python3 -m json.tool
 ```
 
 ### Models Missing
+Open **LLM Studio** and download the model for the role that is missing — it lists only what
+is actually present on this Mac. To see what the app thinks is missing:
 ```bash
-ollama pull olmo-3:7b-instruct
-ollama pull phi4-mini
-ollama pull snowflake-arctic-embed2
+curl -s localhost:8000/system/model-readiness | python3 -m json.tool
 ```
 
 ### Extension Not Connecting

@@ -501,9 +501,18 @@ else
     echo -e "${YELLOW}  The build will continue but TTS may not work at runtime${NC}"
 fi
 
-# Verify MLX LLM engine (Wave 9) bundled. mlx-lm/mlx-vlm are lazy-imported (only when
-# a role's engine == "mlx"), so a bundling miss would stay hidden until a user opts into
-# MLX in Labs — assert at build time instead. Non-fatal (Ollama path unaffected).
+# Verify the MLX LLM engine bundled. mlx-lm/mlx-vlm are lazy-imported, so a bundling miss
+# stays hidden until a user's first chat — assert at build time instead.
+#
+# FATAL as of v2.3.0: there is no Ollama path left to be "unaffected". A build that cannot
+# load a model is not a build, and shipping it as a warning buried in scrollback is how a
+# broken app reaches a user.
+#
+# 🔴 The import list ALONE is not enough, and that was the actual risk here: importing MLX
+# never loads `mlx.metallib` — that happens on the first Metal kernel dispatch. A bundle can
+# therefore pass every import and still fail on the user's first token. Jan shipped exactly
+# this regression (janhq/jan#8046): every Python module present, the data file dropped. So the
+# check below EXECUTES a kernel.
 echo -e "${YELLOW}Verifying MLX LLM engine (mlx-lm / mlx-vlm) bundle integrity...${NC}"
 MLXLLM_EXIT=0
 MLX_OUT=$(PYTHONPATH="$OUTPUT_DIR/localbook-backend/_internal" python -c "
@@ -530,20 +539,35 @@ try:
     from transformers import Gemma4Processor  # noqa: F401  (the processor→torchvision chain)
 except Exception as e:
     failed.append(f'transformers.Gemma4Processor: {type(e).__name__}: {e}')
+
+# THE check an import cannot make: dispatch a real Metal kernel. This is what loads
+# mlx.metallib, so it is the only way to prove the bundle can actually compute.
+try:
+    import mlx.core as mx
+    _a = mx.ones((64, 64))
+    _r = _a @ _a
+    mx.eval(_r)
+    if float(_r[0, 0]) != 64.0:
+        failed.append(f'metal kernel produced {float(_r[0, 0])}, expected 64.0')
+except Exception as e:
+    failed.append(f'METAL DISPATCH (mlx.metallib): {type(e).__name__}: {e}')
+
 if failed:
     print('MLX LLM ENGINE BUNDLE VERIFICATION FAILED:')
     for f in failed:
         print(f'  ✗ {f}')
     sys.exit(1)
 else:
-    print('MLX LLM engine + gemma-4 import chain verified OK')
+    print('MLX LLM engine verified OK — imports + a real Metal kernel dispatch')
 " 2>&1); MLXLLM_EXIT=$?
 # Show the verdict line(s) without any HF noise.
 echo "$MLX_OUT" | grep -vE 'Fetching|Warning: You are sending|UserWarning|warnings.warn|mel filter|rope_parameters|zero values|it/s\]' | tail -5
 if [ $MLXLLM_EXIT -eq 0 ]; then
-    echo -e "${GREEN}✓ MLX LLM engine bundle verified${NC}"
+    echo -e "${GREEN}✓ MLX LLM engine bundle verified (imports + Metal dispatch)${NC}"
 else
-    echo -e "${YELLOW}⚠ MLX LLM engine bundle verification failed — MLX opt-in won't work until fixed (Ollama path unaffected)${NC}"
+    echo -e "${RED}✗ MLX LLM engine bundle verification FAILED — this build cannot run a model.${NC}"
+    echo -e "${RED}  Shipping it would fail on the user's first message. Aborting.${NC}"
+    exit 1
 fi
 
 # Verify PyObjC frameworks (Apple Vision OCR + Touch ID keychain). These fall

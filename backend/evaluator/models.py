@@ -289,11 +289,11 @@ class EvalResult:
         duplicating the routing logic.
         """
         try:
-            # RESOLVE THE ROLE FIRST. Runners pass the OLLAMA name because that is the key the
-            # llm_service seam routes on — correct for invocation, wrong for provenance: on an
-            # all-MLX run every result was stamped provider="ollama" with an Ollama model name,
-            # so a persisted run was mislabelled and an engine A/B would compare Ollama to
-            # Ollama. Ask the same decision point the seam asks.
+            # Resolve through the same decision point the seam uses, so a persisted result
+            # names the model that actually ran. (Runners used to pass an Ollama role key here,
+            # which stamped every all-MLX result "ollama" — a run mislabelled as the engine it
+            # was being compared against.) Identity since the role collapse, but kept so the
+            # stamp follows the seam if resolution ever gains meaning again.
             try:
                 from services.mlx_engine import mlx_model_for_role
                 _mlx_id = mlx_model_for_role(model_name)
@@ -301,15 +301,6 @@ class EvalResult:
                     model_name = _mlx_id
             except Exception:
                 pass
-            # The embed role has no mlx_model_for_role entry (it is not an llm_service role).
-            try:
-                from config import settings as _st
-                if (model_name == getattr(_st, "embedding_model", None)
-                        and getattr(_st, "embed_engine", "ollama") == "mlx"):
-                    model_name = getattr(_st, "embedding_model", model_name)
-            except Exception:
-                pass
-
             from evaluator.capabilities import capabilities_for
             caps = capabilities_for(model_name)
             self.model_used = model_name
