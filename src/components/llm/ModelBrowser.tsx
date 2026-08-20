@@ -1,0 +1,433 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { API_BASE_URL, localFetch } from '../../services/api';
+
+/**
+ * Model Browser — discovery, as opposed to the Locker's "what is already on disk".
+ *
+ * Answers three things at a glance for every model: where it came from (flag + vendor),
+ * whether it fits THIS Mac (badge), and which role slots it could fill (chips). Sorting by
+ * downloads / likes / recency, a details popup with the model card, and one-click download
+ * with live progress.
+ *
+ * Origin is policy, not decoration: models from China and the Middle East are excluded by the
+ * backend and are not downloadable even by id. The count of what was withheld is shown so the
+ * filtering is visible rather than silent.
+ */
+
+type Sort = 'downloads' | 'likes' | 'lastModified' | 'createdAt';
+type RoleFilter = '' | 'main' | 'fast' | 'vision' | 'embedding' | 'image';
+
+interface Origin { vendor: string; country: string; flag: string; allowed: boolean; org: string }
+interface Fit { verdict: 'fits' | 'tight' | 'over' | 'unknown'; needed_gb?: number; budget_gb?: number }
+interface Caps { text: boolean; vision: boolean; embedding: boolean; image: boolean; audio: boolean }
+
+interface CatalogModel {
+  model_id: string;
+  name: string;
+  owner: string;
+  downloads: number;
+  likes: number;
+  updated: string;
+  created: string;
+  gated: boolean;
+  license: string;
+  pipeline_tag: string;
+  size_gb: number | null;
+  size_is_estimate: boolean;
+  capabilities: Caps;
+  roles: string[];
+  origin: Origin;
+  installed: boolean;
+  tags: string[];
+  fit: Fit;
+  readme?: string;
+  url?: string;
+  files?: string[];
+}
+
+interface Download { status: string; pct: number | null; downloaded_gb: number; total_gb: number; error?: string }
+
+const SORTS: { id: Sort; label: string }[] = [
+  { id: 'downloads',    label: 'Most downloaded' },
+  { id: 'likes',        label: 'Highest rated' },
+  { id: 'lastModified', label: 'Recently updated' },
+  { id: 'createdAt',    label: 'Newly uploaded' },
+];
+
+const ROLES: { id: RoleFilter; label: string }[] = [
+  { id: '',          label: 'All roles' },
+  { id: 'main',      label: 'Main (chat)' },
+  { id: 'fast',      label: 'Fast' },
+  { id: 'vision',    label: 'Vision' },
+  { id: 'embedding', label: 'Embeddings' },
+  { id: 'image',     label: 'Image' },
+];
+
+const FIT_STYLE: Record<Fit['verdict'], { cls: string; label: string; title: string }> = {
+  fits:    { cls: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300',
+             label: '✓ Fits', title: 'Comfortably within this Mac’s addressable GPU memory.' },
+  tight:   { cls: 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300',
+             label: '~ Tight', title: 'Fits, but with little headroom — expect pressure at long context.' },
+  over:    { cls: 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300',
+             label: '✕ Too big', title: 'Larger than this Mac’s addressable GPU memory.' },
+  unknown: { cls: 'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300',
+             label: '? Unknown', title: 'This repo publishes no size metadata.' },
+};
+
+const ROLE_CHIP: Record<string, { label: string; cls: string }> = {
+  main:      { label: 'Main',   cls: 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300' },
+  fast:      { label: 'Fast',   cls: 'bg-teal-100 text-teal-700 dark:bg-teal-900/30 dark:text-teal-300' },
+  vision:    { label: 'Vision', cls: 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-300' },
+  embedding: { label: 'Embed',  cls: 'bg-indigo-100 text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-300' },
+  image:     { label: 'Image',  cls: 'bg-pink-100 text-pink-700 dark:bg-pink-900/30 dark:text-pink-300' },
+};
+
+function compact(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(0)}k`;
+  return String(n);
+}
+
+function ago(iso: string): string {
+  if (!iso) return '—';
+  const d = (Date.now() - new Date(iso).getTime()) / 86_400_000;
+  if (!isFinite(d)) return '—';
+  if (d < 1) return 'today';
+  if (d < 30) return `${Math.round(d)}d ago`;
+  if (d < 365) return `${Math.round(d / 30)}mo ago`;
+  return `${(d / 365).toFixed(1)}y ago`;
+}
+
+export function ModelBrowser() {
+  const [models, setModels] = useState<CatalogModel[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [offline, setOffline] = useState<string | null>(null);
+  const [blockedHidden, setBlockedHidden] = useState(0);
+  const [sort, setSort] = useState<Sort>('downloads');
+  const [role, setRole] = useState<RoleFilter>('');
+  const [fitsOnly, setFitsOnly] = useState(false);
+  const [query, setQuery] = useState('');
+  const [detail, setDetail] = useState<CatalogModel | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [downloads, setDownloads] = useState<Record<string, Download>>({});
+  const debounce = useRef<number | undefined>(undefined);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const p = new URLSearchParams({
+        sort, limit: '48',
+        ...(query ? { q: query } : {}),
+        ...(role ? { role } : {}),
+        ...(fitsOnly ? { fits_only: 'true' } : {}),
+      });
+      const res = await localFetch(`${API_BASE_URL}/settings/catalog?${p}`);
+      if (!res.ok) throw new Error(`${res.status}`);
+      const data = await res.json();
+      setOffline(data.offline ? (data.reason || 'Offline') : null);
+      setModels(data.models || []);
+      setBlockedHidden(data.blocked_hidden || 0);
+    } catch (e: any) {
+      setOffline(e?.message ? `Could not load the catalog (${e.message})` : 'Could not load the catalog');
+      setModels([]);
+    } finally {
+      setLoading(false);
+    }
+  }, [sort, role, fitsOnly, query]);
+
+  useEffect(() => {
+    window.clearTimeout(debounce.current);
+    debounce.current = window.setTimeout(load, query ? 350 : 0);
+    return () => window.clearTimeout(debounce.current);
+  }, [load, query]);
+
+  // Poll download progress only while something is actually in flight.
+  const anyActive = useMemo(
+    () => Object.values(downloads).some((d) => d.status === 'downloading'),
+    [downloads],
+  );
+  useEffect(() => {
+    if (!anyActive) return;
+    const t = window.setInterval(async () => {
+      try {
+        const r = await localFetch(`${API_BASE_URL}/settings/mlx/downloads`);
+        if (r.ok) setDownloads(await r.json());
+      } catch { /* transient */ }
+    }, 1500);
+    return () => window.clearInterval(t);
+  }, [anyActive]);
+
+  const startDownload = async (m: CatalogModel) => {
+    setDownloads((d) => ({ ...d, [m.model_id]: { status: 'downloading', pct: null, downloaded_gb: 0, total_gb: 0 } }));
+    try {
+      const r = await localFetch(`${API_BASE_URL}/settings/catalog/download`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model_id: m.model_id, tags: m.tags }),
+      });
+      if (!r.ok) {
+        const err = await r.json().catch(() => ({}));
+        setDownloads((d) => ({ ...d, [m.model_id]: { status: 'error', pct: null, downloaded_gb: 0, total_gb: 0, error: err.detail || `HTTP ${r.status}` } }));
+      }
+    } catch (e: any) {
+      setDownloads((d) => ({ ...d, [m.model_id]: { status: 'error', pct: null, downloaded_gb: 0, total_gb: 0, error: e?.message } }));
+    }
+  };
+
+  const openCard = async (m: CatalogModel) => {
+    setDetail(m);
+    setDetailLoading(true);
+    try {
+      const r = await localFetch(`${API_BASE_URL}/settings/catalog/card?model_id=${encodeURIComponent(m.model_id)}`);
+      if (r.ok) {
+        const full = await r.json();
+        if (!full.error) setDetail(full);
+      }
+    } catch { /* keep the summary we already have */ } finally {
+      setDetailLoading(false);
+    }
+  };
+
+  return (
+    <div className="p-4 space-y-3">
+      {/* Controls */}
+      <div className="flex flex-wrap items-center gap-2">
+        <input
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Search Hugging Face for MLX models…"
+          className="flex-1 min-w-[200px] px-3 py-1.5 text-sm rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100"
+        />
+        <select
+          value={sort}
+          onChange={(e) => setSort(e.target.value as Sort)}
+          className="px-2 py-1.5 text-sm rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100"
+        >
+          {SORTS.map((s) => <option key={s.id} value={s.id}>{s.label}</option>)}
+        </select>
+        <select
+          value={role}
+          onChange={(e) => setRole(e.target.value as RoleFilter)}
+          className="px-2 py-1.5 text-sm rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100"
+        >
+          {ROLES.map((r) => <option key={r.id || 'all'} value={r.id}>{r.label}</option>)}
+        </select>
+        <label className="flex items-center gap-1.5 text-sm text-gray-600 dark:text-gray-300 select-none">
+          <input type="checkbox" checked={fitsOnly} onChange={(e) => setFitsOnly(e.target.checked)} />
+          Only what fits
+        </label>
+      </div>
+
+      {blockedHidden > 0 && (
+        <div className="text-xs text-gray-500 dark:text-gray-400 px-1">
+          {blockedHidden} model{blockedHidden === 1 ? '' : 's'} hidden — origin excluded by policy.
+        </div>
+      )}
+
+      {offline && (
+        <div className="rounded-lg border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/20 p-3 text-sm text-amber-800 dark:text-amber-200">
+          {offline} Models already downloaded still work — the browser is the only part that needs a connection.
+        </div>
+      )}
+
+      {loading ? (
+        <div className="flex items-center justify-center py-12">
+          <div className="animate-spin rounded-full h-7 w-7 border-b-2 border-blue-600" />
+        </div>
+      ) : models.length === 0 && !offline ? (
+        <div className="text-center py-10 text-sm text-gray-500 dark:text-gray-400">
+          Nothing matched. Try a different sort, role, or search term.
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-2">
+          {models.map((m) => {
+            const dl = downloads[m.model_id];
+            const fit = FIT_STYLE[m.fit?.verdict ?? 'unknown'];
+            return (
+              <div
+                key={m.model_id}
+                className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-3 space-y-2"
+              >
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <button
+                      onClick={() => openCard(m)}
+                      className="text-sm font-semibold text-gray-900 dark:text-white truncate hover:underline text-left"
+                      title={m.model_id}
+                    >
+                      {m.name}
+                    </button>
+                    <div className="text-xs text-gray-500 dark:text-gray-400 truncate">
+                      <span title={`${m.origin.vendor}${m.origin.country ? ` · ${m.origin.country}` : ''}`}>
+                        {m.origin.flag} {m.origin.vendor}
+                      </span>
+                      {m.license && <span className="ml-2">· {m.license}</span>}
+                    </div>
+                  </div>
+                  <span className={`shrink-0 px-1.5 py-0.5 text-xs rounded font-medium ${fit.cls}`} title={fit.title}>
+                    {fit.label}
+                  </span>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-1">
+                  {m.roles.map((r) => (
+                    <span key={r} className={`px-1.5 py-0.5 text-xs rounded ${ROLE_CHIP[r]?.cls || 'bg-gray-100 text-gray-600'}`}>
+                      {ROLE_CHIP[r]?.label || r}
+                    </span>
+                  ))}
+                  {m.gated && (
+                    <span className="px-1.5 py-0.5 text-xs rounded bg-yellow-100 text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-300"
+                          title="Requires accepting the licence on Hugging Face before it can be downloaded.">
+                      🔒 Gated
+                    </span>
+                  )}
+                </div>
+
+                <div className="flex items-center justify-between text-xs text-gray-500 dark:text-gray-400">
+                  <span>
+                    {m.size_gb != null ? `${m.size_gb} GB` : 'size unknown'}
+                    {m.size_gb != null && m.size_is_estimate && (
+                      <span title="Computed from the checkpoint's published dtype breakdown; weights only.">
+                        {' '}est.
+                      </span>
+                    )}
+                    {' · '}↓{compact(m.downloads)}{' · '}♥{compact(m.likes)}{' · '}{ago(m.updated)}
+                  </span>
+                  {m.installed ? (
+                    <span className="text-emerald-600 dark:text-emerald-400 font-medium">✓ Downloaded</span>
+                  ) : dl?.status === 'downloading' ? (
+                    <span className="text-blue-600 dark:text-blue-400 tabular-nums">
+                      {dl.pct != null ? `${dl.pct}%` : 'starting…'}
+                      {dl.total_gb ? ` · ${dl.downloaded_gb}/${dl.total_gb} GB` : ''}
+                    </span>
+                  ) : dl?.status === 'error' ? (
+                    <span className="text-red-600 dark:text-red-400" title={dl.error}>failed</span>
+                  ) : (
+                    <button
+                      onClick={() => startDownload(m)}
+                      disabled={m.fit?.verdict === 'over'}
+                      title={m.fit?.verdict === 'over'
+                        ? 'Larger than this Mac can address — downloading it would not make it runnable.'
+                        : 'Download to this Mac'}
+                      className="px-2 py-0.5 rounded font-medium bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      ⬇ Get
+                    </button>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {detail && (
+        <ModelCard
+          model={detail}
+          loading={detailLoading}
+          onClose={() => setDetail(null)}
+          onDownload={() => startDownload(detail)}
+          download={downloads[detail.model_id]}
+        />
+      )}
+    </div>
+  );
+}
+
+function ModelCard({ model, loading, onClose, onDownload, download }: {
+  model: CatalogModel; loading: boolean; onClose: () => void;
+  onDownload: () => void; download?: Download;
+}) {
+  const fit = FIT_STYLE[model.fit?.verdict ?? 'unknown'];
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={onClose}>
+      <div
+        className="bg-white dark:bg-gray-800 rounded-xl shadow-xl max-w-2xl w-full max-h-[80vh] flex flex-col"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-start justify-between gap-3 p-4 border-b border-gray-200 dark:border-gray-700">
+          <div className="min-w-0">
+            <h3 className="text-base font-semibold text-gray-900 dark:text-white truncate">{model.name}</h3>
+            <p className="text-xs text-gray-500 dark:text-gray-400 truncate">{model.model_id}</p>
+          </div>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 text-xl leading-none">×</button>
+        </div>
+
+        <div className="p-4 space-y-3 overflow-y-auto">
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
+            <Stat label="Origin" value={`${model.origin.flag} ${model.origin.vendor}`} />
+            <Stat label="Size" value={model.size_gb != null ? `${model.size_gb} GB` : 'unknown'} />
+            <Stat label="Downloads" value={compact(model.downloads)} />
+            <Stat label="Likes" value={compact(model.likes)} />
+            <Stat label="Updated" value={ago(model.updated)} />
+            <Stat label="Created" value={ago(model.created)} />
+            <Stat label="Licence" value={model.license || '—'} />
+            <Stat label="Pipeline" value={model.pipeline_tag || '—'} />
+          </div>
+
+          <div className="flex flex-wrap items-center gap-1.5">
+            <span className={`px-2 py-0.5 text-xs rounded font-medium ${fit.cls}`} title={fit.title}>{fit.label}</span>
+            {model.fit?.needed_gb != null && model.fit?.budget_gb != null && (
+              <span className="text-xs text-gray-500 dark:text-gray-400">
+                needs ~{model.fit.needed_gb} GB of {model.fit.budget_gb} GB addressable
+              </span>
+            )}
+          </div>
+
+          <div className="flex flex-wrap gap-1">
+            {model.roles.map((r) => (
+              <span key={r} className={`px-1.5 py-0.5 text-xs rounded ${ROLE_CHIP[r]?.cls || 'bg-gray-100 text-gray-600'}`}>
+                {ROLE_CHIP[r]?.label || r}
+              </span>
+            ))}
+            {model.tags?.slice(0, 8).map((t) => (
+              <span key={t} className="px-1.5 py-0.5 text-xs rounded bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300">{t}</span>
+            ))}
+          </div>
+
+          {loading ? (
+            <div className="text-xs text-gray-500 dark:text-gray-400">Loading model card…</div>
+          ) : model.readme ? (
+            <pre className="text-xs whitespace-pre-wrap font-sans text-gray-700 dark:text-gray-300 bg-gray-50 dark:bg-gray-900/50 rounded-lg p-3 max-h-64 overflow-y-auto">
+              {model.readme.slice(0, 6000)}
+            </pre>
+          ) : (
+            <div className="text-xs text-gray-500 dark:text-gray-400">No model card published.</div>
+          )}
+        </div>
+
+        <div className="flex items-center justify-between gap-2 p-4 border-t border-gray-200 dark:border-gray-700">
+          {model.url && (
+            <a href={model.url} target="_blank" rel="noreferrer"
+               className="text-xs text-blue-600 dark:text-blue-400 hover:underline">View on Hugging Face ↗</a>
+          )}
+          {model.installed ? (
+            <span className="text-sm text-emerald-600 dark:text-emerald-400 font-medium">✓ Downloaded</span>
+          ) : download?.status === 'downloading' ? (
+            <span className="text-sm text-blue-600 dark:text-blue-400 tabular-nums">
+              {download.pct != null ? `${download.pct}%` : 'starting…'}
+            </span>
+          ) : (
+            <button
+              onClick={onDownload}
+              disabled={model.fit?.verdict === 'over'}
+              className="px-3 py-1.5 text-sm rounded-lg font-medium bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed"
+              title={model.fit?.verdict === 'over' ? 'Larger than this Mac can address.' : 'Download to this Mac'}
+            >
+              ⬇ Download
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Stat({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <div className="text-gray-400 dark:text-gray-500 uppercase tracking-wide">{label}</div>
+      <div className="text-gray-800 dark:text-gray-200 truncate" title={value}>{value}</div>
+    </div>
+  );
+}

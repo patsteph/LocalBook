@@ -3,11 +3,13 @@ import { LLMSelector } from '../LLMSelector';
 import { EvaluatorPanel } from './EvaluatorPanel';
 import { EvalHistoryPanel } from './EvalHistoryPanel';
 import { EvalComparePanel } from './EvalComparePanel';
+import { ModelBrowser } from './ModelBrowser';
 
-type StudioTab = 'locker' | 'evaluator' | 'history' | 'compare';
+type StudioTab = 'locker' | 'browse' | 'evaluator' | 'history' | 'compare';
 
 const TABS: { id: StudioTab; label: string }[] = [
   { id: 'locker',    label: '🧠 Locker' },
+  { id: 'browse',    label: '🌐 Browse' },
   { id: 'evaluator', label: '🧪 Evaluator' },
   { id: 'history',   label: '📊 History' },
   { id: 'compare',   label: '⚖️ Compare' },
@@ -18,10 +20,10 @@ interface LLMStudioProps {
   onProviderChange: (provider: string) => void;
 }
 
-// The unified LLM management surface (rendered inside the App's <Modal>): pick a
-// brain (Locker), benchmark it (Evaluator), and compare past runs (History) —
-// one place, one flow. Replaces the old split of an in-app Locker modal + a
-// browser-only evaluator page.
+// The unified LLM management surface (rendered inside the App's <Modal>): pick a brain
+// (Locker), find a new one (Browse), benchmark it (Evaluator), and compare past runs
+// (History) — one place, one flow. Locker shows what is ON THIS MAC; Browse shows what
+// exists on Hugging Face and whether it would fit.
 export function LLMStudio({ selectedProvider, onProviderChange }: LLMStudioProps) {
   const [tab, setTab] = useState<StudioTab>('locker');
 
@@ -50,6 +52,7 @@ export function LLMStudio({ selectedProvider, onProviderChange }: LLMStudioProps
           onTestCombo={() => setTab('evaluator')}
         />
       )}
+      {tab === 'browse' && <ModelBrowser />}
       {tab === 'evaluator' && <EvaluatorPanel />}
       {tab === 'history' && <EvalHistoryPanel />}
       {tab === 'compare' && <EvalComparePanel />}

@@ -90,6 +90,63 @@ async def mlx_downloads_active():
     from services.mlx_download import mlx_download_manager
     return mlx_download_manager.active()
 
+# ── Model browser (catalog) ─────────────────────────────────────────────────────
+# Discovery, as opposed to the Locker's "what is already on disk". Lives here rather than in
+# its own router so the download endpoints below stay next to the browse endpoints that
+# trigger them.
+
+@router.get("/catalog")
+async def catalog_search(
+    q: str = "",
+    sort: str = "downloads",
+    limit: int = 40,
+    role: str = "",
+    fits_only: bool = False,
+    include_blocked: bool = False,
+):
+    """Browse MLX models on Hugging Face.
+
+    Needs the network — the one place in the app that legitimately does. Returns
+    `offline: true` with a reason rather than erroring, so the panel can say so plainly.
+    """
+    from services.model_catalog import search
+    import asyncio
+    # HF is a blocking httpx call; keep it off the event loop.
+    return await asyncio.to_thread(
+        search, query=q, sort=sort, limit=max(1, min(limit, 100)),
+        role=role, include_blocked=include_blocked, fits_only=fits_only,
+    )
+
+
+@router.get("/catalog/card")
+async def catalog_card(model_id: str):
+    """Full detail + README for one model — the model-card popup."""
+    import asyncio
+    from services.model_catalog import card
+    return await asyncio.to_thread(card, model_id)
+
+
+@router.post("/catalog/download")
+async def catalog_download(payload: dict):
+    """Start downloading a catalog model. Returns immediately; poll /settings/mlx/downloads.
+
+    Refuses a blocked-origin model here as well as in search: the browse filter is a UI
+    convenience, and this endpoint is what actually puts weights on the disk.
+    """
+    model_id = (payload or {}).get("model_id") or ""
+    if not model_id:
+        raise HTTPException(status_code=400, detail="model_id is required")
+    from services.model_catalog import origin_of
+    org = origin_of(model_id, (payload or {}).get("tags") or [])
+    if not org["allowed"]:
+        raise HTTPException(
+            status_code=403,
+            detail=f"{org['vendor']} ({org['country']}) is excluded by policy — not downloaded.",
+        )
+    from services.mlx_download import mlx_download_manager
+    return await mlx_download_manager.start(model_id)
+
+
 # User profile storage path
 USER_PROFILE_PATH = settings.data_dir / "user_profile.json"
 
