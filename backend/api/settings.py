@@ -362,99 +362,10 @@ async def get_ollama_models():
     async with httpx.AsyncClient() as client:
         semaphore = asyncio.Semaphore(4)
 
-        async def _enrich(m: dict) -> dict:
-            async with semaphore:
-                name = m.get("name", "")
-                size_bytes = m.get("size", 0)
-                show = await _fetch_show(client, name)
-
-                reg = model_registry.get_model(name)
-
-                suggested_role = _classify_model(name, show, size_bytes, reg)
-                ram_required = _estimate_ram(size_bytes, reg)
-                context_window = _parse_context(show)
-
-                # Vision detection
-                if reg:
-                    _vision = reg.supports_vision
-                else:
-                    _vision = _is_vision_model(name, show)
-
-                # also_vision: model should appear in the Vision column in addition to its primary role
-                _also_vision = bool(reg and "vision_model" in (reg.supported_roles or []))
-
-                # Parameter count: registry > Ollama metadata > name parse
-                param_count = (reg.parameter_count if reg else "") or _extract_param_count(name, show)
-
-                # Build E (2026-07-07): probe-derived capabilities + capability-based
-                # role eligibility + RAM-fit on THIS Mac, built from the already-
-                # fetched /api/show (no extra call). Lets the Locker UI show a model
-                # in EVERY column it's eligible for (not one size-based column) +
-                # capability badges + a fits/tight/over chip.
-                _caps_flags = {"vision": _vision, "embedding": False,
-                               "tools": False, "thinking": False, "audio": False}
-                _supported_roles = list(reg.supported_roles) if (reg and reg.supported_roles) else []
-                _ram_fit = None
-                try:
-                    from evaluator.capability_probe import OllamaCapabilityProbe
-                    from evaluator import ram_fit as _ramfit
-                    from evaluator.hardware_profiler import get_hardware_profile as _ghp
-                    _pc = OllamaCapabilityProbe.from_show(name, show)
-                    _caps_flags = {"vision": _vision or _pc.vision, "embedding": _pc.embedding,
-                                   "tools": _pc.tools, "thinking": _pc.thinking, "audio": _pc.audio}
-                    for _r in _pc.roles():
-                        if _r not in _supported_roles:
-                            _supported_roles.append(_r)
-                    _total_ram = float(getattr(_ghp(), "memory_gb", 0) or 0)
-                    if _total_ram > 0 and _pc.param_count_b > 0:
-                        # Fit against the DEPLOYED window (RAM-scaled effective cap),
-                        # not the model's native ceiling — the app never runs 131k on
-                        # a 16GB Mac, so a native-ctx KV estimate would falsely say
-                        # "over" for every large-window model.
-                        try:
-                            from services.llm_runtime import effective_num_ctx_cap
-                            _deployed_ctx = effective_num_ctx_cap(name) or 8192
-                        except Exception:
-                            _deployed_ctx = 8192
-                        _f = _ramfit.ram_fit(_pc.param_count_b, _pc.quantization, _total_ram, _deployed_ctx)
-                        # Surface the FULL breakdown (not just fits/weight/budget) so
-                        # a "too big" verdict is explainable in the UI/tooltip and
-                        # diagnosable off-machine — kv + total_needed + deployed ctx
-                        # are what actually decide the recommendation.
-                        _ram_fit = {"fits": _f["fits"], "recommendation": _f["recommendation"],
-                                    "weight_gb": _f["weight_gb"], "kv_gb": _f["kv_gb"],
-                                    "budget_gb": _f["budget_gb"], "total_needed_gb": _f["total_needed_gb"],
-                                    "headroom_gb": _f["headroom_gb"], "deployed_ctx": _f["context_tokens"],
-                                    "total_ram_gb": _total_ram}
-                except Exception as _ce:
-                    logger.debug(f"[settings] capability enrichment failed for {name}: {_ce}")
-
-                return {
-                    "name": name,
-                    "display_name": (reg.display_name if reg else name.split(":")[0].replace("-", " ").title()),
-                    "family": (reg.family if reg else ""),
-                    "size_bytes": size_bytes,
-                    "size_gb": round(size_bytes / (1024 ** 3), 1),
-                    "ram_required_gb": ram_required,
-                    "context_window": context_window,
-                    "suggested_role": suggested_role,
-                    "supported_roles": _supported_roles,
-                    "capabilities": _caps_flags,
-                    "ram_fit": _ram_fit,
-                    "supports_vision": _caps_flags["vision"],
-                    "also_vision": _also_vision,
-                    "supports_json_mode": (reg.supports_json_mode if reg else False),
-                    "vendor": (reg.vendor if reg else "Community"),
-                    "origin_country": (reg.origin_country if reg else ""),
-                    "parameter_count": param_count,
-                    "quantization": _extract_quant(name, show),
-                    "eval_score": _eval_scores.get(name, 0),
-                    "modified_at": m.get("modified_at", ""),
-                    "in_registry": reg is not None,
-                    "provider": (getattr(reg, "provider", "ollama") if reg else "ollama"),
-                }
-
-        enriched = await asyncio.gather(*[_enrich(m) for m in raw_models])
+        # Every card is built by the MLX block below. The Ollama enrichment that used to
+        # populate this (a /api/tags list, then a /api/show per model, then classification by
+        # size) is gone with the models it described.
+        enriched: list = []
 
         # MLX models — the only ones listed. Caps via a config.json probe (no model load);
         # RAM-fit via model_sizing; presence via a real weight check. Never fatal.

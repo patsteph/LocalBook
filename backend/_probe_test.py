@@ -1,9 +1,16 @@
-"""Locker build A — probe-first capability + slotting + RAM-fit.
+"""Locker — probe-first capability + slotting + RAM-fit.
 
-Uses the EXACT /api/show shapes captured live from ollama 0.31 (2026-07-07) so the
-tests pin real-world behavior with no network. Run: `.venv/bin/python3 _probe_test.py`
+Was written against real `/api/show` payloads captured from ollama 0.31. That probe went with
+the transport in the v2.3.0 cutover, so these now pin the MLX probe: capabilities are read
+from the checkpoint's own `config.json`, which is the only source left.
+
+The role-slotting and RAM-fit assertions are unchanged — they were never Ollama-specific, and
+they guard the two bugs that motivated this file: "Qwen vision model told to install granite"
+(capabilities defaulted off) and "5 fresh models all slotted into Main" (size-based slotting).
+
+Run: `.venv/bin/python3 _probe_test.py`
 """
-from evaluator.capability_probe import OllamaCapabilityProbe, ProbedCapabilities
+from evaluator.capability_probe import MLXCapabilityProbe, ProbedCapabilities
 from evaluator import ram_fit
 
 passed = failed = 0
@@ -12,66 +19,52 @@ def check(name, cond):
     if cond: passed += 1; print(f"  PASS {name}")
     else: failed += 1; print(f"  FAIL {name}")
 
-# ── Real /api/show payloads (trimmed to the fields the probe reads) ──────────────
-GEMMA4 = {
-    "capabilities": ["completion", "vision", "audio", "tools", "thinking"],
-    "details": {"family": "gemma4", "parameter_size": "8.0B", "quantization_level": "Q4_K_M"},
-    "model_info": {"general.architecture": "gemma4", "gemma4.context_length": 131072,
-                   "gemma4.embedding_length": 2560},
-}
-PHI4 = {
-    "capabilities": ["completion", "tools"],
-    "details": {"family": "phi3", "parameter_size": "3.8B", "quantization_level": "Q4_K_M"},
-    "model_info": {"general.architecture": "phi3", "phi3.context_length": 131072,
-                   "phi3.embedding_length": 3072},
-}
-EMBED = {
-    "capabilities": ["embedding"],
-    "details": {"family": "bert", "parameter_size": "566.70M", "quantization_level": "F16"},
-    "model_info": {"general.architecture": "bert", "bert.context_length": 8192,
-                   "bert.embedding_length": 1024},
-}
-# The reported bug: a Qwen vision model, uncurated.
-QWEN_VL = {
-    "capabilities": ["completion", "vision", "tools"],
-    "details": {"family": "qwen3vl", "parameter_size": "8.0B", "quantization_level": "Q4_K_M"},
-    "model_info": {"general.architecture": "qwen3vl", "qwen3vl.context_length": 262144,
-                   "qwen3vl.embedding_length": 4096},
-}
-# Old runner with NO capabilities array → fallback heuristics.
-OLD_VISION = {"details": {"family": "llava", "parameter_size": "7B"},
-              "model_info": {"general.architecture": "llama", "llama.context_length": 4096}}
 
-print("── capability parse (real shapes) ──")
-g = OllamaCapabilityProbe.from_show("gemma4:e4b", GEMMA4)
-check("gemma4 vision+text+tools+thinking+audio",
-      g.vision and g.text and g.tools and g.thinking and g.audio and not g.embedding)
-check("gemma4 native_ctx 131072", g.native_ctx == 131072)
-check("gemma4 params 8.0B → 8.0", g.param_count_b == 8.0 and g.quantization == "Q4_K_M")
-check("gemma4 source=probe", g.source == "probe")
+def probe(model_id):
+    return MLXCapabilityProbe().probe(model_id)
 
-p = OllamaCapabilityProbe.from_show("phi4-mini:latest", PHI4)
-check("phi4 text-only (no vision/embed)", p.text and not p.vision and not p.embedding)
 
-e = OllamaCapabilityProbe.from_show("snowflake-arctic-embed2", EMBED)
-check("embed model: embedding=True, text=False-ish", e.embedding and not e.vision)
-check("embed dim 1024", e.embedding_dim == 1024)
+print("── capability parse (real cached checkpoints) ──")
+g = probe("mlx-community/gemma-4-e4b-it-4bit")
+check("gemma4 probed at all", g is not None)
+if g:
+    check("gemma4 vision + text, not embedding", g.vision and g.text and not g.embedding)
+    check("gemma4 native_ctx 131072", g.native_ctx == 131072)
+    check("gemma4 source=probe", g.source == "probe")
+    check("gemma4 provider=mlx", g.provider == "mlx")
 
-q = OllamaCapabilityProbe.from_show("qwen3-vl:8b", QWEN_VL)
-check("QWEN-VL vision=True (the reported bug)", q.vision is True)
+p = probe("mlx-community/Phi-4-mini-instruct-4bit")
+check("phi4 probed at all", p is not None)
+if p:
+    check("phi4 text-only (no vision/embed)", p.text and not p.vision and not p.embedding)
 
-o = OllamaCapabilityProbe.from_show("llava:7b", OLD_VISION)
-check("old runner fallback: vision from family", o.vision is True and o.source == "fallback")
+e = probe("mlx-community/snowflake-arctic-embed-l-v2.0-bf16")
+check("arctic probed at all", e is not None)
+if e:
+    check("embed model: embedding=True, vision=False", e.embedding and not e.vision)
+
+check("an uncached model probes to None (no network fallback)",
+      probe("mlx-community/definitely-not-downloaded") is None)
 
 print("── capability-based ROLES (the slotting fix) ──")
-check("gemma4 roles = main+fast+vision",
-      set(g.roles()) == {"main_model", "fast_model", "vision_model"})
-check("phi4 roles = main+fast only", set(p.roles()) == {"main_model", "fast_model"})
-check("embed roles = embedding_model ONLY (not Main!)", e.roles() == ["embedding_model"])
-check("QWEN-VL roles include vision_model", "vision_model" in q.roles())
+if g:
+    check("gemma4 roles = main+fast+vision",
+          set(g.roles()) == {"main_model", "fast_model", "vision_model"})
+if p:
+    check("phi4 roles = main+fast only", set(p.roles()) == {"main_model", "fast_model"})
+if e:
+    check("embed roles = embedding_model ONLY (not Main!)", e.roles() == ["embedding_model"])
 
-print("── RAM-fit (60% unified-mem budget) ──")
-# 8B Q4 ≈ 8 * 0.61 = 4.88 GB weights
+print("── role eligibility is capability-driven, not size-driven ──")
+# The original bug: every fresh model landed in Main because slotting keyed off disk size.
+synthetic_vision = ProbedCapabilities(model="x", text=True, vision=True)
+check("any vision-capable model is vision-eligible",
+      "vision_model" in synthetic_vision.roles())
+synthetic_embed = ProbedCapabilities(model="y", text=True, embedding=True)
+check("a pure embedder never lands in Main",
+      synthetic_embed.roles() == ["embedding_model"])
+
+print("── RAM-fit ──")
 fit16 = ram_fit.ram_fit(8.0, "Q4_K_M", 16.0, context_tokens=8192)
 check("8B-Q4 weight ≈ 4.88GB", abs(fit16["weight_gb"] - 4.88) < 0.05)
 check("8B-Q4 fits a 16GB Mac (budget 9.6)", fit16["fits"] and fit16["budget_gb"] == 9.6)

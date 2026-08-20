@@ -40,40 +40,41 @@ class LLMLocker:
     """Safely manages universal model switching."""
     
     @classmethod
-    def _live_model_info(cls, ollama_name: str) -> Optional[Dict[str, Any]]:
+    def _live_model_info(cls, model_id: str) -> Optional[Dict[str, Any]]:
+        """Describe a model that is NOT in the static registry, from the local cache.
+
+        Was a POST to Ollama's /api/show. With Ollama gone that always returned None, and
+        `analyze_swap` turns None into a hard block — so ANY model absent from
+        known_models.json became un-selectable. That matters directly for the model
+        browser: a freshly downloaded MLX checkpoint has no registry row by definition.
+
+        Everything here is read off disk: exact weight bytes from the checkpoint, capability
+        flags from the cached config.json. Returns None only when the model genuinely is not
+        downloaded.
         """
-        Query Ollama /api/show for a model that is not in the static registry.
-        Returns a minimal dict with size_gb, ram_required_gb, supports_vision.
-        Returns None if Ollama is unreachable or model is unknown.
-        """
-        import urllib.request
-        from config import settings as _s
         try:
-            import json as _json
-            req = urllib.request.Request(
-                f"{_s.ollama_base_url}/api/show",
-                data=_json.dumps({"name": ollama_name}).encode(),
-                headers={"Content-Type": "application/json"},
-                method="POST",
-            )
-            with urllib.request.urlopen(req, timeout=5) as resp:
-                data = _json.loads(resp.read().decode())
-            size_bytes = data.get("size", 0)
-            size_gb = size_bytes / (1024 ** 3)
-            ram_gb = round(size_gb * 1.3, 1)
-            # Build A (2026-07-07): stop hardcoding vision=False. The /api/show
-            # payload carries a `capabilities` array — parse it so an uncurated
-            # vision model (e.g. Qwen-VL) is correctly recognized instead of being
-            # told to install granite.
+            from services.model_presence import is_present
+            from services.model_sizing import exact_weight_gb
+
+            if not is_present(model_id):
+                return None
+            size_gb = exact_weight_gb(model_id) or 0.0
+
             supports_vision = False
             try:
-                from evaluator.capability_probe import OllamaCapabilityProbe
-                supports_vision = OllamaCapabilityProbe.from_show(ollama_name, data).vision
+                from evaluator.capability_probe import probe_capabilities
+                pc = probe_capabilities(model_id, provider="mlx")
+                if pc:
+                    supports_vision = bool(pc.vision)
             except Exception:
                 pass
+
             return {
                 "size_gb": size_gb,
-                "ram_required_gb": ram_gb,
+                # Weights plus room for KV and activations. `model_sizing.fit()` is the
+                # precise answer; this stays a cheap estimate because the caller only uses
+                # it for a headroom sanity check.
+                "ram_required_gb": round(size_gb * 1.3, 1),
                 "supports_vision": supports_vision,
             }
         except Exception:
@@ -101,10 +102,10 @@ class LLMLocker:
             if _live is None:
                 return (
                     False,
-                    f"Model '{target_ollama_name}' is not installed in Ollama or Ollama is unreachable.",
+                    f"Model '{target_ollama_name}' is not downloaded. Get it from LLM Studio first.",
                     {},
                 )
-            logger.info(f"[LLMLocker] '{target_ollama_name}' not in registry — using live Ollama data.")
+            logger.info(f"[LLMLocker] '{target_ollama_name}' not in registry — using on-disk data.")
         else:
             if role not in model_info.supported_roles:
                 # Still allow the swap — roles in registry are advisory, not a hard gate

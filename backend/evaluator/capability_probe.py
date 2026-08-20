@@ -5,11 +5,10 @@ text-only / no-vision / no-embeddings / no-roles — the cause of "Qwen vision m
 told to install granite" and "5 fresh models all slotted into Main." Ground truth
 is now the ENGINE itself:
 
-  • Ollama  → POST /api/show → `capabilities` array (completion/vision/embedding/
-              audio/tools/thinking/insert) + model_info (native ctx, embedding dim)
-              + details (parameter_size, quantization_level).  [implemented here]
-  • MLX     → config.json model_type/architectures/vision_config + tokenizer
-              chat_template (+ chat_template.jinja).            [build D — stub below]
+  • config.json → model_type / architectures / vision_config / quantization /
+                  max_position_embeddings, read from the local snapshot.
+
+The Ollama /api/show probe that used to sit alongside this went with the transport.
 
 The static registry (known_models.json) is DEMOTED to OVERRIDES/enrichment only
 (license, origin, policy tags, curated display names, manual capability pins) —
@@ -24,27 +23,16 @@ from __future__ import annotations
 import json
 import logging
 import time
-import urllib.request
 from dataclasses import dataclass, field, asdict
 from typing import Optional, Protocol, runtime_checkable
 
 logger = logging.getLogger(__name__)
 
-# ── Ollama capability tokens (confirmed live on ollama 0.31, 2026-07-07) ─────────
-CAP_COMPLETION = "completion"
-CAP_VISION = "vision"
-CAP_EMBEDDING = "embedding"
-CAP_AUDIO = "audio"
-CAP_TOOLS = "tools"
-CAP_THINKING = "thinking"
-CAP_INSERT = "insert"
-
-
 @dataclass
 class ProbedCapabilities:
     """Resolved, engine-reported capabilities for one model. JSON-serialisable."""
     model: str = ""
-    provider: str = "ollama"
+    provider: str = "mlx"
     source: str = "probe"            # probe | probe+registry | registry | fallback
     text: bool = True
     vision: bool = False
@@ -113,129 +101,13 @@ def invalidate_cache(model: Optional[str] = None) -> None:
     if model is None:
         _CACHE.clear()
     else:
-        _CACHE.pop(f"ollama::{model}", None)
+        _CACHE.pop(f"mlx::{model}", None)
 
 
 def _parse_param_count_b(param_size: str) -> float:
     # Local import keeps ram_fit the single source of truth for the parser.
     from evaluator.ram_fit import parse_param_count_b
     return parse_param_count_b(param_size)
-
-
-# ── Shared, cached raw /api/show (reused by the probe AND run_profile) ────────────
-_SHOW_CACHE: dict[str, tuple[float, dict]] = {}
-
-
-def ollama_show(model: str, base_url: Optional[str] = None, timeout: float = 5.0) -> Optional[dict]:
-    """POST /api/show for `model`, cached (TTL). Returns the raw payload or None
-    when Ollama is unreachable / the model isn't pulled."""
-    if not model:
-        return None
-    if base_url is None:
-        try:
-            from config import settings
-            base_url = settings.ollama_base_url
-        except Exception:
-            base_url = "http://localhost:11434"
-    base_url = base_url.rstrip("/")
-    key = f"{base_url}::{model}"
-    hit = _SHOW_CACHE.get(key)
-    if hit and (time.time() - hit[0]) < _TTL:
-        return hit[1]
-    try:
-        req = urllib.request.Request(
-            f"{base_url}/api/show",
-            data=json.dumps({"name": model}).encode(),
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            data = json.loads(resp.read().decode())
-        _SHOW_CACHE[key] = (time.time(), data)
-        return data
-    except Exception as e:
-        logger.debug(f"[capability_probe] /api/show failed for {model!r}: {e}")
-        return None
-
-
-# ── Ollama implementation ────────────────────────────────────────────────────────
-class OllamaCapabilityProbe:
-    provider = "ollama"
-
-    def __init__(self, base_url: Optional[str] = None, timeout: float = 5.0):
-        if base_url is None:
-            try:
-                from config import settings
-                base_url = settings.ollama_base_url
-            except Exception:
-                base_url = "http://localhost:11434"
-        self.base_url = base_url.rstrip("/")
-        self.timeout = timeout
-
-    def _show(self, model: str) -> Optional[dict]:
-        return ollama_show(model, base_url=self.base_url, timeout=self.timeout)
-
-    @staticmethod
-    def from_show(model: str, data: dict) -> ProbedCapabilities:
-        """Pure parser — build ProbedCapabilities from an /api/show payload.
-        Split out so tests can exercise the real shapes with no network."""
-        caps = [str(c).lower() for c in (data.get("capabilities") or [])]
-        details = data.get("details") or {}
-        mi = data.get("model_info") or {}
-        arch = str(mi.get("general.architecture") or details.get("family") or "")
-
-        def _mi_int(suffix: str) -> int:
-            for k, v in mi.items():
-                if k.endswith(suffix) and isinstance(v, (int, float)):
-                    return int(v)
-            return 0
-
-        has_caps = bool(caps)
-        vision = CAP_VISION in caps
-        embedding = CAP_EMBEDDING in caps
-        text = (CAP_COMPLETION in caps) or (CAP_INSERT in caps)
-
-        # Fallback heuristics ONLY when the runner is too old to report a
-        # capabilities array (ollama ≥ ~0.5 always does; guard anyway).
-        if not has_caps:
-            fam = f"{arch} {model}".lower()
-            embedding = ("embed" in fam) or ("bert" in fam)
-            vision = any(t in fam for t in ("vision", "llava", "-vl", "vl-", "moondream", "bakllava"))
-            text = not embedding
-
-        param_size = str(details.get("parameter_size") or "")
-        return ProbedCapabilities(
-            model=model,
-            provider="ollama",
-            source="probe" if has_caps else "fallback",
-            text=bool(text),
-            vision=bool(vision),
-            embedding=bool(embedding),
-            audio=CAP_AUDIO in caps,
-            tools=CAP_TOOLS in caps,
-            thinking=CAP_THINKING in caps,
-            native_ctx=_mi_int(".context_length"),
-            embedding_dim=_mi_int(".embedding_length"),
-            param_size=param_size,
-            param_count_b=_parse_param_count_b(param_size),
-            quantization=str(details.get("quantization_level") or ""),
-            family=str(details.get("family") or arch),
-            raw_capabilities=caps,
-        )
-
-    def probe(self, model: str) -> Optional[ProbedCapabilities]:
-        if not model:
-            return None
-        key = f"ollama::{model}"
-        cached = _cache_get(key)
-        if cached is not None:
-            return cached
-        data = self._show(model)
-        if data is None:
-            return None
-        caps = self.from_show(model, data)
-        _cache_put(key, caps)
-        return caps
 
 
 def _estimate_param_b_from_id(model: str, cfg: dict) -> float:
@@ -257,15 +129,15 @@ def _estimate_param_b_from_id(model: str, cfg: dict) -> float:
 
 
 class MLXCapabilityProbe:
-    """Wave 9.4 — reads the MLX checkpoint's config.json to derive capabilities.
+    """Reads the MLX checkpoint's config.json to derive capabilities.
     vision ← `vision_config`; embedding ← model_type/architectures; native_ctx ←
     max_position_embeddings; quantization ← `quantization.bits`. Only a cheap
     config.json fetch (never the whole model)."""
     provider = "mlx"
 
     def probe(self, model: str) -> Optional[ProbedCapabilities]:
-        # Cache like the Ollama probe does. Reading + parsing config.json on every
-        # Locker render is pure waste, and the Locker renders often.
+        # Reading + parsing config.json on every Locker render is pure waste, and the
+        # Locker renders often.
         if not model:
             return None
         key = f"mlx::{model}"
@@ -316,24 +188,21 @@ class MLXCapabilityProbe:
 
 
 # ── Dispatcher: probe-first, registry as OVERRIDE only ───────────────────────────
-_OLLAMA_PROBE = OllamaCapabilityProbe()
 
 
-def probe_capabilities(model: str, provider: str = "ollama") -> Optional[ProbedCapabilities]:
-    """Resolve capabilities for a model, ENGINE-FIRST.
+def probe_capabilities(model: str, provider: str = "mlx") -> Optional[ProbedCapabilities]:
+    """Resolve capabilities for a model, CHECKPOINT-FIRST.
 
-    Order: ask the engine (Ollama /api/show today; MLX later) → if it answers,
-    that IS the truth. The registry is consulted only to OVERRIDE explicit pins
-    or fill gaps the engine can't report (curated display niceties), never to
-    gate or to flip an engine-reported capability off.
+    Read the model's own config.json → if it answers, that IS the truth. The registry is
+    consulted only to ADD signal the checkpoint lacks or to apply an explicit manual pin,
+    never to gate or to flip a reported capability off.
+
+    `provider` is vestigial: the Ollama /api/show probe went with the transport, so every
+    model is probed the same way. Kept in the signature because ~6 call sites pass it.
     """
     if not model:
         return None
-    caps: Optional[ProbedCapabilities] = None
-    if provider == "mlx":
-        caps = MLXCapabilityProbe().probe(model)
-    else:
-        caps = _OLLAMA_PROBE.probe(model)
+    caps: Optional[ProbedCapabilities] = MLXCapabilityProbe().probe(model)
 
     # Registry overlay: only ADD signal the probe lacked, or apply an explicit
     # manual pin. Never downgrade a capability the engine reported.
