@@ -99,10 +99,7 @@ class Settings(BaseSettings):
     fast_engine: str = "mlx"        # ollama | mlx — intent, follow-ups, classify
     vision_engine: str = "mlx"      # ollama | mlx — semantic image description (Option A: the
                                     # vision-capable MLX main model serves this too)
-    image_engine: str = "ollama"    # ollama | mlx — Klein / FLUX. Left on ollama: the MLX image
-                                    # model is NOT downloaded on this machine (verified via
-                                    # /system/model-readiness), and defaulting a role to a model
-                                    # that does not exist is how a first run stalls with no UI.
+    image_engine: str = "mlx"       # ollama | mlx — Klein / FLUX via mflux, in-process.
     embed_engine: str = "mlx"       # ollama | mlx — MLX-native embeddings IN-PROCESS (keeps Ollama
                                     # out of the embedding path so it can idle/unload). MLX runs the
                                     # SAME arctic-embed-l-v2.0 at the SAME 1024 dim → same vector

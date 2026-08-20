@@ -93,3 +93,40 @@ def test_registry_reads_the_configured_ollama_url():
     code = "\n".join(l for l in src.splitlines() if not l.strip().startswith("#"))
     assert "from backend.config import get_settings" not in code
     assert "from config import settings" in code
+
+
+# ── Diffusion layouts (2026-08-20) ──────────────────────────────────────────────
+
+def test_a_diffusion_checkpoint_reports_its_real_weight():
+    """THE bug this guards. `exact_weight_gb` read `model.safetensors.index.json` at the
+    snapshot ROOT and, failing that, summed root-level `*.safetensors`. FLUX/Klein has
+    neither: it is several components — `transformer/`, `text_encoder/`, `vae/` — each with
+    its own index. Both paths found zero bytes and returned None, which `is_present` reads as
+    "not downloaded".
+
+    Consequences of the false negative, all observed: a fully-downloaded 4.3 GB Klein was
+    reported absent, `enumerate_cached` skipped it so it never appeared in the model browser,
+    the prefs migration refused to promote the image role, and I told the user image
+    generation was blocked on a download that had already happened.
+    """
+    from services.model_sizing import exact_weight_gb
+
+    gb = exact_weight_gb("Runpod/FLUX.2-klein-4B-mflux-4bit")
+    assert gb is not None, "nested-component weights must be found"
+    assert gb > 3.0, f"expected the real multi-GB size, got {gb}"
+    assert mp.is_present("Runpod/FLUX.2-klein-4B-mflux-4bit") is True
+
+
+def test_the_model_browser_lists_the_diffusion_model():
+    """`enumerate_cached` drops anything with no weights, so the sizing bug hid Klein from
+    every UI that enumerates installable models."""
+    ids = {m["model_id"] for m in mp.enumerate_cached(force=True)}
+    assert "Runpod/FLUX.2-klein-4B-mflux-4bit" in ids
+
+
+def test_sizing_still_works_for_ordinary_sharded_checkpoints():
+    """The recursive walk must not regress the common case."""
+    from services.model_sizing import exact_weight_gb
+
+    gemma = exact_weight_gb("mlx-community/gemma-4-e4b-it-4bit")
+    assert gemma is not None and 4.0 < gemma < 6.0, gemma

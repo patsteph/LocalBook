@@ -26,7 +26,6 @@ import time
 from dataclasses import dataclass
 from typing import Optional
 
-import httpx
 
 from config import settings
 from services.llm_runtime import llm_runtime
@@ -38,8 +37,6 @@ DEFAULT_WIDTH = 1024
 DEFAULT_HEIGHT = 768
 DEFAULT_STEPS = 4  # Klein is a "schnell" class model — few steps suffice
 
-KLEIN_TIMEOUT = 240.0  # Generous; first cold load can take 60-90s
-KLEIN_PREWARM_TIMEOUT = 600.0
 
 # Aspect-ratio → (draft_dims, hero_dims). All values divisible by 8 (Klein
 # constraint). Hero dims push resolution where Klein's coherence holds up;
@@ -99,8 +96,6 @@ class KleinDiffusionService:
     """Text-to-image via Klein (FLUX.2 [klein]) running in Ollama."""
 
     def __init__(self):
-        self._warmed = False
-        self._warm_lock = asyncio.Lock()
         # Wave 9.3b — mflux (FLUX.2 Klein on MLX) resident model, lazy-loaded once.
         self._mflux_model = None
         self._mflux_lock = asyncio.Lock()
@@ -142,117 +137,20 @@ class KleinDiffusionService:
         # in-process via mflux instead of Ollama x/flux2-klein — same dims/steps, no negative
         # prompt (FLUX.2 is CFG-distilled). Bypasses the Ollama klein_model check. Dual-engine
         # fallback to Ollama on error.
-        if getattr(settings, "image_engine", "ollama") == "mlx":
-            rw, rh, rs = resolve_dimensions(aspect_ratio, quality_tier)
-            res = await self._generate_mflux(
-                prompt,
-                width=width if width is not None else rw,
-                height=height if height is not None else rh,
-                steps=steps if steps is not None else rs,
-            )
-            if res.success:
-                return res
-            logger.warning(f"[visual_diffusion] mflux failed ({res.error}); Ollama fallback")
-            # fall through to the Ollama path below
-
+        # In-process via mflux (FLUX.2 Klein). The Ollama `x/flux2-klein` path that used to
+        # follow this — plus its pre-warm — is gone with the transport; there is nothing to
+        # fall back to, so an mflux failure IS the failure.
         if not cap.klein_model:
             return DiffusionResult(
                 success=False,
-                error="Klein model not installed (need x/flux2-klein in ollama list)",
+                error=f"Klein not downloaded ({settings.mlx_image_model}) — get it from LLM Studio.",
             )
-
-        # Resolve final dimensions: explicit args win; otherwise (aspect, tier);
-        # otherwise legacy defaults. Lets new callers opt into the table
-        # without breaking existing call-sites.
-        resolved_w, resolved_h, resolved_steps = resolve_dimensions(aspect_ratio, quality_tier)
-        final_w = width if width is not None else resolved_w
-        final_h = height if height is not None else resolved_h
-        final_steps = steps if steps is not None else resolved_steps
-
-        model = cap.klein_model
-        t0 = time.time()
-
-        # Pre-warm on first ever call (idempotent within the singleton)
-        async with self._warm_lock:
-            if not self._warmed:
-                warm_ok = await self._prewarm(model)
-                self._warmed = warm_ok
-
-        payload: dict = {
-            "model": model,
-            "prompt": prompt,
-            "width": final_w,
-            "height": final_h,
-            "steps": final_steps,
-            "stream": False,
-            "keep_alive": 0 if unload_after else "5m",
-        }
-        if negative_prompt:
-            payload["negative_prompt"] = negative_prompt
-
-        url = f"{settings.ollama_base_url}/api/generate"
-        try:
-            async with httpx.AsyncClient(timeout=httpx.Timeout(10.0, read=KLEIN_TIMEOUT)) as client:
-                logger.info(
-                    f"[visual_diffusion] generate model={model} "
-                    f"{final_w}x{final_h} steps={final_steps} "
-                    f"tier={quality_tier or '-'} aspect={aspect_ratio or '-'} "
-                    f"neg={'y' if negative_prompt else 'n'} "
-                    f"unload_after={unload_after}"
-                )
-                response = await client.post(url, json=payload)
-                response.raise_for_status()
-                data = response.json()
-        except httpx.TimeoutException:
-            return DiffusionResult(
-                success=False,
-                model=model,
-                elapsed_ms=int((time.time() - t0) * 1000),
-                error="Klein generation timed out",
-            )
-        except httpx.HTTPStatusError as e:
-            return DiffusionResult(
-                success=False,
-                model=model,
-                elapsed_ms=int((time.time() - t0) * 1000),
-                error=f"Klein HTTP {e.response.status_code}: {e.response.text[:200]}",
-            )
-        except Exception as e:
-            return DiffusionResult(
-                success=False,
-                model=model,
-                elapsed_ms=int((time.time() - t0) * 1000),
-                error=f"Klein call failed: {e}",
-            )
-
-        b64 = data.get("image") or ""
-        if not b64:
-            return DiffusionResult(
-                success=False,
-                model=model,
-                elapsed_ms=int((time.time() - t0) * 1000),
-                error=(f"Klein returned no image (keys={list(data.keys())}); "
-                       f"check API contract"),
-            )
-
-        try:
-            png = base64.b64decode(b64)
-        except Exception as e:
-            return DiffusionResult(
-                success=False,
-                model=model,
-                elapsed_ms=int((time.time() - t0) * 1000),
-                error=f"Klein image base64 decode failed: {e}",
-            )
-
-        return DiffusionResult(
-            success=True,
-            png_bytes=png,
-            width=final_w,
-            height=final_h,
-            elapsed_ms=int((time.time() - t0) * 1000),
-            model=model,
-            prompt_used=prompt,
+        rw, rh, rs = resolve_dimensions(aspect_ratio, quality_tier)
+        return await self._generate_mflux(
+            prompt,
+            width=width if width is not None else rw,
+            height=height if height is not None else rh,
+            steps=steps if steps is not None else rs,
         )
 
     async def _load_mflux(self):
@@ -310,33 +208,6 @@ class KleinDiffusionService:
             success=True, png_bytes=png, width=width, height=height,
             elapsed_ms=int((time.time() - t0) * 1000),
             model=settings.mlx_image_model, prompt_used=prompt)
-
-    async def _prewarm(self, model: str) -> bool:
-        """Tiny first request to load Klein into VRAM. Best-effort."""
-        logger.info(f"[visual_diffusion] pre-warming {model}")
-        t0 = time.time()
-        try:
-            url = f"{settings.ollama_base_url}/api/generate"
-            payload = {
-                "model": model,
-                "prompt": "a single dot",
-                "width": 256,
-                "height": 256,
-                "steps": 1,
-                "stream": False,
-                "keep_alive": "30s",
-            }
-            async with httpx.AsyncClient(timeout=httpx.Timeout(10.0, read=KLEIN_PREWARM_TIMEOUT)) as client:
-                response = await client.post(url, json=payload)
-                response.raise_for_status()
-            logger.info(
-                f"[visual_diffusion] {model} warm ({time.time() - t0:.1f}s)"
-            )
-            return True
-        except Exception as e:
-            logger.warning(f"[visual_diffusion] pre-warm failed: {e}")
-            return False
-
 
 # ──────────────────────────────────────────────────────────────────────
 # Gemma-as-prompt-writer chain
@@ -490,27 +361,25 @@ async def write_klein_prompt(
 # Explicit unload utility — for RAM-safe swap orchestration
 # ──────────────────────────────────────────────────────────────────────
 async def force_unload(model: str) -> bool:
-    """Tell Ollama to evict `model` from memory immediately.
+    """Evict `model` from memory immediately.
 
-    Used by the hybrid composer to pre-emptively free Gemma RAM before
-    calling Klein on swap-mode machines (16-31 GB total RAM). Without
-    this, Gemma stays loaded for ~5 min, and Klein loading on top can
-    push us into OS swap or trigger OOM.
+    Used by the hybrid composer to pre-emptively free Gemma before calling Klein on swap-mode
+    machines (16-31 GB). This matters MORE under MLX than it did under Ollama: Ollama would
+    eventually evict on its own keep_alive TTL, whereas MLX holds weights until something
+    explicitly unloads them. Gemma (4.8 GB) plus Klein (4.3 GB) resident together is most of
+    a 16 GB machine.
 
-    Ollama's /api/generate with empty prompt + keep_alive=0 is the
-    documented way to just unload a model.
+    Was a `keep_alive: 0` nudge over HTTP; now an in-process unload. Still best-effort —
+    never let a memory optimisation fail a visual.
     """
     try:
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            response = await client.post(
-                f"{settings.ollama_base_url}/api/generate",
-                json={"model": model, "keep_alive": 0, "prompt": ""},
-            )
-            response.raise_for_status()
-            logger.info(f"[visual_diffusion] explicit unload {model} OK")
-            return True
+        from services.mlx_engine import mlx_engine, mlx_model_for_role
+        target = mlx_model_for_role(model) or model
+        freed = await mlx_engine.unload(target)
+        logger.info(f"[visual_diffusion] explicit unload {target}: "
+                    f"{'freed' if freed else 'not resident'}")
+        return bool(freed)
     except Exception as e:
-        # Non-fatal — Ollama may evict on memory pressure anyway
         logger.warning(f"[visual_diffusion] unload nudge for {model} failed: {e}")
         return False
 

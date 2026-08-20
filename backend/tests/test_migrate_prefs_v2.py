@@ -51,12 +51,22 @@ def test_saved_ollama_roles_are_promoted_to_mlx(tmp_path, all_present):
     assert combo["main_engine"] == "mlx"
     assert combo["fast_engine"] == "mlx"
     assert combo["embed_engine"] == "mlx"
-    assert set(out["promoted"]) == {"main", "fast", "vision", "embed"}
+    assert set(out["promoted"]) == {"main", "fast", "vision", "embed", "image"}
 
 
-def test_image_is_never_promoted(tmp_path, all_present):
-    """The MLX image model is not downloaded. Repointing a role at absent weights is how a
-    first run stalls with no error — image stays on Ollama until its model ships."""
+def test_image_is_promoted_like_every_other_role(tmp_path, all_present):
+    """Image was excluded here for a while on the belief that Klein wasn't downloaded. It
+    was — `is_present` reported it absent because `exact_weight_gb` only looked for weights
+    at the snapshot ROOT, and diffusion checkpoints keep theirs in transformer/ text_encoder/
+    vae/. No role needs a hardcoded exception; the presence gate is the real protection."""
+    p = _write(tmp_path, _v1())
+    mig.run(p)
+    assert json.loads(open(p).read())["default_combo"]["image_engine"] == "mlx"
+
+
+def test_image_is_still_skipped_when_klein_is_genuinely_absent(tmp_path, monkeypatch):
+    monkeypatch.setattr("services.model_presence.is_present",
+                        lambda m: "klein" not in m.lower())
     p = _write(tmp_path, _v1())
     mig.run(p)
     assert json.loads(open(p).read())["default_combo"]["image_engine"] == "ollama"

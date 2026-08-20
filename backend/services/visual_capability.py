@@ -1,7 +1,7 @@
 """Visual System v2 — runtime capability detection.
 
 Decides which generation path the visual composer should use based on:
-  • Which Ollama models are installed (Gemma 4, Flux2-klein, Olmo, vision)
+  • Which MLX models are downloaded (Gemma 4, Flux2-Klein, vision)
   • System RAM (concurrent vs swap mode for model loading)
   • Currently-configured main/fast/vision model names
 
@@ -20,7 +20,6 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import List, Optional
 
-import httpx
 
 from config import settings
 
@@ -29,9 +28,6 @@ logger = logging.getLogger(__name__)
 # ──────────────────────────────────────────────────────────────────────
 # Model-name detection rules. Match by prefix so :tag suffix doesn't matter.
 # ──────────────────────────────────────────────────────────────────────
-GEMMA_PREFIXES = ("gemma4", "gemma3", "gemma2")  # Gemma family
-KLEIN_PREFIXES = ("flux2-klein", "x/flux2-klein", "flux-klein")
-VISION_PREFIXES = ("granite", "llava", "moondream", "bakllava")
 
 # RAM thresholds (bytes). Total system RAM, not available.
 RAM_CONCURRENT_THRESHOLD = 32 * 1024**3  # 32 GB+ → can co-load Gemma + Klein
@@ -60,7 +56,7 @@ class VisualCapability:
     concurrency_mode: ConcurrencyMode
     total_ram_gb: float
 
-    # Installed (present in `ollama list`)
+    # Installed (weights present in the HF cache)
     has_gemma: bool = False
     has_klein: bool = False
     has_vision_model: bool = False
@@ -139,13 +135,23 @@ def invalidate_cache():
 
 
 async def _detect() -> VisualCapability:
-    installed = await _list_ollama_models()
-    total_ram = _total_ram_bytes()
+    # Presence is a FILESYSTEM question now — the MLX checkpoints either have weights in the
+    # HF cache or they do not. This used to enumerate `ollama list` over /api/tags, which
+    # returned an empty list once Ollama was gone and silently degraded every visual to the
+    # template path.
+    from services.model_presence import is_present
 
-    # Find best match per family
-    gemma = _find_first(installed, GEMMA_PREFIXES)
-    klein = _find_first(installed, KLEIN_PREFIXES)
-    vision = _find_first(installed, VISION_PREFIXES)
+    total_ram = _total_ram_bytes()
+    _roles = {
+        "gemma": settings.mlx_main_model,
+        "klein": settings.mlx_image_model,
+        "vision": settings.mlx_vision_model,
+    }
+    _have = {k: (bool(v) and is_present(v)) for k, v in _roles.items()}
+    installed = [v for k, v in _roles.items() if _have[k]]
+    gemma = _roles["gemma"] if _have["gemma"] else None
+    klein = _roles["klein"] if _have["klein"] else None
+    vision = _roles["vision"] if _have["vision"] else None
 
     # Determine setup. Prefer Setup B if Gemma is the configured main model
     # OR if Gemma is installed and configured vision_model also points at Gemma.
@@ -188,36 +194,6 @@ async def _detect() -> VisualCapability:
     return cap
 
 
-async def _list_ollama_models() -> List[str]:
-    """Query Ollama /api/tags. Returns lowercased model names."""
-    url = f"{settings.ollama_base_url}/api/tags"
-    # /api/tags is cheap but can be slow to RESPOND when Ollama is mid-inference
-    # under load. 5 s was too tight (timed out → empty list → degraded visual).
-    # Use a tolerant timeout + one retry before giving up.
-    last_err: Optional[Exception] = None
-    for attempt in range(2):
-        try:
-            async with httpx.AsyncClient(timeout=15.0) as client:
-                r = await client.get(url)
-                r.raise_for_status()
-                data = r.json()
-                models = data.get("models", [])
-                return [m.get("name", "").lower() for m in models if m.get("name")]
-        except Exception as e:
-            last_err = e
-            if attempt == 0:
-                await asyncio.sleep(1.0)
-    logger.warning(f"[visual_capability] ollama tags fetch failed after retry: {last_err}")
-    return []
-
-
-def _find_first(installed: List[str], prefixes: tuple[str, ...]) -> Optional[str]:
-    """Return the first installed model whose name starts with any prefix."""
-    for name in installed:
-        for prefix in prefixes:
-            if name.startswith(prefix):
-                return name
-    return None
 
 
 def _total_ram_bytes() -> int:

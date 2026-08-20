@@ -109,12 +109,15 @@ def run(path: Optional[str] = None) -> Dict[str, Any]:
     # Only rewrites a role whose saved engine is "ollama" AND whose MLX model is present on
     # disk. A deliberate Ollama choice on a machine without the MLX weights is left alone —
     # silently repointing a role at a model that is not there is how a first run stalls.
+    # `image` is included: Klein IS an MLX model and is auto-downloaded when a machine adopts
+    # all-MLX. It was excluded here only because `is_present` wrongly reported it absent —
+    # `exact_weight_gb` looked for weights at the snapshot ROOT, and diffusion checkpoints
+    # keep theirs in transformer/ text_encoder/ vae/. The presence gate below is the real
+    # protection, so no role needs a hardcoded exception.
     promoted = {}
     try:
         from services.model_presence import is_present
         for role, (eng_key, _ok, mlx_key) in ROLES.items():
-            if role == "image":
-                continue          # image stays on ollama until its MLX model is downloaded
             if combo.get(eng_key) != "ollama":
                 continue
             mlx_model = combo.get(mlx_key)

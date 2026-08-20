@@ -101,10 +101,19 @@ def load_config(model_id: str) -> Optional[Dict[str, Any]]:
 
 
 def exact_weight_gb(model_id: str) -> Optional[float]:
-    """EXACT weight bytes from the checkpoint index — no quantization guessing.
+    """EXACT weight bytes on disk — no quantization guessing.
 
-    Every MLX snapshot ships `model.safetensors.index.json` with `metadata.total_size`.
-    Returns None when the model is not on disk (caller falls back to an estimate).
+    Three layouts, tried in order:
+      1. `model.safetensors.index.json` at the snapshot root (`metadata.total_size`) — what
+         every sharded LLM checkpoint ships.
+      2. Loose `*.safetensors` at the root — single-shard checkpoints have no index.
+      3. **Nested components.** Diffusion models (FLUX/Klein) are not one checkpoint but
+         several: `transformer/`, `text_encoder/`, `vae/`, each with its OWN index. Nothing
+         lives at the root, so layouts 1 and 2 both find zero bytes and report the model
+         absent — which made `is_present()` return False for a fully-downloaded 4.3 GB Klein
+         and hid it from the model browser entirely.
+
+    Returns None only when nothing is on disk.
     """
     key = f"w::{model_id}"
     if key in _CACHE:
@@ -123,12 +132,19 @@ def exact_weight_gb(model_id: str) -> Optional[float]:
         except Exception:
             val = None
         if val is None:
-            # Single-shard checkpoints have no index file — sum the safetensors instead.
+            # Walk the whole snapshot: covers loose root shards AND nested components.
+            # Follows symlinks because the HF cache stores real bytes in ../../blobs and
+            # links them into the snapshot — os.path.getsize on the link reports the target,
+            # but the walk must not skip them.
             try:
-                tot = sum(
-                    os.path.getsize(os.path.join(d, f))
-                    for f in os.listdir(d) if f.endswith(".safetensors")
-                )
+                tot = 0
+                for root, _dirs, files in os.walk(d, followlinks=True):
+                    for f in files:
+                        if f.endswith(".safetensors"):
+                            try:
+                                tot += os.path.getsize(os.path.join(root, f))
+                            except OSError:
+                                pass          # a broken link mid-download — count nothing
                 if tot > 0:
                     val = round(tot / GB, 3)
             except Exception:
