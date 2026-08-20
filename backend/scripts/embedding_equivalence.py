@@ -178,17 +178,16 @@ def embed_with(engine: str, model: Optional[str], texts: List[str]) -> Tuple[Lis
     from config import settings
     from services import rag_embeddings
 
-    prev_engine = getattr(settings, "embed_engine", "ollama")
+    # `embed_engine` is gone — there is one engine. The script now varies only the MODEL,
+    # which is the comparison that still has meaning (bf16 vs 8-bit vs whatever ships next).
     prev_model = getattr(settings, "embedding_model", None)
     try:
-        settings.embed_engine = engine
         if model:
             settings.embedding_model = model
         t0 = time.time()
         vecs = rag_embeddings._get_embeddings_batch_sync(texts)
         return vecs, time.time() - t0
     finally:
-        settings.embed_engine = prev_engine
         if prev_model is not None:
             settings.embedding_model = prev_model
 
@@ -254,7 +253,7 @@ def main() -> int:
     print("EMBEDDING EQUIVALENCE — the MLX cutover gate")
     print("═" * 72)
     print(f"dim={dim}  ollama_model={settings.embedding_model}")
-    print(f"⚠️  requires a live Ollama at {settings.ollama_base_url}\n")
+    print("⚠️  compares embedding MODELS against the stored index\n")
 
     print(f"Sampling up to {args.chunks} real chunks from LanceDB…")
     chunks = sample_chunks(args.chunks)

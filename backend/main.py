@@ -179,8 +179,7 @@ async def _run_startup_tasks():
     # ── Banner ────────────────────────────────────────────────────────────
     print(f"🚀 LocalBook API starting on {settings.api_host}:{settings.api_port}")
     print(f"📁 Data directory: {settings.data_dir}")
-    print(f"🤖 LLM Provider: {settings.llm_provider}")
-    print(f"🔥 Models: {settings.main_model} (think), {settings.fast_model} (fast)")
+    print(f"🔥 Models: {settings.main_model} (main), {settings.fast_model} (fast)")
     print(f"💾 Storage: {'SQLite' if settings.use_sqlite else 'JSON files'}")
     
     # ── Step 1: Upgrade check ─────────────────────────────────────────────

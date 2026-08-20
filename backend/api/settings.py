@@ -369,7 +369,8 @@ async def get_llm_info():
     return {
         "model_name": settings.main_model,
         "fast_model_name": settings.fast_model,
-        "provider": settings.llm_provider
+        # One engine since v2.3.0. Kept in the response shape because callers read it.
+        "provider": "mlx",
     }
 
 def get_api_key(key_name: str) -> str | None:
