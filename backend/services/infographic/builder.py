@@ -727,8 +727,10 @@ async def build_l4(
     except Exception as e:
         logger.warning(f"[infographic] L4 capability probe failed: {e}")
         return None
-    engine_mlx = getattr(settings, "image_engine", "ollama") == "mlx"
-    if not engine_mlx and not getattr(cap, "klein_model", None):
+    # `cap.klein_model` is presence-derived (HF cache), so it is the whole answer now — the
+    # `image_engine` flag it used to be OR'd with no longer exists, and its getattr default
+    # made this branch permanently true.
+    if not getattr(cap, "klein_model", None):
         logger.info("[infographic] L4 skipped — Klein not installed; degrading")
         return None
 

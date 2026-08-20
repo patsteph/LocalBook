@@ -39,11 +39,7 @@ async def run(notebook_id: str, config: dict, combo_name: str, hw_fingerprint: s
     """Test embedding model quality: dimensions, throughput, semantic discrimination."""
     from config import settings
 
-    # Wave 9.6 — report the model actually exercised: the MLX arctic id when embed_engine==mlx
-    # (the seam runs it at the same 1024 dim), else the Ollama embedding model.
-    _mlx_embed = getattr(settings, "embed_engine", "ollama") == "mlx"
-    embed_model = (getattr(settings, "embedding_model", "") if _mlx_embed
-                   else settings.embedding_model)
+    embed_model = settings.embedding_model
     expected_dim = getattr(settings, 'embedding_dim', 0)
 
     results = []

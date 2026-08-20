@@ -668,8 +668,10 @@ class LLMRuntime:
         fails one ingest that can simply be retried. A zero vector matches nothing, forever —
         this install already carries 104 of them (1.42%) from the old silent-fallback era.
         """
-        if getattr(settings, "embed_engine", "ollama") != "mlx":
-            return None
+        # No engine gate: there is one engine. This used to short-circuit on
+        # `embed_engine != "mlx"`, and when the v2.3.0 collapse deleted that setting the
+        # getattr default ("ollama") made the check ALWAYS true — so every embed returned
+        # None and raised "unserviceable" while the model sat loaded and working.
         try:
             from services.mlx_engine import mlx_engine
             if not mlx_engine.available():
@@ -715,8 +717,8 @@ class LLMRuntime:
             return {"embeddings": _mlx}
 
         raise RuntimeError(
-            f"embed unserviceable (caller={_get_caller()}): embed_engine="
-            f"{getattr(settings, 'embed_engine', '?')}, model={settings.embedding_model}. "
+            f"embed unserviceable (caller={_get_caller()}): "
+            f"model={settings.embedding_model}. "
             f"Refusing to return an empty embedding — check /system/model-readiness."
         )
 
@@ -757,8 +759,8 @@ class LLMRuntime:
             return out
 
         raise RuntimeError(
-            f"embed_batch unserviceable (n={len(texts)}, caller={_get_caller()}): embed_engine="
-            f"{getattr(settings, 'embed_engine', '?')}, model={settings.embedding_model}. "
+            f"embed_batch unserviceable (n={len(texts)}, caller={_get_caller()}): "
+            f"model={settings.embedding_model}. "
             f"Refusing to zero-fill {len(texts)} vectors into the index — "
             f"check /system/model-readiness."
         )

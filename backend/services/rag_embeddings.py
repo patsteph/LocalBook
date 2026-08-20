@@ -49,12 +49,12 @@ def load_embedding_model():
 # ─── Sync Embedding ─────────────────────────────────────────────────────────────
 
 def _mlx_embed_sync_or_none(texts: List[str]) -> Optional[List[List[float]]]:
-    """When embed_engine==mlx, embed via the in-process MLX engine synchronously (same
+    """Embed via the in-process MLX engine synchronously (same
     arctic model + 1024 dim → no re-index). Returns None (→ Ollama fallback) on flag-off,
     unavailable engine, shape mismatch, or ANY error. Mirrors llm_runtime._mlx_embed_or_none
     for the sync paths so query and doc encoders stay consistent."""
-    if getattr(settings, "embed_engine", "ollama") != "mlx":
-        return None
+    # See llm_runtime._mlx_embed_or_none: the `embed_engine` gate that was here became
+    # permanently true when the setting was deleted, disabling every sync embed.
     try:
         from services.mlx_engine import mlx_engine
         if not mlx_engine.available():
@@ -78,7 +78,7 @@ def _get_embedding_sync(text: str) -> List[float]:
     if _mlx is not None:
         return _mlx[0]
     raise RuntimeError(
-        f"embed unserviceable: embed_engine={getattr(settings, 'embed_engine', '?')}, "
+        f"embed unserviceable: "
         f"model={settings.embedding_model}. Refusing to return an empty embedding."
     )
 
@@ -131,8 +131,7 @@ def _get_embeddings_batch_sync(texts: List[str]) -> List[List[float]]:
         return out
 
     raise RuntimeError(
-        f"embed_batch unserviceable (n={len(texts)}): embed_engine="
-        f"{getattr(settings, 'embed_engine', '?')}, model={settings.embedding_model}. "
+        f"embed_batch unserviceable (n={len(texts)}): model={settings.embedding_model}. "
         f"Refusing to zero-fill {len(texts)} vectors into the index."
     )
 

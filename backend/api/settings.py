@@ -273,14 +273,12 @@ async def get_ollama_models():
         except Exception as _mlx_e:
             logger.debug(f"[settings] MLX model enumeration failed: {_mlx_e}")
 
-    # Attach active-role flags from current settings (engine-aware: mlx role → mlx model)
-    def _active_for(engine_attr, mlx_attr, ollama_val):
-        return getattr(app_settings, mlx_attr) if getattr(app_settings, engine_attr, "ollama") == "mlx" else ollama_val
+    # Active role → model. Each attribute IS the live checkpoint since the role collapse.
     active = {
-        "main": _active_for("main_engine", "main_model", app_settings.main_model),
-        "fast": _active_for("fast_engine", "fast_model", app_settings.fast_model),
-        "embeddings": _active_for("embed_engine", "embedding_model", app_settings.embedding_model),
-        "vision": _active_for("vision_engine", "vision_model", app_settings.vision_model),
+        "main": app_settings.main_model,
+        "fast": app_settings.fast_model,
+        "embeddings": app_settings.embedding_model,
+        "vision": app_settings.vision_model,
     }
 
     def _names_match(config_name: str, ollama_name: str) -> bool:

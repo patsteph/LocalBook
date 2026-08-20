@@ -289,10 +289,9 @@ async def free_for_pipeline(
         mlx_keep.discard(None)
         try:
             from config import settings as _st
-            if getattr(_st, "embed_engine", "ollama") == "mlx":
-                # The embedder is cheap to keep and expensive to reload on the next search.
-                mlx_keep.add(getattr(_st, "embedding_model", None))
-                mlx_keep.discard(None)
+            # The embedder is cheap to keep and expensive to reload on the next search.
+            mlx_keep.add(getattr(_st, "embedding_model", None))
+            mlx_keep.discard(None)
         except Exception:
             pass
         freed_mlx = await mlx_engine.unload_all(keep=sorted(mlx_keep))

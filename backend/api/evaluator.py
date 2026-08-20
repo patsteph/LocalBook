@@ -295,7 +295,11 @@ def _delta(a, b):
 
 
 def _engines_of(result: dict) -> dict:
-    """Per-role engines, from the combo snapshot."""
+    """Per-role engines, from the COMBO SNAPSHOT of a persisted run.
+
+    Reads run provenance, not live settings — a pre-cutover run legitimately holds "ollama"
+    or "llama_server" and the comparison view has to see that to refuse a mismatched A/B.
+    """
     combo = result.get("combo") or {}
     return {k.replace("_engine", ""): combo.get(k)
             for k in ("main_engine", "fast_engine", "vision_engine", "embed_engine")
@@ -392,11 +396,7 @@ async def save_default_combo(payload: dict):
     main_model = payload.get("main_model") or settings.main_model
     fast_model = payload.get("fast_model") or settings.fast_model
     vision_model = payload.get("vision_model") or settings.vision_model
-    # Resolved active embedding (engine-aware) — persisted so the frontend can tell when a
-    # standalone embedding adoption differs from the saved default (enables the Save button).
-    embeddings_model = (settings.embedding_model
-                        if getattr(settings, "embed_engine", "ollama") == "mlx"
-                        else settings.embedding_model)
+    embeddings_model = settings.embedding_model
     
     # Validate models are installed (registry match preferred, live fallback for community models).
     # Wave 9.6 — MLX models are HuggingFace ids (org/repo), NOT Ollama models: the Ollama /api/show

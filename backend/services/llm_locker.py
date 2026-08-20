@@ -261,47 +261,35 @@ class LLMLocker:
         return True, msg, changes
 
     @classmethod
-    def execute_swap(cls, target_ollama_name: str, role: str) -> str:
-        """
-        Executes the swap physically into the environment and config states.
-        Wave 9.4: engine-aware — an MLX target flips the role's engine flag to "mlx"
-        (and sets the mlx_* model id); an Ollama target flips it back to "ollama". So
-        selecting an MLX model in the Locker adopts MLX with NO .env editing.
-        """
-        # MLX target → engine=mlx swap (bypasses Ollama analyze_swap / disk math).
-        if cls._is_mlx_target(target_ollama_name):
-            return cls._execute_mlx_swap(target_ollama_name, role)
+    def execute_swap(cls, target_model: str, role: str) -> str:
+        """Point `role` at `target_model` — persisted to .env and applied in-memory.
 
-        is_safe, message, changes = cls.analyze_swap(target_ollama_name, role)
+        There used to be two paths here: an MLX target flipped the role's `*_engine` flag to
+        "mlx" and set an `mlx_*` id, an Ollama target flipped it back. The v2.3.0 collapse
+        removed both the flags and the second engine, so a swap is now just "which checkpoint
+        does this role use".
+        """
+        is_safe, message, changes = cls.analyze_swap(target_model, role)
 
         if not is_safe:
             raise ModelSwapError(message)
 
-        # Ensure the role's engine flag reflects an Ollama target (undo a prior MLX pin).
-        _eng = {"main_model": "main_engine", "fast_model": "fast_engine",
-                "vision_model": "vision_engine", "embedding_model": "embed_engine"}.get(role)
-        if _eng:
-            changes[_eng] = "ollama"
-        # Option A (reverse) — switching MAIN back to Ollama returns vision to Ollama too;
-        # its runtime `resolve_vision_model` then rides the (vision-capable) main model.
+        # Option A — a vision-capable MAIN model absorbs the vision slot too (one gemma load
+        # serves text + vision; the memory win depends on NOT loading it twice).
         if role == "main_model":
-            changes["vision_engine"] = "ollama"
+            try:
+                from evaluator.capability_probe import probe_capabilities
+                caps = probe_capabilities(target_model)
+                if caps and caps.vision:
+                    changes["vision_model"] = target_model
+                    message += " (vision follows — Option A)"
+            except Exception:
+                pass
 
         # Write changes to the config environment
         cls._patch_environment(changes)
 
         return message
-
-    @staticmethod
-    def _is_mlx_target(name: str) -> bool:
-        """True if `name` refers to an MLX model (a configured mlx_* id or a known MLX org repo)."""
-        from config import settings as s
-        if name in {getattr(s, "main_model", None), getattr(s, "fast_model", None),
-                    getattr(s, "vision_model", None), getattr(s, "embedding_model", None)}:
-            return True
-        return "/" in name and any(name.startswith(o) for o in (
-            "mlx-community/", "Runpod/", "lmstudio-community/", "unsloth/",
-            "AITRADER/", "themindstudio/"))
 
     @classmethod
     def _check_mlx_swap_safe(cls, mlx_model: str, role: str) -> None:
@@ -347,82 +335,6 @@ class LLMLocker:
         except Exception as e:
             logger.debug(f"[locker] MLX fit check skipped: {e}")
 
-    @classmethod
-    def _execute_mlx_swap(cls, mlx_model: str, role: str) -> str:
-        """Flip a role to the MLX engine + set its mlx model id. Persisted + in-memory."""
-        role_map = {
-            "main_model": ("main_engine", "main_model"),
-            "fast_model": ("fast_engine", "fast_model"),
-            "vision_model": ("vision_engine", "vision_model"),
-            "embedding_model": ("embed_engine", "embedding_model"),
-        }
-        if role not in role_map:
-            raise ModelSwapError(f"MLX engine swap is not supported for role '{role}'")
-        eng_attr, model_attr = role_map[role]
-
-        # SAFETY (Stage 3.8). `execute_swap` short-circuits here BEFORE `analyze_swap`, so
-        # every guardrail — RAM fit, headroom, min_ram refusal — applied only to Ollama
-        # targets. MLX swaps had NONE, and deleting the Ollama half would have deleted the
-        # Locker's only safety layer rather than half of it.
-        cls._check_mlx_swap_safe(mlx_model, role)
-
-        changes = {eng_attr: "mlx", model_attr: mlx_model}
-        # Option A — a vision-capable MLX MAIN model absorbs the vision slot too (one gemma
-        # load serves text + vision; the memory win depends on NOT loading it twice). Mirrors
-        # the Ollama `resolve_vision_model` behaviour. Only when the model actually has vision.
-        extra = ""
-        if role == "main_model":
-            try:
-                from evaluator.capability_probe import probe_capabilities
-                caps = probe_capabilities(mlx_model, provider="mlx")
-                if caps and caps.vision:
-                    changes["vision_engine"] = "mlx"
-                    changes["vision_model"] = mlx_model
-                    extra = " (vision follows — Option A)"
-            except Exception:
-                pass
-        cls._patch_environment(changes)
-        # When the user has gone all-MLX for the text/vision roles, bring the two remaining
-        # capabilities onto MLX too and kick off their downloads in the background NOW — so the
-        # first time they're used the model is already on disk instead of stalling on a lazy
-        # first-use fetch mid-session (user requests 2026-07-17 image, 2026-07-22 embeddings):
-        #   • image generation (klein/mflux, ~4 GB) — else "Klein model not installed"
-        #   • embeddings (arctic-embed-l-v2.0 bf16, 1.1 GB measured) — else the first RAG search / @curator
-        #     routing / constellation clustering / memory recall blocks on the download.
-        # Embeddings run the SAME arctic model at the SAME 1024 dim as Ollama → NO re-index; both
-        # hooks are fallback-safe (a failed download just falls back to the Ollama path).
-        try:
-            from config import settings as _s
-            text_all_mlx = (getattr(_s, "main_engine", "") == "mlx"
-                            and getattr(_s, "fast_engine", "") == "mlx"
-                            and getattr(_s, "vision_engine", "") == "mlx")
-            if text_all_mlx:
-                import asyncio
-                from services.mlx_download import mlx_download_manager
-
-                def _prefetch(model_id: str) -> bool:
-                    """Start a background HF download so the model is ready, not fetched mid-use.
-                    No running loop (sync caller) → returns False; the model still downloads lazily."""
-                    if not model_id:
-                        return False
-                    try:
-                        asyncio.get_running_loop().create_task(mlx_download_manager.start(model_id))
-                        return True
-                    except RuntimeError:
-                        return False
-
-                if getattr(_s, "image_engine", "ollama") != "mlx":
-                    cls._patch_environment({"image_engine": "mlx"})
-                    if _prefetch(getattr(_s, "image_model", "")):
-                        extra += " · image→MLX (klein downloading)"
-                if getattr(_s, "embed_engine", "ollama") != "mlx":
-                    cls._patch_environment({"embed_engine": "mlx"})
-                    if _prefetch(getattr(_s, "embedding_model", "")):
-                        extra += " · embed→MLX (arctic downloading)"
-        except Exception as _e:
-            logger.debug(f"[llm_locker] all-MLX prefetch hook skipped: {_e}")
-        return f"Switched {role} to the MLX engine: {mlx_model}{extra}"
-        
     @classmethod
     def _patch_environment(cls, changes: Dict[str, Any]):
         """Persists changes back to the .env file and reloads config settings."""
@@ -477,9 +389,9 @@ class LLMLocker:
             setattr(settings, 'embedding_model', changes["embedding_model"])
         if "embedding_dim" in changes:
             setattr(settings, 'embedding_dim', int(changes["embedding_dim"]))
-        # Wave 9.4 — sync engine flags + mlx model ids to the live settings (session-immediate).
-        for _attr in ("main_engine", "fast_engine", "vision_engine", "image_engine", "embed_engine",
-                      "main_model", "fast_model", "vision_model", "embedding_model"):
+        # Sync role models to the live settings (session-immediate).
+        for _attr in ("main_model", "fast_model", "vision_model", "image_model",
+                      "embedding_model"):
             if _attr in changes:
                 setattr(settings, _attr, changes[_attr])
             
