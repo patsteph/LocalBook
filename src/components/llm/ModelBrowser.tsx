@@ -17,7 +17,13 @@ import { API_BASE_URL, localFetch } from '../../services/api';
 type Sort = 'downloads' | 'likes' | 'lastModified' | 'createdAt';
 type RoleFilter = '' | 'main' | 'fast' | 'vision' | 'embedding' | 'image';
 
-interface Origin { vendor: string; country: string; flag: string; allowed: boolean; org: string }
+interface Origin {
+  vendor: string; country: string; flag: string; allowed: boolean; org: string;
+  /** The publishing account, shown when the lineage could not be established. */
+  lab?: string;
+  /** False when origin is a guess from the repo name rather than a resolved lineage. */
+  verified?: boolean;
+}
 interface Fit { verdict: 'fits' | 'tight' | 'over' | 'unknown'; needed_gb?: number; budget_gb?: number }
 interface Caps { text: boolean; vision: boolean; embedding: boolean; image: boolean; audio: boolean }
 
@@ -98,15 +104,30 @@ function ago(iso: string): string {
   return `${(d / 365).toFixed(1)}y ago`;
 }
 
+// Browse state lives OUTSIDE the component so switching tabs does not throw it away.
+// LLMStudio unmounts the inactive tab, so a search, sort and scroll position were reset
+// every time the user looked at the Locker and came back — losing their place halfway
+// through a list. (User report, 2026-08-20.) Module scope is the right home: it is per
+// session, needs no provider, and is deliberately NOT persisted — a stale result list on
+// next launch would be worse than a fresh fetch.
+const browseState: {
+  sort: Sort; role: RoleFilter; fitsOnly: boolean; query: string;
+  models: CatalogModel[]; blockedHidden: number; scrollTop: number; loaded: boolean;
+} = {
+  sort: 'downloads', role: '', fitsOnly: false, query: '',
+  models: [], blockedHidden: 0, scrollTop: 0, loaded: false,
+};
+
 export function ModelBrowser() {
-  const [models, setModels] = useState<CatalogModel[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [models, setModels] = useState<CatalogModel[]>(browseState.models);
+  const [loading, setLoading] = useState(!browseState.loaded);
   const [offline, setOffline] = useState<string | null>(null);
-  const [blockedHidden, setBlockedHidden] = useState(0);
-  const [sort, setSort] = useState<Sort>('downloads');
-  const [role, setRole] = useState<RoleFilter>('');
-  const [fitsOnly, setFitsOnly] = useState(false);
-  const [query, setQuery] = useState('');
+  const [blockedHidden, setBlockedHidden] = useState(browseState.blockedHidden);
+  const [sort, setSort] = useState<Sort>(browseState.sort);
+  const [role, setRole] = useState<RoleFilter>(browseState.role);
+  const [fitsOnly, setFitsOnly] = useState(browseState.fitsOnly);
+  const [query, setQuery] = useState(browseState.query);
+  const scrollRef = useRef<HTMLDivElement | null>(null);
   const [detail, setDetail] = useState<CatalogModel | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [downloads, setDownloads] = useState<Record<string, Download>>({});
@@ -127,6 +148,9 @@ export function ModelBrowser() {
       setOffline(data.offline ? (data.reason || 'Offline') : null);
       setModels(data.models || []);
       setBlockedHidden(data.blocked_hidden || 0);
+      browseState.models = data.models || [];
+      browseState.blockedHidden = data.blocked_hidden || 0;
+      browseState.loaded = true;
     } catch (e: any) {
       setOffline(e?.message ? `Could not load the catalog (${e.message})` : 'Could not load the catalog');
       setModels([]);
@@ -135,7 +159,27 @@ export function ModelBrowser() {
     }
   }, [sort, role, fitsOnly, query]);
 
+  // Remember the controls so a remount restores them rather than snapping back to defaults.
   useEffect(() => {
+    browseState.sort = sort;
+    browseState.role = role;
+    browseState.fitsOnly = fitsOnly;
+    browseState.query = query;
+  }, [sort, role, fitsOnly, query]);
+
+  const first = useRef(true);
+  useEffect(() => {
+    // Returning to the tab with results already in hand: restore them and the scroll
+    // position instead of refetching, which would flash a spinner and jump to the top.
+    if (first.current && browseState.loaded) {
+      first.current = false;
+      setLoading(false);
+      requestAnimationFrame(() => {
+        if (scrollRef.current) scrollRef.current.scrollTop = browseState.scrollTop;
+      });
+      return;
+    }
+    first.current = false;
     window.clearTimeout(debounce.current);
     debounce.current = window.setTimeout(load, query ? 350 : 0);
     return () => window.clearTimeout(debounce.current);
@@ -189,7 +233,11 @@ export function ModelBrowser() {
   };
 
   return (
-    <div className="p-4 space-y-3">
+    <div
+      className="p-4 space-y-3 max-h-[70vh] overflow-y-auto"
+      ref={scrollRef}
+      onScroll={(e) => { browseState.scrollTop = (e.target as HTMLDivElement).scrollTop; }}
+    >
       {/* Controls */}
       <div className="flex flex-wrap items-center gap-2">
         <input
@@ -258,8 +306,17 @@ export function ModelBrowser() {
                       {m.name}
                     </button>
                     <div className="text-xs text-gray-500 dark:text-gray-400 truncate">
-                      <span title={`${m.origin.vendor}${m.origin.country ? ` · ${m.origin.country}` : ''}`}>
+                      <span
+                        title={
+                          m.origin.verified === false
+                            ? `Origin not established — no base-model or architecture tag. "${m.origin.lab || m.origin.vendor}" is the publishing account, not necessarily who trained it.`
+                            : `${m.origin.vendor}${m.origin.country ? ` · ${m.origin.country}` : ''}`
+                        }
+                      >
                         {m.origin.flag} {m.origin.vendor}
+                        {m.origin.verified === false && (
+                          <span className="ml-1 text-gray-400 dark:text-gray-500">· lab, origin unverified</span>
+                        )}
                       </span>
                       {m.license && <span className="ml-2">· {m.license}</span>}
                     </div>
@@ -355,7 +412,10 @@ function ModelCard({ model, loading, onClose, onDownload, download }: {
 
         <div className="p-4 space-y-3 overflow-y-auto">
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
-            <Stat label="Origin" value={`${model.origin.flag} ${model.origin.vendor}`} />
+            <Stat
+              label={model.origin.verified === false ? 'Lab (origin unverified)' : 'Origin'}
+              value={`${model.origin.flag} ${model.origin.vendor}`}
+            />
             <Stat label="Size" value={model.size_gb != null ? `${model.size_gb} GB` : 'unknown'} />
             <Stat label="Downloads" value={compact(model.downloads)} />
             <Stat label="Likes" value={compact(model.likes)} />

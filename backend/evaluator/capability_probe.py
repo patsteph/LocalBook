@@ -168,8 +168,31 @@ class MLXCapabilityProbe:
         model_type = str(cfg.get("model_type", "") or "")
         archs = [str(a) for a in (cfg.get("architectures") or [])]
         vision = cfg.get("vision_config") is not None
+        # `bert` + `BertModel` is the classic sentence-transformers embedder shape; without
+        # it MiniLM was offered as a Main chat model.
         is_embed = ("embed" in model_type.lower()
-                    or any("embed" in a.lower() or "roberta" in a.lower() for a in archs))
+                    or model_type.lower() in {"bert", "xlm-roberta", "nomic_bert", "mpnet"}
+                    or any(("embed" in a.lower() or "roberta" in a.lower()
+                            or a.lower() in {"bertmodel", "mpnetmodel"}) for a in archs))
+
+        # NOT-A-CHAT-MODEL guard. Text generation was assumed for anything that wasn't
+        # obviously an embedder, so the Locker offered Kokoro (TTS), whisper (ASR) and
+        # FLUX/Klein (diffusion) as Main and Fast models — pick one and chat produces
+        # nothing, with no error. These live in the same cache and are enumerated alongside
+        # real LLMs, so the Locker has to tell them apart. (User report, 2026-08-20.)
+        _mt = model_type.lower()
+        _arch_l = " ".join(archs).lower()
+        _speech = _mt in {"whisper", "wav2vec2", "hubert", "parakeet", "moonshine"} or "whisper" in _arch_l
+        _tts = (not _mt and not archs) or "kokoro" in model.lower() or _mt in {"kokoro", "bark", "vits"}
+        _diffusion = ("flux" in _mt or "diffusion" in _mt or "stable" in _mt
+                      or cfg.get("vae") is not None or cfg.get("transformer") is not None)
+        _reranker = any("sequenceclassification" in a.lower() for a in archs)
+        if _speech or _tts or _diffusion or _reranker:
+            return ProbedCapabilities(
+                model=model, provider="mlx", source="probe",
+                text=False, vision=False, embedding=False,
+                native_ctx=0, family=model_type,
+            )
         quant = cfg.get("quantization")
         bits = quant.get("bits") if isinstance(quant, dict) else None
         ctx = int(tcfg.get("max_position_embeddings") or cfg.get("max_position_embeddings") or 0)

@@ -258,10 +258,23 @@ async def get_ollama_models():
             # geometry and derives the budget from the GPU's addressable working set.
             from services import model_sizing as _sizing
             _seen = {e.get("name") for e in enriched}
+            # EVERY model in the local cache, not just the four currently assigned to a
+            # role. Enumerating only the configured roles meant a model you had just
+            # downloaded did not appear in the Locker at all — so there was no way to
+            # select it, and the download looked like it had failed. (User report,
+            # 2026-08-20.) The configured ids are unioned in so a role always renders even
+            # if its cache entry is somehow unreadable.
+            from services.model_presence import enumerate_cached as _enum
+            try:
+                _cached_ids = [m["model_id"] for m in _enum()]
+            except Exception:
+                _cached_ids = []
             _mlx_ids = dict.fromkeys(
-                getattr(app_settings, k, None)
-                for k in ("main_model", "fast_model", "vision_model",
-                          "embedding_model"))
+                _cached_ids + [
+                    getattr(app_settings, k, None)
+                    for k in ("main_model", "fast_model", "vision_model",
+                              "embedding_model", "image_model")
+                ])
             for _mid in [x for x in _mlx_ids if x and x not in _seen]:
                 _c = _mprobe(_mid, provider="mlx")
                 if not _c:
@@ -280,6 +293,12 @@ async def get_ollama_models():
                 if _mid == getattr(app_settings, "embedding_model", None):
                     _role_slots.append("embedding_model")
                 _roles = list(dict.fromkeys(_role_slots)) or _c.roles()
+                # Nothing to assign it to → do not list it. The cache holds TTS, ASR,
+                # diffusion and reranker models alongside the LLMs; a card with no role is a
+                # row the user cannot act on, and offering Kokoro as a Main model produces
+                # silence rather than an error. (User report, 2026-08-20.)
+                if not _roles:
+                    continue
                 _sr = ("fast" if _role_slots == ["fast_model"]
                        else "vision" if _role_slots == ["vision_model"]
                        else "embeddings" if _role_slots == ["embedding_model"]

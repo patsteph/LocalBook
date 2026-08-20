@@ -138,3 +138,47 @@ def test_offline_returns_a_reason_rather_than_raising(monkeypatch):
     assert res["offline"] is True
     assert res["models"] == []
     assert "Hugging Face" in res["reason"]
+
+
+# ── Architecture-based lineage (2026-08-20) ─────────────────────────────────────
+
+@pytest.mark.parametrize("model_id,arch,vendor", [
+    # A third-party fine-tune keeps its base model's architecture but publishes under the
+    # fine-tuner's account with no base_model tag. Measured live: 24 of 31 unresolved models
+    # were Chinese-origin derivatives being offered as allowed because nothing named them.
+    ("prism-ml/Bonsai-8B-mlx-1bit",                    "qwen3",       "Alibaba / Qwen"),
+    ("majentik/UI-Mate-27B-MLX-3bit",                  "qwen3_5",     "Alibaba / Qwen"),
+    ("Shiftedx/ornith-1.0-35b-mxfp4-mtplx",            "qwen3_5_moe", "Alibaba / Qwen"),
+    ("lmstudio-community/Seed-OSS-36B-Instruct-MLX",   "seed_oss",    "ByteDance (Seed)"),
+    ("majentik/MiniMax-M2.7-TurboQuant-MLX-3bit",      "minimax_m2",  "MiniMax"),
+])
+def test_a_fine_tune_is_traced_through_its_architecture(model_id, arch, vendor):
+    o = mc.origin_of(model_id, ["mlx", "safetensors", arch])
+    assert o["vendor"] == vendor, o
+    assert o["allowed"] is False, "a derivative of a blocked origin is itself blocked"
+    assert o["verified"] is True
+
+
+def test_architecture_outranks_the_publishing_account():
+    """The owner of a fine-tune is the fine-tuner. Lineage is what the policy is about, so
+    the architecture has to win — otherwise republishing under a new account launders it."""
+    o = mc.origin_of("some-us-lab/friendly-name-mlx-4bit", ["mlx", "qwen3"])
+    assert o["allowed"] is False
+
+
+@pytest.mark.parametrize("arch,vendor", [
+    ("gemma4", "Google"), ("llama", "Meta"), ("phi4", "Microsoft"),
+    ("mistral", "Mistral AI"), ("smolvlm", "Hugging Face"),
+])
+def test_allowed_lineages_resolve_too(arch, vendor):
+    assert mc.origin_of(f"repackager/thing-{arch}-mlx", ["mlx", arch])["vendor"] == vendor
+
+
+def test_an_unattributable_model_names_its_lab_and_says_so():
+    """When nothing identifies the lineage, name the publishing ACCOUNT — a checkable fact —
+    and mark it unverified rather than implying it was cleared."""
+    o = mc.origin_of("VertexAGI/prism-caption-1-micro", ["mlx", "safetensors"])
+    assert o["lab"] == "VertexAGI"
+    assert o["vendor"] == "VertexAGI"
+    assert o["verified"] is False
+    assert o["flag"], "still needs a placeholder flag so the row renders"

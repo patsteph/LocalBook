@@ -395,11 +395,37 @@ if [ -d "$APP_PATH" ] && [ -n "${APPLE_SIGNING_IDENTITY:-}" ]; then
     echo -e "${GREEN}✓ Post-Tauri Developer ID signing complete (notarization-ready)${NC}"
 fi
 
-# Copy app to easy location. ditto preserves all metadata (extended
-# attributes, code signatures, symlinks) which a plain `cp -r` may not.
+# Copy the app to an easy location — BUILD TO TEMP, THEN SWAP.
+#
+# This used to `rm -rf ./LocalBook.app` and then `ditto` into place. A build interrupted
+# between those two lines (Ctrl-C, a killed terminal, a failing step) left NO app at all:
+# the working copy was deleted and the replacement never arrived. That happened on
+# 2026-08-20 and the only clue was `./LocalBook.app: No such file or directory`.
+#
+# Now the new copy is staged alongside and moved into place only once it is complete, so the
+# previous app survives any failure. `ditto` preserves extended attributes, code signatures
+# and symlinks, which a plain `cp -r` does not.
 if [ -d "$APP_PATH" ]; then
-    rm -rf "./LocalBook.app"
-    ditto "$APP_PATH" "./LocalBook.app"
+    STAGE="./.LocalBook.app.new"
+    OLD="./.LocalBook.app.old"
+    rm -rf "$STAGE" "$OLD"
+    if ditto "$APP_PATH" "$STAGE"; then
+        # Swap: move the current app aside, put the new one in place, then drop the old.
+        # If the mv of the new copy fails, the previous app is restored rather than lost.
+        [ -d "./LocalBook.app" ] && mv "./LocalBook.app" "$OLD"
+        if mv "$STAGE" "./LocalBook.app"; then
+            rm -rf "$OLD"
+        else
+            echo -e "${RED}✗ Could not move the new app into place — restoring the previous one.${NC}"
+            [ -d "$OLD" ] && mv "$OLD" "./LocalBook.app"
+            rm -rf "$STAGE"
+            exit 1
+        fi
+    else
+        echo -e "${RED}✗ ditto failed while staging the app — the existing ./LocalBook.app is untouched.${NC}"
+        rm -rf "$STAGE"
+        exit 1
+    fi
 fi
 
 echo -e "\n${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"

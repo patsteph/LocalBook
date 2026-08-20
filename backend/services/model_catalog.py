@@ -76,7 +76,43 @@ VENDORS: Dict[str, Tuple[str, str, str, bool]] = {
     "tiiuae":            ("TII (Falcon)", "AE", "🇦🇪", False),
     "core42":            ("Core42 (Jais)", "AE", "🇦🇪", False),
     "moonshotai":        ("Moonshot", "CN", "🇨🇳", False),
+    "minimaxai":         ("MiniMax", "CN", "🇨🇳", False),
+    "bytedance":         ("ByteDance (Seed)", "CN", "🇨🇳", False),
     "01ai":              ("01.AI (Yi)", "CN", "🇨🇳", False),
+}
+
+# ARCHITECTURE → origin. THE most reliable signal, and the one that closes the real hole:
+# a third-party fine-tune keeps its base model's `model_type` (a Qwen fine-tune is still
+# `qwen3`), but the repackager routinely drops the `base_model:` tag and publishes under
+# their own account. Measured 2026-08-20: 24 of 31 unresolved models were Chinese-origin
+# derivatives — Qwen fine-tunes, ByteDance Seed, MiniMax — every one of which was being
+# offered as allowed because nothing identified them.
+#
+# Architecture is far harder to disguise than a repo name: it has to match the weights.
+ARCH_ORIGIN = {
+    # Blocked lineages
+    "qwen2": "qwen", "qwen3": "qwen", "qwen3_5": "qwen", "qwen2_moe": "qwen",
+    "qwen3_moe": "qwen", "qwen3_5_moe": "qwen", "qwen2_vl": "qwen", "qwen3_vl": "qwen",
+    "deepseek_v2": "deepseek-ai", "deepseek_v3": "deepseek-ai", "deepseek_vl": "deepseek-ai",
+    "minimax_m2": "minimaxai", "minimax": "minimaxai",
+    "seed_oss": "bytedance",
+    "glm4": "thudm", "glm4v": "thudm", "chatglm": "thudm",
+    "internlm2": "internlm", "internlm3": "internlm",
+    "baichuan": "baichuan-inc",
+    "yi": "01-ai",
+    # Allowed lineages
+    "gemma": "google", "gemma2": "google", "gemma3": "google", "gemma4": "google",
+    "llama": "meta-llama", "llama4": "meta-llama", "mllama": "meta-llama",
+    "mistral": "mistralai", "mixtral": "mistralai",
+    "phi3": "microsoft", "phi4": "microsoft", "phimoe": "microsoft",
+    "granite": "ibm-granite", "granitemoe": "ibm-granite",
+    "cohere": "cohereforai", "cohere2": "cohereforai",
+    "olmo": "allenai", "olmo2": "allenai", "olmoe": "allenai",
+    "smolvlm": "huggingface", "smollm": "huggingface", "smollm3": "huggingface",
+    "starcoder2": "bigcode",
+    "whisper": "openai", "gpt_oss": "openai",
+    "xlm-roberta": "sentence-transformers", "bert": "sentence-transformers",
+    "flux": "black-forest-labs",
 }
 
 # Substring fallbacks for when the org is a repackager (mlx-community, lmstudio-community…)
@@ -119,15 +155,33 @@ def origin_of(model_id: str, tags: Optional[List[str]] = None) -> Dict[str, Any]
         owner = (model_id.split("/", 1)[0] or "").lower()
         if owner in VENDORS:
             org = owner
+    # ARCHITECTURE next — see ARCH_ORIGIN. This runs BEFORE the owner check on purpose: the
+    # owner of a fine-tune is the fine-tuner, whereas the architecture names the lineage, and
+    # lineage is what the origin policy is actually about.
+    if not org:
+        for t in (tags or []):
+            key = ARCH_ORIGIN.get(t.lower())
+            if key:
+                org = key
+                break
     if not org:
         low = model_id.lower()
         for needle, key in NAME_HINTS:
             if needle in low:
                 org = key
                 break
-    vendor, country, flag, allowed = VENDORS.get(org, UNKNOWN_ORIGIN)
-    return {"vendor": vendor, "country": country, "flag": flag,
-            "allowed": allowed, "org": org or ""}
+
+    if org:
+        vendor, country, flag, allowed = VENDORS.get(org, UNKNOWN_ORIGIN)
+        return {"vendor": vendor, "country": country, "flag": flag,
+                "allowed": allowed, "org": org, "lab": "", "verified": True}
+
+    # Genuinely unattributable. Name the LAB that published it — the account is a real,
+    # checkable fact even when the lineage is not — and say plainly that the origin is
+    # unverified rather than implying it was cleared.
+    lab = model_id.split("/", 1)[0] if "/" in model_id else ""
+    return {"vendor": lab or "Unknown", "country": "", "flag": "🏳️",
+            "allowed": True, "org": "", "lab": lab, "verified": False}
 
 
 def size_gb_of(safetensors: Optional[dict]) -> Optional[float]:
