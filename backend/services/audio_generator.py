@@ -1972,7 +1972,10 @@ Write at least {phase_exchanges} back-and-forth exchanges between {name_a} and {
         Single-narrator mode: cleans script and chunks by paragraph.
         No script length limit — chunked generation handles any length.
         """
+        import time as _time
         import traceback
+
+        _pipeline_t0 = _time.time()
         import shutil
         from services.audio_llm import audio_llm
         
@@ -2168,11 +2171,18 @@ Write at least {phase_exchanges} back-and-forth exchanges between {name_a} and {
                 "duration_seconds": duration_seconds,
                 "error_message": None
             })
-            print(f"✅ Audio generated: {audio_id} → {final_path} ({duration_seconds}s)")
+            # logger, not print: the pipeline runs as a detached background task whose stdout
+            # does not reach backend.log, so a successful podcast produced NO log line at all —
+            # the only way to confirm one had worked was to stat the .wav. (2026-08-20)
+            _elapsed = _time.time() - _pipeline_t0
+            logger.info(
+                f"[STUDIO] Podcast COMPLETE audio_id={audio_id} "
+                f"{duration_seconds:.0f}s of audio in {_elapsed:.0f}s → {final_path.name}"
+            )
             
         except Exception as e:
-            print(f"❌ Audio generation failed: {e}")
-            traceback.print_exc()
+            logger.error(f"[STUDIO] Podcast FAILED audio_id={audio_id}: {type(e).__name__}: {e}",
+                         exc_info=True)
             await audio_store.update(audio_id, {
                 "status": "failed",
                 "error_message": str(e)

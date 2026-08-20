@@ -1310,6 +1310,19 @@ async def v2_compose(request: V2ComposeRequest):
         )
     payload = _visual_to_dict(visual)
 
+    # Completion line. Everything below already assembled these facts for telemetry, but none
+    # of it reached backend.log — a finished visual left only a `memory_steward resumed
+    # (visual)` line, so there was no way to tell from the log whether it rendered via
+    # diffusion, freeform SVG or a template, or whether it succeeded at all. (2026-08-20)
+    logger.info(
+        f"[STUDIO] Visual {'COMPLETE' if visual.success else 'FAILED'} "
+        f"path={visual.path.value} format={visual.output_format.value} "
+        f"setup={visual.setup.value} retries={visual.retry_count} "
+        f"{visual.generation_ms}ms"
+        + (f" critic={visual.critic_score.overall}" if visual.critic_score else "")
+        + ("" if visual.success else f" error={getattr(visual, 'error', None)}")
+    )
+
     # Telemetry hook (same surface as existing endpoints)
     try:
         log_content_generated(

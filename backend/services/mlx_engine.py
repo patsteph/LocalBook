@@ -18,6 +18,7 @@ Design invariants:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import functools
 import logging
 import os
@@ -68,6 +69,62 @@ def _combine(system: Optional[str], prompt: str) -> str:
 # layout trips mlx-vlm's loader (a bug in an audio path LocalBook never uses). Nulling
 # `audio_config` + dropping the audio weights loads a clean VISION+TEXT-only model.
 _AUDIO_WEIGHT_PREFIXES = ("audio_tower", "embed_audio")
+
+
+@contextlib.contextmanager
+def offline_if_cached(model_id: str):
+    """Load `model_id` WITHOUT contacting huggingface.co when it is already on disk.
+
+    `mlx_lm.load` / `mlx_vlm.get_model_path` / `mlx_embeddings.load` all resolve through the
+    Hub, which revalidates the revision over the network even for a fully cached model. Three
+    consequences, all observed in the backend log (11 occurrences since 2026-08-19, most
+    recently 11:51:18 while loading phi):
+
+      · an "unauthenticated requests to the HF Hub" warning on every cold load;
+      · **model loading depends on network reachability** — on a flaky link the load stalls
+        behind an HTTP timeout before touching a single local byte;
+      · a request leaves the machine, in an app whose premise is that nothing does.
+
+    Only engaged when the weights are ALREADY present. An uncached model still resolves
+    normally so a genuine first download can proceed — acquisition is the download manager's
+    job, and offline mode would only turn that into a confusing LocalEntryNotFoundError.
+
+    Both the env var and `constants.HF_HUB_OFFLINE` are set: the constant is captured at
+    import, so the env var alone is too late to matter here. Verified — a runtime flip
+    suppresses the network call AND is genuinely enforced (an uncached id raises
+    LocalEntryNotFoundError rather than downloading).
+
+    Restores prior state in `finally`. Every load already runs on the single `_exec` thread
+    under `_load_lock`, so this process-wide toggle is serialised in practice.
+    """
+    try:
+        from services.model_presence import is_present
+        cached = is_present(model_id)
+    except Exception:
+        cached = False
+    if not cached:
+        yield
+        return
+
+    import huggingface_hub.constants as _hc
+    prev_env = os.environ.get("HF_HUB_OFFLINE")
+    prev_const = getattr(_hc, "HF_HUB_OFFLINE", False)
+    os.environ["HF_HUB_OFFLINE"] = "1"
+    try:
+        _hc.HF_HUB_OFFLINE = True
+    except Exception:
+        pass
+    try:
+        yield
+    finally:
+        if prev_env is None:
+            os.environ.pop("HF_HUB_OFFLINE", None)
+        else:
+            os.environ["HF_HUB_OFFLINE"] = prev_env
+        try:
+            _hc.HF_HUB_OFFLINE = prev_const
+        except Exception:
+            pass
 
 
 def install_gemma_vision_only_shim() -> None:
@@ -418,7 +475,8 @@ def _embed_on_thread(engine, texts, model_id, batch_size, max_length):
         from mlx_embeddings import load as _eload
         logger.info(f"[mlx-engine] loading embedding model {model_id} …")
         _t0 = time.perf_counter()
-        pair = _eload(model_id)
+        with offline_if_cached(model_id):
+            pair = _eload(model_id)
         engine._embed_resident[model_id] = pair
         engine._last_used[model_id] = time.monotonic()
         logger.info(f"[mlx-engine] loaded embedding model {model_id} in {time.perf_counter() - _t0:.1f}s")
@@ -543,10 +601,15 @@ class MLXEngine:
             return self._kind[model_id]
         kind = "vlm" if "gemma" in model_id.lower() else "lm"
         try:
-            from huggingface_hub import hf_hub_download
-            import json as _json
-            cfg = _json.load(open(hf_hub_download(model_id, "config.json")))
-            kind = "vlm" if cfg.get("vision_config") is not None else "lm"
+            # `hf_hub_download` was the original here and it REVALIDATES against
+            # huggingface.co even for a cached file — this call, not the load itself, is what
+            # emitted the "unauthenticated requests to the HF Hub" warning on every cold
+            # start. It also runs BEFORE the load lock, so it is not covered by
+            # `offline_if_cached`. `load_config` reads the cached snapshot off disk.
+            from services.model_sizing import load_config
+            cfg = load_config(model_id) or {}
+            if cfg:
+                kind = "vlm" if cfg.get("vision_config") is not None else "lm"
         except Exception:
             pass
         self._kind[model_id] = kind
@@ -656,13 +719,14 @@ class MLXEngine:
             t0 = time.perf_counter()
 
             def _load():
-                if kind == "vlm":
-                    from mlx_vlm.utils import get_model_path, load_config
-                    pair = load_gemma_vision_only(model_id)
-                    self._vlm_config[model_id] = load_config(str(get_model_path(model_id)))
-                    return pair
-                from mlx_lm import load
-                return load(model_id)
+                with offline_if_cached(model_id):
+                    if kind == "vlm":
+                        from mlx_vlm.utils import get_model_path, load_config
+                        pair = load_gemma_vision_only(model_id)
+                        self._vlm_config[model_id] = load_config(str(get_model_path(model_id)))
+                        return pair
+                    from mlx_lm import load
+                    return load(model_id)
 
             pair = await self._run(_load)
             self._resident[model_id] = pair

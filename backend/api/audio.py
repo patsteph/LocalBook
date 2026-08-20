@@ -59,7 +59,11 @@ async def generate_audio(request: AudioGenerateRequest):
             chat_context=request.chat_context,
             register=request.register,
         )
-        logger.info(f"[STUDIO] Podcast generation completed: audio_id={result.get('audio_id', 'unknown')}")
+        # QUEUED, not completed: `generate()` returns as soon as the background pipeline is
+        # spawned, so this used to log "completed" ~4 minutes before the .wav existed. The real
+        # completion line comes from `_generate_audio_async`.
+        logger.info(f"[STUDIO] Podcast QUEUED: audio_id={result.get('audio_id', 'unknown')} "
+                    f"(generating in the background)")
         log_content_generated(request.notebook_id, "audio", request.skill_id or "podcast", request.topic or "")
         return result
     except Exception as e:

@@ -154,3 +154,47 @@ def test_every_cached_model_reports_a_size():
         and exact_weight_gb(r.repo_id) is None
     ]
     assert not invisible, f"cached but unsizeable: {invisible}"
+
+
+# ── Offline model loading (2026-08-20) ──────────────────────────────────────────
+
+def test_loading_a_cached_model_never_contacts_the_hub():
+    """`mlx_lm.load` / `mlx_vlm.get_model_path` / `hf_hub_download` all REVALIDATE against
+    huggingface.co even when the file is already cached. Three consequences, all observed in
+    backend.log: an "unauthenticated requests to the HF Hub" warning on every cold start,
+    model loading that depends on network reachability, and a request leaving a machine whose
+    whole premise is that nothing does.
+
+    `offline_if_cached` engages only when the weights are already on disk, so a genuine first
+    download still works.
+    """
+    import os
+
+    from services.mlx_engine import offline_if_cached
+
+    present = "mlx-community/gemma-4-e4b-it-4bit"
+    absent = "mlx-community/definitely-not-downloaded"
+
+    with offline_if_cached(present):
+        assert os.environ.get("HF_HUB_OFFLINE") == "1"
+        import huggingface_hub.constants as hc
+        assert hc.HF_HUB_OFFLINE is True, "the constant is captured at import; the env var alone is too late"
+    assert os.environ.get("HF_HUB_OFFLINE") is None, "prior state must be restored"
+
+    with offline_if_cached(absent):
+        assert os.environ.get("HF_HUB_OFFLINE") is None, \
+            "an uncached model must stay online so a first download can proceed"
+
+
+def test_model_kind_detection_reads_the_cache_not_the_hub():
+    """`_model_kind` ran BEFORE the load lock and called `hf_hub_download`, so it sat outside
+    `offline_if_cached` — it, not the load itself, emitted the warning on every cold start."""
+    import inspect
+
+    from services import mlx_engine as me
+
+    src = inspect.getsource(me.MLXEngine._model_kind)
+    code = "\n".join(l for l in src.splitlines() if not l.strip().startswith("#"))
+    assert "hf_hub_download" not in code
+    assert me.mlx_engine._model_kind("mlx-community/gemma-4-e4b-it-4bit") == "vlm"
+    assert me.mlx_engine._model_kind("mlx-community/Phi-4-mini-instruct-4bit") == "lm"
