@@ -1,29 +1,28 @@
-"""Centralized Ollama Service — Single point of contact for all LLM calls.
+"""Centralized LLM runtime — single point of contact for all model calls.
 
-Replaces the fragmented pattern of 50+ files each creating their own
-httpx.AsyncClient for Ollama API calls. Provides:
+Formerly `ollama_service.py`. The v2.3.0 cutover removed the HTTP transport entirely: every
+call now dispatches in-process to `mlx_engine`. What survived the excise is the part that was
+never about Ollama —
 
-1. Connection pooling (one shared httpx.AsyncClient)
-2. Token recording on every call (via rag_metrics)
-3. Model registry option lookup (per-model temperature, top_k, etc.)
-4. Model warmup tracking (mark_*_model_used)
-5. keep_alive policy (main=30m, fast=10m)
-6. Consistent error handling and logging
-7. Per-model concurrency caps (P14.H.3, 2026-06-11) — prevents Ollama
-   queue collapse when many background paths fan out concurrent calls
-   (per-article entity extraction, curator brain inference, memory
-   consolidation, IMAP-driven classification, etc.). gemma4 can only
-   serve ~1 request at a time on Apple Silicon before tail latency
-   explodes; embeddings parallelize better. The semaphores act as a
-   process-wide rate limiter that protects ALL callers, including the
-   ones we can't easily refactor (curator brain handlers fire as
-   asyncio.create_task and bypass any application-level lock).
+1. Token recording on every call (via rag_metrics)
+2. Model registry option lookup (per-model temperature, top_k, etc.)
+3. Model warmup tracking (mark_*_model_used)
+4. num_ctx sizing and num_predict clamping — one source of truth
+5. Consistent error handling and logging
+6. Per-model concurrency caps (P14.H.3, 2026-06-11). These matter MORE in-process, not less:
+   there is one GPU, and gemma serves ~1 request at a time on Apple Silicon before tail
+   latency explodes. The lanes are a process-wide rate limiter protecting callers we can't
+   easily refactor (curator brain handlers fire as asyncio.create_task and bypass any
+   application-level lock).
 
-Migration guide:
-  OLD:  async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.post(f"{settings.ollama_base_url}/api/generate", ...)
-  NEW:  from services.llm_runtime import llm_runtime
-        result = await llm_runtime.generate(prompt=..., model=..., temperature=...)
+**There is no fallback engine.** Every path that used to degrade to Ollama now fails: text
+and vision return an empty result and log an error, embeddings RAISE. That asymmetry is
+deliberate — an empty answer is visible and retryable, whereas a wrong embedding is written
+into LanceDB and is only fixable by re-ingesting every notebook.
+
+Usage:
+  from services.llm_runtime import llm_runtime
+  result = await llm_runtime.generate(prompt=..., model=..., temperature=...)
 """
 import asyncio
 import heapq
@@ -35,8 +34,6 @@ import time
 import traceback
 from contextlib import asynccontextmanager
 from typing import Any, AsyncGenerator, Dict, List, Optional
-
-import httpx
 
 from config import settings
 
@@ -406,39 +403,11 @@ def _mark_model_used(model: str):
         logger.debug(f"[ollama-service] {type(_e).__name__}: {_e}")
 
 
-def _keep_alive_for(model: str):
-    """Return keep_alive policy: 5m for all models — warmup loop re-pings active ones."""
-    return "5m"
-
-
 class LLMRuntime:
-    """Shared Ollama API client with connection pooling and cross-cutting concerns.
+    """In-process LLM dispatch plus the cross-cutting concerns around it.
 
     All LLM calls in the application should go through this service.
     """
-
-    def __init__(self):
-        self._client: Optional[httpx.AsyncClient] = None
-
-    def _get_client(self) -> httpx.AsyncClient:
-        """Get or create the shared httpx client with connection pooling."""
-        if self._client is None or self._client.is_closed:
-            self._client = httpx.AsyncClient(
-                timeout=httpx.Timeout(10.0, read=600.0),
-                limits=httpx.Limits(
-                    max_connections=20,
-                    max_keepalive_connections=5,
-                    keepalive_expiry=60,
-                ),
-            )
-        return self._client
-
-    async def close(self):
-        """Close the shared client. Called during app shutdown."""
-        if self._client and not self._client.is_closed:
-            await self._client.aclose()
-            self._client = None
-
     # ── Non-streaming generate (/api/generate) ────────────────────────
 
     async def generate(
@@ -516,22 +485,12 @@ class LLMRuntime:
             from services.voice_modifier import voiced_system as _voiced
             system = _voiced(system, model_name=use_model)
 
-        full_prompt = f"{system}\n\n{prompt}" if system else prompt
-
-        payload: Dict[str, Any] = {
-            "model": use_model,
-            "prompt": full_prompt,
-            "stream": False,
-            "keep_alive": keep_alive if keep_alive is not None else _keep_alive_for(use_model),
-            "options": options,
-        }
-        if format:
-            payload["format"] = format
-        if images:
-            payload["images"] = images
-        _final_think = think if think is not None else _profile_think
-        if _final_think is not None:
-            payload["think"] = _final_think
+        # `keep_alive`, `think` and the old Ollama `payload` are gone with the HTTP path. Both
+        # were already inert whenever MLX served the call (the MLX branches return before any
+        # payload was sent), so MLX-only removes dead config rather than changing behaviour.
+        # `_profile_think` is still computed because _apply_rag_profile also applies the
+        # num_ctx cap and stop sequences; only its think flag is unused.
+        _ = (keep_alive, think, _profile_think)
 
         # Wave 9.6 — MLX VISION route (single-gemma invariant). Image calls (notably the visual
         # CRITIC) route to MLX gemma vision when vision_engine==mlx, so a SECOND (Ollama) gemma never
@@ -556,8 +515,12 @@ class LLMRuntime:
                                 f"format={format} tokens={_res.get('eval_count', '?')}")
                     return _res
                 except Exception as _mlx_ve:
-                    logger.warning(f"[LLMRuntime→MLX] vision generate failed (→{_mlx_vid}); "
-                                   f"Ollama fallback: {_mlx_ve}")
+                    # No Ollama fallback exists any more. Contract preserved: generate() never
+                    # raises, so callers still get a dict — but this is now an ERROR, not a
+                    # warning about a degraded path.
+                    logger.error(f"[LLMRuntime] vision generate FAILED model={use_model}→{_mlx_vid} "
+                                 f"caller={_get_caller()}: {_mlx_ve}")
+                    return {"response": ""}
 
         # Wave 9.2b — MLX engine route for text + STRUCTURED (dual-engine). structured_llm's
         # JSON methods call this with the main model + format="json"; when main_engine=mlx we
@@ -583,200 +546,22 @@ class LLMRuntime:
                                 f"format={format} tokens={_res.get('eval_count', '?')}")
                     return _res
                 except Exception as _mlx_e:
-                    logger.warning(f"[LLMRuntime→MLX] generate failed ({use_model}→{_mlx_id}); "
-                                   f"Ollama fallback: {_mlx_e}")
+                    logger.error(f"[LLMRuntime] generate FAILED model={use_model}→{_mlx_id} "
+                                 f"caller={_get_caller()}: {_mlx_e}")
+                    return {"response": ""}
 
-        client = self._get_client()
-        read_timeout = timeout or 600.0
-        _caller = _get_caller()
-        _t0 = time.time()
-        # v1.7.0: resolve provider. Ollama path is byte-identical to pre-provider code.
-        from services.llm_provider import (
-            resolve as _resolve_provider,
-            ollama_to_openai_payload,
-            openai_non_stream_to_ollama_response,
+        # Reaching here means no engine could serve the call — MLX is unavailable, or the role
+        # has no MLX id. There is no HTTP path left to fall through to. Loud, because under
+        # MLX-only this is a misconfiguration (a missing download, a role pointing nowhere),
+        # not a transient failure worth retrying silently.
+        logger.error(
+            f"[LLMRuntime] generate UNSERVICEABLE model={use_model} images={bool(images)} "
+            f"caller={_get_caller()} — no MLX model resolved for this role. "
+            f"Check /system/model-readiness."
         )
-        route = _resolve_provider(use_model)
-        # P14.H.3 — acquire per-model semaphore before the network call.
-        # Caps concurrent in-flight calls so background fan-out (curator
-        # brain, per-article entity extraction, memory consolidation)
-        # can't collapse Ollama's queue.
-        sem = _semaphore_for_model(use_model) if route.api_style == "ollama" else None
-        try:
-            if sem is not None:
-                await sem.acquire(priority)
-            if route.api_style == "ollama":
-                response = await client.post(
-                    f"{route.base_url}/api/generate",
-                    json=payload,
-                    timeout=httpx.Timeout(10.0, read=read_timeout),
-                )
-                response.raise_for_status()
-                result = response.json()
-            else:
-                openai_payload = ollama_to_openai_payload(payload, is_chat=False)
-                response = await client.post(
-                    f"{route.base_url}/v1/chat/completions",
-                    json=openai_payload,
-                    timeout=httpx.Timeout(10.0, read=read_timeout),
-                )
-                response.raise_for_status()
-                result = openai_non_stream_to_ollama_response(response.json(), is_chat=False)
-            _record_tokens(result)
-            _mark_model_used(use_model)
-            _elapsed = time.time() - _t0
-            logger.info(f"[LLMRuntime] generate OK model={use_model} provider={route.provider.value} caller={_caller} {_elapsed:.1f}s tokens={result.get('eval_count', '?')} ctx={options.get('num_ctx', 'def')}")
-            return result
-        except httpx.TimeoutException:
-            _elapsed = time.time() - _t0
-            logger.error(f"[LLMRuntime] generate TIMEOUT model={use_model} caller={_caller} {_elapsed:.1f}s")
-            return {"response": ""}
-        except httpx.HTTPStatusError as e:
-            _elapsed = time.time() - _t0
-            logger.error(f"[LLMRuntime] generate HTTP {e.response.status_code} model={use_model} caller={_caller} {_elapsed:.1f}s: {e.response.text[:200]}")
-            return {"response": ""}
-        except Exception as e:
-            _elapsed = time.time() - _t0
-            logger.error(f"[LLMRuntime] generate FAILED model={use_model} caller={_caller} {_elapsed:.1f}s: {e}")
-            return {"response": ""}
-        finally:
-            if sem is not None:
-                sem.release()
+        return {"response": ""}
 
-    # ── Non-streaming chat (/api/chat) ────────────────────────────────
-
-    async def chat(
-        self,
-        messages: List[Dict[str, Any]],
-        model: Optional[str] = None,
-        temperature: Optional[float] = None,
-        timeout: Optional[float] = None,
-        extra_options: Optional[Dict[str, Any]] = None,
-        images: Optional[List[str]] = None,
-        keep_alive: Optional[Any] = None,
-        voice_modifier: bool = True,
-        respect_rag_profile: bool = True,
-        priority: int = PRIORITY_NORMAL,
-        think: Optional[bool] = None,  # explicit override of the rag_profile think flag
-    ) -> Dict[str, Any]:
-        """Non-streaming chat call to Ollama /api/chat.
-
-        Args:
-            messages: List of message dicts with 'role' and 'content'.
-            model: Ollama model name. Defaults to settings.ollama_model.
-            temperature: Override model registry default temperature.
-            timeout: Read timeout in seconds.
-            extra_options: Additional Ollama options.
-            images: Injected into the last user message.
-            keep_alive: Override default keep_alive policy.
-            voice_modifier: Prepend the active model's voice instruction
-                to the first system message. Auto-disabled if images are
-                present (vision call). Defaults True.
-
-        Returns:
-            Full Ollama response dict (with 'message', token stats, etc.)
-        """
-        use_model = model or settings.ollama_model
-        model_defaults = _get_model_options(use_model)
-        options = {**model_defaults}
-        if temperature is not None:
-            options["temperature"] = temperature
-        if extra_options:
-            options.update(extra_options)
-
-        # Auto-size the context window. Chat has no num_predict param — read it from
-        # options; estimate input from the concatenated message text. Skip if the
-        # caller set num_ctx explicitly.
-        if "num_ctx" not in options:
-            _msg_text = "\n".join(str(m.get("content") or "") for m in messages)
-            _nc = compute_num_ctx(use_model, _msg_text, options.get("num_predict"))
-            if _nc:
-                options["num_ctx"] = _nc
-
-        # PB-2a: rag_profile overlay (num_ctx cap / stop sequences / think).
-        _profile_think = _apply_rag_profile(use_model, options, respect_rag_profile, images)
-
-        # Voice modifier: prepend tone instruction to the FIRST system
-        # message. Skips for vision calls (images present) where the model
-        # is doing OCR / scene description, not prose generation.
-        if voice_modifier and not images and messages:
-            from services.voice_modifier import voiced_system as _voiced
-            for msg in messages:
-                if msg.get("role") == "system":
-                    voiced = _voiced(msg.get("content", ""), model_name=use_model)
-                    if voiced:
-                        msg["content"] = voiced
-                    break
-
-        if images:
-            for msg in reversed(messages):
-                if msg.get("role") == "user":
-                    msg["images"] = images
-                    break
-
-        payload: Dict[str, Any] = {
-            "model": use_model,
-            "messages": messages,
-            "stream": False,
-            "keep_alive": keep_alive if keep_alive is not None else _keep_alive_for(use_model),
-            "options": options,
-        }
-        _final_think = think if think is not None else _profile_think
-        if _final_think is not None:
-            payload["think"] = _final_think
-
-        client = self._get_client()
-        read_timeout = timeout or 600.0
-        _caller = _get_caller()
-        _t0 = time.time()
-        # v1.7.0: resolve provider. Ollama path is byte-identical to pre-provider code.
-        from services.llm_provider import (
-            resolve as _resolve_provider,
-            ollama_to_openai_payload,
-            openai_non_stream_to_ollama_response,
-        )
-        route = _resolve_provider(use_model)
-        # P14.H.3 — per-model semaphore (see generate())
-        sem = _semaphore_for_model(use_model) if route.api_style == "ollama" else None
-        try:
-            if sem is not None:
-                await sem.acquire(priority)
-            if route.api_style == "ollama":
-                response = await client.post(
-                    f"{route.base_url}/api/chat",
-                    json=payload,
-                    timeout=httpx.Timeout(10.0, read=read_timeout),
-                )
-                response.raise_for_status()
-                result = response.json()
-            else:
-                openai_payload = ollama_to_openai_payload(payload, is_chat=True)
-                response = await client.post(
-                    f"{route.base_url}/v1/chat/completions",
-                    json=openai_payload,
-                    timeout=httpx.Timeout(10.0, read=read_timeout),
-                )
-                response.raise_for_status()
-                result = openai_non_stream_to_ollama_response(response.json(), is_chat=True)
-            _record_tokens(result)
-            _mark_model_used(use_model)
-            _elapsed = time.time() - _t0
-            logger.info(f"[LLMRuntime] chat OK model={use_model} provider={route.provider.value} caller={_caller} {_elapsed:.1f}s tokens={result.get('eval_count', '?')} ctx={options.get('num_ctx', 'def')}")
-            return result
-        except httpx.TimeoutException:
-            _elapsed = time.time() - _t0
-            logger.error(f"[LLMRuntime] chat TIMEOUT model={use_model} caller={_caller} {_elapsed:.1f}s")
-            return {"message": {"content": ""}}
-        except Exception as e:
-            _elapsed = time.time() - _t0
-            logger.error(f"[LLMRuntime] chat FAILED model={use_model} caller={_caller} {_elapsed:.1f}s: {e}")
-            return {"message": {"content": ""}}
-        finally:
-            if sem is not None:
-                sem.release()
-
-    # ── Vision (dispatches to generate/chat) ──────────────────────────
-
+    # ── Vision ────────────────────────────────────────────────────────
     async def vision_describe(
         self,
         image_b64: str,
@@ -842,65 +627,33 @@ class LLMRuntime:
                 logger.info(f"[LLMRuntime→MLX] vision OK model→{_mlx_vid} ({len(_desc)} chars)")
                 return _desc
             except Exception as _mlx_e:
-                logger.warning(f"[LLMRuntime→MLX] vision failed (→{_mlx_vid}); Ollama fallback: {_mlx_e}")
+                logger.error(f"[LLMRuntime] vision_describe FAILED model→{_mlx_vid}: {_mlx_e}")
+                return f"Error: {_mlx_e}"
 
-        profile: Dict[str, Any] = {}
-        try:
-            from evaluator.model_registry import model_registry
-            info = model_registry.get_model(model)
-            if info and getattr(info, "vision_profile", None):
-                profile = dict(info.vision_profile)
-        except Exception as _e:
-            logger.debug(f"[vision] profile lookup failed: {_e}")
-
-        final_num_predict = num_predict if num_predict is not None else profile.get("num_predict", 1500)
-        final_num_ctx = num_ctx if num_ctx is not None else profile.get("num_ctx", 8192)
-        final_temp = temperature if temperature is not None else profile.get("temperature", 0.3)
-
-        try:
-            if api_style == "chat":
-                # Gemma 4 / Llama 3.2 — images go inside chat messages.
-                result = await self.chat(
-                    messages=[{"role": "user", "content": prompt}],
-                    model=model,
-                    temperature=final_temp,
-                    timeout=timeout,
-                    extra_options={"num_predict": final_num_predict, "num_ctx": final_num_ctx},
-                    images=[image_b64],
-                    voice_modifier=False,
-                    priority=priority,
-                    think=False,  # 2026-07-07: gemma4 & other thinking-capable vision
-                    # models route the WHOLE description to the `thinking` field when
-                    # think is on, leaving content empty. We want the description.
-                )
-                _msg = result.get("message") or {}
-                return _msg.get("content") or _msg.get("thinking") or "" 
-            else:
-                # Granite / LLaVA — images are top-level in /api/generate.
-                result = await self.generate(
-                    prompt=prompt,
-                    model=model,
-                    temperature=final_temp,
-                    timeout=timeout,
-                    num_predict=final_num_predict,
-                    extra_options={"num_ctx": final_num_ctx},
-                    images=[image_b64],
-                    voice_modifier=False,
-                    priority=priority,
-                    think=False,  # see chat path note above
-                )
-                return result.get("response") or result.get("thinking") or "" 
-        except Exception as e:
-            logger.error(f"[LLMRuntime] vision_describe FAILED model={model}: {e}")
-            return f"Error: {str(e)}"
+        # The Ollama tail is gone. It split on `api_style` because granite took images at the
+        # top level of /api/generate while gemma4 needed them inside chat messages — a
+        # distinction with no meaning in-process, so `api_style` is now vestigial and kept only
+        # so the ~12 call sites don't all have to change in this commit. Same for `timeout`
+        # (MLX has no socket to time out) and `priority` (no HTTP lane to queue behind).
+        logger.error(
+            f"[LLMRuntime] vision_describe UNSERVICEABLE model={model} — vision_engine is not "
+            f"MLX or the vision model is unavailable. Check /system/model-readiness."
+        )
+        return "Error: no vision engine available"
 
     # ── Embeddings (/api/embed) ───────────────────────────────────────
 
     async def _mlx_embed_or_none(self, texts: List[str]) -> Optional[List[List[float]]]:
-        """When embed_engine==mlx, embed via the in-process MLX engine (arctic on MLX,
-        same 1024-dim space → no re-index). Returns None to mean 'use Ollama' — flag off,
-        engine/lib unavailable, shape mismatch, or ANY error — so every embed path falls
-        back to Ollama transparently (retrieval never breaks)."""
+        """Embed via the in-process MLX engine (arctic, 1024-dim — the same space the index
+        was built in, so no re-index).
+
+        Returns None to mean 'could not serve'. That used to mean 'fall back to Ollama';
+        with the Ollama path gone it means the caller must FAIL, not substitute. Every
+        caller below raises on None, deliberately: a wrong or zero embedding is written into
+        LanceDB and is only fixable by re-ingesting every notebook, whereas a raised error
+        fails one ingest that can simply be retried. A zero vector matches nothing, forever —
+        this install already carries 104 of them (1.42%) from the old silent-fallback era.
+        """
         if getattr(settings, "embed_engine", "ollama") != "mlx":
             return None
         try:
@@ -910,11 +663,11 @@ class LLMRuntime:
             vecs = await mlx_engine.embed(texts, model=settings.mlx_embedding_model)
             if vecs and len(vecs) == len(texts):
                 return vecs
-            logger.warning(
-                f"[LLMRuntime→MLX] embed shape {len(vecs) if vecs else 0}≠{len(texts)} — Ollama fallback")
+            logger.error(
+                f"[LLMRuntime→MLX] embed shape {len(vecs) if vecs else 0}≠{len(texts)}")
             return None
         except Exception as e:
-            logger.warning(f"[LLMRuntime→MLX] embed failed ({e}) — Ollama fallback")
+            logger.error(f"[LLMRuntime→MLX] embed failed: {e}")
             return None
 
     async def embed(
@@ -924,53 +677,33 @@ class LLMRuntime:
         timeout: Optional[float] = None,
         keep_alive: Optional[Any] = None,
     ) -> Dict[str, Any]:
-        """Get embeddings from Ollama /api/embed.
+        """Embed a single text.
 
         Args:
             text: Text to embed.
-            model: Embedding model. Defaults to settings.embedding_model.
-            timeout: Read timeout in seconds.
-            keep_alive: Override default keep_alive.
+            model: Unused — retained for signature compatibility.
+            timeout: Unused — MLX is in-process, there is no socket to time out.
+            keep_alive: Unused — no model TTL in-process.
 
         Returns:
-            Full Ollama response dict (with 'embeddings' key).
+            {'embeddings': [[...]]} — the Ollama response shape, kept so callers don't change.
+
+        Raises:
+            RuntimeError: when no embedding engine can serve the call. See
+            `_mlx_embed_or_none` for why this raises instead of returning an empty result.
         """
-        use_model = model or settings.embedding_model
+        _ = (model, timeout, keep_alive)
 
         _mlx = await self._mlx_embed_or_none([text])
         if _mlx is not None:
             logger.info(f"[LLMRuntime→MLX] embed OK model={settings.mlx_embedding_model} caller={_get_caller()}")
             return {"embeddings": _mlx}
 
-        payload = {
-            "model": use_model,
-            "input": text,
-            "keep_alive": keep_alive if keep_alive is not None else "5m",
-        }
-
-        client = self._get_client()
-        read_timeout = timeout or 120.0
-        _caller = _get_caller()
-        _t0 = time.time()
-        # P14.H.3 — per-model semaphore (see generate())
-        sem = _semaphore_for_model(use_model)
-        try:
-            await sem.acquire()
-            response = await client.post(
-                f"{settings.ollama_base_url}/api/embed",
-                json=payload,
-                timeout=httpx.Timeout(10.0, read=read_timeout),
-            )
-            response.raise_for_status()
-            _elapsed = time.time() - _t0
-            logger.info(f"[LLMRuntime] embed OK model={use_model} caller={_caller} {_elapsed:.1f}s")
-            return response.json()
-        except Exception as e:
-            _elapsed = time.time() - _t0
-            logger.error(f"[LLMRuntime] embed FAILED model={use_model} caller={_caller} {_elapsed:.1f}s: {e}")
-            return {}
-        finally:
-            sem.release()
+        raise RuntimeError(
+            f"embed unserviceable (caller={_get_caller()}): embed_engine="
+            f"{getattr(settings, 'embed_engine', '?')}, model={settings.mlx_embedding_model}. "
+            f"Refusing to return an empty embedding — check /system/model-readiness."
+        )
 
     async def embed_batch(
         self,
@@ -980,235 +713,40 @@ class LLMRuntime:
         keep_alive: Optional[Any] = None,
         max_batch: int = 64,
     ) -> List[List[float]]:
-        """Embed many texts in the FEWEST round-trips.
+        """Embed many texts in one in-process call.
 
-        Ollama's /api/embed accepts ``input`` as a list and returns one vector per
-        item in a single response. Callers used to fire one HTTP request per chunk
-        (thousands per big ingest → the 2026-06-26 loop-freeze); this issues one
-        request per ``max_batch`` slice instead. Order preserved; a failed or
-        shape-mismatched sub-batch falls back to zero vectors (logged) so retrieval
-        gaps stay visible rather than silently corrupting the index.
+        MLX embeds the whole list at once, so the old ``max_batch`` slicing (which existed to
+        cap HTTP round-trips after the 2026-06-26 loop-freeze) no longer applies; the
+        parameter is kept so the call sites don't change. Order is preserved.
+
+        A wrong-length vector is still zero-filled and reported rather than dropped, because
+        dropping one would silently misalign every subsequent vector with its chunk — a
+        far worse corruption than one unretrievable chunk.
+
+        Raises:
+            RuntimeError: when no embedding engine can serve the call.
         """
         if not texts:
             return []
-        use_model = model or settings.embedding_model
+        _ = (model, timeout, keep_alive, max_batch)
         zero = [0.0] * settings.embedding_dim
 
         _mlx = await self._mlx_embed_or_none(texts)
         if _mlx is not None:
             logger.info(
                 f"[LLMRuntime→MLX] embed_batch OK model={settings.mlx_embedding_model} n={len(texts)}")
-            return [v if (v and len(v) == settings.embedding_dim) else zero for v in _mlx]
+            out = [v if (v and len(v) == settings.embedding_dim) else zero for v in _mlx]
+            _bad = sum(1 for v in out if not any(v))
+            if _bad:
+                logger.error(f"[LLMRuntime] embed_batch zero-filled {_bad}/{len(out)} vectors")
+            return out
 
-        read_timeout = timeout or 120.0
-        client = self._get_client()
-        sem = _semaphore_for_model(use_model)
-        out: List[List[float]] = []
-        for start in range(0, len(texts), max_batch):
-            sub = texts[start:start + max_batch]
-            _caller = _get_caller()
-            _t0 = time.time()
-            try:
-                await sem.acquire()
-                response = await client.post(
-                    f"{settings.ollama_base_url}/api/embed",
-                    json={
-                        "model": use_model,
-                        "input": sub,
-                        "keep_alive": keep_alive if keep_alive is not None else "5m",
-                    },
-                    timeout=httpx.Timeout(10.0, read=read_timeout),
-                )
-                response.raise_for_status()
-                embs = response.json().get("embeddings") or []
-                _elapsed = time.time() - _t0
-                logger.info(
-                    f"[LLMRuntime] embed_batch OK model={use_model} n={len(sub)} "
-                    f"caller={_caller} {_elapsed:.1f}s"
-                )
-                if len(embs) == len(sub):
-                    out.extend(e if (e and len(e) == settings.embedding_dim) else zero for e in embs)
-                else:
-                    logger.error(
-                        f"[LLMRuntime] embed_batch shape mismatch {len(embs)}≠{len(sub)} — zero-filling"
-                    )
-                    out.extend(zero for _ in sub)
-            except Exception as e:
-                _elapsed = time.time() - _t0
-                logger.error(
-                    f"[LLMRuntime] embed_batch FAILED model={use_model} n={len(sub)} "
-                    f"caller={_caller} {_elapsed:.1f}s: {e}"
-                )
-                out.extend(zero for _ in sub)
-            finally:
-                sem.release()
-        return out
-
-    # ── Streaming generate (/api/generate, stream=True) ───────────────
-
-    async def stream_generate(
-        self,
-        prompt: str,
-        model: Optional[str] = None,
-        system: Optional[str] = None,
-        temperature: Optional[float] = None,
-        num_predict: Optional[int] = None,
-        timeout: Optional[float] = None,
-        extra_options: Optional[Dict[str, Any]] = None,
-        stop: Optional[List[str]] = None,
-        keep_alive: Optional[Any] = None,
-        priority: int = PRIORITY_NORMAL,
-    ) -> AsyncGenerator[Dict[str, Any], None]:
-        """Streaming generate — yields parsed JSON chunks from Ollama.
-
-        Each chunk is the raw Ollama JSON dict. The caller can extract
-        chunk["response"] for tokens and check chunk["done"] for the final chunk.
-
-        Args:
-            prompt: The user prompt.
-            model: Ollama model name.
-            system: System prompt.
-            temperature: Override temperature.
-            num_predict: Max tokens.
-            timeout: Read timeout.
-            extra_options: Merged last into options.
-            stop: Stop sequences.
-            keep_alive: Override keep_alive.
-
-        Yields:
-            Parsed JSON dicts from the Ollama streaming response.
-        """
-        use_model = model or settings.ollama_model
-        model_defaults = _get_model_options(use_model)
-        options = {**model_defaults}
-        if num_predict is not None:
-            options["num_predict"] = num_predict
-        if temperature is not None:
-            options["temperature"] = temperature
-        if extra_options:
-            options.update(extra_options)
-
-        # Auto-size the context window (input+output), RAM-tier-capped — same as
-        # non-streaming generate. Skip if the caller set num_ctx explicitly.
-        if "num_ctx" not in options:
-            _nc = compute_num_ctx(use_model, f"{system or ''}\n\n{prompt or ''}", num_predict)
-            if _nc:
-                options["num_ctx"] = _nc
-
-        full_prompt = f"{system}\n\n{prompt}" if system else prompt
-
-        payload: Dict[str, Any] = {
-            "model": use_model,
-            "prompt": full_prompt,
-            "stream": True,
-            "keep_alive": keep_alive if keep_alive is not None else _keep_alive_for(use_model),
-            "options": options,
-        }
-        if stop:
-            payload["stop"] = stop
-
-        _mark_model_used(use_model)
-        client = self._get_client()
-        read_timeout = timeout or 600.0
-        _caller = _get_caller()
-        _t0 = time.time()
-        # v1.7.0: provider routing for streaming
-        from services.llm_provider import (
-            resolve as _resolve_provider,
-            ollama_to_openai_payload,
-            openai_stream_chunk_to_ollama,
+        raise RuntimeError(
+            f"embed_batch unserviceable (n={len(texts)}, caller={_get_caller()}): embed_engine="
+            f"{getattr(settings, 'embed_engine', '?')}, model={settings.mlx_embedding_model}. "
+            f"Refusing to zero-fill {len(texts)} vectors into the index — "
+            f"check /system/model-readiness."
         )
-        route = _resolve_provider(use_model)
-        # P14.H.3 — semaphore for streaming generate too. Held for the
-        # full duration of the stream (which is short for interactive
-        # chat). Without this, a streaming chat could start while a
-        # bg gemma4 call holds the non-streaming semaphore → still 2
-        # concurrent calls hitting Ollama.
-        sem = _semaphore_for_model(use_model) if route.api_style == "ollama" else None
-        if sem is not None:
-            await sem.acquire(priority)
-        try:
-            if route.api_style == "ollama":
-                async with client.stream(
-                    "POST",
-                    f"{route.base_url}/api/generate",
-                    json=payload,
-                    timeout=httpx.Timeout(10.0, read=read_timeout),
-                ) as response:
-                    async for line in response.aiter_lines():
-                        if line:
-                            data = json.loads(line)
-                            yield data
-                            if data.get("done"):
-                                _record_tokens(data)
-                                _elapsed = time.time() - _t0
-                                logger.info(f"[LLMRuntime] stream OK model={use_model} provider={route.provider.value} caller={_caller} {_elapsed:.1f}s tokens={data.get('eval_count', '?')}")
-            else:
-                openai_payload = ollama_to_openai_payload(payload, is_chat=False)
-                async with client.stream(
-                    "POST",
-                    f"{route.base_url}/v1/chat/completions",
-                    json=openai_payload,
-                    timeout=httpx.Timeout(10.0, read=read_timeout),
-                ) as response:
-                    async for line in response.aiter_lines():
-                        if not line or not line.startswith("data:"):
-                            continue
-                        payload_text = line[5:].strip()
-                        if not payload_text or payload_text == "[DONE]":
-                            continue
-                        try:
-                            chunk = json.loads(payload_text)
-                        except Exception:
-                            continue
-                        translated = openai_stream_chunk_to_ollama(chunk, is_chat=False)
-                        if translated is None:
-                            continue
-                        yield translated
-                        if translated.get("done"):
-                            _record_tokens(translated)
-                            _elapsed = time.time() - _t0
-                            logger.info(f"[LLMRuntime] stream OK model={use_model} provider={route.provider.value} caller={_caller} {_elapsed:.1f}s tokens={translated.get('eval_count', '?')}")
-        except httpx.TimeoutException:
-            _elapsed = time.time() - _t0
-            logger.error(f"[LLMRuntime] stream TIMEOUT model={use_model} caller={_caller} {_elapsed:.1f}s")
-            raise
-        except Exception as e:
-            _elapsed = time.time() - _t0
-            logger.error(f"[LLMRuntime] stream FAILED model={use_model} caller={_caller} {_elapsed:.1f}s: {e}")
-            raise
-        finally:
-            if sem is not None:
-                sem.release()
-
-    # ── Utility: model info / availability ────────────────────────────
-
-    async def check_model(self, model: str, timeout: float = 10.0) -> bool:
-        """Quick check if a model is available in Ollama."""
-        client = self._get_client()
-        try:
-            response = await client.post(
-                f"{settings.ollama_base_url}/api/show",
-                json={"name": model},
-                timeout=httpx.Timeout(timeout),
-            )
-            return response.status_code == 200
-        except Exception:
-            return False
-
-    async def list_models(self, timeout: float = 10.0) -> List[Dict[str, Any]]:
-        """List all locally available Ollama models."""
-        client = self._get_client()
-        try:
-            response = await client.get(
-                f"{settings.ollama_base_url}/api/tags",
-                timeout=httpx.Timeout(timeout),
-            )
-            response.raise_for_status()
-            return response.json().get("models", [])
-        except Exception as e:
-            logger.error(f"[LLMRuntime] list_models failed: {e}")
-            return []
 
 
 llm_runtime = LLMRuntime()

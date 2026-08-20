@@ -1,12 +1,17 @@
-"""Deterministic unit checks for the Wave 1 P0 embedding fix (no live model).
+"""Deterministic unit checks for the embedding contract (no live model).
 
 Run:  cd backend && python3 _wave1_embed_test.py
 
 Verifies:
-  1. llm_runtime.embed_batch issues ONE /api/embed call per <=max_batch slice,
-     sends `input` as a LIST, preserves order/count, returns correct dim.
+  1. llm_runtime.embed_batch embeds the whole list in ONE in-process call, preserves
+     order/count/dim, and RAISES rather than zero-filling when no engine can serve it.
   2. rag_embeddings.encode_async sub-batches via embed_batch (not per-text),
      returns (N, dim), yields between batches.
+
+Check 1 originally pinned the Ollama HTTP batching contract — one /api/embed call per
+<=max_batch slice, `input` sent as a list. The v2.3.0 cutover deleted that transport, so it
+now pins what replaced it. The `max_batch` slicing it used to verify existed to cap HTTP
+round-trips; in-process there are none to cap.
 """
 import asyncio
 import sys
@@ -32,49 +37,51 @@ def check(name, cond):
         print(f"  ✗ {name}")
 
 
-class _Resp:
-    def __init__(self, n):
-        self._n = n
-
-    def raise_for_status(self):
-        pass
-
-    def json(self):
-        return {"embeddings": [[0.1] * DIM for _ in range(self._n)]}
-
-
 async def test_embed_batch_single_call():
-    print("embed_batch — one /api/embed call per slice")
+    print("embed_batch — one in-process call, and it RAISES rather than zero-filling")
     calls = []
 
-    class FakeClient:
-        async def post(self, url, json=None, timeout=None):
-            calls.append(json)
-            n = len(json["input"]) if isinstance(json["input"], list) else 1
-            return _Resp(n)
+    async def _fake_mlx(texts):
+        calls.append(len(texts))
+        return [[0.1] * DIM for _ in texts]
 
-    async def _no_mlx(_texts):
-        return None
-
-    orig = llm_runtime._get_client
-    # Pin the OLLAMA path: embed_batch short-circuits to in-process MLX when that engine is
-    # available (default since 653bd6f), which would bypass FakeClient entirely and make the
-    # call-shape checks below vacuous. This test is about the Ollama batching contract, so
-    # neutralize the MLX branch the same way test_encode_async_batches pins `_use_ollama`.
     orig_mlx = llm_runtime._mlx_embed_or_none
-    llm_runtime._get_client = lambda: FakeClient()
-    llm_runtime._mlx_embed_or_none = _no_mlx
+    llm_runtime._mlx_embed_or_none = _fake_mlx
     try:
         out = await llm_runtime.embed_batch([f"t{i}" for i in range(100)], max_batch=64)
     finally:
-        llm_runtime._get_client = orig
         llm_runtime._mlx_embed_or_none = orig_mlx
 
     check("returns one vector per input (100)", len(out) == 100)
-    check("sends `input` as a list", bool(calls) and isinstance(calls[0]["input"], list))
-    check("collapses 100 texts -> 2 calls (64+36)", len(calls) == 2)
-    check("first slice carries 64 texts", bool(calls) and len(calls[0]["input"]) == 64)
+    check("embeds all 100 in ONE call (no HTTP slicing)", calls == [100])
     check("vectors have correct dim", all(len(v) == DIM for v in out))
+
+    # THE property that matters. A zero vector is unretrievable forever and is written into
+    # LanceDB; with no fallback engine left, returning zeros would silently poison the index.
+    async def _no_engine(_texts):
+        return None
+
+    llm_runtime._mlx_embed_or_none = _no_engine
+    try:
+        await llm_runtime.embed_batch(["a", "b"])
+        check("raises when no engine can serve it", False)
+    except RuntimeError:
+        check("raises when no engine can serve it", True)
+    except Exception:
+        check("raises when no engine can serve it", False)
+    finally:
+        llm_runtime._mlx_embed_or_none = orig_mlx
+
+    llm_runtime._mlx_embed_or_none = _no_engine
+    try:
+        await llm_runtime.embed("q")
+        check("single embed raises too", False)
+    except RuntimeError:
+        check("single embed raises too", True)
+    except Exception:
+        check("single embed raises too", False)
+    finally:
+        llm_runtime._mlx_embed_or_none = orig_mlx
 
 
 async def test_encode_async_batches():
