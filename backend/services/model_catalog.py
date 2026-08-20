@@ -30,14 +30,19 @@ _TTL_S = 300.0
 _CACHE: Dict[str, Tuple[float, Any]] = {}
 
 
-# ── Origin policy ───────────────────────────────────────────────────────────────
-# CLAUDE.md: never recommend or wire in an LLM/embedding model originating from China or the
-# Middle East, or anything derived from them. That is a HARD rule, so this module does not
-# merely label origin — it withholds blocked models from results by default. Showing them with
-# a red flag would still be recommending them.
+# ── Origin ──────────────────────────────────────────────────────────────────────
+# The browser shows EVERYTHING and labels where each model came from; filtering is the user's
+# decision, not ours (user call, 2026-08-20 — this reverses an earlier default that withheld
+# CN/AE models outright). `allowed` therefore no longer gates the listing; it drives the
+# OPTIONAL origin filter and the label, and callers can still ask for a restricted set.
+#
+# Accurate attribution matters MORE under this policy, not less: if the user is doing the
+# filtering, the flag has to be right. That is why lineage is resolved from the architecture
+# rather than the repo name — a Qwen fine-tune republished under a US account is still a Qwen
+# fine-tune, and showing it as unknown-origin would quietly deny the user the choice.
 #
 # Keyed by the org that appears in a model id or a `base_model:` tag. The value is
-# (display vendor, ISO country, flag, allowed).
+# (display vendor, ISO country, flag, unrestricted).
 VENDORS: Dict[str, Tuple[str, str, str, bool]] = {
     # Allowed
     "google":            ("Google", "US", "🇺🇸", True),
@@ -311,6 +316,7 @@ def _enrich(raw: dict, installed: set) -> dict:
         "updated": raw.get("lastModified") or "",
         "created": raw.get("createdAt") or "",
         "gated": bool(raw.get("gated")),
+        "trending": raw.get("trendingScore") or 0,
         "license": lic,
         "pipeline_tag": raw.get("pipeline_tag") or "",
         "size_gb": size,
@@ -328,15 +334,20 @@ def search(
     sort: str = "downloads",
     limit: int = 40,
     role: str = "",
-    include_blocked: bool = False,
+    include_blocked: bool = True,
     fits_only: bool = False,
+    exclude_countries: str = "",
 ) -> Dict[str, Any]:
     """Search the MLX catalog on Hugging Face.
 
-    sort: downloads | likes | lastModified | createdAt
+    sort: trendingScore | downloads | likes | lastModified | createdAt
     role: main | fast | vision | embedding | image  (filters by eligibility)
+    exclude_countries: comma-separated ISO codes to hide, e.g. "CN,AE". Empty shows every
+        origin — the default, because the browser's job is to show what exists and let the
+        user decide.
     """
-    sort = sort if sort in {"downloads", "likes", "lastModified", "createdAt"} else "downloads"
+    sort = sort if sort in {"trendingScore", "downloads", "likes",
+                            "lastModified", "createdAt"} else "downloads"
     # `filter=mlx` (the TAG), not `library=mlx`. The library form matches loosely and returns
     # plain sentence-transformers/BERT repos that this engine cannot load at all — verified:
     # its top results were all `mlx_tag=False`. The tag is what a genuine MLX conversion sets.
@@ -347,7 +358,7 @@ def search(
         f"{HF_API}/models?filter=mlx&sort={sort}&direction=-1&limit={fetch}",
         "expand[]=downloads", "expand[]=likes", "expand[]=safetensors",
         "expand[]=tags", "expand[]=pipeline_tag", "expand[]=gated",
-        "expand[]=lastModified", "expand[]=createdAt",
+        "expand[]=lastModified", "expand[]=createdAt", "expand[]=trendingScore",
     ]
     if query:
         from urllib.parse import quote
@@ -371,15 +382,19 @@ def search(
     except Exception:
         installed = set()
 
-    out, blocked_n = [], 0
+    excluded = {c.strip().upper() for c in exclude_countries.split(",") if c.strip()}
+    out, restricted_n, filtered_n = [], 0, 0
     for r in raw:
         card = _enrich(r, installed)
         if not card["model_id"]:
             continue
         if not card["origin"]["allowed"]:
-            blocked_n += 1
+            restricted_n += 1
             if not include_blocked:
                 continue
+        if excluded and card["origin"].get("country", "").upper() in excluded:
+            filtered_n += 1
+            continue
         if not card["roles"]:
             # Eligible for no slot — an ASR model, a re-ranker, a depth estimator. Listing it
             # would offer a download the app has nowhere to put.
@@ -395,9 +410,11 @@ def search(
         "models": out[:limit],
         "offline": False,
         "sort": sort,
-        "blocked_hidden": blocked_n if not include_blocked else 0,
-        "policy_note": ("Models from China and the Middle East are excluded by policy. "
-                        "See the origin rule in CLAUDE.md."),
+        # How many carry a restricted-origin label, whether or not they were shown — so the
+        # UI can say "12 from CN/AE" rather than the user having to count flags.
+        "restricted_count": restricted_n,
+        "hidden_by_filter": filtered_n,
+        "blocked_hidden": 0 if include_blocked else restricted_n,
     }
     _CACHE[ck] = (time.time(), res)
     return res

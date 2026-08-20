@@ -3,9 +3,11 @@
 Every assertion here is offline — the HF call is the only networked part and it is mocked.
 A test that needed the Hub would fail on a plane and teach us nothing about our own logic.
 
-The origin tests are the ones that matter most. CLAUDE.md forbids recommending or wiring in a
-model from China or the Middle East, so `search()` WITHHOLDS them rather than labelling them —
-showing a blocked model with a red flag next to a Download button is still recommending it.
+The origin tests are the ones that matter most — but what they guard changed on 2026-08-20.
+The browser now shows EVERY model and the user filters; nothing is withheld and nothing blocks
+a download. That makes accurate attribution more important, not less: if the user is making
+the call, the flag has to be right, and a Qwen fine-tune republished under another account has
+to still read as Qwen. These tests pin the LABEL and the optional filter, not a gate.
 """
 import pytest
 
@@ -34,8 +36,9 @@ def test_origin_resolution(model_id, tags, vendor, allowed):
     assert o["flag"], "every origin needs a flag for the UI"
 
 
-def test_blocked_models_are_withheld_not_merely_flagged(monkeypatch):
-    """THE policy test. A blocked model must not reach the UI at all by default."""
+def test_everything_is_shown_by_default_and_labelled(monkeypatch):
+    """The default is to show what exists. A restricted-origin model appears like any other,
+    carrying `allowed: False` so the UI can flag it and the user can decide."""
     fake = [
         {"id": "mlx-community/Qwen3-8B-4bit", "tags": ["mlx", "base_model:Qwen/Qwen3-8B"],
          "pipeline_tag": "text-generation", "safetensors": {"parameters": {"BF16": 1_000_000}},
@@ -48,21 +51,43 @@ def test_blocked_models_are_withheld_not_merely_flagged(monkeypatch):
     mc.reset_cache()
     res = mc.search()
     ids = [m["model_id"] for m in res["models"]]
+    assert "mlx-community/Qwen3-8B-4bit" in ids, "nothing is withheld"
+    assert "mlx-community/gemma-4-e4b-it-4bit" in ids
+    assert res["restricted_count"] == 1, "the count is reported so the UI can say how many"
+    qwen = next(m for m in res["models"] if "Qwen" in m["model_id"])
+    assert qwen["origin"]["allowed"] is False, "still labelled, so the user can judge"
+    assert qwen["origin"]["flag"] == "🇨🇳"
+
+
+def test_the_user_can_filter_by_origin_themselves(monkeypatch):
+    """The filter is a control the user opts into, not a default."""
+    fake = [
+        {"id": "mlx-community/Qwen3-8B-4bit", "tags": ["mlx", "qwen3"],
+         "pipeline_tag": "text-generation", "safetensors": {"parameters": {"BF16": 1_000_000}},
+         "downloads": 5, "likes": 1},
+        {"id": "mlx-community/gemma-4-e4b-it-4bit", "tags": ["mlx", "gemma4"],
+         "pipeline_tag": "text-generation", "safetensors": {"parameters": {"BF16": 1_000_000}},
+         "downloads": 10, "likes": 1},
+    ]
+    monkeypatch.setattr(mc, "_get_json", lambda *a, **k: fake)
+    mc.reset_cache()
+    res = mc.search(exclude_countries="CN,AE")
+    ids = [m["model_id"] for m in res["models"]]
     assert "mlx-community/Qwen3-8B-4bit" not in ids
     assert "mlx-community/gemma-4-e4b-it-4bit" in ids
-    assert res["blocked_hidden"] == 1, "the withholding must be VISIBLE, not silent"
+    assert res["hidden_by_filter"] == 1
 
 
-def test_blocked_models_can_be_revealed_deliberately(monkeypatch):
-    """`include_blocked` exists for auditing what the policy is excluding. The card still
-    carries allowed=False so nothing downstream can treat it as installable."""
+def test_a_caller_can_still_request_a_restricted_set(monkeypatch):
+    """`include_blocked=False` remains for any caller that wants the narrow set; the browser
+    does not use it."""
     fake = [{"id": "mlx-community/Qwen3-8B-4bit", "tags": ["mlx"], "pipeline_tag": "text-generation",
              "safetensors": {"parameters": {"BF16": 1_000_000}}, "downloads": 1, "likes": 0}]
     monkeypatch.setattr(mc, "_get_json", lambda *a, **k: fake)
     mc.reset_cache()
-    res = mc.search(include_blocked=True)
-    assert len(res["models"]) == 1
-    assert res["models"][0]["origin"]["allowed"] is False
+    res = mc.search(include_blocked=False)
+    assert res["models"] == []
+    assert res["blocked_hidden"] == 1
 
 
 # ── Size, from the real dtype breakdown ─────────────────────────────────────────
@@ -182,3 +207,18 @@ def test_an_unattributable_model_names_its_lab_and_says_so():
     assert o["vendor"] == "VertexAGI"
     assert o["verified"] is False
     assert o["flag"], "still needs a placeholder flag so the row renders"
+
+
+def test_nothing_gates_a_download():
+    """The download endpoint must not refuse on origin or on fit. Showing a model and then
+    refusing to fetch it is the worst of both — the user sees the option and cannot take it.
+    (User call, 2026-08-20: "nothing should limit a user from downloading, it's up to them.")
+    """
+    import inspect
+
+    import api.settings as st
+
+    src = inspect.getsource(st.catalog_download)
+    code = "\n".join(l for l in src.splitlines() if not l.strip().startswith("#"))
+    assert "origin_of" not in code, "origin must not gate the download"
+    assert "403" not in code, "no refusal path belongs here"

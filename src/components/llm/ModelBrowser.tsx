@@ -9,12 +9,13 @@ import { API_BASE_URL, localFetch } from '../../services/api';
  * downloads / likes / recency, a details popup with the model card, and one-click download
  * with live progress.
  *
- * Origin is policy, not decoration: models from China and the Middle East are excluded by the
- * backend and are not downloadable even by id. The count of what was withheld is shown so the
- * filtering is visible rather than silent.
+ * Every model is shown, labelled with where it came from. Filtering by origin is the user's
+ * decision, offered as a control here rather than imposed by the backend — which is exactly
+ * why the attribution has to be right: lineage comes from the model ARCHITECTURE, so a Qwen
+ * fine-tune republished under another account still reads as Qwen.
  */
 
-type Sort = 'downloads' | 'likes' | 'lastModified' | 'createdAt';
+type Sort = 'trendingScore' | 'downloads' | 'likes' | 'lastModified' | 'createdAt';
 type RoleFilter = '' | 'main' | 'fast' | 'vision' | 'embedding' | 'image';
 
 interface Origin {
@@ -36,6 +37,7 @@ interface CatalogModel {
   updated: string;
   created: string;
   gated: boolean;
+  trending?: number;
   license: string;
   pipeline_tag: string;
   size_gb: number | null;
@@ -54,10 +56,22 @@ interface CatalogModel {
 interface Download { status: string; pct: number | null; downloaded_gb: number; total_gb: number; error?: string }
 
 const SORTS: { id: Sort; label: string }[] = [
+  // Trending first: it answers "what is worth looking at today", which is why someone opens
+  // this tab. All-time downloads is dominated by long-lived embedders that never change.
+  { id: 'trendingScore', label: '🔥 Trending' },
   { id: 'downloads',    label: 'Most downloaded' },
   { id: 'likes',        label: 'Highest rated' },
   { id: 'lastModified', label: 'Recently updated' },
   { id: 'createdAt',    label: 'Newly uploaded' },
+];
+
+type OriginFilter = '' | 'CN,AE' | 'CN' | 'AE';
+
+const ORIGINS: { id: OriginFilter; label: string }[] = [
+  { id: '',      label: 'All origins' },
+  { id: 'CN,AE', label: 'Hide 🇨🇳 + 🇦🇪' },
+  { id: 'CN',    label: 'Hide 🇨🇳' },
+  { id: 'AE',    label: 'Hide 🇦🇪' },
 ];
 
 const ROLES: { id: RoleFilter; label: string }[] = [
@@ -111,10 +125,10 @@ function ago(iso: string): string {
 // session, needs no provider, and is deliberately NOT persisted — a stale result list on
 // next launch would be worse than a fresh fetch.
 const browseState: {
-  sort: Sort; role: RoleFilter; fitsOnly: boolean; query: string;
+  sort: Sort; role: RoleFilter; fitsOnly: boolean; query: string; origin: OriginFilter;
   models: CatalogModel[]; blockedHidden: number; scrollTop: number; loaded: boolean;
 } = {
-  sort: 'downloads', role: '', fitsOnly: false, query: '',
+  sort: 'trendingScore', role: '', fitsOnly: false, query: '', origin: '',
   models: [], blockedHidden: 0, scrollTop: 0, loaded: false,
 };
 
@@ -122,11 +136,13 @@ export function ModelBrowser() {
   const [models, setModels] = useState<CatalogModel[]>(browseState.models);
   const [loading, setLoading] = useState(!browseState.loaded);
   const [offline, setOffline] = useState<string | null>(null);
-  const [blockedHidden, setBlockedHidden] = useState(browseState.blockedHidden);
   const [sort, setSort] = useState<Sort>(browseState.sort);
   const [role, setRole] = useState<RoleFilter>(browseState.role);
   const [fitsOnly, setFitsOnly] = useState(browseState.fitsOnly);
   const [query, setQuery] = useState(browseState.query);
+  const [origin, setOrigin] = useState<OriginFilter>(browseState.origin);
+  const [restricted, setRestricted] = useState(0);
+  const [hiddenByFilter, setHiddenByFilter] = useState(0);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const [detail, setDetail] = useState<CatalogModel | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
@@ -141,13 +157,15 @@ export function ModelBrowser() {
         ...(query ? { q: query } : {}),
         ...(role ? { role } : {}),
         ...(fitsOnly ? { fits_only: 'true' } : {}),
+        ...(origin ? { exclude_countries: origin } : {}),
       });
       const res = await localFetch(`${API_BASE_URL}/settings/catalog?${p}`);
       if (!res.ok) throw new Error(`${res.status}`);
       const data = await res.json();
       setOffline(data.offline ? (data.reason || 'Offline') : null);
       setModels(data.models || []);
-      setBlockedHidden(data.blocked_hidden || 0);
+      setRestricted(data.restricted_count || 0);
+      setHiddenByFilter(data.hidden_by_filter || 0);
       browseState.models = data.models || [];
       browseState.blockedHidden = data.blocked_hidden || 0;
       browseState.loaded = true;
@@ -157,7 +175,7 @@ export function ModelBrowser() {
     } finally {
       setLoading(false);
     }
-  }, [sort, role, fitsOnly, query]);
+  }, [sort, role, fitsOnly, query, origin]);
 
   // Remember the controls so a remount restores them rather than snapping back to defaults.
   useEffect(() => {
@@ -165,7 +183,8 @@ export function ModelBrowser() {
     browseState.role = role;
     browseState.fitsOnly = fitsOnly;
     browseState.query = query;
-  }, [sort, role, fitsOnly, query]);
+    browseState.origin = origin;
+  }, [sort, role, fitsOnly, query, origin]);
 
   const first = useRef(true);
   useEffect(() => {
@@ -260,15 +279,25 @@ export function ModelBrowser() {
         >
           {ROLES.map((r) => <option key={r.id || 'all'} value={r.id}>{r.label}</option>)}
         </select>
+        <select
+          value={origin}
+          onChange={(e) => setOrigin(e.target.value as OriginFilter)}
+          title="Everything is shown by default. Set a standing rule here if you want certain origins hidden."
+          className="px-2 py-1.5 text-sm rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100"
+        >
+          {ORIGINS.map((o) => <option key={o.id || 'all'} value={o.id}>{o.label}</option>)}
+        </select>
         <label className="flex items-center gap-1.5 text-sm text-gray-600 dark:text-gray-300 select-none">
           <input type="checkbox" checked={fitsOnly} onChange={(e) => setFitsOnly(e.target.checked)} />
           Only what fits
         </label>
       </div>
 
-      {blockedHidden > 0 && (
+      {(hiddenByFilter > 0 || restricted > 0) && (
         <div className="text-xs text-gray-500 dark:text-gray-400 px-1">
-          {blockedHidden} model{blockedHidden === 1 ? '' : 's'} hidden — origin excluded by policy.
+          {hiddenByFilter > 0
+            ? `${hiddenByFilter} hidden by your origin filter.`
+            : `${restricted} of these are from 🇨🇳/🇦🇪 origins — the flag on each card shows which.`}
         </div>
       )}
 
@@ -348,7 +377,9 @@ export function ModelBrowser() {
                         {' '}est.
                       </span>
                     )}
-                    {' · '}↓{compact(m.downloads)}{' · '}♥{compact(m.likes)}{' · '}{ago(m.updated)}
+                    {' · '}↓{compact(m.downloads)}{' · '}♥{compact(m.likes)}
+                    {sort === 'trendingScore' && m.trending ? ` · 🔥${m.trending}` : ''}
+                    {' · '}{ago(m.updated)}
                   </span>
                   {m.installed ? (
                     <span className="text-emerald-600 dark:text-emerald-400 font-medium">✓ Downloaded</span>
@@ -362,11 +393,14 @@ export function ModelBrowser() {
                   ) : (
                     <button
                       onClick={() => startDownload(m)}
-                      disabled={m.fit?.verdict === 'over'}
                       title={m.fit?.verdict === 'over'
-                        ? 'Larger than this Mac can address — downloading it would not make it runnable.'
+                        ? 'Bigger than this Mac can address — it will download, but expect it not to run here. Your call.'
                         : 'Download to this Mac'}
-                      className="px-2 py-0.5 rounded font-medium bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed"
+                      className={`px-2 py-0.5 rounded font-medium text-white ${
+                        m.fit?.verdict === 'over'
+                          ? 'bg-gray-500 hover:bg-gray-600'
+                          : 'bg-blue-600 hover:bg-blue-700'
+                      }`}
                     >
                       ⬇ Get
                     </button>
@@ -470,9 +504,14 @@ function ModelCard({ model, loading, onClose, onDownload, download }: {
           ) : (
             <button
               onClick={onDownload}
-              disabled={model.fit?.verdict === 'over'}
-              className="px-3 py-1.5 text-sm rounded-lg font-medium bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed"
-              title={model.fit?.verdict === 'over' ? 'Larger than this Mac can address.' : 'Download to this Mac'}
+              className={`px-3 py-1.5 text-sm rounded-lg font-medium text-white ${
+                model.fit?.verdict === 'over'
+                  ? 'bg-gray-500 hover:bg-gray-600'
+                  : 'bg-blue-600 hover:bg-blue-700'
+              }`}
+              title={model.fit?.verdict === 'over'
+                ? 'Bigger than this Mac can address — it will download, but expect it not to run here. Your call.'
+                : 'Download to this Mac'}
             >
               ⬇ Download
             </button>

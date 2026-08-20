@@ -102,7 +102,8 @@ async def catalog_search(
     limit: int = 40,
     role: str = "",
     fits_only: bool = False,
-    include_blocked: bool = False,
+    include_blocked: bool = True,
+    exclude_countries: str = "",
 ):
     """Browse MLX models on Hugging Face.
 
@@ -115,6 +116,7 @@ async def catalog_search(
     return await asyncio.to_thread(
         search, query=q, sort=sort, limit=max(1, min(limit, 100)),
         role=role, include_blocked=include_blocked, fits_only=fits_only,
+        exclude_countries=exclude_countries,
     )
 
 
@@ -130,19 +132,14 @@ async def catalog_card(model_id: str):
 async def catalog_download(payload: dict):
     """Start downloading a catalog model. Returns immediately; poll /settings/mlx/downloads.
 
-    Refuses a blocked-origin model here as well as in search: the browse filter is a UI
-    convenience, and this endpoint is what actually puts weights on the disk.
+    No origin gate: the browser shows every model and the user decides what to install
+    (user call, 2026-08-20). Origin is surfaced on the card and in the model-card popup so
+    the choice is informed, and the browser's country filter is there for anyone who wants
+    a standing rule.
     """
     model_id = (payload or {}).get("model_id") or ""
     if not model_id:
         raise HTTPException(status_code=400, detail="model_id is required")
-    from services.model_catalog import origin_of
-    org = origin_of(model_id, (payload or {}).get("tags") or [])
-    if not org["allowed"]:
-        raise HTTPException(
-            status_code=403,
-            detail=f"{org['vendor']} ({org['country']}) is excluded by policy — not downloaded.",
-        )
     from services.mlx_download import mlx_download_manager
     return await mlx_download_manager.start(model_id)
 
