@@ -130,3 +130,27 @@ def test_sizing_still_works_for_ordinary_sharded_checkpoints():
 
     gemma = exact_weight_gb("mlx-community/gemma-4-e4b-it-4bit")
     assert gemma is not None and 4.0 < gemma < 6.0, gemma
+
+
+def test_non_safetensors_weight_formats_are_counted():
+    """mlx-whisper ships a single `weights.npz`. Counting only safetensors reported it as
+    absent — the same false negative as Klein, a different cause. A model browser that
+    enumerates the cache has to see every format we actually ship."""
+    from services.model_sizing import exact_weight_gb
+
+    assert exact_weight_gb("mlx-community/whisper-base-mlx") is not None
+
+
+def test_every_cached_model_reports_a_size():
+    """Sweep, not a spot check: any cached repo we cannot size is invisible to presence,
+    readiness and the model browser."""
+    from huggingface_hub import scan_cache_dir
+    from services.model_sizing import exact_weight_gb
+
+    invisible = [
+        r.repo_id for r in scan_cache_dir().repos
+        if getattr(r, "repo_type", "model") == "model"
+        and r.size_on_disk > 50 * 1024 ** 2      # ignore tokenizer-only stubs
+        and exact_weight_gb(r.repo_id) is None
+    ]
+    assert not invisible, f"cached but unsizeable: {invisible}"

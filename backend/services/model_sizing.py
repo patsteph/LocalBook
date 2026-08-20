@@ -100,6 +100,12 @@ def load_config(model_id: str) -> Optional[Dict[str, Any]]:
     return cfg
 
 
+# Weight file formats we count. safetensors is the norm; mlx-whisper ships weights.npz;
+# `.bin` covers older torch checkpoints. `.gguf` is deliberately absent — nothing loads GGUF
+# since the llama-server sidecar was removed.
+_WEIGHT_SUFFIXES = (".safetensors", ".npz", ".bin")
+
+
 def exact_weight_gb(model_id: str) -> Optional[float]:
     """EXACT weight bytes on disk — no quantization guessing.
 
@@ -136,11 +142,16 @@ def exact_weight_gb(model_id: str) -> Optional[float]:
             # Follows symlinks because the HF cache stores real bytes in ../../blobs and
             # links them into the snapshot — os.path.getsize on the link reports the target,
             # but the walk must not skip them.
+            #
+            # Multiple weight formats on purpose: safetensors is the norm, but mlx-whisper
+            # ships a single `weights.npz` and older checkpoints use `.bin`. Recognising only
+            # safetensors reports those models as absent, which is the same false negative
+            # that hid Klein.
             try:
                 tot = 0
                 for root, _dirs, files in os.walk(d, followlinks=True):
                     for f in files:
-                        if f.endswith(".safetensors"):
+                        if f.endswith(_WEIGHT_SUFFIXES):
                             try:
                                 tot += os.path.getsize(os.path.join(root, f))
                             except OSError:
