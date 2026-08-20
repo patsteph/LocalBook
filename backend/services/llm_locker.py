@@ -186,22 +186,36 @@ class LLMLocker:
         if target_ram > sys_ram:
             return False, f"INSUFFICIENT UNIFIED MEMORY. {target_ollama_name} requires minimum {target_ram}GB RAM. Your Mac has {sys_ram}GB.", {}
 
-        # Combined RAM headroom check — estimate VRAM footprint for concurrent models
-        # On Apple Silicon, Ollama uses unified memory. Models are swapped in/out,
-        # so typically only 2 models are loaded simultaneously (main + one of fast/vision).
-        # We estimate concurrent VRAM as disk_size * 1.2 (weights + KV cache), NOT min_ram_gb
-        # which is the standalone system requirement and already includes OS overhead.
+        # Combined memory headroom for concurrently-resident models.
+        #
+        # This used to be `disk_size_gb * 1.2` from the registry — a declared size times a
+        # magic factor, which is exactly the guesswork `model_sizing` replaced (the old
+        # estimator was off by −16 % to +99 %, and reported 0.0 GB for both arctic builds,
+        # which read as "fits"). Weights are now read from the checkpoint.
+        #
+        # The concurrency model changed too. The old comment reasoned "Ollama swaps models
+        # in/out, so typically only 2 are loaded" — MLX has no such rotation and holds every
+        # loaded model until something evicts it, so assuming 2 UNDERSTATES the footprint.
         OS_HEADROOM_GB = 3  # macOS, app, embeddings, system services
         
         def _model_vram(name: str) -> float:
-            """Estimate actual VRAM footprint for a loaded model."""
-            # If this is the target we already have live data for, use it
-            if name == target_ollama_name and _live:
-                return _live["size_gb"] * 1.2
+            """Resident cost of a loaded model, in GB: exact weights + activation slack."""
+            if not name:
+                return 0.0
+            try:
+                from services.model_sizing import exact_weight_gb
+                w = exact_weight_gb(name)
+                if w:
+                    # 1.2× for activations/scratch, matching model_sizing.fit's factor. KV is
+                    # excluded deliberately — it scales with context, and this check is about
+                    # whether the SET of models can co-reside at all.
+                    return round(w * 1.2, 2)
+            except Exception:
+                pass
             info = registry.get_model(name)
             if info and info.disk_size_gb > 0:
-                return info.disk_size_gb * 1.2  # weights + KV cache overhead
-            return 3.0  # conservative default for unknown models without live data
+                return info.disk_size_gb * 1.2
+            return 3.0  # conservative default for an unknown, unmeasurable model
         
         if role == "main_model":
             main_vram = _model_vram(target_ollama_name)
