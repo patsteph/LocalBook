@@ -165,7 +165,17 @@ async def check_models_present() -> Tuple[List[str], List[Tuple[str, str]]]:
         return [m for m, _ in _required_models()], []
 
     for name, description in _required_models():
-        if is_present(name):
+        # Per-model try/except, not just around the import. A presence check that raises
+        # mid-loop propagated straight out of here and stopped the app booting — the one
+        # outcome this function exists to avoid. An unknowable model counts as present:
+        # a genuinely missing one still fails loudly at first use, whereas a false "missing"
+        # at boot is a scary banner about a model that is sitting on disk.
+        try:
+            present = is_present(name)
+        except Exception as e:
+            logger.warning(f"[Startup] presence check failed for {name}: {e}")
+            present = True
+        if present:
             available.append(name)
         else:
             missing.append((name, description))

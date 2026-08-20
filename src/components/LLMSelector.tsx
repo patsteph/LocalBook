@@ -122,7 +122,6 @@ export const LLMSelector: React.FC<LLMSelectorProps> = ({ selectedProvider, onPr
   const [savedDefault, setSavedDefault] = useState<SavedDefaultResponse | null>(null);
   const [savingDefault, setSavingDefault] = useState(false);
   // Wave 9.6 — within Local, filter cards by engine so the view isn't overwhelming (#2).
-  const [engineFilter, setEngineFilter] = useState<'ollama' | 'mlx'>('ollama');
   // Wave 9.6 — in-flight MLX downloads keyed by model name (#3).
   const [downloads, setDownloads] = useState<Record<string, { status: string; pct: number | null; downloaded_gb: number; total_gb: number; error?: string }>>({});
   // Wave 9.6 — background MLX downloads the backend auto-starts on all-MLX adoption (klein image /
@@ -239,7 +238,7 @@ export const LLMSelector: React.FC<LLMSelectorProps> = ({ selectedProvider, onPr
       setModels(data.models ?? []);
       setActive(data.active ?? {});
     } catch (e: any) {
-      setError(e.message ?? 'Could not reach Ollama');
+      setError(e.message ?? 'Could not load the model list');
     } finally {
       setLoading(false);
     }
@@ -327,10 +326,8 @@ export const LLMSelector: React.FC<LLMSelectorProps> = ({ selectedProvider, onPr
   // (from the probe-derived supported_roles), not one size-classified column — the
   // frontend half of the "5 models all land in Main" fix. Falls back to the old
   // suggested_role/also_vision logic when the backend didn't send supported_roles.
-  const hasMLX = models.some(m => m.provider === 'mlx');
-
   // Friendly display name for a raw model id, via the loaded model list (which carries
-  // display_name for both Ollama and MLX). Falls back to the raw id. Used by the
+  // display_name). Falls back to the raw id. Used by the
   // "Built-in default" summary line so it never shows the long HF path (user #3).
   const friendlyName = (id?: string) => {
     if (!id) return '—';
@@ -340,16 +337,14 @@ export const LLMSelector: React.FC<LLMSelectorProps> = ({ selectedProvider, onPr
   const modelsForRole = (role: Role) => {
     const apiRole = ROLE_META[role].api_role; // main_model | fast_model | vision_model | embedding_model
     return models.filter(m => {
-      const isMLXm = m.provider === 'mlx';
-      // Engine filter (#2). Embeddings show BOTH engines' arctic-embed (same model, same 1024
-      // dim → no re-index) so the MLX embedding can be adopted standalone and benchmarked in the
-      // Evaluator; the row isn't gated by the main/fast/vision engine toggle.
-      if (role === 'embeddings') {
-        /* show all embedding models regardless of engineFilter */
-      } else if (hasMLX) {
-        if (engineFilter === 'mlx' && !isMLXm) return false;
-        if (engineFilter === 'ollama' && isMLXm) return false;
-      }
+      // MLX only. The Ollama/MLX toggle is gone with the engine it filtered — showing an
+      // Ollama card would offer a model nothing can load.
+      if (m.provider !== 'mlx') return false;
+      // And only what is genuinely in the model cache. `installed` comes from a filesystem
+      // scan of the HF cache, so an entry that is merely *known* (registry row, no weights)
+      // must not be offered as selectable. Matters more once the browser/download manager
+      // lists models we do not ship.
+      if (m.installed === false) return false;
       if (m.supported_roles && m.supported_roles.length) {
         return m.supported_roles.includes(apiRole);
       }
@@ -419,7 +414,7 @@ export const LLMSelector: React.FC<LLMSelectorProps> = ({ selectedProvider, onPr
           <div className="flex flex-wrap items-center gap-1.5 mb-0.5">
             {isMLX && (
               <span
-                title="Runs in-process on Apple MLX — faster, ~½ the RAM of the Ollama build. Selecting this flips the role to the MLX engine."
+                title="Runs in-process on Apple MLX. Selecting this points the role at it."
                 className="px-2 py-0.5 text-xs font-bold rounded-md bg-gradient-to-r from-amber-500 to-orange-500 text-white shadow-sm tracking-wide"
               >
                 ⚡ MLX
@@ -550,45 +545,11 @@ export const LLMSelector: React.FC<LLMSelectorProps> = ({ selectedProvider, onPr
 
   return (
     <div className="p-4 space-y-4">
-      {/* Local/Cloud toggle intentionally hidden — no cloud provider is in use right now,
-          so the Ollama/MLX engine toggle below is the primary control (keeps the view clean). */}
+      {/* Local/Cloud toggle intentionally hidden — no cloud provider is in use. */}
 
-      {/* Wave 9.6 — Engine toggle (only when MLX models exist). Filters the model grid to
-          one engine so the view isn't overwhelming (#2). The embeddings role isn't picked per
-          column — embed_engine follows all-MLX adoption automatically and the arctic MLX
-          download shows in the background-downloads strip below. */}
-      {mode === 'local' && hasMLX && (
-        <div className="flex items-center justify-center">
-          <div className="relative inline-flex items-center bg-gray-100 dark:bg-gray-800 rounded-full p-1 border border-gray-200 dark:border-gray-700">
-            <button
-              onClick={() => setEngineFilter('ollama')}
-              className={`px-5 py-1.5 rounded-full text-xs font-semibold transition-all ${
-                engineFilter === 'ollama'
-                  ? 'bg-blue-600 text-white shadow'
-                  : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'
-              }`}
-            >
-              🦙 Ollama
-            </button>
-            <button
-              onClick={() => setEngineFilter('mlx')}
-              title="Apple MLX — in-process, faster, ~½ the RAM. Selecting a model downloads it if needed."
-              className={`px-5 py-1.5 rounded-full text-xs font-semibold transition-all ${
-                engineFilter === 'mlx'
-                  ? 'bg-gradient-to-r from-amber-500 to-orange-500 text-white shadow'
-                  : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white'
-              }`}
-            >
-              ⚡ MLX
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* Wave 9.6 — background MLX downloads the Locker auto-starts on all-MLX adoption (klein
-          image / arctic embeddings). These have no pickable card, so their progress is surfaced
-          here. Exclude anything already shown as a per-card download (user-picked main/fast/vision)
-          to avoid a double chip. Renders on either engine tab; hidden when nothing is in flight. */}
+      {/* Background MLX downloads (klein image / arctic embeddings). These have no pickable
+          card, so their progress is surfaced here. Excludes anything already shown as a
+          per-card download to avoid a double chip; hidden when nothing is in flight. */}
       {mode === 'local' && (() => {
         const entries = Object.entries(bgDownloads).filter(
           ([id, st]) => (st.status === 'downloading' || st.status === 'error') && !(id in downloads),
@@ -610,7 +571,7 @@ export const LLMSelector: React.FC<LLMSelectorProps> = ({ selectedProvider, onPr
                   </span>
                   <span className="text-amber-700 dark:text-amber-400 tabular-nums">
                     {dl.status === 'error'
-                      ? 'failed — using Ollama'
+                      ? 'download failed'
                       : dl.pct != null
                         ? `${dl.pct}%${dl.total_gb ? ` · ${dl.downloaded_gb}/${dl.total_gb} GB` : ''}`
                         : 'starting…'}
@@ -640,7 +601,7 @@ export const LLMSelector: React.FC<LLMSelectorProps> = ({ selectedProvider, onPr
         );
       })()}
 
-      {/* Local — Dynamic Ollama Model Table */}
+      {/* Local — model table, sourced from the on-disk model cache */}
       {mode === 'local' && (
         <div className="space-y-3">
           {loading ? (
@@ -649,7 +610,7 @@ export const LLMSelector: React.FC<LLMSelectorProps> = ({ selectedProvider, onPr
             </div>
           ) : error ? (
             <div className="rounded-lg border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900/10 p-4 text-center space-y-2">
-              <p className="text-sm font-medium text-red-700 dark:text-red-400">Ollama unreachable</p>
+              <p className="text-sm font-medium text-red-700 dark:text-red-400">Could not load models</p>
               <p className="text-xs text-red-600 dark:text-red-500">{error}</p>
               <button
                 onClick={loadModels}
@@ -660,8 +621,8 @@ export const LLMSelector: React.FC<LLMSelectorProps> = ({ selectedProvider, onPr
             </div>
           ) : models.length === 0 ? (
             <div className="text-center py-8 space-y-2">
-              <p className="text-sm text-gray-500 dark:text-gray-400">No models found in Ollama</p>
-              <p className="text-xs text-gray-400 dark:text-gray-500">Run <code className="px-1 bg-gray-100 dark:bg-gray-700 rounded">ollama pull &lt;model&gt;</code> to add one</p>
+              <p className="text-sm text-gray-500 dark:text-gray-400">No models downloaded yet</p>
+              <p className="text-xs text-gray-400 dark:text-gray-500">Only models present in the local cache are listed here.</p>
             </div>
           ) : (
             <>
@@ -690,39 +651,6 @@ export const LLMSelector: React.FC<LLMSelectorProps> = ({ selectedProvider, onPr
                   {switchMsg.text}
                 </div>
               )}
-              {/* Wave 9 — engine-consistency nudge. Mixing MLX + Ollama across the text/
-                  vision roles keeps a model family resident on BOTH engines (≈2× RAM), which
-                  defeats the MLX memory win. Encourage going all-MLX (or all-Ollama). */}
-              {(() => {
-                const providerOf = (name?: string) =>
-                  models.find(mm => mm.name === name)?.provider ?? 'ollama';
-                const engines = (['main', 'fast', 'vision'] as Role[]).map(r => providerOf(active[r]));
-                const anyMLX = engines.includes('mlx');
-                const allMLX = anyMLX && engines.every(e => e === 'mlx');
-                if (anyMLX && !allMLX) {
-                  return (
-                    <div className="flex items-start gap-2 px-3 py-2 rounded-lg text-xs bg-amber-50 dark:bg-amber-900/20 border border-amber-300 dark:border-amber-700 text-amber-800 dark:text-amber-200">
-                      <span className="text-base leading-none">⚡</span>
-                      <span>
-                        <strong>Mixed engines — go all-MLX for the full benefit.</strong> Some roles run on
-                        MLX and others on Ollama. Running the same model family on both engines keeps it
-                        loaded twice (≈2× RAM), which cancels out MLX's memory savings. Switch the remaining
-                        roles to their <span className="font-semibold">⚡ MLX</span> variants (Main, Fast, Vision)
-                        for the best speed + footprint.
-                      </span>
-                    </div>
-                  );
-                }
-                if (allMLX) {
-                  return (
-                    <div className="flex items-center gap-2 px-3 py-2 rounded-lg text-xs bg-emerald-50 dark:bg-emerald-900/20 border border-emerald-300 dark:border-emerald-700 text-emerald-800 dark:text-emerald-200">
-                      <span className="text-base leading-none">⚡</span>
-                      <span><strong>Fully on MLX.</strong> Main, Fast, and Vision all run in-process — Ollama can idle.</span>
-                    </div>
-                  );
-                }
-                return null;
-              })()}
               {/* 2×2 grid (Main/Fast on top, Vision/Embeddings below) instead of
                   four cramped columns across — reads far better in the modal. */}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -730,7 +658,7 @@ export const LLMSelector: React.FC<LLMSelectorProps> = ({ selectedProvider, onPr
               </div>
               <div className="flex items-center justify-between pt-1 gap-3 flex-wrap">
                 <p className="text-xs text-gray-400 dark:text-gray-500">
-                  {models.length} model{models.length !== 1 ? 's' : ''} installed · roles &amp; RAM-fit by probed capability
+                  {models.length} model{models.length !== 1 ? 's' : ''} in the local cache · roles &amp; RAM-fit by probed capability
                 </p>
                 <div className="flex items-center gap-2">
                   {onTestCombo && (

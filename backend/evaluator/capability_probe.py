@@ -280,10 +280,16 @@ class MLXCapabilityProbe:
     def _probe_uncached(self, model: str) -> Optional[ProbedCapabilities]:
         if not model:
             return None
+        # READ THE CACHE, never the Hub. `hf_hub_download(model, "config.json")` contacts
+        # huggingface.co to revalidate even when the file is already local — it emitted an
+        # "unauthenticated requests to the HF Hub" warning on every Locker open, made the
+        # model list depend on connectivity, and sent a request off the machine for an app
+        # whose whole premise is that nothing does. `load_config` reads the cached snapshot.
         try:
-            from huggingface_hub import hf_hub_download
-            import json
-            cfg = json.load(open(hf_hub_download(model, "config.json")))
+            from services.model_sizing import load_config
+            cfg = load_config(model)
+            if not cfg:
+                return None
         except Exception:
             return None
         tcfg = cfg.get("text_config", cfg) if isinstance(cfg.get("text_config"), dict) else cfg

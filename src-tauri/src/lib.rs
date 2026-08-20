@@ -135,183 +135,16 @@ async fn check_health() -> Result<bool, Box<dyn std::error::Error>> {
     Ok(response.status().is_success())
 }
 
-// Function to check if Ollama is running
-async fn check_ollama() -> bool {
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(2))
-        .build();
-    
-    match client {
-        Ok(c) => c.get("http://localhost:11434/api/tags").send().await.is_ok(),
-        Err(_) => false,
-    }
-}
+// NOTE (v2.3.0 MLX cutover): the Ollama pre-flight that used to live here is gone.
+// It started `ollama serve`, then BLOCKED the launch pulling a hardcoded REQUIRED_MODELS
+// list — still naming `olmo-3:7b-instruct`, retired months earlier — before the backend was
+// even spawned. Removing Ollama models from a machine therefore hung startup on a multi-GB
+// download of models the app no longer uses.
+//
+// Model readiness is the backend's job now: it reports per-role status at
+// GET /system/model-readiness. Nothing is mandatory at launch and nothing is auto-downloaded
+// (Wave 9 decision #1 — auto-pulling at boot surprised users with multi-GB downloads).
 
-// Function to check if a model is available in Ollama
-async fn check_model_available(model_name: &str) -> bool {
-    let client = match reqwest::Client::builder()
-        .timeout(Duration::from_secs(5))
-        .build() {
-            Ok(c) => c,
-            Err(_) => return false,
-        };
-    
-    let response = client
-        .get("http://localhost:11434/api/tags")
-        .send()
-        .await;
-    
-    match response {
-        Ok(resp) => {
-            if let Ok(text) = resp.text().await {
-                // Check if model name appears in the response
-                text.contains(model_name)
-            } else {
-                false
-            }
-        }
-        Err(_) => false,
-    }
-}
-
-// Function to pull a model from Ollama
-async fn pull_ollama_model(model_name: &str) -> Result<(), String> {
-    println!("Pulling Ollama model: {}", model_name);
-    
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(600)) // 10 min timeout for large models
-        .build()
-        .map_err(|e| format!("Failed to create client: {}", e))?;
-    
-    let response = client
-        .post("http://localhost:11434/api/pull")
-        .json(&serde_json::json!({
-            "name": model_name,
-            "stream": false
-        }))
-        .send()
-        .await
-        .map_err(|e| format!("Failed to pull model: {}", e))?;
-    
-    if response.status().is_success() {
-        println!("Successfully pulled model: {}", model_name);
-        Ok(())
-    } else {
-        Err(format!("Failed to pull model {}: HTTP {}", model_name, response.status()))
-    }
-}
-
-// Required models for LocalBook - must match backend/config.py settings
-const REQUIRED_MODELS: &[(&str, &str)] = &[
-    ("olmo-3:7b-instruct", "Main AI model (~4.5GB)"),
-    ("phi4-mini:latest", "Fast AI model (~2.5GB)"),
-    ("snowflake-arctic-embed2", "Embedding model (~1.2GB)"),
-];
-
-// Function to ensure all required models are available
-async fn ensure_required_models(status_ref: &Arc<Mutex<BackendStatus>>) {
-    println!("Checking required AI models...");
-    
-    for (model_name, description) in REQUIRED_MODELS {
-        if let Ok(mut status) = status_ref.lock() {
-            status.stage = "checking_models".to_string();
-            status.message = format!("Checking {}...", description);
-        }
-        
-        if !check_model_available(model_name).await {
-            println!("Model {} not found, downloading...", model_name);
-            
-            if let Ok(mut status) = status_ref.lock() {
-                status.stage = "downloading_model".to_string();
-                status.message = format!("Downloading {} (this may take several minutes)...", description);
-            }
-            
-            match pull_ollama_model(model_name).await {
-                Ok(_) => {
-                    println!("Model {} downloaded successfully", model_name);
-                }
-                Err(e) => {
-                    eprintln!("Failed to download model {}: {}", model_name, e);
-                    if let Ok(mut status) = status_ref.lock() {
-                        status.last_error = Some(format!("Failed to download {}: {}", model_name, e));
-                    }
-                }
-            }
-        } else {
-            println!("Model {} is available", model_name);
-        }
-    }
-    
-    println!("Model check complete");
-}
-
-// Function to start Ollama if not running
-async fn ensure_ollama_running() {
-    if check_ollama().await {
-        println!("Ollama is already running");
-        return;
-    }
-
-    println!("Starting Ollama...");
-    
-    // Try common Ollama installation paths
-    let ollama_paths = [
-        "/opt/homebrew/bin/ollama",  // Apple Silicon Homebrew
-        "/usr/local/bin/ollama",      // Intel Homebrew
-        "/Applications/Ollama.app/Contents/Resources/ollama", // Ollama.app
-        "ollama",                      // Fallback to PATH
-    ];
-
-    let mut result = None;
-    for path in &ollama_paths {
-        let attempt = std::process::Command::new(path)
-            .arg("serve")
-            // Memory management: limit concurrent models, enable flash attention,
-            // and use q8_0 KV cache to halve context memory vs f16 default.
-            .env("OLLAMA_MAX_LOADED_MODELS", "2")
-            .env("OLLAMA_FLASH_ATTENTION", "1")
-            .env("OLLAMA_KV_CACHE_TYPE", "q8_0")
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn();
-        
-        if attempt.is_ok() {
-            result = Some(attempt);
-            println!("Started Ollama from: {} (MAX_LOADED_MODELS=2, FLASH_ATTN=1, KV=q8_0)", path);
-            break;
-        }
-    }
-
-    let result = result.unwrap_or_else(|| {
-        std::process::Command::new("ollama")
-            .arg("serve")
-            .env("OLLAMA_MAX_LOADED_MODELS", "2")
-            .env("OLLAMA_FLASH_ATTENTION", "1")
-            .env("OLLAMA_KV_CACHE_TYPE", "q8_0")
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-    });
-
-    match result {
-        Ok(_) => {
-            // Wait for Ollama to be ready
-            for attempt in 1..=10 {
-                tokio::time::sleep(Duration::from_secs(1)).await;
-                if check_ollama().await {
-                    println!("Ollama started successfully");
-                    return;
-                }
-                println!("Waiting for Ollama... attempt {}/10", attempt);
-            }
-            eprintln!("Warning: Ollama may not have started properly");
-        }
-        Err(e) => {
-            eprintln!("Could not start Ollama: {}", e);
-            eprintln!("Please start Ollama manually: ollama serve");
-        }
-    }
-}
 
 // Function to kill any existing backend process
 fn kill_existing_backend() {
@@ -834,17 +667,6 @@ fn setup_backend(app: &AppHandle) -> Result<BackendState, String> {
 
     // Spawn backend startup in background
     tauri::async_runtime::spawn(async move {
-        if let Ok(mut status) = status_ref.lock() {
-            status.stage = "starting_ollama".to_string();
-            status.message = "Starting Ollama...".to_string();
-            status.last_error = None;
-        }
-        // Ensure Ollama is running first
-        ensure_ollama_running().await;
-
-        // Check and download required models
-        ensure_required_models(&status_ref).await;
-
         if let Ok(mut status) = status_ref.lock() {
             status.stage = "starting_backend".to_string();
             status.message = "Starting backend...".to_string();

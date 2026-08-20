@@ -48,7 +48,8 @@ struct Status {
     metrics: Metrics,
     #[serde(default)]
     enrichment: Enrich,
-    // Wave 9.6 — "mlx" (all roles) | "mixed" | "ollama". Surfaced in the status line
+    // "mlx" (all roles) | "mixed" | "ollama". Post-cutover this is always "mlx";
+    // the other arms remain so an older backend still renders something sane.
     // so the menu bar persists which engine is live (user #5).
     #[serde(default)]
     engine: String,

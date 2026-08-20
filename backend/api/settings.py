@@ -354,9 +354,12 @@ async def get_ollama_models():
         m = _re.search(r'(\d+(?:\.\d+)?)\s*[bB]', name)
         return f"{m.group(1)}B" if m else ""
 
+    # Ollama tags are no longer listed. Nothing can load them, so a card for one is an offer
+    # the app cannot honour — and on a machine where the user has deleted their Ollama models
+    # (the normal state now) the list was mostly stale entries. The enrichment machinery below
+    # is retained but fed an empty list; it goes with the /api/show probe in Phase 4.
+    raw_models: list = []
     async with httpx.AsyncClient() as client:
-        raw_models = await _fetch_tags(client)
-
         semaphore = asyncio.Semaphore(4)
 
         async def _enrich(m: dict) -> dict:
@@ -453,9 +456,8 @@ async def get_ollama_models():
 
         enriched = await asyncio.gather(*[_enrich(m) for m in raw_models])
 
-        # Wave 9.4 — append MLX models (opt-in engine). Surface the configured mlx_* models so
-        # the Locker can show + select them. Caps via config.json probe (no model load); RAM-fit
-        # via ram_fit; installed = HF snapshot cached. Never fatal.
+        # MLX models — the only ones listed. Caps via a config.json probe (no model load);
+        # RAM-fit via model_sizing; presence via a real weight check. Never fatal.
         try:
             from services.mlx_engine import MLXEngine as _MLXEngine
             _mlx_ok = _MLXEngine.available()
@@ -464,7 +466,7 @@ async def get_ollama_models():
         if _mlx_ok:
             try:
                 from evaluator.capability_probe import probe_capabilities as _mprobe
-                from huggingface_hub import try_to_load_from_cache as _tlfc
+                from services.model_presence import is_present as _is_present
                 # `services.hardware_profiler` NEVER EXISTED — this import raised on every
                 # call, so the whole fit block below was dead and no MLX card was ever
                 # size-checked. `services.model_sizing` reads exact weight bytes + real KV
@@ -497,7 +499,11 @@ async def get_ollama_models():
                            else "vision" if _role_slots == ["vision_model"]
                            else "embeddings" if _role_slots == ["embedding_model"]
                            else "main")
-                    _installed = _tlfc(_mid, "config.json") is not None
+                    # `try_to_load_from_cache(_mid, "config.json")` was the old test — it is
+                    # true for a download that fetched the config and then died, which is
+                    # exactly the state that must NOT read as installed. `is_present` requires
+                    # real weight bytes.
+                    _installed = _is_present(_mid)
                     # Real disk size if downloaded; otherwise an estimate so the card is
                     # never a blank "0 GB" (user #1 — MLX cards must carry the same data).
                     _size_gb = _mlx_cache_size_gb(_mid, _installed) or \
@@ -531,7 +537,11 @@ async def get_ollama_models():
                             _card["ram_required_gb"] = round(float(_f["total_needed_gb"]), 1)
                     except Exception as _fit_e:
                         logger.debug(f"[settings] fit calc failed for {_mid}: {_fit_e}")
-                    enriched.append(_card)
+                    # LLM Studio lists ONLY models verified present in the local cache. A
+                    # card for something not downloaded is an offer the app cannot honour;
+                    # acquiring new models belongs to the download manager, not this list.
+                    if _installed:
+                        enriched.append(_card)
             except Exception as _mlx_e:
                 logger.debug(f"[settings] MLX model enumeration failed: {_mlx_e}")
 
