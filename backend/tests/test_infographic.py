@@ -681,20 +681,35 @@ def test_build_l3_returns_none_on_bad_graph_directly(monkeypatch):
 
 
 # ── Archetype heuristic ────────────────────────────────────────────────
-def test_pick_archetype():
-    # Request-first (topic) routing — the production path. Single-word cues match the
-    # request but are ignored in noisy retrieved content (see topic_beats_noisy_content).
-    assert pick_archetype("", "quarterly revenue figures from the filing") == "facts_table"
-    # A generic sequence + generic prose fall to the neutral default (stepped_cards),
-    # not the retrieval-specific pipeline_compare (which now needs an explicit signal).
-    assert pick_archetype("", "the compile stage then index then serve") == "stepped_cards"
-    assert pick_archetype("", "some generic prose about a process") == "stepped_cards"
+# Request-first routing, as one table. This was three functions (`test_pick_archetype`,
+# `_new_lanes`, `_deck_lanes`) whose cases had drifted into overlapping — two rows were
+# asserted verbatim in two of them. A table makes a duplicate row obvious and reports the
+# failing ROW rather than stopping at the first bad assert in a long function.
+@pytest.mark.parametrize("content,topic,expected", [
+    # Single-word cues match the REQUEST but are ignored in noisy retrieved content
+    # (see test_pick_archetype_topic_beats_noisy_content).
+    ("", "quarterly revenue figures from the filing", "facts_table"),
+    # A generic sequence + generic prose fall to the neutral default (stepped_cards), NOT
+    # the retrieval-specific pipeline_compare, which now needs an explicit signal.
+    ("", "the compile stage then index then serve", "stepped_cards"),
+    ("", "some generic prose about a process", "stepped_cards"),
+    ("", "a timeline of the company milestones", "timeline"),
+    ("", "the taxonomy breaks down into these categories", "tree_hierarchy"),
+    ("", "the key metrics dashboard at a glance", "stat_grid"),
+])
+def test_pick_archetype_routes_the_request(content, topic, expected):
+    assert pick_archetype(content, topic) == expected
 
 
-def test_pick_archetype_new_lanes():
-    assert pick_archetype("", "a timeline of the company milestones") == "timeline"
-    assert pick_archetype("", "the taxonomy breaks down into these categories") == "tree_hierarchy"
-    assert pick_archetype("", "the key metrics dashboard at a glance") == "stat_grid"
+# The deck lanes route on a single positional argument (content-only calls).
+@pytest.mark.parametrize("text,expected", [
+    ("two implementations of the same api call", "compare_code"),
+    ("a capability tier ladder: what runs at home", "tier_ladder"),
+    ("an exploded view of the stacked layers of a file", "layer_stack"),
+    ("three step cards joined by a feedback loop", "stepped_cards"),
+])
+def test_pick_archetype_routes_the_deck_lanes(text, expected):
+    assert pick_archetype(text) == expected
 
 
 def test_pick_archetype_comparison_routes_to_compare_columns():
@@ -708,7 +723,7 @@ def test_pick_archetype_comparison_routes_to_compare_columns():
 # ── New L2 archetypes (stat_grid / timeline / tree_hierarchy) ──────────
 # Full slot payloads exercised model-free: each expands, slot-checks (pass +
 # fail), and fails open (leftover slots stripped).
-_NEW_ARCHETYPE_SLOTS = {
+_ARCHETYPE_SLOTS = {
     "stat_grid": {
         "GRID_TITLE": "Key figures", "FOOTER": "as of 2026",
         "STAT_1_VALUE": "$1.2B", "STAT_1_LABEL": "Revenue",
@@ -732,38 +747,49 @@ _NEW_ARCHETYPE_SLOTS = {
 }
 
 
-def test_new_archetypes_registered():
-    for arch in ("stat_grid", "timeline", "tree_hierarchy"):
-        assert arch in ARCHETYPES
-        assert get_skeleton(arch), f"{arch} produced no skeleton"
+# The structural assertions these used to repeat (skeleton expands, no leftover `__`
+# marker, `{{` slots present) are made for EVERY archetype by
+# test_all_skeletons_expand_without_structural_markers. All that is unique here is
+# MEMBERSHIP — that these specific lanes still exist — so that is all this asserts.
+@pytest.mark.parametrize("arch", [
+    "stat_grid", "timeline", "tree_hierarchy",              # Phase-2 lanes
+    "compare_code", "stepped_cards", "tier_ladder", "layer_stack",   # deck lanes
+])
+def test_archetype_is_registered(arch):
+    assert arch in ARCHETYPES, f"{arch} was dropped from the archetype registry"
 
 
-def test_new_archetypes_slot_check_pass_and_fail():
-    for arch, good in _NEW_ARCHETYPE_SLOTS.items():
-        ok, reason = _check_slots(arch, dict(good))
-        assert ok, f"{arch} full-slot check should pass ({reason})"
-        # blank almost everything -> the empty-ratio + key-slot gate rejects it
-        blank = {k: "" for k in good}
-        blank[next(iter(good))] = good[next(iter(good))]  # keep one filled
-        ok2, _ = _check_slots(arch, blank)
-        assert not ok2, f"{arch} should reject a mostly-blank slot set"
+@pytest.mark.parametrize("arch", sorted(_ARCHETYPE_SLOTS))
+def test_slot_check_accepts_full_and_rejects_mostly_blank(arch):
+    good = _ARCHETYPE_SLOTS[arch]
+    ok, reason = _check_slots(arch, dict(good))
+    assert ok, f"{arch} full-slot check should pass ({reason})"
+    # Blank almost everything → the empty-ratio + key-slot gate must reject it, or a
+    # near-empty infographic ships looking like a real one.
+    blank = {k: "" for k in good}
+    first = next(iter(good))
+    blank[first] = good[first]
+    ok2, _ = _check_slots(arch, blank)
+    assert not ok2, f"{arch} should reject a mostly-blank slot set"
 
 
-def test_new_archetypes_finalize_fails_open():
-    """A partial slot-fill still yields legible HTML with NO leftover {{SLOT}}
-    markers (the degradation-ladder invariant)."""
-    for arch, good in _NEW_ARCHETYPE_SLOTS.items():
-        sk = get_skeleton(arch)
-        partial = dict(list(good.items())[:2])   # only the first couple slots
-        body = _finalize_body(sk, partial)
-        assert "{{" not in body and "}}" not in body, f"{arch} left an unfilled slot"
-        assert "<div" in body
+@pytest.mark.parametrize("arch", sorted(_ARCHETYPE_SLOTS))
+def test_finalize_fails_open_on_a_partial_fill(arch):
+    """The degradation-ladder invariant: a partial slot-fill still yields legible HTML with
+    NO leftover {{SLOT}} markers. A visible `{{HEADLINE}}` in an exported PNG is the most
+    embarrassing possible failure, and it happens whenever the model returns fewer slots
+    than the skeleton declares."""
+    good = _ARCHETYPE_SLOTS[arch]
+    partial = dict(list(good.items())[:2])       # only the first couple of slots
+    body = _finalize_body(get_skeleton(arch), partial)
+    assert "{{" not in body and "}}" not in body, f"{arch} left an unfilled slot"
+    assert "<div" in body
 
 
 # ── Family-B "deck" archetypes (compare_code / stepped_cards / tier_ladder /
 #    layer_stack) — the 07-31 corpus. Model-free: expand, slot-check pass+fail,
 #    fail-open, cite-binding, and route. ─────────────────────────────────────
-_DECK_ARCHETYPE_SLOTS = {
+_ARCHETYPE_SLOTS.update({
     "compare_code": {
         "HEADLINE": "Same pattern. Different decade.",
         "SUBHEAD": "They shipped it as a managed feature two years later.",
@@ -805,35 +831,13 @@ _DECK_ARCHETYPE_SLOTS = {
         "LAYER_4_LABEL": "Brand and style", "LAYER_4_NOTE": "The visual system.",
         "LAYER_5_LABEL": "Components", "LAYER_5_NOTE": "Reusable UI pieces.",
     },
-}
+})
 
 
-def test_deck_archetypes_registered():
-    for arch in ("compare_code", "stepped_cards", "tier_ladder", "layer_stack"):
-        assert arch in ARCHETYPES
-        sk = get_skeleton(arch)
-        assert sk, f"{arch} produced no skeleton"
-        assert "__" not in sk, f"{arch} left an unexpanded structural marker"
-        assert "{{" in sk
 
 
-def test_deck_archetypes_slot_check_pass_and_fail():
-    for arch, good in _DECK_ARCHETYPE_SLOTS.items():
-        ok, reason = _check_slots(arch, dict(good))
-        assert ok, f"{arch} full-slot check should pass ({reason})"
-        blank = {k: "" for k in good}
-        blank[next(iter(good))] = good[next(iter(good))]  # keep one filled
-        ok2, _ = _check_slots(arch, blank)
-        assert not ok2, f"{arch} should reject a mostly-blank slot set"
 
 
-def test_deck_archetypes_finalize_fails_open():
-    for arch, good in _DECK_ARCHETYPE_SLOTS.items():
-        sk = get_skeleton(arch)
-        partial = dict(list(good.items())[:2])
-        body = _finalize_body(sk, partial)
-        assert "{{" not in body and "}}" not in body, f"{arch} left an unfilled slot"
-        assert "<div" in body
 
 
 def test_tier_ladder_chips_bind_to_real_sources():
@@ -841,28 +845,19 @@ def test_tier_ladder_chips_bind_to_real_sources():
     numbers (HARD RULE §2.6) — or empty, never dangling, when no provenance."""
     sk = get_skeleton("tier_ladder")
     prov = _normalize_sources([{"title": "bench"}, {"title": "receipts"}])
-    slots = dict(_DECK_ARCHETYPE_SLOTS["tier_ladder"])
+    slots = dict(_ARCHETYPE_SLOTS["tier_ladder"])
     slots.update(_cite_slots_for_rows(prov, n_rows=4))
     body = _finalize_body(sk, slots)
     assert '<sup class="ib-cite">1</sup>' in body
     assert '<sup class="ib-cite">2</sup>' in body
 
-    slots2 = dict(_DECK_ARCHETYPE_SLOTS["tier_ladder"])
+    slots2 = dict(_ARCHETYPE_SLOTS["tier_ladder"])
     slots2.update(_cite_slots_for_rows([], n_rows=4))
     body2 = _finalize_body(sk, slots2)
     assert '<sup class="ib-cite">1</sup>' not in body2
     assert '<sup class="ib-cite"></sup>' in body2   # empty, not dangling
 
 
-def test_pick_archetype_deck_lanes():
-    assert pick_archetype("two implementations of the same api call") == "compare_code"
-    assert pick_archetype("a capability tier ladder: what runs at home") == "tier_ladder"
-    assert pick_archetype("an exploded view of the stacked layers of a file") == "layer_stack"
-    assert pick_archetype("three step cards joined by a feedback loop") == "stepped_cards"
-    # Single-word cues route on the REQUEST (topic), not on noisy retrieved content.
-    assert pick_archetype("", "quarterly revenue figures from the filing") == "facts_table"
-    # A generic compile->index->serve sequence falls to the neutral sequence default.
-    assert pick_archetype("", "the compile stage then index then serve") == "stepped_cards"
 
 
 def test_cream_tone_is_valid_and_drops_dots():
