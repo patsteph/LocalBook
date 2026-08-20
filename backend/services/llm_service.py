@@ -15,7 +15,6 @@ client (lanes, num_ctx math, embeddings); this module is the task router.
 import json
 from typing import AsyncGenerator, Optional
 
-import httpx
 
 from config import settings
 import logging
@@ -73,10 +72,14 @@ def _record_ollama_tokens(data: dict):
         pass  # Never let metrics recording break LLM calls
 
 
-def _record_engine_fallback(detail: str, role_model: str, severity: str = "warn") -> None:
-    """Best-effort quality signal when a preferred MLX call degrades to Ollama (never raises).
-    An engine fallback is a SILENT slowdown/behaviour-shift the user can't see — a sustained
-    pattern of these is exactly what the Rough-edges rollup should surface."""
+def _record_engine_fallback(detail: str, role_model: str, severity: str = "error") -> None:
+    """Best-effort quality signal when a generation could not be served (never raises).
+
+    Named for the era when MLX degraded to Ollama. There is no second engine now, so this
+    fires on a HARD failure rather than a silent slowdown — hence severity defaults to
+    "error". Still the signal the Rough-edges rollup surfaces; the meaning got worse, not
+    different.
+    """
     try:
         from services.quality_signals import record_signal
         record_signal("fallback", "llm_service", detail, severity=severity, key=str(role_model))
@@ -84,7 +87,7 @@ def _record_engine_fallback(detail: str, role_model: str, severity: str = "warn"
         pass
 
 
-# ─── Ollama Non-Streaming ────────────────────────────────────────────────────────
+# ─── Non-Streaming ───────────────────────────────────────────────────────────────
 
 async def generate_text(
     system_prompt: str,
@@ -115,8 +118,6 @@ async def generate_text(
                   fallbacks, quick actions) should pass FOREGROUND so they jump
                   ahead of background ingest on the shared model lane.
     """
-    # Use very long timeout - LLM generation can take minutes for complex queries
-    timeout = httpx.Timeout(10.0, read=600.0)  # 10s connect, 10 min read
     # Default to fast model for non-streaming calls - faster response times
     # Main model (olmo-3:7b-instruct) used for streaming queries
     use_model = model or settings.ollama_fast_model
@@ -190,11 +191,14 @@ async def generate_text(
     if extra_options:
         options.update(extra_options)
 
-    # Wave 9.1 — MLX engine route (dual-engine). When the role that `use_model` fills is
-    # configured engine="mlx" (fast in 9.1; main in 9.2), generate IN-PROCESS via mlx-lm
-    # instead of the Ollama httpx path — reusing the options/num_ctx/temperature computed
-    # above and recording tokens identically. On ANY failure we fall through to the Ollama
-    # path (dual-engine safety). No-op when every engine is "ollama" (the default).
+    # Generate IN-PROCESS via MLX, reusing the options/num_ctx/temperature computed above and
+    # recording tokens identically. The `options` dict keeps its Ollama-shaped key names
+    # because the model registry and the rag_profiles are keyed that way; mlx_engine reads
+    # the few it honours (temperature, num_predict, num_ctx, stop) and ignores the rest.
+    # ⚠️ That means the Mirostat / repeat_penalty / repeat_last_n tuning above is INERT —
+    # it is Ollama sampler configuration with no mlx-lm equivalent. Left in place because
+    # the registry still supplies it and removing it is a tuning decision (Stage 5), not
+    # part of the excise.
     try:
         from services.mlx_engine import mlx_engine, mlx_model_for_role
         _mlx_id = mlx_model_for_role(use_model)
@@ -221,100 +225,24 @@ async def generate_text(
                   f"({_res.get('eval_count', 0)} tok, {_res.get('eval_duration', 0)/1e9:.1f}s)")
             return _res.get("response", "")
         except Exception as _mlx_e:
-            logger.warning(f"[mlx-engine] generate failed ({use_model}→{_mlx_id}); "
-                           f"falling back to Ollama: {_mlx_e}")
-            _record_engine_fallback(f"MLX generate failed → Ollama ({type(_mlx_e).__name__})", use_model)
+            logger.error(f"[llm_service] generate FAILED ({use_model}→{_mlx_id}): {_mlx_e}")
+            _record_engine_fallback(
+                f"generate failed, no fallback engine ({type(_mlx_e).__name__})", use_model)
+            return ""
 
-    async with httpx.AsyncClient(timeout=timeout) as client:
-        print(f"Calling LLM with model: {use_model}, num_predict: {num_predict}, num_ctx: {num_ctx or 'default'}")
-        # Short keep_alive — warmup loop re-pings active models every 4 min
-        _keep_alive = "5m"
-
-        # v1.8.0: provider routing (identical Ollama path + translated OpenAI path)
-        from services.llm_provider import (
-            resolve as _resolve_provider,
-            ollama_to_openai_payload,
-            openai_non_stream_to_ollama_response,
-        )
-        _route = _resolve_provider(use_model)
-
-        # Gemma-family models use /api/chat for proper system+user message structure.
-        # All other Ollama models keep the /api/generate path unchanged.
-        _use_chat = rag_profile.get("use_chat_endpoint", False) and _route.api_style == "ollama"
-
-        # PB-2d / D4 (2026-06-23): join the shared per-model lane so this raw-httpx
-        # call serializes on the SAME limiter as llm_runtime.generate/chat/embed
-        # and stream_ollama — it can't run as a 2nd concurrent call to the heavy
-        # model, and user-facing callers (priority=FOREGROUND) preempt background
-        # ingest. Mirrors stream_ollama, which already joins the lane. call_ollama
-        # keeps its own bespoke coherence tuning (num_ctx auto-size / repeat_penalty
-        # / Mirostat) that generate()/chat() don't replicate, so it lane-joins
-        # rather than migrating. Lane held only around the network dispatch.
-        from services.llm_runtime import model_lane, PRIORITY_NORMAL
-        _priority = priority if priority is not None else PRIORITY_NORMAL
-        async with model_lane(use_model, _priority):
-            if _use_chat:
-                payload = {
-                    "model": use_model,
-                    "messages": [
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": prompt},
-                    ],
-                    "stream": False,
-                    "keep_alive": _keep_alive,
-                    "options": options,
-                }
-                if "think" in rag_profile:
-                    payload["think"] = rag_profile["think"]
-                response = await client.post(f"{_route.base_url}/api/chat", json=payload)
-                raw = response.json()
-                # Normalize to the same shape as /api/generate so token tracking works
-                result = {"response": raw.get("message", {}).get("content", ""), **raw}
-            elif _route.api_style == "ollama":
-                payload = {
-                    "model": use_model,
-                    "prompt": f"{system_prompt}\n\n{prompt}",
-                    "stream": False,
-                    "keep_alive": _keep_alive,
-                    "options": options,
-                }
-                response = await client.post(f"{_route.base_url}/api/generate", json=payload)
-                result = response.json()
-            else:
-                payload = {
-                    "model": use_model,
-                    "prompt": f"{system_prompt}\n\n{prompt}",
-                    "stream": False,
-                    "keep_alive": _keep_alive,
-                    "options": options,
-                }
-                openai_payload = ollama_to_openai_payload(payload, is_chat=False)
-                response = await client.post(
-                    f"{_route.base_url}/v1/chat/completions",
-                    json=openai_payload,
-                )
-                result = openai_non_stream_to_ollama_response(response.json(), is_chat=False)
-
-        # Track model usage for warmup service
-        from services.model_warmup import mark_fast_model_used, mark_main_model_used
-        if use_model == settings.ollama_fast_model:
-            mark_fast_model_used()
-        else:
-            mark_main_model_used()
-        # Record token usage for Health Portal token economy stats
-        _record_ollama_tokens(result)
-        # Visibility: this httpx path does NOT go through llm_runtime, so log the
-        # ctx here too — otherwise doc/RAG/needle generations are invisible in the
-        # ctx logs (only the small phi4 llm_runtime calls show up).
-        logger.info(
-            f"[llm_service] generate OK model={use_model} caller=call_ollama "
-            f"ctx={options.get('num_ctx', 'def')} num_predict={options.get('num_predict')} "
-            f"resp_chars={len(result.get('response', ''))}"
-        )
-        return result.get("response", "No response from LLM")
+    # No engine resolved. Under MLX-only this means the role points at a model that isn't
+    # downloaded or MLX itself failed to initialise — a misconfiguration, not a transient.
+    # Returns a string because every caller treats the result as prose; raising here would
+    # convert one missing model into unhandled exceptions across the synthesis pipelines.
+    logger.error(
+        f"[llm_service] generate UNSERVICEABLE model={use_model} — no MLX model resolved "
+        f"for this role. Check /system/model-readiness."
+    )
+    _record_engine_fallback("no engine resolved for role", use_model)
+    return ""
 
 
-# ─── Ollama Streaming ────────────────────────────────────────────────────────────
+# ─── Streaming ───────────────────────────────────────────────────────────────────
 
 async def stream_text(
     system_prompt: str,
@@ -338,8 +266,6 @@ async def stream_text(
         voice_modifier: Prepend the active model's voice instruction to the system prompt.
                         Defaults True. Set False for structured/format-sensitive outputs.
     """
-    timeout = httpx.Timeout(10.0, read=600.0)
-
     # Two-tier model selection:
     # - System 1 (phi4-mini): Factual queries, fast responses
     # - System 2 (olmo-3:7b-instruct): Synthesis, complex queries, Deep Think
@@ -397,223 +323,127 @@ async def stream_text(
     else:
         effective_num_predict = 1500 if deep_think else 800
     
-    async with httpx.AsyncClient(timeout=timeout) as client:
-        mode_str = " [Deep Think]" if deep_think else (" [Fast]" if use_fast_model else "")
-        print(f"Streaming from Ollama with model: {model}{mode_str} (temp={temperature}, num_predict={effective_num_predict})")
-        
-        # Auto-size context window via the shared helper (one sizing rule app-wide);
-        # floor at 8192 for streaming (chat) exactly as before.
-        from services.llm_runtime import compute_num_ctx, clamp_num_predict
-        effective_num_ctx = compute_num_ctx(model, f"{system_prompt}\n\n{prompt}", effective_num_predict) or 8192
-        # P4: cap output to what the resolved window can hold (small-RAM cap-bound case).
-        # Ollama-specific — see the note on the non-streaming path. MLX gets the unclamped value.
-        _requested_num_predict = effective_num_predict
-        effective_num_predict = clamp_num_predict(
-            f"{system_prompt}\n\n{prompt}", effective_num_predict, effective_num_ctx
-        ) or effective_num_predict
-        # doc-gen flag drives the repeat-penalty tier below (restored — it used to be
-        # defined in the inline num_ctx block the shared helper replaced).
-        is_doc_gen = num_predict is not None and num_predict > 500
+    mode_str = " [Deep Think]" if deep_think else (" [Fast]" if use_fast_model else "")
+    print(f"Streaming with model: {model}{mode_str} (temp={temperature}, num_predict={effective_num_predict})")
+    
+    # Auto-size context window via the shared helper (one sizing rule app-wide);
+    # floor at 8192 for streaming (chat) exactly as before.
+    from services.llm_runtime import compute_num_ctx, clamp_num_predict
+    effective_num_ctx = compute_num_ctx(model, f"{system_prompt}\n\n{prompt}", effective_num_predict) or 8192
+    # P4: cap output to what the resolved window can hold (small-RAM cap-bound case).
+    # Ollama-specific — see the note on the non-streaming path. MLX gets the unclamped value.
+    _requested_num_predict = effective_num_predict
+    effective_num_predict = clamp_num_predict(
+        f"{system_prompt}\n\n{prompt}", effective_num_predict, effective_num_ctx
+    ) or effective_num_predict
+    # doc-gen flag drives the repeat-penalty tier below (restored — it used to be
+    # defined in the inline num_ctx block the shared helper replaced).
+    is_doc_gen = num_predict is not None and num_predict > 500
 
-        # Repetition / coherence control — same strategy as non-streaming path
-        # Start with model-specific base options, then layer on call-specific params
-        stream_options = {**model_defaults}
-        stream_options.update({
-            "temperature": temperature,
-            "top_p": top_p,
-            "num_predict": effective_num_predict,
-            "num_ctx": effective_num_ctx,
-        })
-        _profile_penalty = rag_profile.get("repeat_penalty")
-        if effective_num_predict > 3000:
-            # Long-form: Mirostat 2.0 adaptive sampling
-            stream_options["mirostat"] = 2
-            stream_options["mirostat_tau"] = 4.0
-            stream_options["mirostat_eta"] = 0.1
-            stream_options["repeat_penalty"] = _profile_penalty if _profile_penalty is not None else 1.15
-            stream_options["repeat_last_n"] = 512
-        elif is_doc_gen:
-            stream_options["repeat_penalty"] = _profile_penalty if _profile_penalty is not None else 1.3
-            stream_options["repeat_last_n"] = 256
-        else:
-            stream_options["repeat_penalty"] = _profile_penalty if _profile_penalty is not None else 1.1
-            stream_options["repeat_last_n"] = 64
-        # Merge caller-supplied overrides LAST (e.g., Mirostat for outline-first sections)
-        if extra_options:
-            stream_options.update(extra_options)
+    # Repetition / coherence control — same strategy as non-streaming path
+    # Start with model-specific base options, then layer on call-specific params
+    stream_options = {**model_defaults}
+    stream_options.update({
+        "temperature": temperature,
+        "top_p": top_p,
+        "num_predict": effective_num_predict,
+        "num_ctx": effective_num_ctx,
+    })
+    _profile_penalty = rag_profile.get("repeat_penalty")
+    if effective_num_predict > 3000:
+        # Long-form: Mirostat 2.0 adaptive sampling
+        stream_options["mirostat"] = 2
+        stream_options["mirostat_tau"] = 4.0
+        stream_options["mirostat_eta"] = 0.1
+        stream_options["repeat_penalty"] = _profile_penalty if _profile_penalty is not None else 1.15
+        stream_options["repeat_last_n"] = 512
+    elif is_doc_gen:
+        stream_options["repeat_penalty"] = _profile_penalty if _profile_penalty is not None else 1.3
+        stream_options["repeat_last_n"] = 256
+    else:
+        stream_options["repeat_penalty"] = _profile_penalty if _profile_penalty is not None else 1.1
+        stream_options["repeat_last_n"] = 64
+    # Merge caller-supplied overrides LAST (e.g., Mirostat for outline-first sections)
+    if extra_options:
+        stream_options.update(extra_options)
 
-        # Visibility: streaming also bypasses llm_runtime — log the ctx so the
-        # streamed chat/doc answer shows its window (otherwise it's invisible).
-        logger.info(
-            f"[llm_service] stream start model={model} "
-            f"ctx={stream_options.get('num_ctx')} num_predict={stream_options.get('num_predict')}"
-        )
+    # Visibility: streaming also bypasses llm_runtime — log the ctx so the
+    # streamed chat/doc answer shows its window (otherwise it's invisible).
+    logger.info(
+        f"[llm_service] stream start model={model} "
+        f"ctx={stream_options.get('num_ctx')} num_predict={stream_options.get('num_predict')}"
+    )
 
-        # Short keep_alive — warmup loop re-pings active models every 4 min
-        _keep_alive = "5m"
+    # Short keep_alive — warmup loop re-pings active models every 4 min
+    _keep_alive = "5m"
 
-        # Track model usage for warmup service
-        from services.model_warmup import mark_fast_model_used, mark_main_model_used
-        if use_fast_model:
-            mark_fast_model_used()
-        else:
-            mark_main_model_used()
+    # Track model usage for warmup service
+    from services.model_warmup import mark_fast_model_used, mark_main_model_used
+    if use_fast_model:
+        mark_fast_model_used()
+    else:
+        mark_main_model_used()
 
-        # Wave 9.2 — MLX main streaming route (dual-engine). Stream in-process (gemma via
-        # mlx-vlm / phi via mlx-lm) when the model's role is engine=mlx. Yields token
-        # strings like the Ollama path + records tokens on done. Falls back to Ollama ONLY
-        # if MLX fails before emitting any token (can't cleanly resume mid-stream).
+    # Wave 9.2 — MLX main streaming route (dual-engine). Stream in-process (gemma via
+    # mlx-vlm / phi via mlx-lm) when the model's role is engine=mlx. Yields token
+    # strings like the Ollama path + records tokens on done. Falls back to Ollama ONLY
+    # if MLX fails before emitting any token (can't cleanly resume mid-stream).
+    try:
+        from services.mlx_engine import mlx_engine, mlx_model_for_role
+        _mlx_id = mlx_model_for_role(model)
+    except Exception:
+        _mlx_id = None
+    if _mlx_id and mlx_engine.available():
+        _emitted = False
         try:
-            from services.mlx_engine import mlx_engine, mlx_model_for_role
-            _mlx_id = mlx_model_for_role(model)
-        except Exception:
-            _mlx_id = None
-        if _mlx_id and mlx_engine.available():
-            _emitted = False
-            try:
-                async for _chunk in mlx_engine.stream_generate(
-                    prompt, model=_mlx_id, system=system_prompt,
-                    temperature=stream_options.get("temperature", 0.3),
-                    # The caller's request, NOT the Ollama-window-clamped value.
-                    num_predict=_requested_num_predict,
-                    num_ctx=stream_options.get("num_ctx"),
-                    stop=stop_sequences or None,
-                ):
-                    _t = _chunk.get("response")
-                    if _t:
-                        _emitted = True
-                        yield _t
-                    if _chunk.get("done"):
-                        _record_ollama_tokens(_chunk)
-                        # The streaming guard ABORTED on degeneration. Nothing consumed this
-                        # flag, so a truncated answer looked like a short one — invisible to
-                        # the user, to the logs, and (critically) to any quality measurement.
-                        # With no Ollama fallback after the cutover this guard IS the safety
-                        # system, so its firing has to be recorded.
-                        if _chunk.get("degenerate"):
-                            try:
-                                from services.quality_signals import record_signal
-                                record_signal(
-                                    "degraded", "mlx_engine",
-                                    f"streaming aborted on degeneration ({model}→{_mlx_id}) after "
-                                    f"{_chunk.get('eval_count', 0)} tokens — output truncated",
-                                    severity="warn", key="streaming_degeneration",
-                                )
-                            except Exception:
-                                pass
-                print(f"[mlx-engine] {model}→{_mlx_id} stream OK")
-                return
-            except Exception as _mlx_e:
-                logger.warning(f"[mlx-engine] stream failed ({model}→{_mlx_id}): {_mlx_e}")
-                _record_engine_fallback(
-                    f"MLX stream failed{' mid-output (no Ollama restart)' if _emitted else ' → Ollama'} "
-                    f"({type(_mlx_e).__name__})", model)
-                if _emitted:
-                    return  # already streamed partial output — cannot restart on Ollama
-                # else fall through to the Ollama streaming path below
-
-        # ── v1.7.0: provider routing ─────────────────────────────────────
-        # Resolve the backend for this model. Ollama-backed models keep the
-        # existing /api/generate path byte-for-byte. Sidecar-backed models
-        # (Bonsai via llama-server) translate to /v1/chat/completions.
-        # Gemma-family models use /api/chat for proper system+user message structure.
-        from services.llm_provider import (
-            resolve as _resolve_provider,
-            ollama_to_openai_payload,
-            openai_stream_chunk_to_ollama,
-        )
-        _route = _resolve_provider(model)
-        _use_chat = rag_profile.get("use_chat_endpoint", False) and _route.api_style == "ollama"
-
-        # Hold the per-model priority lane for the whole stream at FOREGROUND
-        # priority. stream_text is always user-initiated (chat answer or doc
-        # generation), so it must (a) not run as a 2nd concurrent gemma call
-        # against background work — the thrash the lane prevents — and (b) jump
-        # ahead of background ingest. This is the rag_llm half of PB-2d: it owns
-        # its own httpx streaming + stop-sequence logic, so it joins the lane
-        # via model_lane() rather than migrating to llm_runtime.stream_generate.
-        from services.llm_runtime import model_lane, PRIORITY_FOREGROUND
-        async with model_lane(model, PRIORITY_FOREGROUND):
-            if _use_chat:
-                chat_payload = {
-                    "model": model,
-                    "messages": [
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": prompt},
-                    ],
-                    "stream": True,
-                    "keep_alive": _keep_alive,
-                    "options": stream_options,
-                }
-                if stop_sequences:
-                    chat_payload["stop"] = stop_sequences
-                if "think" in rag_profile:
-                    chat_payload["think"] = rag_profile["think"]
-                async with client.stream("POST", f"{_route.base_url}/api/chat", json=chat_payload) as response:
-                    async for line in response.aiter_lines():
-                        if line:
-                            data = json.loads(line)
-                            token = data.get("message", {}).get("content", "")
-                            if token:
-                                yield token
-                            if data.get("done"):
-                                _record_ollama_tokens(data)
-            elif _route.api_style == "ollama":
-                request_json = {
-                    "model": model,
-                    "prompt": f"{system_prompt}\n\n{prompt}",
-                    "stream": True,
-                    "keep_alive": _keep_alive,
-                    "options": stream_options,
-                }
-                if stop_sequences:
-                    request_json["stop"] = stop_sequences
-                async with client.stream(
-                    "POST",
-                    f"{_route.base_url}/api/generate",
-                    json=request_json,
-                ) as response:
-                    async for line in response.aiter_lines():
-                        if line:
-                            data = json.loads(line)
-                            if data.get("response"):
-                                yield data["response"]
-                            if data.get("done"):
-                                _record_ollama_tokens(data)
-            else:
-                # OpenAI-compatible streaming (llama-server sidecar).
-                request_json = {
-                    "model": model,
-                    "prompt": f"{system_prompt}\n\n{prompt}",
-                    "stream": True,
-                    "keep_alive": _keep_alive,
-                    "options": stream_options,
-                }
-                if stop_sequences:
-                    request_json["stop"] = stop_sequences
-                openai_payload = ollama_to_openai_payload(request_json, is_chat=False)
-                async with client.stream(
-                    "POST",
-                    f"{_route.base_url}/v1/chat/completions",
-                    json=openai_payload,
-                ) as response:
-                    async for line in response.aiter_lines():
-                        if not line or not line.startswith("data:"):
-                            continue
-                        payload_text = line[5:].strip()
-                        if not payload_text or payload_text == "[DONE]":
-                            continue
+            async for _chunk in mlx_engine.stream_generate(
+                prompt, model=_mlx_id, system=system_prompt,
+                temperature=stream_options.get("temperature", 0.3),
+                # The caller's request, NOT the Ollama-window-clamped value.
+                num_predict=_requested_num_predict,
+                num_ctx=stream_options.get("num_ctx"),
+                stop=stop_sequences or None,
+            ):
+                _t = _chunk.get("response")
+                if _t:
+                    _emitted = True
+                    yield _t
+                if _chunk.get("done"):
+                    _record_ollama_tokens(_chunk)
+                    # The streaming guard ABORTED on degeneration. Nothing consumed this
+                    # flag, so a truncated answer looked like a short one — invisible to
+                    # the user, to the logs, and (critically) to any quality measurement.
+                    # With no Ollama fallback after the cutover this guard IS the safety
+                    # system, so its firing has to be recorded.
+                    if _chunk.get("degenerate"):
                         try:
-                            chunk = json.loads(payload_text)
+                            from services.quality_signals import record_signal
+                            record_signal(
+                                "degraded", "mlx_engine",
+                                f"streaming aborted on degeneration ({model}→{_mlx_id}) after "
+                                f"{_chunk.get('eval_count', 0)} tokens — output truncated",
+                                severity="warn", key="streaming_degeneration",
+                            )
                         except Exception:
-                            continue
-                        translated = openai_stream_chunk_to_ollama(chunk, is_chat=False)
-                        if not translated:
-                            continue
-                        if translated.get("response"):
-                            yield translated["response"]
-                        if translated.get("done"):
-                            _record_ollama_tokens(translated)
+                            pass
+            print(f"[mlx-engine] {model}→{_mlx_id} stream OK")
+            return
+        except Exception as _mlx_e:
+            logger.error(f"[llm_service] stream FAILED ({model}→{_mlx_id}): {_mlx_e}")
+            _record_engine_fallback(
+                f"stream failed{' mid-output' if _emitted else ''}, no fallback engine "
+                f"({type(_mlx_e).__name__})", model)
+            return
+
+    # No engine resolved — see generate_text for why this is a misconfiguration rather
+    # than a transient. A generator returns by yielding nothing; callers already handle
+    # an empty stream (it is what a stopped model looked like before).
+    logger.error(
+        f"[llm_service] stream UNSERVICEABLE model={model} — no MLX model resolved for "
+        f"this role. Check /system/model-readiness."
+    )
+    _record_engine_fallback("no engine resolved for role", model)
+    return
 
 
 # Simplification S1/B2 (2026-07-03): the call_openai/call_anthropic cloud escape
