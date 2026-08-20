@@ -154,7 +154,7 @@ def _main_lane_cap() -> int:
         return 1  # psutil missing → assume constrained, stay safe
 
 
-# ── Ollama-activity tracker (for SYSTEM-idle gating of enrichment) ──────
+# ── LLM-activity tracker (for SYSTEM-idle gating of enrichment) ─────────
 # `memory_steward.await_idle` originally gated deferred enrichment (image
 # description, HyDE) on USER-idleness only. But a PDF upload kicks off a
 # multi-minute BACKGROUND flood — embeddings + community-detection + entity
@@ -168,23 +168,31 @@ def _main_lane_cap() -> int:
 # it stays fresh; when the flood drains it goes stale → enrichment proceeds on
 # a quiet system (fast, no stacking). Warmup pings use raw httpx (not this
 # path) so they don't keep the system falsely "busy".
-_last_ollama_activity_ts: float = 0.0
+#
+# 2026-08-20: this nearly died in the Ollama excise. The marker hangs off
+# `_semaphore_for_model`, which only the HTTP paths called — so with the
+# transport gone NOTHING marked activity and `presence.system_busy()` would
+# have reported idle forever, firing enrichment straight into a live MLX
+# ingest. The MLX dispatch paths below now join the same lane, which both
+# restores the signal and restores FOREGROUND preemption (mlx_engine's own
+# per-model locks serialize, but they have no priority concept).
+_last_llm_activity_ts: float = 0.0
 
 
-def _note_ollama_activity() -> None:
-    global _last_ollama_activity_ts
-    _last_ollama_activity_ts = time.monotonic()
+def _note_llm_activity() -> None:
+    global _last_llm_activity_ts
+    _last_llm_activity_ts = time.monotonic()
 
 
-def seconds_since_ollama_activity() -> float:
-    """Seconds since the last Ollama call started (large == Ollama idle)."""
-    return time.monotonic() - _last_ollama_activity_ts
+def seconds_since_llm_activity() -> float:
+    """Seconds since the last model call started (large == the system is idle)."""
+    return time.monotonic() - _last_llm_activity_ts
 
 
 def _semaphore_for_model(model: str) -> PriorityLane:
     """Return the priority lane for a model name, picking the right bucket
     by matching against settings. Initialized lazily."""
-    _note_ollama_activity()  # every routed call funnels here → system-busy signal
+    _note_llm_activity()  # every routed call funnels here → system-busy signal
     if model == settings.embedding_model:
         bucket = "embed"
     elif model == settings.ollama_fast_model:
@@ -504,11 +512,12 @@ class LLMRuntime:
                 _mlx_vid = None
             if _mlx_vid and mlx_engine.available():
                 try:
-                    _res = await mlx_engine.vision_describe(
-                        images[0], prompt, model=_mlx_vid, system=system,
-                        num_predict=options.get("num_predict", 500),
-                        format=format, json_schema=json_schema,
-                        temperature=options.get("temperature", 0.3))
+                    async with model_lane(use_model, priority):
+                        _res = await mlx_engine.vision_describe(
+                            images[0], prompt, model=_mlx_vid, system=system,
+                            num_predict=options.get("num_predict", 500),
+                            format=format, json_schema=json_schema,
+                            temperature=options.get("temperature", 0.3))
                     _record_tokens(_res)
                     _mark_model_used(use_model)
                     logger.info(f"[LLMRuntime→MLX] vision generate OK model={use_model}→{_mlx_vid} "
@@ -534,12 +543,16 @@ class LLMRuntime:
                 _mlx_id = None
             if _mlx_id and mlx_engine.available():
                 try:
-                    _res = await mlx_engine.generate(
-                        prompt, model=_mlx_id, system=system,
-                        temperature=options.get("temperature", 0.3),
-                        num_predict=options.get("num_predict", 500),
-                        num_ctx=options.get("num_ctx"), format=format, stop=None,
-                        json_schema=json_schema)  # grammar-constrained JSON when a schema is given
+                    # The lane both restores FOREGROUND preemption (mlx_engine's per-model
+                    # locks serialize but have no priority) and marks LLM activity, which
+                    # presence.system_busy() reads to keep enrichment off a live ingest.
+                    async with model_lane(use_model, priority):
+                        _res = await mlx_engine.generate(
+                            prompt, model=_mlx_id, system=system,
+                            temperature=options.get("temperature", 0.3),
+                            num_predict=options.get("num_predict", 500),
+                            num_ctx=options.get("num_ctx"), format=format, stop=None,
+                            json_schema=json_schema)  # grammar-constrained JSON when given
                     _record_tokens(_res)
                     _mark_model_used(use_model)
                     logger.info(f"[LLMRuntime→MLX] generate OK model={use_model}→{_mlx_id} "
@@ -620,8 +633,9 @@ class LLMRuntime:
             _mlx_vid = None
         if _mlx_vid and mlx_engine.available():
             try:
-                _res = await mlx_engine.vision_describe(
-                    image_b64, prompt, model=_mlx_vid, num_predict=num_predict or 400)
+                async with model_lane(model or _mlx_vid, priority):
+                    _res = await mlx_engine.vision_describe(
+                        image_b64, prompt, model=_mlx_vid, num_predict=num_predict or 400)
                 _mark_model_used(_mlx_vid)
                 _desc = _res.get("response", "")
                 logger.info(f"[LLMRuntime→MLX] vision OK model→{_mlx_vid} ({len(_desc)} chars)")
@@ -660,7 +674,8 @@ class LLMRuntime:
             from services.mlx_engine import mlx_engine
             if not mlx_engine.available():
                 return None
-            vecs = await mlx_engine.embed(texts, model=settings.mlx_embedding_model)
+            async with model_lane(settings.embedding_model, PRIORITY_NORMAL):
+                vecs = await mlx_engine.embed(texts, model=settings.mlx_embedding_model)
             if vecs and len(vecs) == len(texts):
                 return vecs
             logger.error(

@@ -206,14 +206,21 @@ async def generate_text(
         _mlx_id = None
     if _mlx_id and mlx_engine.available():
         try:
-            _res = await mlx_engine.generate(
-                prompt, model=_mlx_id, system=system_prompt,
-                temperature=options.get("temperature", 0.3),
-                # The caller's request, NOT the Ollama-window-clamped value (see above).
-                num_predict=_requested_num_predict or num_predict,
-                num_ctx=options.get("num_ctx"),
-                stop=rag_profile.get("stop_sequences"),
-            )
+            # Lane-join restored with the excise: mlx_engine serializes per model but has no
+            # priority concept, and the lane is also what marks LLM activity for
+            # presence.system_busy(). Both were lost when the httpx path (which held the
+            # lane) was deleted.
+            from services.llm_runtime import model_lane, PRIORITY_NORMAL
+            _prio = priority if priority is not None else PRIORITY_NORMAL
+            async with model_lane(use_model, _prio):
+                _res = await mlx_engine.generate(
+                    prompt, model=_mlx_id, system=system_prompt,
+                    temperature=options.get("temperature", 0.3),
+                    # The caller's request, NOT the window-clamped value (see above).
+                    num_predict=_requested_num_predict or num_predict,
+                    num_ctx=options.get("num_ctx"),
+                    stop=rag_profile.get("stop_sequences"),
+                )
             _record_ollama_tokens(_res)
             try:
                 from services.model_warmup import mark_fast_model_used, mark_main_model_used
@@ -374,9 +381,6 @@ async def stream_text(
         f"ctx={stream_options.get('num_ctx')} num_predict={stream_options.get('num_predict')}"
     )
 
-    # Short keep_alive — warmup loop re-pings active models every 4 min
-    _keep_alive = "5m"
-
     # Track model usage for warmup service
     from services.model_warmup import mark_fast_model_used, mark_main_model_used
     if use_fast_model:
@@ -384,10 +388,7 @@ async def stream_text(
     else:
         mark_main_model_used()
 
-    # Wave 9.2 — MLX main streaming route (dual-engine). Stream in-process (gemma via
-    # mlx-vlm / phi via mlx-lm) when the model's role is engine=mlx. Yields token
-    # strings like the Ollama path + records tokens on done. Falls back to Ollama ONLY
-    # if MLX fails before emitting any token (can't cleanly resume mid-stream).
+    # Stream in-process (gemma via mlx-vlm / phi via mlx-lm).
     try:
         from services.mlx_engine import mlx_engine, mlx_model_for_role
         _mlx_id = mlx_model_for_role(model)
@@ -395,21 +396,28 @@ async def stream_text(
         _mlx_id = None
     if _mlx_id and mlx_engine.available():
         _emitted = False
+        # Hold the lane for the WHOLE stream at FOREGROUND priority, as the deleted httpx
+        # path did. stream_text is always user-initiated, so it must not run as a second
+        # concurrent call against background work, and it must jump ahead of background
+        # ingest. Holding across yields is intentional: the model is busy for that whole
+        # window, and releasing between tokens would let ingest interleave into it.
+        from services.llm_runtime import model_lane, PRIORITY_FOREGROUND
         try:
-            async for _chunk in mlx_engine.stream_generate(
-                prompt, model=_mlx_id, system=system_prompt,
-                temperature=stream_options.get("temperature", 0.3),
-                # The caller's request, NOT the Ollama-window-clamped value.
-                num_predict=_requested_num_predict,
-                num_ctx=stream_options.get("num_ctx"),
-                stop=stop_sequences or None,
-            ):
-                _t = _chunk.get("response")
-                if _t:
-                    _emitted = True
-                    yield _t
-                if _chunk.get("done"):
-                    _record_ollama_tokens(_chunk)
+            async with model_lane(model, PRIORITY_FOREGROUND):
+                async for _chunk in mlx_engine.stream_generate(
+                    prompt, model=_mlx_id, system=system_prompt,
+                    temperature=stream_options.get("temperature", 0.3),
+                    # The caller's request, NOT the window-clamped value.
+                    num_predict=_requested_num_predict,
+                    num_ctx=stream_options.get("num_ctx"),
+                    stop=stop_sequences or None,
+                ):
+                    _t = _chunk.get("response")
+                    if _t:
+                        _emitted = True
+                        yield _t
+                    if _chunk.get("done"):
+                        _record_ollama_tokens(_chunk)
                     # The streaming guard ABORTED on degeneration. Nothing consumed this
                     # flag, so a truncated answer looked like a short one — invisible to
                     # the user, to the logs, and (critically) to any quality measurement.

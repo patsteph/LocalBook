@@ -97,11 +97,38 @@ def test_a_wrong_length_vector_is_zero_filled_not_dropped(monkeypatch):
     assert any(out[0]) and any(out[2]), "good vectors must survive intact"
 
 
+# ── The presence signal the excise nearly killed ────────────────────────────────
+
+def test_an_mlx_call_marks_the_system_busy(monkeypatch):
+    """The activity marker hangs off the model lane, and the lane used to be acquired by the
+    HTTP path. Deleting that transport left NOTHING marking activity, so
+    `presence.system_busy()` would report idle forever and enrichment would fire straight
+    into a live MLX ingest — the exact 2026-06-23 failure the signal exists to prevent.
+
+    The MLX dispatch now joins the lane, which restores both this signal and FOREGROUND
+    preemption (mlx_engine serializes per model but has no priority concept).
+    """
+    import services.llm_runtime as lr
+    from services import presence
+
+    async def _fake_generate(prompt, **kw):
+        return {"response": "hi", "eval_count": 5, "eval_duration": 10 ** 9}
+
+    monkeypatch.setattr("services.mlx_engine.mlx_engine.available", lambda: True)
+    monkeypatch.setattr("services.mlx_engine.mlx_engine.generate", _fake_generate)
+    monkeypatch.setattr("services.mlx_engine.mlx_model_for_role", lambda m: "mlx-community/fake")
+    monkeypatch.setattr(lr, "_last_llm_activity_ts", 0.0)
+
+    assert presence.system_busy() is False, "fixture should start from an idle clock"
+    asyncio.run(lr.llm_runtime.generate("hello"))
+    assert presence.system_busy() is True, "an MLX generation must register as system activity"
+
+
 # ── The surviving engine-neutral surface ────────────────────────────────────────
 
 @pytest.mark.parametrize("name", [
     "effective_num_ctx_cap", "compute_num_ctx", "clamp_num_predict",
-    "seconds_since_ollama_activity", "model_lane", "PRIORITY_BACKGROUND",
+    "seconds_since_llm_activity", "model_lane", "PRIORITY_BACKGROUND",
 ])
 def test_engine_neutral_helpers_survived_the_excise(name):
     """These are imported across ~10 modules and have nothing to do with any engine. The

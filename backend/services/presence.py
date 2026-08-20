@@ -92,9 +92,9 @@ def system_busy(quiet_s: float = 8.0) -> bool:
     (embeds + whatever else) is still draining. The worker waits for this to go
     quiet before starting a job, so enrichment never stacks onto a live flood
     (the 2026-06-23 failure mode)."""
-    from services.llm_runtime import seconds_since_ollama_activity
+    from services.llm_runtime import seconds_since_llm_activity
 
-    return seconds_since_ollama_activity() < quiet_s
+    return seconds_since_llm_activity() < quiet_s
 
 
 # Inter-unit trickle (seconds to rest between consecutive BACKGROUND work units)
