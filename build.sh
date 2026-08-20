@@ -65,12 +65,6 @@ if ! command -v node &> /dev/null; then
     brew install node
 fi
 
-# Install Ollama if not found
-if ! command -v ollama &> /dev/null; then
-    echo -e "${YELLOW}Ollama not found. Installing...${NC}"
-    brew install ollama
-fi
-
 # Install ffmpeg if not found (for audio/video transcription)
 if ! command -v ffmpeg &> /dev/null; then
     echo -e "${YELLOW}ffmpeg not found. Installing...${NC}"
@@ -419,38 +413,11 @@ echo -e "To install, drag LocalBook.app to your Applications folder, or run:"
 echo -e "  ${BLUE}cp -r LocalBook.app /Applications/${NC}"
 echo -e ""
 
-# Download Ollama models if not present
-echo -e "${YELLOW}Checking AI models...${NC}"
-
-# Start Ollama if not running
-if ! curl -s http://localhost:11434/api/tags > /dev/null 2>&1; then
-    ollama serve > /dev/null 2>&1 &
-    sleep 2
-fi
-
-MODELS=$(ollama list 2>/dev/null || echo "")
-
-# Main model — chat/synthesis + native vision. gemma4 absorbs the vision slot
-# (Option A), so no separate olmo or granite download is needed.
-if ! echo "$MODELS" | grep -q "gemma4:e4b"; then
-    echo -e "${YELLOW}Downloading gemma4:e4b model (~9.6GB, main + native vision)...${NC}"
-    ollama pull gemma4:e4b
-fi
-
-# System 1: Fast model for quick responses (Microsoft Phi-4 mini)
-if ! echo "$MODELS" | grep -q "phi4-mini"; then
-    echo -e "${YELLOW}Downloading phi4-mini model (~2GB)...${NC}"
-    ollama pull phi4-mini
-fi
-
-# Embedding model (1024 dims, frontier quality)
-if ! echo "$MODELS" | grep -q "snowflake-arctic-embed2"; then
-    echo -e "${YELLOW}Downloading snowflake-arctic-embed2 model (~500MB)...${NC}"
-    ollama pull snowflake-arctic-embed2
-fi
-
-echo -e "${GREEN}✓ AI models ready${NC}"
-echo -e ""
+# Models are NOT downloaded here. This block used to `ollama serve` and then pull gemma4 /
+# phi4-mini / snowflake-arctic-embed2 after every build — which, once those models were
+# removed from Ollama, FAILED the build with a 412 ("requires a newer version of Ollama")
+# even though the app had bundled successfully. LocalBook runs on MLX now; its models live
+# in the HuggingFace cache and are fetched from LLM Studio, never by the build script.
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Optional post-build bundle smoke gate (additive — Ring 2 of testing-ci-foundation)
