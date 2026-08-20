@@ -127,3 +127,36 @@ def test_presence_requires_weights_not_just_a_config_file():
     # by the cache-size helper, where "is the config there" is the right question.
     assert "_is_present(_mid)" in code
     assert '_installed = _tlfc(' not in code
+
+
+# ── Shell scripts (2026-08-20) ──────────────────────────────────────────────────
+
+def _sh(rel: str) -> str:
+    """Script source with comment-only lines stripped, so prose about the removal
+    doesn't read as the removed code."""
+    return "\n".join(l for l in _read(rel).splitlines() if not l.strip().startswith("#"))
+
+
+def test_no_script_pulls_or_starts_ollama():
+    """`build.sh` ran three `ollama pull`s AFTER bundling. Once those models were deleted
+    the pull returned 412 and failed the build, even though the app had bundled fine — a
+    green build reported red. `start.sh` additionally `exit 1`d when the ollama binary was
+    absent, which is now the normal state.
+    """
+    for script in ("build.sh", "start.sh", "release.sh", "install.sh"):
+        code = _sh(script)
+        assert "ollama pull" not in code, f"{script} still pulls models"
+        assert "ollama serve" not in code, f"{script} still starts a daemon"
+        assert "brew install ollama" not in code, f"{script} still installs Ollama"
+        assert "11434" not in code, f"{script} still probes the Ollama port"
+
+
+def test_the_rag_v3_sentinel_still_writes():
+    """THE fragile edit in install.sh. The RAG V3 upgrade sat inside `if curl ollama`; with
+    Ollama gone that branch never runs, so the upgrade is skipped forever AND
+    `.rag_v3_upgraded` is never written — every later upgrade retries and re-skips. Dropping
+    the guard has to keep the body, sentinel included."""
+    code = _sh("install.sh")
+    assert 'upgrade_rag_v3.py' in code
+    assert '> "$rag_v3_marker"' in code, "the sentinel write was lost with the guard"
+    assert "if true; then" not in code, "leftover no-op guard"

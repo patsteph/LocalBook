@@ -386,20 +386,6 @@ main() {
         fi
     }
 
-    ensure_ollama() {
-        if command -v ollama &>/dev/null; then
-            success "Ollama"
-            return
-        fi
-        info "Installing Ollama..."
-        brew install ollama
-        if command -v ollama &>/dev/null; then
-            success "Ollama installed"
-        else
-            fail "Ollama installation failed"
-            exit 1
-        fi
-    }
 
     ensure_brew_pkg() {
         local cmd="$1"
@@ -633,64 +619,12 @@ main() {
 
     download_models() {
         step 6 "Downloading AI models"
-        info "This downloads ~9GB of language models via Ollama"
+        info "Fetching the MLX models the app runs on"
         info "Download speed depends on your internet connection"
 
-        # Start Ollama if not running
-        if ! curl -s http://localhost:11434/api/tags >/dev/null 2>&1; then
-            info "Starting Ollama service..."
-            ollama serve >/dev/null 2>&1 &
-            local retries=0
-            while ! curl -s http://localhost:11434/api/tags >/dev/null 2>&1; do
-                sleep 2
-                retries=$((retries + 1))
-                if [ $retries -gt 15 ]; then
-                    fail "Ollama failed to start after 30 seconds"
-                    exit 1
-                fi
-            done
-            success "Ollama service started"
-        fi
-
-        local models
-        models=$(ollama list 2>/dev/null || echo "")
-
-        # Main model (System 2: chat, vision, synthesis) — gemma4:e4b is the
-        # v2.0 default (replaces olmo-3; see backend/config.py ollama_model).
-        if echo "$models" | grep -q "gemma4:e4b"; then
-            success "gemma4:e4b (already downloaded)"
-        else
-            info "Downloading gemma4:e4b (~9.6GB) — main model (chat + native vision)..."
-            ollama pull gemma4:e4b
-            success "gemma4:e4b downloaded"
-        fi
-
-        # NOTE: olmo-3 (legacy main) and granite3.2-vision (vision fallback) are
-        # NOT downloaded by default — gemma4 is the main model and absorbs the
-        # vision slot (Option A). Pull them manually only to swap/test via the
-        # LLM Locker: `ollama pull olmo-3:7b-instruct` / `ollama pull granite3.2-vision:2b`.
-
-        # Fast model (System 1: quick extraction, classification)
-        if echo "$models" | grep -q "phi4-mini"; then
-            success "phi4-mini (already downloaded)"
-        else
-            info "Downloading phi4-mini (~2GB) — fast response model..."
-            ollama pull phi4-mini
-            success "phi4-mini downloaded"
-        fi
-
-        # Embedding model (vector search)
-        if echo "$models" | grep -q "snowflake-arctic-embed2"; then
-            success "snowflake-arctic-embed2 (already downloaded)"
-        else
-            info "Downloading snowflake-arctic-embed2 (~500MB) — embedding model..."
-            ollama pull snowflake-arctic-embed2
-            success "snowflake-arctic-embed2 downloaded"
-        fi
-
-        # (Vision is handled by gemma4's native vision — no separate granite pull.)
-
-        echo ""
+        # The Ollama pulls that used to be here (gemma4 / phi4-mini /
+        # snowflake-arctic-embed2, ~9 GB, preceded by `ollama serve`) are gone with the
+        # engine. MLX checkpoints land in the HuggingFace cache via the Python block below.
 
         # ── Python-based models (need venv) ──────────────────────────────
         info "Checking additional AI models..."
@@ -1298,18 +1232,8 @@ print(f'cached at: {local_dir}')
         # Step 6: Verify AI models
         step 6 "Verifying AI models"
 
-        # Check Ollama models
-        if ! curl -s http://localhost:11434/api/tags >/dev/null 2>&1; then
-            info "Starting Ollama service..."
-            ollama serve >/dev/null 2>&1 &
-            sleep 3
-        fi
-        local models
-        models=$(ollama list 2>/dev/null || echo "")
-        echo "$models" | grep -q "gemma4:e4b" && success "gemma4:e4b" || { info "Pulling gemma4:e4b (main + native vision)..."; ollama pull gemma4:e4b; }
-        echo "$models" | grep -q "phi4-mini" && success "phi4-mini" || { info "Pulling phi4-mini..."; ollama pull phi4-mini; }
-        echo "$models" | grep -q "snowflake-arctic-embed2" && success "snowflake-arctic-embed2" || { info "Pulling snowflake-arctic-embed2..."; ollama pull snowflake-arctic-embed2; }
-        # olmo-3 (legacy) + granite3.2-vision (vision fallback) intentionally NOT pulled — gemma4 covers main + vision.
+        # Ollama model verification removed with the engine — the MLX checkpoints are
+        # verified by the Python block below, which is now the only model check that matters.
 
         # Check Python-based models (reranker + TTS)
         # shellcheck disable=SC1091
@@ -1487,39 +1411,27 @@ print(f'Whisper cached at: {local_dir}')
             info "This enriches your search index with HyDE metadata and GraphRAG summaries."
             info "(May take several minutes depending on data size and local LLM speed)"
 
-            # Ensure Ollama is running (should be from Step 6, but verify)
-            if ! curl -s http://localhost:11434/api/tags >/dev/null 2>&1; then
-                info "Starting Ollama service for RAG upgrade..."
-                ollama serve >/dev/null 2>&1 &
-                local ollama_retries=0
-                while ! curl -s http://localhost:11434/api/tags >/dev/null 2>&1; do
-                    sleep 2
-                    ollama_retries=$((ollama_retries + 1))
-                    if [ $ollama_retries -gt 15 ]; then
-                        warn "Ollama failed to start — skipping RAG upgrade (will run on next upgrade)"
-                        break
-                    fi
-                done
+            # No engine health gate: this used to run only `if curl ollama` answered, so
+            # with Ollama gone the upgrade would be skipped forever AND the
+            # `.rag_v3_upgraded` sentinel below would never be written — meaning every future
+            # upgrade retried it and every one skipped again. The body runs unconditionally;
+            # upgrade_rag_v3.py reports its own failures.
+            # shellcheck disable=SC1091
+            source "$INSTALL_DIR/backend/.venv/bin/activate"
+
+            # Set LOCALBOOK_DATA_DIR so the upgrade script finds the right database
+            export LOCALBOOK_DATA_DIR="$DATA_DIR"
+
+            if python "$INSTALL_DIR/backend/scripts/upgrade_rag_v3.py" 2>&1; then
+                # Write sentinel so subsequent upgrades skip this step
+                date -u "+%Y-%m-%dT%H:%M:%SZ" > "$rag_v3_marker"
+                success "RAG V3 upgrade complete"
+            else
+                warn "RAG upgrade encountered issues (non-fatal — app will still work)"
+                info "You can re-run the upgrade later: cd $INSTALL_DIR/backend && python scripts/upgrade_rag_v3.py"
             fi
 
-            if curl -s http://localhost:11434/api/tags >/dev/null 2>&1; then
-                # shellcheck disable=SC1091
-                source "$INSTALL_DIR/backend/.venv/bin/activate"
-
-                # Set LOCALBOOK_DATA_DIR so the upgrade script finds the right database
-                export LOCALBOOK_DATA_DIR="$DATA_DIR"
-
-                if python "$INSTALL_DIR/backend/scripts/upgrade_rag_v3.py" 2>&1; then
-                    # Write sentinel so subsequent upgrades skip this step
-                    date -u "+%Y-%m-%dT%H:%M:%SZ" > "$rag_v3_marker"
-                    success "RAG V3 upgrade complete"
-                else
-                    warn "RAG upgrade encountered issues (non-fatal — app will still work)"
-                    info "You can re-run the upgrade later: cd $INSTALL_DIR/backend && python scripts/upgrade_rag_v3.py"
-                fi
-
-                deactivate
-            fi
+            deactivate
         else
             info "No existing vector data found — skipping RAG upgrade (not needed for fresh data)"
             success "RAG engine up to date"
@@ -1623,7 +1535,6 @@ print(f'Whisper cached at: {local_dir}')
         ensure_python
         ensure_node
         ensure_rust
-        ensure_ollama
         ensure_brew_pkg "ffmpeg" "ffmpeg" "ffmpeg (audio/video processing)"
         ensure_brew_pkg "tesseract" "tesseract" "Tesseract (OCR)"
         ensure_brew_pkg "espeak-ng" "espeak-ng" "espeak-ng (TTS phonemizer)"
