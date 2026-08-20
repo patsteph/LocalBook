@@ -82,3 +82,39 @@ def test_resident_reports_what_is_held():
     r = mlx_engine.resident()
     assert "fake/model" in r["text"]
     assert "active_gb" in r and "peak_gb" in r
+
+
+# ── Gate metrics (2026-08-19) ───────────────────────────────────────────────────
+
+def test_gate_thresholds_discriminate_between_real_runs():
+    """A gate that fails everything is not a gate.
+
+    The memory-metrics recommendation, implemented literally, aborted all SEVEN recorded runs
+    including both Ollama baselines. Two flaws, both found by validating against the real data:
+      · it recommended a single-dip floor (min_available >= 0.75 GB) while its own analysis
+        said a single-dip criterion cannot discriminate — every run of both engines touches
+        0.29-0.74 GB at some instant;
+      · it compared MLX commitment to the WORKING SET, but MLX is pinned at `mlx_engine`'s own
+        set_memory_limit (90% of the working set), so "abort above 90%" aborts on the ceiling
+        we configured. Circular, and guaranteed to fire.
+    """
+    from evaluator.memory_sampler import _verdict
+
+    # A healthy Ollama run (real numbers from 1690b60a-88b).
+    assert _verdict(0.43, 0.3, 2.0, 0.46)["level"] == "pass"
+    # A genuinely bad run — 75s continuously under 1.5 GB (507b0c49-12c).
+    assert _verdict(0.43, 6.0, 75.5, 0.52)["level"] == "abort"
+    # The worst MLX run — 22.8% of samples under pressure (759c52b5-3ff).
+    assert _verdict(0.29, 22.8, 15.4, 1.0)["level"] == "abort"
+    # A healthy MLX run pinned at its own limit: WARN, not abort — the cap is what prevents
+    # the danger, so sitting on it is informative rather than dangerous.
+    assert _verdict(0.56, 8.9, 14.2, 1.0)["level"] == "warn"
+
+
+def test_a_single_dip_never_gates():
+    """Every run of both engines dips below 0.75 GB. If that gated, nothing would ever pass."""
+    from evaluator.memory_sampler import _verdict
+
+    v = _verdict(0.10, 1.0, 2.0, 0.50)
+    assert v["level"] == "pass"
+    assert any("[info]" in r for r in v["reasons"]), "the dip should still be REPORTED"
