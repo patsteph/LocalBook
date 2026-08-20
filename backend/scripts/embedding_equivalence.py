@@ -15,7 +15,7 @@ READ-ONLY on user data. It reads LanceDB tables and the exploration store, calls
 endpoints, and writes ONLY its report file. It never writes a vector, never re-indexes, and never
 persists a settings change (engine flips are in-process only and restored in a finally block).
 
-It drives the REAL production path — `rag_embeddings._get_ollama_embeddings_batch_sync` with
+It drives the REAL production path — `rag_embeddings._get_embeddings_batch_sync` with
 `settings.embed_engine` flipped — rather than reimplementing embedding. Testing a reimplementation
 would prove nothing about what the app actually does.
 
@@ -185,7 +185,7 @@ def embed_with(engine: str, model: Optional[str], texts: List[str]) -> Tuple[Lis
         if model:
             settings.mlx_embedding_model = model
         t0 = time.time()
-        vecs = rag_embeddings._get_ollama_embeddings_batch_sync(texts)
+        vecs = rag_embeddings._get_embeddings_batch_sync(texts)
         return vecs, time.time() - t0
     finally:
         settings.embed_engine = prev_engine

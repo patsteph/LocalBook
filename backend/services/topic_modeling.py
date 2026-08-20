@@ -15,7 +15,6 @@ from typing import Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass, field
 from uuid import uuid4
 
-import httpx
 import numpy as np
 
 from config import settings
@@ -471,6 +470,16 @@ class TopicModelingService:
         """Start background task to enhance topic names with LLM."""
         import threading
         
+        # Capture the MAIN loop while we are still on it. The worker below runs its own
+        # loop, but the LLM seam's priority lane and clearance Events are bound to this
+        # one — so the generation itself has to be submitted back here rather than awaited
+        # over there. (Replaces the raw-httpx exception that used to exist for exactly
+        # this reason; there is no loop-agnostic HTTP path left to take.)
+        try:
+            self._main_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            self._main_loop = None
+        
         def run_enhancement_sync():
             """Run enhancement in a new event loop (for bundled app compatibility)."""
             loop = asyncio.new_event_loop()
@@ -556,23 +565,28 @@ Rules:
 Theme name:"""
 
         try:
-            # NOTE: this runs inside `_enhance_names_background`, which spins its
-            # OWN event loop (`asyncio.new_event_loop()` above). llm_runtime's
-            # priority lane / clearance Event bind to the main loop and crash
-            # cross-loop ("bound to a different event loop"), so this one caller
-            # stays on loop-agnostic raw httpx. (D4 exception, documented.)
-            import httpx
-            async with httpx.AsyncClient(timeout=httpx.Timeout(15.0, read=30.0)) as client:
-                response = await client.post(
-                    f"{settings.ollama_base_url}/api/generate",
-                    json={
-                        "model": settings.ollama_fast_model,
-                        "prompt": prompt,
-                        "stream": False,
-                        "options": {"temperature": 0.3, "num_predict": 20},
-                    },
-                )
-            name = (response.json().get("response", "") if response.status_code == 200 else "").strip()
+            # This runs inside `_enhance_names_background`, which spins its OWN event loop.
+            # The LLM seam's lane and clearance Events are bound to the MAIN loop and raise
+            # "bound to a different event loop" if awaited from here — so submit the
+            # coroutine back to the main loop and wait on the resulting future. Topic
+            # labelling is background work; if the main loop is gone we simply skip it.
+            from services import llm_service
+
+            main_loop = getattr(self, "_main_loop", None)
+            if main_loop is None or main_loop.is_closed():
+                return None
+
+            fut = asyncio.run_coroutine_threadsafe(
+                llm_service.generate_text(
+                    "", prompt,
+                    model=settings.ollama_fast_model,
+                    num_predict=20,
+                    temperature=0.3,
+                    voice_modifier=False,
+                ),
+                main_loop,
+            )
+            name = (await asyncio.wrap_future(fut) or "").strip()
             if name:
                 # Clean up
                 name = name.strip('"\'').strip()
@@ -797,45 +811,12 @@ Theme name:"""
                 # Use MaximalMarginalRelevance for diverse, non-redundant keywords
                 mmr = MaximalMarginalRelevance(diversity=0.5)
                 
-                # Try to use Ollama for better topic labels via BERTopic's native OpenAI integration
-                representation_model = mmr  # Default to MMR only
-                try:
-                    import openai
-                    from bertopic.representation import OpenAI as BERTopicOpenAI
-                    
-                    # Configure OpenAI client to point to local Ollama
-                    client = openai.OpenAI(
-                        base_url=f"{settings.ollama_base_url}/v1",
-                        api_key="ollama",  # Required but unused
-                        timeout=30.0  # Don't hang forever on slow Ollama
-                    )
-                    
-                    # Custom prompt for concise, meaningful topic labels
-                    label_prompt = """I have a topic that contains the following documents:
-[DOCUMENTS]
-
-The topic is described by the following keywords: [KEYWORDS]
-
-Based on the information above, create a short, descriptive label (2-4 words) for this topic.
-The label should be specific and meaningful, not generic.
-Use title case (e.g., "Machine Learning Applications").
-Return ONLY the label, nothing else."""
-
-                    ollama_model = BERTopicOpenAI(
-                        client,
-                        model=settings.ollama_model,
-                        prompt=label_prompt,
-                        nr_docs=3,
-                        doc_length=150,
-                        chat=True
-                    )
-                    
-                    # Chain MMR (for keywords) then Ollama (for labels)
-                    representation_model = [mmr, ollama_model]
-                    print(f"[TopicModel] Using Ollama ({settings.ollama_model}) for topic labeling")
-                except Exception as e:
-                    print(f"[TopicModel] Ollama integration failed, using MMR only: {e}")
-                    representation_model = mmr
+                # MMR only. BERTopic's OpenAI representation model was pointed at Ollama's
+                # /v1 compatibility endpoint; MLX has no HTTP server, and BERTopic offers no
+                # in-process hook. Labels still get LLM enhancement — just afterwards, via
+                # `_generate_enhanced_name`, which submits to the main loop and goes through
+                # the normal seam. This path only loses the inline labelling.
+                representation_model = mmr
                 
                 # Create model with improved representation
                 self._model = BERTopic(

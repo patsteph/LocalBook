@@ -1,13 +1,16 @@
 """
-Startup Checks Service for LocalBook v0.6.0
+Startup Checks Service
 
 Handles all first-launch and upgrade checks:
 1. Data migration to ~/Library/Application Support/LocalBook/
-2. Ollama model verification (olmo-3:7b-instruct, phi4-mini, snowflake-arctic-embed2)
+2. Model readiness — are the configured MLX models actually on disk?
 3. Embedding dimension migration (768 -> 1024 for all tables)
 4. Knowledge graph table schema validation
+
+Model verification used to ask Ollama over HTTP (`/api/version`, `/api/tags`). MLX models
+live in the HuggingFace cache, so presence is a filesystem question — `model_presence` answers
+it without a server, and there is no engine version to floor-check any more.
 """
-import httpx
 import lancedb
 import pyarrow as pa
 from typing import List, Tuple, Dict, Any
@@ -15,31 +18,32 @@ from config import settings
 import logging
 logger = logging.getLogger(__name__)
 
-# Required Ollama models — derived ENTIRELY from the configured models, never a
-# hardcoded olmo/granite set. The vision slot is RESOLVED: when the main model
-# (gemma4) is vision-capable it absorbs the slot, so granite is neither required
-# nor auto-downloaded. Falls back to the configured vision model otherwise.
-# Deduped so a vision model that equals the main model isn't listed twice.
-def _resolved_vision_model() -> str:
-    try:
-        from evaluator.model_registry import model_registry
-        return model_registry.resolve_vision_model(settings.ollama_model, settings.vision_model)
-    except Exception:
-        return settings.vision_model
-
-_RAW_REQUIRED_MODELS = [
-    (settings.ollama_model, "Main model (chat/synthesis)"),
-    (settings.ollama_fast_model, "Fast response model for follow-ups"),
-    (settings.embedding_model, "Embedding model (1024 dimensions)"),
-    (_resolved_vision_model(), "Vision model for PDF image/chart extraction"),
-]
-_seen_models: set = set()
-REQUIRED_MODELS = [
-    (m, d) for m, d in _RAW_REQUIRED_MODELS if not (m in _seen_models or _seen_models.add(m))
+# Required models — derived ENTIRELY from the configured roles, never a hardcoded set.
+# Deduped, because main and vision are the same gemma checkpoint under MLX and listing it
+# twice would report one missing download as two.
+_ROLE_DESCRIPTIONS = [
+    ("mlx_main_model", "Main model (chat/synthesis)"),
+    ("mlx_fast_model", "Fast response model for follow-ups"),
+    ("mlx_embedding_model", "Embedding model (1024 dimensions)"),
+    ("mlx_vision_model", "Vision model for PDF image/chart extraction"),
 ]
 
-# Minimum Ollama version (broad floor for the current gemma/phi models)
-MIN_OLLAMA_VERSION = "0.5.0"
+
+def _required_models() -> List[Tuple[str, str]]:
+    """Resolved at CALL time, not import time. A role can be repointed in the Locker while
+    the app runs, and an import-time snapshot would keep checking the old model forever."""
+    out, seen = [], set()
+    for attr, desc in _ROLE_DESCRIPTIONS:
+        name = getattr(settings, attr, "") or ""
+        if name and name not in seen:
+            seen.add(name)
+            out.append((name, desc))
+    return out
+
+
+# Back-compat alias: health_portal renders this. A property-like call would be better but
+# this stays a plain list so the import in api/health_portal.py keeps working.
+REQUIRED_MODELS = _required_models()
 
 # Expected embedding dimension for snowflake-arctic-embed2
 # Updated from 768 (nomic-embed-text) to 1024 in v0.6.0
@@ -75,32 +79,21 @@ async def run_all_startup_checks(status_callback=None) -> Dict[str, Any]:
         update_status("checking", "Verifying data directory...", 10)
         results["data_migration"] = verify_data_directory()
         
-        # Step 2: Check Ollama version (broad floor)
-        update_status("checking", "Checking Ollama version...", 15)
-        version_ok, current_version, min_version = await check_ollama_version()
-        results["ollama_version"] = current_version
-        results["ollama_version_ok"] = version_ok
-        
-        if not version_ok:
-            error_msg = f"Ollama version {current_version} is too old. Please update to {min_version}+. Run: ollama --version to check, then update Ollama from ollama.ai"
-            results["errors"].append(error_msg)
-            update_status("error", error_msg, 20)
-        
-        # Step 3: Check Ollama models
+        # Step 2: Are the configured models actually downloaded?
         update_status("checking", "Checking AI models...", 20)
-        available, missing = await check_ollama_models()
+        available, missing = await check_models_present()
         results["models_verified"] = len(missing) == 0
         results["models_missing"] = missing
         
         if missing:
-            # Wave 9 (decision #1) — NEVER auto-download on startup. Report the missing
-            # models and let the user install them explicitly (LLM Labs, or `ollama pull`).
-            # Auto-pulling at boot surprised users with multi-GB downloads and stalled launch.
+            # NEVER auto-download on startup (Wave 9 decision #1) — auto-pulling at boot
+            # surprised users with multi-GB downloads and stalled launch. Report and let
+            # them install explicitly from LLM Studio.
             _missing_names = ", ".join([m[0] for m in missing])
-            update_status("warning", f"Models not installed (install in LLM Labs): {_missing_names}", 25)
+            update_status("warning", f"Models not installed (install in LLM Studio): {_missing_names}", 25)
             results["errors"].append(
-                f"Models not installed: {_missing_names}. Install them in LLM Labs "
-                f"or run `ollama pull <model>`. (Not auto-downloaded — Wave 9 decision.)")
+                f"Models not installed: {_missing_names}. Install them in LLM Studio. "
+                f"(Not auto-downloaded — Wave 9 decision.)")
         
         # Step 3: Check RAG embedding dimensions
         update_status("checking", "Checking embedding compatibility...", 50)
@@ -154,99 +147,29 @@ def verify_data_directory() -> bool:
         return False
 
 
-def parse_version(version_str: str) -> Tuple[int, int, int]:
-    """Parse a version string like '0.5.1' into a tuple (0, 5, 1)."""
-    try:
-        parts = version_str.strip().split('.')
-        return tuple(int(p) for p in parts[:3])
-    except:
-        return (0, 0, 0)
+async def check_models_present() -> Tuple[List[str], List[Tuple[str, str]]]:
+    """Which configured models are on disk, and which are missing.
 
-
-async def check_ollama_version() -> Tuple[bool, str, str]:
+    A filesystem question now — MLX weights live in the HF cache. Returns the same
+    (available, missing) shape the Ollama `/api/tags` version returned so the Health
+    portal and the startup reporter did not have to change.
     """
-    Check if Ollama version meets minimum requirements.
-    
-    Returns:
-        Tuple of (version_ok, current_version, min_version)
-    """
+    available: List[str] = []
+    missing: List[Tuple[str, str]] = []
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.get(f"{settings.ollama_base_url}/api/version")
-            if response.status_code == 200:
-                data = response.json()
-                current = data.get("version", "0.0.0")
-                current_tuple = parse_version(current)
-                min_tuple = parse_version(MIN_OLLAMA_VERSION)
-                
-                version_ok = current_tuple >= min_tuple
-                if not version_ok:
-                    print(f"[Startup] Ollama version {current} is below minimum {MIN_OLLAMA_VERSION}")
-                else:
-                    print(f"[Startup] Ollama version {current} meets requirements")
-                
-                return version_ok, current, MIN_OLLAMA_VERSION
-            else:
-                print(f"[Startup] Could not get Ollama version: {response.status_code}")
-                return False, "unknown", MIN_OLLAMA_VERSION
+        from services.model_presence import is_present
     except Exception as e:
-        print(f"[Startup] Could not check Ollama version: {e}")
-        return False, "unknown", MIN_OLLAMA_VERSION
+        # Presence is unknowable → report nothing missing rather than blocking the boot on
+        # a false alarm. A genuinely absent model still fails loudly at first use.
+        logger.warning(f"[Startup] model presence check unavailable: {e}")
+        return [m for m, _ in _required_models()], []
 
-
-async def check_ollama_models() -> Tuple[List[str], List[Tuple[str, str]]]:
-    """
-    Check which required Ollama models are available.
-    
-    Returns:
-        Tuple of (available_models, missing_models)
-    """
-    available = []
-    missing = []
-    
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.get(f"{settings.ollama_base_url}/api/tags")
-            if response.status_code == 200:
-                data = response.json()
-                installed_models = {m["name"].split(":")[0] for m in data.get("models", [])}
-                # Also check full names with tags
-                installed_full = {m["name"] for m in data.get("models", [])}
-                
-                for model_name, description in REQUIRED_MODELS:
-                    base_name = model_name.split(":")[0]
-                    if model_name in installed_full or base_name in installed_models:
-                        available.append(model_name)
-                    else:
-                        missing.append((model_name, description))
-            else:
-                print(f"[Startup] Ollama API returned {response.status_code}")
-                missing = REQUIRED_MODELS.copy()
-    except Exception as e:
-        print(f"[Startup] Could not connect to Ollama: {e}")
-        missing = REQUIRED_MODELS.copy()
-    
+    for name, description in _required_models():
+        if is_present(name):
+            available.append(name)
+        else:
+            missing.append((name, description))
     return available, missing
-
-
-async def pull_ollama_model(model_name: str) -> bool:
-    """Pull an Ollama model if not already available."""
-    try:
-        print(f"[Startup] Pulling model: {model_name}")
-        async with httpx.AsyncClient(timeout=600.0) as client:  # 10 min timeout for large models
-            response = await client.post(
-                f"{settings.ollama_base_url}/api/pull",
-                json={"name": model_name, "stream": False}
-            )
-            if response.status_code == 200:
-                print(f"[Startup] Successfully pulled {model_name}")
-                return True
-            else:
-                print(f"[Startup] Failed to pull {model_name}: {response.status_code}")
-                return False
-    except Exception as e:
-        print(f"[Startup] Error pulling {model_name}: {e}")
-        return False
 
 
 def check_rag_embedding_dimensions() -> bool:

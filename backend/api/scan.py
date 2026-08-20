@@ -268,30 +268,23 @@ async def ocr_scan_batch(request: ScanOcrBatchRequest):
 # difference between "instant feedback" and "I think something is broken").
 @router.post("/warmup")
 async def warmup_vision_model():
-    """Best-effort: send a no-op generate to the vision model so Ollama loads it.
+    """Best-effort: load the vision model so the first scan isn't cold.
 
-    Returns immediately on success or after a short timeout — the frontend
-    fires this fire-and-forget, so we never want to block the UI on it.
+    Was an empty /api/generate against Ollama to force a load; MLX loads in-process, so
+    this asks the engine directly. Fire-and-forget from the frontend, so it never raises
+    and never blocks — warmup is purely an optimization.
     """
-    import os as _os
     from config import settings as _settings
-    import httpx
 
-    model = _os.getenv("LOCALBOOK_VISION_MODEL") or _settings.vision_model
-    base = _settings.ollama_base_url.rstrip("/")
+    model = getattr(_settings, "mlx_vision_model", "") or _settings.vision_model
     try:
-        # /api/generate with empty prompt is the cheapest way to force a load.
-        # keep_alive matches the rest of the codebase (5m).
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.post(
-                f"{base}/api/generate",
-                json={"model": model, "prompt": "", "keep_alive": "5m"},
-            )
-        if resp.status_code != 200:
-            logger.warning(f"[scan] vision warmup non-200: {resp.status_code} {resp.text[:200]}")
-            return {"status": "warning", "model": model, "code": resp.status_code}
+        from services.mlx_engine import mlx_engine
+        if not mlx_engine.available():
+            return {"status": "warning", "model": model, "message": "MLX engine unavailable"}
+        if model in mlx_engine.resident().get("text", {}):
+            return {"status": "ok", "model": model, "note": "already resident"}
+        await mlx_engine._load(model)
         return {"status": "ok", "model": model}
     except Exception as e:
-        # Never raise — warmup is purely an optimization.
         logger.warning(f"[scan] vision warmup failed: {e}")
         return {"status": "error", "model": model, "message": str(e)[:200]}

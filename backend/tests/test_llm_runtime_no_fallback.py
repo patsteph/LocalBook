@@ -97,6 +97,45 @@ def test_a_wrong_length_vector_is_zero_filled_not_dropped(monkeypatch):
     assert any(out[0]) and any(out[2]), "good vectors must survive intact"
 
 
+# ── The SYNC embedding path, which the audit's excise list missed ───────────────
+
+def test_the_sync_embed_path_also_raises(monkeypatch):
+    """`rag_embeddings` has its own sync helpers that bypass llm_runtime entirely. They
+    fell through to Ollama over `requests` and zero-filled the batch on failure — so with
+    Ollama gone, every sync embed would have written unretrievable vectors into LanceDB
+    while looking like it worked. Same contract as the async path, for the same reason.
+    """
+    from services import rag_embeddings as r
+
+    monkeypatch.setattr(r, "_mlx_embed_sync_or_none", lambda texts: None)
+    with pytest.raises(RuntimeError, match="unserviceable"):
+        r._get_embeddings_batch_sync(["a", "b"])
+    with pytest.raises(RuntimeError, match="unserviceable"):
+        r._get_embedding_sync("a")   # NB: `_get_embedding` is the ASYNC sibling
+
+
+def test_the_sync_path_still_zero_fills_a_wrong_length_vector(monkeypatch):
+    """Same alignment argument as the async side: a dropped vector shifts every later
+    chunk onto the wrong text."""
+    from config import settings
+    from services import rag_embeddings as r
+
+    monkeypatch.setattr(r, "_mlx_embed_sync_or_none",
+                        lambda texts: [[0.1] * settings.embedding_dim, [0.1] * 3])
+    out = r._get_embeddings_batch_sync(["a", "b"])
+    assert len(out) == 2 and any(out[0]) and not any(out[1])
+
+
+def test_no_sync_http_embed_path_remains():
+    """`requests.post(.../api/embed)` here was invisible to every llm_runtime-level guard."""
+    import services.rag_embeddings as m
+
+    src = open(m.__file__).read()
+    code = "\n".join(l for l in src.splitlines() if not l.strip().startswith("#"))
+    assert "/api/embed" not in code
+    assert "requests.post" not in code
+
+
 # ── The presence signal the excise nearly killed ────────────────────────────────
 
 def test_an_mlx_call_marks_the_system_busy(monkeypatch):

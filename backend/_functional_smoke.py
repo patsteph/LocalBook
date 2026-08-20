@@ -64,8 +64,8 @@ async def _run():
 
     # ── core embedding path (hot — single + batch must keep shape) ──
     from services import rag_embeddings
-    await check("rag_embeddings._get_ollama_embedding",
-                rag_embeddings._get_ollama_embedding("hello world"),
+    await check("rag_embeddings._get_embedding",
+                rag_embeddings._get_embedding("hello world"),
                 lambda v: len(v) == DIM)
     await check("rag_embeddings.encode_async (batch order+shape)",
                 rag_embeddings.encode_async(["alpha one", "beta two", "gamma three"]),

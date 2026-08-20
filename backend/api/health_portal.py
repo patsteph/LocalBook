@@ -24,7 +24,7 @@ from utils.binary_finder import find_binary
 from services.rag_cache import embedding_cache, answer_cache
 from services.startup_checks import (
     REQUIRED_MODELS, EXPECTED_EMBEDDING_DIM,
-    check_ollama_version, check_ollama_models,
+    check_models_present,
     check_rag_embedding_dimensions, check_knowledge_graph_dimensions
 )
 
@@ -110,14 +110,13 @@ async def quick_health_check():
     issues = 0
     status = "healthy"
     
-    # Quick Ollama check
+    # Quick engine check — in-process, so this is a flag read rather than a 1s HTTP probe.
     try:
-        async with httpx.AsyncClient(timeout=1.0) as client:
-            resp = await client.get(f"{settings.ollama_base_url}/api/tags")
-            if resp.status_code != 200:
-                issues += 1
-                status = "degraded"
-    except:
+        from services.mlx_engine import mlx_engine
+        if not mlx_engine.available():
+            issues += 1
+            status = "critical"
+    except Exception:
         issues += 1
         status = "critical"
     
@@ -187,43 +186,51 @@ async def full_health_check():
     
     # ============ CORE SERVICES SECTION ============
     
-    # Ollama Connection — gates all downstream Ollama-dependent checks
-    ollama_ok = False
+    # Engine availability — gates all downstream model checks. Was an HTTP probe of
+    # Ollama's /api/tags; MLX runs in-process, so the question is whether the engine
+    # imported and initialised, not whether a server answers.
+    engine_ok = False
     try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.get(f"{settings.ollama_base_url}/api/tags")
-            if resp.status_code == 200:
-                data = resp.json()
-                models = data.get("models", [])
-                add_check("core_services", {
-                    "name": "ollama_connection",
-                    "display": "Ollama Server",
-                    "status": "pass",
-                    "details": {"url": settings.ollama_base_url, "model_count": len(models)}
-                })
-                ollama_ok = True
-            else:
-                add_check("core_services", {
-                    "name": "ollama_connection",
-                    "display": "Ollama Server",
-                    "status": "fail",
-                    "error": f"HTTP {resp.status_code}",
-                    "repair": "restart_ollama"
-                })
-                results["overall"] = "critical"
+        from services.mlx_engine import mlx_engine
+        engine_ok = mlx_engine.available()
+        if engine_ok:
+            _res = mlx_engine.resident()
+            add_check("core_services", {
+                "name": "engine",
+                "display": "MLX Engine",
+                "status": "pass",
+                "details": {
+                    "resident_models": list(_res.get("text", {})) + list(_res.get("embed", {})),
+                    "active_gb": _res.get("active_gb"),
+                    "peak_gb": _res.get("peak_gb"),
+                },
+            })
+        else:
+            add_check("core_services", {
+                "name": "engine",
+                "display": "MLX Engine",
+                "status": "fail",
+                "error": "MLX engine unavailable (mlx/mlx-lm not importable, or no Metal device)",
+            })
+            results["issues"].append({
+                "severity": "critical",
+                "title": "MLX Engine Unavailable",
+                "message": "The in-process model engine did not initialise. AI features will not work.",
+                "repair": None,
+            })
+            results["overall"] = "critical"
     except Exception as e:
         add_check("core_services", {
-            "name": "ollama_connection",
-            "display": "Ollama Server",
+            "name": "engine",
+            "display": "MLX Engine",
             "status": "fail",
             "error": str(e),
-            "repair": "restart_ollama"
         })
         results["issues"].append({
             "severity": "critical",
-            "title": "Ollama Not Running",
-            "message": "Cannot connect to Ollama server. AI features will not work.",
-            "repair": "restart_ollama"
+            "title": "MLX Engine Error",
+            "message": f"Engine check failed: {str(e)[:120]}",
+            "repair": None,
         })
         results["overall"] = "critical"
     
@@ -272,12 +279,10 @@ async def full_health_check():
     
     # ============ AI & MODELS SECTION ============
     
-    # Skip all Ollama-dependent checks when connection failed — avoids
-    # stacking timeouts (version 10s + models 10s + loading 5s + embedding
-    # 10s + LLM 30s ≈ 65s) that cause /health/full to exceed client timeouts.
-    if not ollama_ok:
+    # Skip the live-generation checks when the engine is down — they would each burn
+    # their full timeout and push /health/full past the client's.
+    if not engine_ok:
         for skip_name, skip_display in [
-            ("ollama_version", "Ollama Version"),
             ("models", "Models Installed"),
             ("model_loading", "Models Loaded"),
             ("embedding_test", "Embedding Generation"),
@@ -287,30 +292,12 @@ async def full_health_check():
                 "name": skip_name,
                 "display": skip_display,
                 "status": "fail",
-                "error": "Skipped — Ollama not connected"
+                "error": "Skipped — MLX engine unavailable"
             })
     
-    if ollama_ok:
-      # Ollama Version
-      version_ok, current_version, min_version = await check_ollama_version()
-      add_check("ai_models", {
-          "name": "ollama_version",
-          "display": "Ollama Version",
-          "status": "pass" if version_ok else "warn",
-          "details": {"current": current_version, "minimum": min_version}
-      })
-      if not version_ok and current_version != "unknown":
-          results["issues"].append({
-              "severity": "medium",
-              "title": "Ollama Version Outdated",
-              "message": f"Version {current_version} is below minimum {min_version}. Update from ollama.ai",
-              "repair": None
-          })
-          if results["overall"] == "healthy":
-              results["overall"] = "degraded"
-      
-      # Models Installed Check
-      available, missing = await check_ollama_models()
+    if engine_ok:
+      # Models Installed Check — a filesystem question now, not an /api/tags call.
+      available, missing = await check_models_present()
       add_check("ai_models", {
           "name": "models",
           "display": "Models Installed",
@@ -329,212 +316,130 @@ async def full_health_check():
           if results["overall"] == "healthy":
               results["overall"] = "degraded"
       
-      # Model Loading Status (cold start detection)
-      # v1.8.0: provider-aware — sidecar-backed models never appear in Ollama's
-      # /api/ps, so we check llama-server /health for them instead.
+      # Model Loading Status (cold start detection) — the MLX twin of Ollama's /api/ps.
+      # `resident()` reports what is actually held in memory right now, which is also what
+      # the idle-eviction sweep acts on.
       try:
-          from services.llm_provider import resolve as _resolve_provider, Provider as _Provider, health_check as _provider_health
-
-          async def _is_model_loaded(model_name: str) -> bool:
-              if not model_name:
-                  return False
-              route = _resolve_provider(model_name)
-              if route.provider is _Provider.LLAMA_SERVER:
-                  # llama-server loads exactly one model at boot; healthy == loaded.
-                  return await _provider_health(_Provider.LLAMA_SERVER)
-              # Ollama path — look in /api/ps
-              try:
-                  async with httpx.AsyncClient(timeout=5.0) as client:
-                      resp = await client.get(f"{settings.ollama_base_url}/api/ps")
-                      if resp.status_code != 200:
-                          return False
-                      names = [m.get("name", "") for m in resp.json().get("models", [])]
-                      return any(model_name in n for n in names)
-              except Exception:
-                  return False
-
-          main_loaded = await _is_model_loaded(settings.ollama_model)
-          fast_loaded = await _is_model_loaded(settings.ollama_fast_model)
-
-          main_route = _resolve_provider(settings.ollama_model)
-          backend_label = "sidecar" if main_route.provider is _Provider.LLAMA_SERVER else "ollama"
+          from services.mlx_engine import mlx_engine, mlx_model_for_role
+          _res = mlx_engine.resident()
+          _held = set(_res.get("text", {})) | set(_res.get("embed", {}))
+          _main_id = mlx_model_for_role(settings.ollama_model)
+          _fast_id = mlx_model_for_role(settings.ollama_fast_model)
+          main_loaded = bool(_main_id and _main_id in _held)
+          fast_loaded = bool(_fast_id and _fast_id in _held)
 
           add_check("ai_models", {
               "name": "model_loading",
               "display": "Models Loaded",
               "status": "pass" if main_loaded else "warn",
               "details": {
-                  "main_model": settings.ollama_model,
+                  "main_model": _main_id or settings.ollama_model,
                   "main_loaded": main_loaded,
                   "fast_loaded": fast_loaded,
-                  "main_backend": backend_label,
+                  "resident": sorted(_held),
+                  "active_gb": _res.get("active_gb"),
+                  "peak_gb": _res.get("peak_gb"),
               },
           })
 
-          # Wave 9 — MLX engine status. Reports which roles run in-process on MLX and whether
-          # their models are downloaded. Non-fatal (MLX is opt-in; Ollama is the fallback).
-          try:
-              _mlx_active = {r: getattr(settings, f"{r}_engine", "ollama")
-                             for r in ("main", "fast", "vision", "image")
-                             if getattr(settings, f"{r}_engine", "ollama") == "mlx"}
-              if _mlx_active:
-                  from services.mlx_engine import MLXEngine
-                  from huggingface_hub import try_to_load_from_cache
-                  _deps_ok = MLXEngine.available()
-                  _model_of = {"main": settings.mlx_main_model, "fast": settings.mlx_fast_model,
-                               "vision": settings.mlx_vision_model, "image": settings.mlx_image_model}
-                  _pending = [_model_of[r] for r in _mlx_active
-                              if try_to_load_from_cache(_model_of[r], "config.json") is None]
-                  add_check("ai_models", {
-                      "name": "mlx_engine",
-                      "display": "MLX Engine (in-process)",
-                      "status": "fail" if not _deps_ok else ("warn" if _pending else "pass"),
-                      "details": {
-                          "roles_on_mlx": list(_mlx_active.keys()),
-                          "deps_available": _deps_ok,
-                          "models_pending_download": _pending,
-                      },
-                  })
-                  if not _deps_ok:
-                      results["issues"].append({
-                          "severity": "medium",
-                          "title": "MLX engine unavailable",
-                          "message": "A role is set to the MLX engine but mlx-lm/mlx-vlm aren't importable — those roles are falling back to Ollama. Rebuild the app to bundle the MLX deps.",
-                          "repair": None,
-                      })
-          except Exception as _mlxe:
-              logger.debug(f"[health] MLX check skipped: {_mlxe}")
-
           if not main_loaded:
-              if main_route.provider is _Provider.LLAMA_SERVER:
-                  results["issues"].append({
-                      "severity": "medium",
-                      "title": "Sidecar Not Running",
-                      "message": f"{settings.ollama_model} is served by llama-server, which is not responding on {main_route.base_url}. Start the sidecar from the Locker tab.",
-                      "repair": None,
-                  })
-              else:
-                  results["issues"].append({
-                      "severity": "low",
-                      "title": "Main Model Not Loaded",
-                      "message": f"{settings.ollama_model} not in memory. First query will be slow.",
-                      "repair": "warmup_model",
-                      "repair_params": {"model": settings.ollama_model},
-                  })
+              # Not an error. Models load lazily and the idle sweep evicts them on purpose,
+              # so "not resident" is the expected steady state on a quiet machine.
+              results["issues"].append({
+                  "severity": "low",
+                  "title": "Main Model Not Loaded",
+                  "message": f"{_main_id or settings.ollama_model} is not resident. The first query will pay the load cost.",
+                  "repair": "warmup_model",
+                  "repair_params": {"model": settings.ollama_model},
+              })
       except Exception as e:
           add_log("WARN", f"Model loading check failed: {e}", "health_portal")
       
-      # Embedding Model Test - verify embeddings actually work
+      # Embedding Model Test — go through the real seam, not a hand-rolled HTTP call, so
+      # this exercises the same code path ingestion uses (including the zero-vector guard).
       try:
-          async with httpx.AsyncClient(timeout=10.0) as client:
-              resp = await client.post(
-                  f"{settings.ollama_base_url}/api/embeddings",
-                  json={"model": settings.embedding_model, "prompt": "test"}
-              )
-              if resp.status_code == 200:
-                  emb_data = resp.json()
-                  emb_dim = len(emb_data.get("embedding", []))
-                  add_check("ai_models", {
-                      "name": "embedding_test",
-                      "display": "Embedding Generation",
-                      "status": "pass" if emb_dim == EXPECTED_EMBEDDING_DIM else "warn",
-                      "details": {"model": settings.embedding_model, "dimension": emb_dim, "expected": EXPECTED_EMBEDDING_DIM}
-                  })
-              else:
-                  add_check("ai_models", {
-                      "name": "embedding_test",
-                      "display": "Embedding Generation",
-                      "status": "fail",
-                      "error": f"HTTP {resp.status_code}"
-                  })
-                  results["issues"].append({
-                      "severity": "high",
-                      "title": "Embedding Model Not Working",
-                      "message": "Cannot generate embeddings. Search will not work.",
-                      "repair": "pull_model",
-                      "repair_params": {"model": settings.embedding_model}
-                  })
-                  if results["overall"] == "healthy":
-                      results["overall"] = "degraded"
+          _emb = await llm_runtime.embed("test")
+          _vecs = _emb.get("embeddings") or []
+          emb_dim = len(_vecs[0]) if _vecs else 0
+          _all_zero = bool(_vecs and not any(_vecs[0]))
+          add_check("ai_models", {
+              "name": "embedding_test",
+              "display": "Embedding Generation",
+              "status": "pass" if (emb_dim == EXPECTED_EMBEDDING_DIM and not _all_zero) else "fail",
+              "details": {
+                  "model": settings.mlx_embedding_model,
+                  "dimension": emb_dim,
+                  "expected": EXPECTED_EMBEDDING_DIM,
+                  "zero_vector": _all_zero,
+              },
+          })
+          if emb_dim != EXPECTED_EMBEDDING_DIM or _all_zero:
+              results["issues"].append({
+                  "severity": "high",
+                  "title": "Embedding Model Not Working",
+                  "message": (f"Returned a zero vector — those are unretrievable and poison the index."
+                              if _all_zero else
+                              f"Wrong dimension {emb_dim}, expected {EXPECTED_EMBEDDING_DIM}. Search will not work."),
+                  "repair": None,
+              })
+              if results["overall"] == "healthy":
+                  results["overall"] = "degraded"
       except Exception as e:
+          # embed() RAISES when no engine can serve it — deliberately, so a failure can
+          # never be mistaken for an empty result.
           add_check("ai_models", {
               "name": "embedding_test",
               "display": "Embedding Generation",
               "status": "fail",
-              "error": str(e)[:50]
+              "error": str(e)[:120]
           })
           results["issues"].append({
               "severity": "high",
               "title": "Embedding Test Failed",
-              "message": f"Cannot test embeddings: {str(e)[:50]}",
+              "message": f"Cannot generate embeddings: {str(e)[:120]}",
               "repair": None
           })
           if results["overall"] == "healthy":
               results["overall"] = "degraded"
       
-      # LLM Generation Test - verify chat/generation works
+      # LLM Generation Test — through the seam, so it exercises the same path chat uses.
       try:
-          async with httpx.AsyncClient(timeout=30.0) as client:
-              resp = await client.post(
-                  f"{settings.ollama_base_url}/api/generate",
-                  json={"model": settings.ollama_fast_model, "prompt": "Say OK", "stream": False, "options": {"num_predict": 5}}
-              )
-              if resp.status_code == 200:
-                  gen_data = resp.json()
-                  response_text = gen_data.get("response", "")
-                  add_check("ai_models", {
-                      "name": "llm_test",
-                      "display": "LLM Generation",
-                      "status": "pass" if len(response_text) > 0 else "warn",
-                      "details": {"model": settings.ollama_fast_model, "responded": len(response_text) > 0}
-                  })
-              else:
-                  error_text = resp.text[:200] if resp.text else ""
-                  is_corrupted = "unable to load model" in error_text.lower()
-                  
-                  add_check("ai_models", {
-                      "name": "llm_test",
-                      "display": "LLM Generation",
-                      "status": "fail",
-                      "error": f"HTTP {resp.status_code}" + (" (model corrupted)" if is_corrupted else "")
-                  })
-                  
-                  if is_corrupted:
-                      results["issues"].append({
-                          "severity": "high",
-                          "title": "Model File Corrupted",
-                          "message": f"The model {settings.ollama_fast_model} is corrupted. Click Repair to re-download it.",
-                          "repair": "repair_model",
-                          "repair_params": {"model": settings.ollama_fast_model}
-                      })
-                  else:
-                      results["issues"].append({
-                          "severity": "high",
-                          "title": "LLM Not Responding",
-                          "message": "Language model failed to generate. Chat will not work.",
-                          "repair": "restart_ollama"
-                      })
-                  if results["overall"] == "healthy":
-                      results["overall"] = "degraded"
-      except Exception as e:
-          error_str = str(e).lower()
-          is_corrupted = "unable to load model" in error_str
-          
+          from services import llm_service
+          _txt = await llm_service.generate_text(
+              "You are a health check.", "Say OK",
+              model=settings.ollama_fast_model, num_predict=5, voice_modifier=False)
+          _ok = bool(_txt and _txt.strip())
           add_check("ai_models", {
               "name": "llm_test",
               "display": "LLM Generation",
-              "status": "fail" if is_corrupted else "warn",
-              "error": "Model corrupted" if is_corrupted else f"Timeout or error: {str(e)[:30]}"
+              "status": "pass" if _ok else "fail",
+              "details": {"model": settings.ollama_fast_model, "responded": _ok},
           })
-          
-          if is_corrupted:
+          if not _ok:
+              # generate_text returns "" rather than raising when nothing can serve it, so
+              # an empty string here IS the failure signal.
               results["issues"].append({
                   "severity": "high",
-                  "title": "Model File Corrupted",
-                  "message": "The model file is corrupted. Click Repair to re-download it.",
-                  "repair": "repair_model",
-                  "repair_params": {"model": settings.ollama_fast_model}
+                  "title": "LLM Not Responding",
+                  "message": "The model produced no output. Chat will not work. Check that the "
+                             "configured MLX model is downloaded.",
+                  "repair": None,
               })
+              if results["overall"] == "healthy":
+                  results["overall"] = "degraded"
+      except Exception as e:
+          add_check("ai_models", {
+              "name": "llm_test",
+              "display": "LLM Generation",
+              "status": "fail",
+              "error": str(e)[:120],
+          })
+          results["issues"].append({
+              "severity": "high",
+              "title": "LLM Test Failed",
+              "message": f"Generation raised: {str(e)[:120]}",
+              "repair": None,
+          })
           if results["overall"] == "healthy":
               results["overall"] = "degraded"
     
@@ -568,46 +473,35 @@ async def full_health_check():
         if results["overall"] == "healthy":
             results["overall"] = "degraded"
     
-    # NEW: Vision Model Check (for PDF image/chart extraction)
-    # Use the RESOLVED vision model — when the main model (gemma4) is vision-capable
-    # it absorbs the slot, so we check/suggest gemma4, not granite (which isn't
-    # needed and shouldn't be flagged "missing" under the gemma defaults).
+    # Vision Model Check (for PDF image/chart extraction). Under MLX the main model IS the
+    # vision model — one gemma checkpoint serves both — so this is a presence check on the
+    # configured vision id rather than a scan of installed Ollama tags.
     try:
-        from evaluator.model_registry import model_registry
-        vision_model = model_registry.resolve_vision_model(settings.ollama_model, settings.vision_model)
-    except Exception:
-        vision_model = settings.vision_model
-    try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.get(f"{settings.ollama_base_url}/api/tags")
-            if resp.status_code == 200:
-                models = resp.json().get("models", [])
-                model_names = [m.get("name", "") for m in models]
-                vision_installed = any(vision_model in name for name in model_names)
-                
-                add_check("ai_models", {
-                    "name": "vision_model",
-                    "display": "Vision Model (PDF)",
-                    "status": "pass" if vision_installed else "warn",
-                    "details": {"model": vision_model, "installed": vision_installed, "purpose": "PDF image/chart extraction"}
-                })
-                
-                if not vision_installed:
-                    results["issues"].append({
-                        "severity": "medium",
-                        "title": "Vision Model Not Installed",
-                        "message": f"{vision_model} needed for PDF image extraction. Run: ollama pull {vision_model}",
-                        "repair": "pull_model",
-                        "repair_params": {"model": vision_model}
-                    })
-                    if results["overall"] == "healthy":
-                        results["overall"] = "degraded"
+        from services.model_presence import is_present
+        vision_model = settings.mlx_vision_model
+        vision_installed = bool(vision_model) and is_present(vision_model)
+        add_check("ai_models", {
+            "name": "vision_model",
+            "display": "Vision Model (PDF)",
+            "status": "pass" if vision_installed else "warn",
+            "details": {"model": vision_model, "installed": vision_installed},
+        })
+        if not vision_installed:
+            results["issues"].append({
+                "severity": "medium",
+                "title": "Vision Model Not Downloaded",
+                "message": f"{vision_model} is needed for PDF image/chart extraction. "
+                           f"Download it from LLM Studio.",
+                "repair": None,
+            })
+            if results["overall"] == "healthy":
+                results["overall"] = "degraded"
     except Exception as e:
         add_check("ai_models", {
             "name": "vision_model",
             "display": "Vision Model (PDF)",
             "status": "warn",
-            "error": f"Check failed: {str(e)[:30]}"
+            "error": f"Check failed: {str(e)[:60]}"
         })
     
     # Kokoro-82M TTS (MLX) + mlx-whisper ASR Check (required for video narration & podcast audio)
@@ -1609,51 +1503,19 @@ async def execute_repair(request: RepairRequest, background_tasks: BackgroundTas
     
     add_log("INFO", f"Executing repair: {action}", "health_portal")
     
-    if action == "restart_ollama":
-        try:
-            # Kill existing Ollama
-            subprocess.run(["pkill", "-f", "ollama"], capture_output=True)
-            await asyncio.sleep(1)
-            # Start Ollama
-            subprocess.Popen(
-                ["ollama", "serve"],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                start_new_session=True
-            )
-            await asyncio.sleep(2)
-            
-            # Verify
-            async with httpx.AsyncClient(timeout=5.0) as client:
-                resp = await client.get(f"{settings.ollama_base_url}/api/tags")
-                if resp.status_code == 200:
-                    add_log("INFO", "Ollama restarted successfully", "health_portal")
-                    return {"status": "success", "message": "Ollama restarted"}
-            
-            return {"status": "partial", "message": "Ollama started but not responding yet"}
-        except Exception as e:
-            add_log("ERROR", f"Failed to restart Ollama: {e}", "health_portal")
-            return {"status": "error", "message": str(e)}
-    
-    elif action == "pull_model":
+    if action == "pull_model":
+        # Downloads an MLX model into the HF cache. Returns immediately with a job the
+        # Locker's progress strip polls — a multi-GB pull must not block the request.
         model = params.get("model")
         if not model:
             return {"status": "error", "message": "No model specified"}
-        
         try:
-            add_log("INFO", f"Pulling model: {model}", "health_portal")
-            async with httpx.AsyncClient(timeout=600.0) as client:
-                resp = await client.post(
-                    f"{settings.ollama_base_url}/api/pull",
-                    json={"name": model, "stream": False}
-                )
-                if resp.status_code == 200:
-                    add_log("INFO", f"Model {model} pulled successfully", "health_portal")
-                    return {"status": "success", "message": f"Model {model} installed"}
-                else:
-                    return {"status": "error", "message": f"Pull failed: {resp.status_code}"}
+            from services.mlx_download import mlx_download_manager
+            add_log("INFO", f"Downloading model: {model}", "health_portal")
+            job = await mlx_download_manager.start(model)
+            return {"status": "success", "message": f"Downloading {model}", "details": job}
         except Exception as e:
-            add_log("ERROR", f"Failed to pull model: {e}", "health_portal")
+            add_log("ERROR", f"Failed to start download for {model}: {e}", "health_portal")
             return {"status": "error", "message": str(e)}
     
     elif action == "reindex_all":
@@ -1709,22 +1571,18 @@ async def execute_repair(request: RepairRequest, background_tasks: BackgroundTas
         model = params.get("model", settings.ollama_model)
         try:
             add_log("INFO", f"Warming up model: {model}", "health_portal")
-            async with httpx.AsyncClient(timeout=120.0) as client:
-                # Send a simple prompt to load the model into memory
-                resp = await client.post(
-                    f"{settings.ollama_base_url}/api/generate",
-                    json={
-                        "model": model,
-                        "prompt": "Hello",
-                        "stream": False,
-                        "options": {"num_predict": 1}
-                    }
-                )
-                if resp.status_code == 200:
-                    add_log("INFO", f"Model {model} warmed up", "health_portal")
-                    return {"status": "success", "message": f"Model {model} loaded into memory"}
-                else:
-                    return {"status": "error", "message": f"Warmup failed: {resp.status_code}"}
+            from services import llm_service
+            # One tiny generation through the normal seam is the warmup: it resolves the
+            # role, loads the weights, and leaves them resident.
+            await llm_service.generate_text("", "Hello", model=model, num_predict=1,
+                                            voice_modifier=False)
+            from services.mlx_engine import mlx_engine, mlx_model_for_role
+            _id = mlx_model_for_role(model)
+            _held = mlx_engine.resident()
+            if _id and _id in (set(_held.get("text", {})) | set(_held.get("embed", {}))):
+                add_log("INFO", f"Model {model} warmed up", "health_portal")
+                return {"status": "success", "message": f"Model {model} loaded into memory"}
+            return {"status": "partial", "message": f"{model} generated but is not resident"}
         except Exception as e:
             add_log("ERROR", f"Model warmup failed: {e}", "health_portal")
             return {"status": "error", "message": str(e)}
@@ -2063,52 +1921,39 @@ async def execute_repair(request: RepairRequest, background_tasks: BackgroundTas
             return {"status": "error", "message": str(e)}
     
     elif action == "repair_model":
-        # Repair corrupted Ollama model by removing and re-pulling
+        # Re-download a corrupted MLX checkpoint. Deletes the cached snapshot so the
+        # download manager cannot short-circuit on a partial one, then re-fetches.
         model = params.get("model", settings.ollama_model)
         try:
             add_log("INFO", f"Starting model repair for: {model}", "health_portal")
-            
-            # Step 1: Remove the corrupted model
-            add_log("INFO", f"Removing corrupted model: {model}", "health_portal")
-            rm_result = subprocess.run(
-                ["ollama", "rm", model],
-                capture_output=True,
-                text=True,
-                timeout=30
-            )
-            if rm_result.returncode != 0 and "not found" not in rm_result.stderr.lower():
-                add_log("WARN", f"Model removal warning: {rm_result.stderr[:100]}", "health_portal")
-            
-            # Step 2: Start the pull in background (don't wait - it takes too long)
-            add_log("INFO", f"Starting background pull for: {model}", "health_portal")
-            
-            # Use subprocess.Popen to run in background
-            import threading
-            def pull_model_background():
-                try:
-                    pull_result = subprocess.run(
-                        ["ollama", "pull", model],
-                        capture_output=True,
-                        text=True,
-                        timeout=1800  # 30 min timeout
-                    )
-                    if pull_result.returncode == 0:
-                        add_log("INFO", f"Model {model} re-pulled successfully", "health_portal")
-                    else:
-                        add_log("ERROR", f"Model pull failed: {pull_result.stderr[:200]}", "health_portal")
-                except subprocess.TimeoutExpired:
-                    add_log("ERROR", f"Model pull timed out for {model}", "health_portal")
-                except Exception as e:
-                    add_log("ERROR", f"Model pull error: {e}", "health_portal")
-            
-            # Start background thread
-            thread = threading.Thread(target=pull_model_background, daemon=True)
-            thread.start()
-            
-            add_log("INFO", f"Model repair started for {model} - pulling in background", "health_portal")
+            from services.mlx_engine import mlx_engine, mlx_model_for_role
+            from services.mlx_download import mlx_download_manager
+            _id = mlx_model_for_role(model) or model
+
+            # Free it first — re-downloading weights that are mapped in memory is how you
+            # get a half-swapped model.
+            try:
+                await mlx_engine.unload(_id)
+            except Exception as _ue:
+                add_log("WARN", f"Could not unload {_id} before repair: {_ue}", "health_portal")
+
+            import shutil
+            from huggingface_hub import scan_cache_dir
+            try:
+                for repo in scan_cache_dir().repos:
+                    if repo.repo_id == _id:
+                        shutil.rmtree(repo.repo_path, ignore_errors=True)
+                        add_log("INFO", f"Removed cached snapshot for {_id}", "health_portal")
+                        break
+            except Exception as _ce:
+                add_log("WARN", f"Cache scan failed: {_ce}", "health_portal")
+
+            job = await mlx_download_manager.start(_id)
             return {
                 "status": "started",
-                "message": f"Model repair started for {model}. This may take 5-30 minutes depending on model size. Refresh Health Portal to check progress."
+                "message": f"Re-downloading {_id}. This may take several minutes; "
+                           f"progress shows in LLM Studio.",
+                "details": job,
             }
         except Exception as e:
             add_log("ERROR", f"Model repair failed: {e}", "health_portal")

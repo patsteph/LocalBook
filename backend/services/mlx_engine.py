@@ -552,24 +552,6 @@ class MLXEngine:
         self._kind[model_id] = kind
         return kind
 
-    def _evict_ollama_twin(self, mlx_model_id: str) -> None:
-        """Single-engine-per-family invariant: evict the Ollama model this MLX one
-        replaces (reboot-avoidance). Sync httpx — called inside the load thread."""
-        try:
-            from config import settings
-            import httpx
-            twin = None
-            if mlx_model_id == getattr(settings, "mlx_main_model", None):
-                twin = settings.ollama_model
-            elif mlx_model_id == getattr(settings, "mlx_vision_model", None):
-                twin = settings.vision_model
-            if twin:
-                httpx.post(f"{settings.ollama_base_url}/api/generate",
-                           json={"model": twin, "prompt": "", "keep_alive": 0}, timeout=10.0)
-                logger.info(f"[mlx-engine] evicted Ollama twin '{twin}' for {mlx_model_id}")
-        except Exception as e:
-            logger.debug(f"[mlx-engine] evict twin skipped: {e}")
-
     # -- resident budget (Stage 3.2) ---------------------------------------------
     def _resident_cost_gb(self) -> float:
         """What the currently-resident set costs — weights only, exactly.
@@ -675,7 +657,6 @@ class MLXEngine:
 
             def _load():
                 if kind == "vlm":
-                    self._evict_ollama_twin(model_id)
                     from mlx_vlm.utils import get_model_path, load_config
                     pair = load_gemma_vision_only(model_id)
                     self._vlm_config[model_id] = load_config(str(get_model_path(model_id)))
