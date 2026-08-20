@@ -175,7 +175,7 @@ Respond with the JSON array only, no other text."""
     try:
         response = await llm_runtime.generate(
             prompt=prompt,
-            model=settings.ollama_fast_model,
+            model=settings.fast_model,
             temperature=0.2,
         )
 

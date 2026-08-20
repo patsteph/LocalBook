@@ -149,7 +149,7 @@ Keep it conversational and short (1-2 sentences). Return just the message, no JS
             response = await llm_runtime.generate(
                 prompt=prompt,
                 system=f"You are {self.name}. Personality: {self.personality}",
-                model=settings.ollama_fast_model,
+                model=settings.fast_model,
                 temperature=0.5
             )
             
@@ -195,7 +195,7 @@ Respond with JSON only:
             response = await llm_runtime.generate(
                 prompt=prompt,
                 system=f"You are {self.name}. Analyze research content and suggest configuration. Respond with valid JSON only.",
-                model=settings.ollama_fast_model,
+                model=settings.fast_model,
                 temperature=0.3
             )
             

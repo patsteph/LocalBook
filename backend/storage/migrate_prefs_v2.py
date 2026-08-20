@@ -34,22 +34,32 @@ from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 3
-# v2 = resolved_roles recorded. v3 = Stage 4 Phase 1 engine promotion. A file migrated to v2
-# BEFORE the promotion existed must still receive it, so the version bump is what re-opens it.
+SCHEMA_VERSION = 4
+# v2 = resolved_roles recorded. v3 = engine promotion to MLX. v4 = the ROLE COLLAPSE: each role
+# is now ONE key holding a checkpoint id, so `mlx_main_model` folds into `main_model` and the
+# `*_engine` flags are dropped. A file at any earlier version still stores the old pairs, and
+# `main.py`'s restore loop would write an Ollama NAME into a role that can only load an MLX id —
+# which is why the bump matters rather than being cosmetic.
 
-# role → (engine key, ollama model key, mlx model key)
-# ⚠️ The ollama keys are the COMBO's names, which are NOT the settings attribute names:
-# the file stores `main_model`/`fast_model`/`embeddings`, not `ollama_model`/
-# `ollama_fast_model`/`embedding_model`. Reading the settings names silently resolved
-# main/fast/image to "" — caught by running the migration against a COPY of the real file
-# rather than trusting the mapping.
+# role → (engine key, legacy-name key, mlx-id key) AS STORED IN THE FILE.
+#
+# ⚠️ These are the COMBO's key names, which are NOT the settings attribute names — the file
+# stores `embeddings`, not `embedding_model`. Reading the settings names instead silently
+# resolved three roles to "" (caught by running the migration against a COPY of the real file
+# rather than trusting the mapping).
+#
+# ⚠️⚠️ These strings describe DATA ON DISK written by older versions. They must NOT be renamed
+# to track config.py — a bulk rename during the v2.3.0 collapse rewrote the `mlx_*` column to
+# match the new attribute names, which made both columns identical, so the promotion read the
+# Ollama name and "promoted" every role to a model MLX cannot load. Concatenated below so a
+# careless search-and-replace cannot silently do it again.
+_MLX = "mlx_"
 ROLES = {
-    "main": ("main_engine", "main_model", "mlx_main_model"),
-    "fast": ("fast_engine", "fast_model", "mlx_fast_model"),
-    "vision": ("vision_engine", "vision_model", "mlx_vision_model"),
-    "embed": ("embed_engine", "embeddings", "mlx_embedding_model"),
-    "image": ("image_engine", "image_model", "mlx_image_model"),
+    "main":   ("main_engine",   "main_model",  _MLX + "main_model"),
+    "fast":   ("fast_engine",   "fast_model",  _MLX + "fast_model"),
+    "vision": ("vision_engine", "vision_model", _MLX + "vision_model"),
+    "embed":  ("embed_engine",  "embeddings",  _MLX + "embedding_model"),
+    "image":  ("image_engine",  "image_model", _MLX + "image_model"),
 }
 
 
@@ -133,6 +143,39 @@ def run(path: Optional[str] = None) -> Dict[str, Any]:
     except Exception as e:
         logger.warning(f"[migrate-prefs] engine promotion skipped: {e}")
     out["promoted"] = promoted
+
+    # ── v4: collapse each role pair into one key ────────────────────────────────
+    # `mlx_main_model` → `main_model`, and so on. The MLX id wins because it is the only
+    # thing that can actually be loaded. Engine flags are dropped; they selected between two
+    # halves of a pair that no longer exists.
+    _COLLAPSE = [(_MLX + "main_model", "main_model"),
+                 (_MLX + "fast_model", "fast_model"),
+                 (_MLX + "vision_model", "vision_model"),
+                 (_MLX + "image_model", "image_model"),
+                 (_MLX + "embedding_model", "embeddings")]
+    collapsed = {}
+    for mlx_key, role_key in _COLLAPSE:
+        mlx_id = combo.get(mlx_key)
+        if mlx_id:
+            combo[role_key] = mlx_id
+            collapsed[role_key] = mlx_id
+        combo.pop(mlx_key, None)
+    for _eng, _, _ in ROLES.values():
+        combo.pop(_eng, None)
+
+    # `embeddings` is the combo's historical name for the embedding role; the settings
+    # attribute is `embedding_model`. Write both so a reader of either shape works.
+    if combo.get("embeddings"):
+        combo["embedding_model"] = combo["embeddings"]
+
+    data["default_combo"] = combo
+    out["collapsed"] = collapsed
+    data["resolved_roles"] = {
+        r: {"engine": "mlx", "model": combo.get(k, "")}
+        for r, k in (("main", "main_model"), ("fast", "fast_model"),
+                     ("vision", "vision_model"), ("embed", "embedding_model"),
+                     ("image", "image_model"))
+    }
 
     if not _write(p, data, out):
         return out

@@ -318,7 +318,7 @@ Write ONLY the missing elements now (they will be appended to the section):"""
         fix = await rag_engine._call_ollama(
             "You add missing structural elements to documents. Be concise and factual.",
             fix_prompt,
-            model=settings.ollama_model,
+            model=settings.main_model,
             num_predict=400,
             temperature=0.4,
         )
@@ -881,7 +881,7 @@ EXAMPLE: [concrete example]
     analysis = await rag_engine._call_ollama(
         "You extract key educational concepts from source material. Be precise and factual.",
         analysis_prompt,
-        model=settings.ollama_model,
+        model=settings.main_model,
         num_predict=600,
         temperature=max(0.3, temperature - 0.1),
     )
@@ -1011,7 +1011,7 @@ Write the narrative now:"""
         section_content = await rag_engine._call_ollama(
             system_prompt,
             sec_prompt,
-            model=settings.ollama_model,
+            model=settings.main_model,
             num_predict=600,
             temperature=sec_temp,
             extra_options={
@@ -1031,7 +1031,7 @@ Write the narrative now:"""
             retry = await rag_engine._call_ollama(
                 system_prompt,
                 sec_prompt + "\n\nIMPORTANT: Short, clear sentences. No filler. Be specific.",
-                model=settings.ollama_model,
+                model=settings.main_model,
                 num_predict=600,
                 temperature=min(sec_temp + 0.15, 0.95),
                 extra_options={
@@ -1080,7 +1080,7 @@ Write only the table and prompts. Nothing else."""
         enrichment = await rag_engine._call_ollama(
             "You create educational vocabulary tables and reflection questions. Be concise.",
             enrich_prompt,
-            model=settings.ollama_model,
+            model=settings.main_model,
             num_predict=400,
             temperature=0.4,
         )
@@ -1258,7 +1258,7 @@ async def _inject_doc_visuals(content: str, topic_focus: str, source_context: st
             raw = await rag_engine._call_ollama(
                 "You output ONLY valid JSON — no markdown, no prose.",
                 prompt,
-                model=settings.ollama_model,
+                model=settings.main_model,
                 num_predict=800,
                 temperature=max(0.2, temperature - 0.2),
             )
@@ -1354,7 +1354,7 @@ async def _build_debate_scorecard(
             f"SOURCES:\n{ctx[:4000]}\n\n"
             'Respond as JSON exactly: {"scores": [{"point": "<point>", "affirmative": <1-5>, '
             '"opposing": <1-5>}, ...]} — one entry per contested point.',
-            model=settings.ollama_model, num_predict=300, temperature=0.2,
+            model=settings.main_model, num_predict=300, temperature=0.2,
         )
         parsed = robust_json_parse(raw, expect="object", fallback=None, label="DebateScore")
         rows = []
@@ -1433,7 +1433,7 @@ async def _generate_debate(
             ' "clash_points": ["<axis 1, <=8 words>", "<axis 2>", "<axis 3>"]}\n'
             "The clash_points are the 3 concrete axes BOTH sides must fight over "
             "(e.g. cost, privacy, performance) — pick the 3 most contested.",
-            model=settings.ollama_model, num_predict=300, temperature=0.2,
+            model=settings.main_model, num_predict=300, temperature=0.2,
         )
         parsed = robust_json_parse(raw, expect="object", fallback=None, label="DebateFrame")
         if isinstance(parsed, dict) and parsed.get("for_side") and parsed.get("against_side"):
@@ -1468,7 +1468,7 @@ async def _generate_debate(
         f"job. Target ~{lens_words} words.",
         f"{chat_preamble}CENTRAL QUESTION: {question}\n\nTHE THREE CLASH POINTS:\n{clash_block}\n\n"
         f"SOURCES:\n{ctx}\n\nDeliver your case FOR {for_side}:",
-        model=settings.ollama_model, num_predict=per_lens, temperature=min(0.75, temperature + 0.1),
+        model=settings.main_model, num_predict=per_lens, temperature=min(0.75, temperature + 0.1),
     ))
 
     # ── Voice 2: THE SKEPTIC (against — sees the FOR case and must rebut it) ──
@@ -1485,7 +1485,7 @@ async def _generate_debate(
         f"{chat_preamble}CENTRAL QUESTION: {question}\n\nTHE THREE CLASH POINTS:\n{clash_block}\n\n"
         f"THE ADVOCATE'S CASE (rebut its strongest claims):\n{for_text[:3500]}\n\n"
         f"SOURCES:\n{ctx}\n\nDeliver your case FOR {against_side}:",
-        model=settings.ollama_model, num_predict=per_lens, temperature=min(0.75, temperature + 0.1),
+        model=settings.main_model, num_predict=per_lens, temperature=min(0.75, temperature + 0.1),
     ))
 
     # ── Voice 3: THE JUDGE (reason + logic + a unique perspective) ──
@@ -1506,7 +1506,7 @@ async def _generate_debate(
         f"THE ADVOCATE'S CASE ({for_side}):\n{for_text[:3500]}\n\n"
         f"THE SKEPTIC'S CASE ({against_side}):\n{against_text[:3500]}\n\n"
         f"SOURCES (ground your ruling):\n{ctx}\n\nDeliver your ruling:",
-        model=settings.ollama_model, num_predict=per_lens, temperature=max(0.3, temperature - 0.1),
+        model=settings.main_model, num_predict=per_lens, temperature=max(0.3, temperature - 0.1),
     ))
 
     # ── Harvest the judge's marker contract into real document structure ──
@@ -1538,7 +1538,7 @@ async def _generate_debate(
             f"THE ADVOCATE argues for: {for_side}\nTHE SKEPTIC argues for: {against_side}\n"
             f"CONTESTED ON: {', '.join(clash)}\n\n"
             f"OPENING OF THE ADVOCATE'S CASE (context only):\n{for_text[:600]}\n\nWrite the standfirst:",
-            model=settings.ollama_model, num_predict=350, temperature=min(0.8, temperature + 0.15),
+            model=settings.main_model, num_predict=350, temperature=min(0.8, temperature + 0.15),
         ))
     except Exception as _ie:
         logger.debug(f"[DEBATE] intro pass skipped: {_ie}")
@@ -1617,7 +1617,7 @@ Write the outline now — section titles and bullet points only, no full prose:"
     outline = await rag_engine._call_ollama(
         system_prompt,
         outline_prompt,
-        model=settings.ollama_model,
+        model=settings.main_model,
         num_predict=800,
         temperature=max(0.3, temperature - 0.1),  # Slightly lower temp for planning
     )
@@ -1685,7 +1685,7 @@ Begin writing section {i+1} now — start with the heading:"""
         section_content = await rag_engine._call_ollama(
             system_prompt,
             section_prompt,
-            model=settings.ollama_model,
+            model=settings.main_model,
             num_predict=tokens_per_section,
             temperature=section_temp,
             extra_options={
@@ -1707,7 +1707,7 @@ Begin writing section {i+1} now — start with the heading:"""
             retry_content = await rag_engine._call_ollama(
                 system_prompt,
                 section_prompt + "\n\nIMPORTANT: Use short, clear sentences. No filler.",
-                model=settings.ollama_model,
+                model=settings.main_model,
                 num_predict=tokens_per_section,
                 temperature=min(section_temp + 0.15, 0.95),
                 extra_options={
@@ -1750,7 +1750,7 @@ Begin writing section {i+1} now — start with the heading:"""
                 "preserving ALL key topics, arguments, data points, and conclusions. "
                 "Do not add new information.",
                 f"Summarize the following document sections in 150-200 words:\n\n{all_content_so_far[:6000]}",
-                model=settings.ollama_model,
+                model=settings.main_model,
                 num_predict=300,
                 temperature=0.2,
             )
@@ -1838,7 +1838,7 @@ Write the missing section "{req}" now:"""
         section = await rag_engine._call_ollama(
             system_prompt,
             fill_prompt,
-            model=settings.ollama_model,
+            model=settings.main_model,
             num_predict=600,
             temperature=temperature,
         )
@@ -2071,7 +2071,7 @@ Generate the {skill_name} now, ensuring you synthesize insights across ALL sourc
             # Outline-first already runs _clean_llm_output per section + at assembly
             content = raw_content
         else:
-            raw_content = await rag_engine._call_ollama(system_prompt, user_prompt, model=settings.ollama_model, num_predict=doc_num_predict, temperature=skill_temp)
+            raw_content = await rag_engine._call_ollama(system_prompt, user_prompt, model=settings.main_model, num_predict=doc_num_predict, temperature=skill_temp)
             # Post-process: detect loops, ensure clean ending
             content = _clean_llm_output(raw_content)
             if len(content) < len(raw_content) * 0.8:

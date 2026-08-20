@@ -80,7 +80,7 @@ class RAGEngine:
         self.reranker = None  # Lazy load reranker
         self.flashrank_reranker = None  # FlashRank reranker (preferred)
         self.db = None
-        self._use_ollama_embeddings = settings.use_ollama_embeddings
+        self._use_ollama_embeddings = True   # embeddings always run through llm_runtime
         self._use_reranker = settings.use_reranker
         self._query_pattern_cache = {}  # Cache for common query patterns
     
@@ -635,7 +635,7 @@ JSON:"""
             from services.llm_runtime import llm_runtime as _os, PRIORITY_FOREGROUND
             _resp = await _os.generate(
                 prompt=prompt,
-                model=settings.ollama_fast_model,
+                model=settings.fast_model,
                 temperature=0,
                 num_predict=200,
                 timeout=10.0,

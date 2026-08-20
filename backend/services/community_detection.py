@@ -371,7 +371,7 @@ SUMMARY: [2-3 sentence summary]"""
             await await_background_clearance()
             result = await llm_runtime.generate(
                 prompt=prompt,
-                model=settings.ollama_fast_model,
+                model=settings.fast_model,
                 temperature=0.3,
                 num_predict=150,
                 timeout=60.0,

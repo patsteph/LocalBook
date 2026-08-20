@@ -1,25 +1,20 @@
-"""An eval result must record the engine that actually produced it.
+"""An eval result must record the engine and model that actually produced it.
 
-Test runners pass the OLLAMA model name to `stamp_provider` because that is the key the
-`llm_service` seam routes on — correct for invocation, wrong for provenance. On an all-MLX run
-every persisted result was therefore stamped `provider="ollama"` with an Ollama model name.
+ORIGINAL BUG (2026-08-19): runners passed the OLLAMA model name to `stamp_provider` because
+that was the key the `llm_service` seam routed on — correct for invocation, wrong for
+provenance. Every result on an all-MLX run was stamped `provider="ollama"` with an Ollama
+model name, which would have made the planned A/B compare two runs both labelled "ollama"
+and look like it worked.
 
-That is not cosmetic: the planned MLX-vs-Ollama A/B compares two persisted runs. With both runs
-labelled "ollama" the comparison is meaningless, and — worse — it looks like it worked.
+The v2.3.0 role collapse removed the two-names-per-role arrangement these tests were written
+around: `settings.main_model` now holds the checkpoint id directly and there are no `*_engine`
+flags to toggle. What still has to hold — and is what the bug was actually about — is that a
+persisted result names the real model and the real engine.
 """
 import pytest
 
 from config import settings
 from evaluator.models import EvalResult
-
-
-@pytest.fixture
-def restore_engines():
-    keep = {k: getattr(settings, k, "ollama")
-            for k in ("main_engine", "fast_engine", "vision_engine", "embed_engine")}
-    yield
-    for k, v in keep.items():
-        setattr(settings, k, v)
 
 
 def _stamp(name):
@@ -28,48 +23,30 @@ def _stamp(name):
     return r
 
 
-def test_ollama_role_stamps_ollama(restore_engines):
-    settings.main_engine = "ollama"
-    r = _stamp(settings.ollama_model)
-    assert r.provider == "ollama"
-    assert r.model_used == settings.ollama_model
+@pytest.mark.parametrize("attr", ["main_model", "fast_model", "vision_model", "embedding_model"])
+def test_every_role_stamps_its_real_checkpoint(attr):
+    """The embed role is the one that used to slip through: it is not an `llm_service` role,
+    so it had no entry in the old role-mapping and kept reporting the Ollama arctic name."""
+    model = getattr(settings, attr)
+    r = _stamp(model)
+    assert r.model_used == model
+    assert r.provider == "mlx", f"{attr} stamped {r.provider}"
+    assert "/" in r.model_used, "an MLX checkpoint id is an HF org/repo path"
 
 
-def test_mlx_main_role_stamps_the_mlx_id(restore_engines):
-    settings.main_engine = "mlx"
-    r = _stamp(settings.ollama_model)
-    assert r.provider == "mlx"
-    assert r.model_used == settings.mlx_main_model
-    assert "/" in r.model_used, "an MLX id is an HF org/repo path"
+def test_the_backend_url_says_in_process():
+    """There is no server to name. A URL here would imply an HTTP hop that no longer exists."""
+    assert _stamp(settings.main_model).backend_url == "in-process"
 
 
-def test_mlx_fast_role_stamps_the_mlx_id(restore_engines):
-    settings.fast_engine = "mlx"
-    r = _stamp(settings.ollama_fast_model)
-    assert r.provider == "mlx"
-    assert r.model_used == settings.mlx_fast_model
+def test_a_legacy_ollama_name_is_not_relabelled_as_mlx():
+    """Historical runs hold Ollama names. Stamping those "mlx" would rewrite history — the
+    Eval History view has to be able to show what really produced an old result."""
+    r = _stamp("gemma4:e4b")
+    assert r.provider == "ollama", r.provider
 
 
-def test_mlx_embed_role_stamps_the_mlx_id(restore_engines):
-    """The embed role has no `mlx_model_for_role` entry — it is not an llm_service role — so it
-    needs its own resolution or it silently keeps reporting the Ollama arctic name."""
-    settings.embed_engine = "mlx"
-    r = _stamp(settings.embedding_model)
-    assert r.provider == "mlx"
-    assert r.model_used == settings.mlx_embedding_model
-
-
-def test_roles_are_resolved_independently(restore_engines):
-    """A half-migrated machine is the normal case during a cutover, and the most likely place
-    for a mislabel to slip through."""
-    settings.main_engine = "mlx"
-    settings.fast_engine = "ollama"
-    assert _stamp(settings.ollama_model).provider == "mlx"
-    assert _stamp(settings.ollama_fast_model).provider == "ollama"
-
-
-def test_an_explicit_mlx_id_still_stamps_mlx(restore_engines):
-    """Runners that already hold an HF id (vision, embeddings) must keep working."""
-    r = _stamp("mlx-community/some-model-4bit")
-    assert r.provider == "mlx"
-    assert r.backend_url == "in-process"
+def test_stamping_never_raises_on_an_unknown_model():
+    """Telemetry must not be able to fail a run."""
+    r = _stamp("some/model-nobody-has-heard-of")
+    assert r.model_used

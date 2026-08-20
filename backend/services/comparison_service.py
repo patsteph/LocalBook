@@ -59,7 +59,7 @@ class ComparisonService:
         try:
             from services.llm_runtime import effective_num_ctx_cap
             from config import settings as _s
-            _per_doc = max(4000, int(effective_num_ctx_cap(_s.ollama_model) * 3 * 0.55 / 2))
+            _per_doc = max(4000, int(effective_num_ctx_cap(_s.main_model) * 3 * 0.55 / 2))
         except Exception:
             _per_doc = 12000
         text_a = text_a[:_per_doc]

@@ -40,35 +40,24 @@ async def get_tray_status():
     out = {
         "ok": True,
         "models": {"main": "", "fast": "", "vision": ""},
-        # Wave 9.6 — which engine is actually serving: "mlx" (all roles), "mixed"
-        # (some MLX, some Ollama), or "ollama". Lets the menu-bar show ⚡ MLX so the
-        # user can tell at a glance which stack is live (persisted knowledge, #5).
-        "engine": "ollama",
+        # One engine. Kept as a field because the tray and `tray.rs` still render it, and a
+        # missing key would blank the status line rather than degrade.
+        "engine": "mlx",
         # Aligned 1:1 with the Health Portal's counters (same rag_metrics source)
         # so the two never disagree: Tokens In/Out + AVG Tokens/Sec + Avg Latency.
         "metrics": {"tokens_in": 0, "tokens_out": 0, "tokens_per_sec": 0.0, "avg_latency_ms": 0},
         "enrichment": {"queue_depth": 0},
     }
     try:
-        from evaluator.model_registry import model_registry
-        # Engine-aware: when a role's engine == "mlx", the live model is the mlx_* one,
-        # not the Ollama default — report what's actually resident so the tray is truthful.
-        def _eng(attr):
-            return getattr(settings, attr, "ollama") or "ollama"
-        main_eng, fast_eng, vision_eng = _eng("main_engine"), _eng("fast_engine"), _eng("vision_engine")
-        ollama_main = getattr(settings, "ollama_model", "") or ""
-        main = getattr(settings, "mlx_main_model", "") if main_eng == "mlx" else ollama_main
-        fast = getattr(settings, "mlx_fast_model", "") if fast_eng == "mlx" else (getattr(settings, "ollama_fast_model", "") or "")
-        vision = (getattr(settings, "mlx_vision_model", "") if vision_eng == "mlx"
-                  else model_registry.resolve_vision_model(ollama_main, getattr(settings, "vision_model", "") or ""))
-        # Friendly names in the menu bar too (user #4) — same short names as the Evaluator.
+        # Each role attribute IS the live checkpoint now — the engine-flag branching that
+        # used to pick between an Ollama name and an mlx_* id had both arms resolving to the
+        # same value after the collapse.
         from utils.model_display import friendly_model_name
-        out["models"] = {"main": friendly_model_name(main),
-                         "fast": friendly_model_name(fast),
-                         "vision": friendly_model_name(vision)}
-        engines = [main_eng, fast_eng, vision_eng]
-        out["engine"] = ("mlx" if all(e == "mlx" for e in engines)
-                         else "mixed" if any(e == "mlx" for e in engines) else "ollama")
+        out["models"] = {
+            "main": friendly_model_name(getattr(settings, "main_model", "") or ""),
+            "fast": friendly_model_name(getattr(settings, "fast_model", "") or ""),
+            "vision": friendly_model_name(getattr(settings, "vision_model", "") or ""),
+        }
     except Exception as e:
         logger.debug(f"[system.tray] models snapshot failed: {e}")
     try:
@@ -556,25 +545,23 @@ async def engine_truth():
     """
     from config import settings
 
-    def _role(engine_attr: str, ollama_attr: str, mlx_attr: str) -> dict:
-        engine = getattr(settings, engine_attr, "ollama") or "ollama"
-        model = (getattr(settings, mlx_attr, "") if engine == "mlx"
-                 else getattr(settings, ollama_attr, ""))
+    def _role(model_attr: str) -> dict:
+        model = getattr(settings, model_attr, "") or ""
         present = None
-        if engine == "mlx" and model:
+        if model:
             try:
                 from services.model_sizing import exact_weight_gb
                 present = exact_weight_gb(model) is not None
             except Exception:
                 present = None
-        return {"engine": engine, "model": model, "present_on_disk": present}
+        return {"engine": "mlx", "model": model, "present_on_disk": present}
 
     roles = {
-        "main": _role("main_engine", "ollama_model", "mlx_main_model"),
-        "fast": _role("fast_engine", "ollama_fast_model", "mlx_fast_model"),
-        "vision": _role("vision_engine", "vision_model", "mlx_vision_model"),
-        "embed": _role("embed_engine", "embedding_model", "mlx_embedding_model"),
-        "image": _role("image_engine", "image_model", "mlx_image_model"),
+        "main":   _role("main_model"),
+        "fast":   _role("fast_model"),
+        "vision": _role("vision_model"),
+        "embed":  _role("embedding_model"),
+        "image":  _role("image_model"),
     }
     engines = {r: v["engine"] for r, v in roles.items()}
     distinct = sorted(set(engines.values()))
@@ -582,12 +569,14 @@ async def engine_truth():
 
     # Name the disagreements explicitly. Leaving a reader to diff two dicts is how this gets
     # missed — and being missed is the entire failure mode this endpoint exists for.
+    # The engine can no longer disagree (there is one), but the MODEL still can: prefs are
+    # re-applied at every launch and win over config.
     conflicts = []
-    for role, resolved in engines.items():
-        want = (prefs.get("engines") or {}).get(f"{role}_engine")
-        if want and want != resolved:
+    for role, v in roles.items():
+        want = (prefs.get("models") or {}).get(role)
+        if want and want != v["model"]:
             conflicts.append({
-                "role": role, "resolved": resolved, "prefs_say": want,
+                "role": role, "resolved": v["model"], "prefs_say": want,
                 "note": "user_preferences.json is re-applied at every launch and wins — "
                         "expect the prefs value in the running app",
             })
@@ -610,7 +599,7 @@ async def engine_truth():
 
 
 def _prefs_override_summary() -> dict:
-    """Which engine values user_preferences.json is forcing over the config defaults."""
+    """Which model values user_preferences.json is forcing over the config defaults."""
     try:
         import json
         from pathlib import Path
@@ -619,10 +608,13 @@ def _prefs_override_summary() -> dict:
         if not p.is_file():
             return {"present": False}
         combo = (json.loads(p.read_text()) or {}).get("default_combo") or {}
-        return {
-            "present": True,
-            "engines": {k: v for k, v in combo.items() if k.endswith("_engine")},
-        }
+        # `embeddings` is the combo's historical key for the embed role.
+        _keys = {"main": "main_model", "fast": "fast_model", "vision": "vision_model",
+                 "image": "image_model", "embed": "embedding_model"}
+        models = {r: combo.get(k) for r, k in _keys.items() if combo.get(k)}
+        if "embed" not in models and combo.get("embeddings"):
+            models["embed"] = combo["embeddings"]
+        return {"present": True, "models": models}
     except Exception:
         return {"present": None}
 
@@ -642,32 +634,20 @@ async def model_readiness():
     """
     from config import settings
 
-    def _model_for(role: str) -> str:
-        eng = getattr(settings, f"{role}_engine", "ollama") or "ollama"
-        if eng == "mlx":
-            return getattr(settings, f"mlx_{role}_model" if role != "embed"
-                           else "mlx_embedding_model", "") or ""
-        return {
-            "main": getattr(settings, "ollama_model", ""),
-            "fast": getattr(settings, "ollama_fast_model", ""),
-            "vision": getattr(settings, "vision_model", ""),
-            "embed": getattr(settings, "embedding_model", ""),
-        }.get(role, "")
-
-    roles = {r: _model_for(r) for r in ("main", "fast", "vision", "embed")}
-    engines = {r: (getattr(settings, f"{r}_engine", "ollama") or "ollama") for r in roles}
+    _ATTR = {"main": "main_model", "fast": "fast_model",
+             "vision": "vision_model", "embed": "embedding_model"}
+    roles = {r: (getattr(settings, a, "") or "") for r, a in _ATTR.items()}
 
     out = {"roles": {}, "blocking": [], "ready": True}
     for role, model in roles.items():
-        eng = engines[role]
-        present: object = True          # an Ollama model's presence is Ollama's problem
-        if eng == "mlx":
+        present: object = None
+        if model:
             try:
                 from services.model_presence import is_present
                 present = is_present(model)
             except Exception:
                 present = None
-        out["roles"][role] = {"engine": eng, "model": model, "present": present}
+        out["roles"][role] = {"engine": "mlx", "model": model, "present": present}
         if present is False and role in ("main", "fast", "embed"):
             out["blocking"].append(role)
 

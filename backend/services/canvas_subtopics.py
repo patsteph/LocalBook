@@ -130,7 +130,7 @@ async def _title_synthesis(member_titles: List[str]) -> Tuple[str, str]:
             "Respond EXACTLY as:\nNAME: <3-5 word topic name>\nSUMMARY: <one sentence>"
         )
         res = await llm_runtime.generate(
-            prompt=prompt, model=settings.ollama_fast_model, temperature=0.3,
+            prompt=prompt, model=settings.fast_model, temperature=0.3,
             num_predict=80, think=False, timeout=20.0)
         text = (res or {}).get("response", "") or ""
         name, summary = fallback, ""

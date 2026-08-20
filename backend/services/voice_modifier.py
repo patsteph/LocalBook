@@ -93,7 +93,7 @@ def get_voice_modifier(model_name: Optional[str] = None) -> str:
         # Use the active main model's family by default.
         try:
             from config import settings
-            model_name = settings.ollama_model
+            model_name = settings.main_model
         except Exception:
             return _FAMILY_VOICE["default"]
     family = _family_for_model(model_name)

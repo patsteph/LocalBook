@@ -64,7 +64,7 @@ async def classify_article(title: str, body_text: str) -> Dict[str, Any]:
         result = await llm_runtime.generate(
             prompt=user_prompt,
             system=_CLASSIFIER_SYSTEM,
-            model=settings.ollama_fast_model,
+            model=settings.fast_model,
             temperature=0.1,
             num_predict=120,
             format="json",

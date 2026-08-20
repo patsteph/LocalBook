@@ -61,75 +61,39 @@ class Settings(BaseSettings):
     data_dir: Path = get_data_directory()
     db_path: Path = get_data_directory() / "lancedb"
 
-    # LLM settings
-    llm_provider: str = "ollama"  # ollama, openai, or anthropic
-    ollama_base_url: str = "http://localhost:11434"
-    ollama_model: str = "gemma4:e4b"  # System 2: Main model - 8B Q4, native vision + JSON-mode + thinking control; per FINAL_CODE_REVIEW_Gemma4_Migration.md, replaces olmo-3:7b-instruct
-    ollama_fast_model: str = "phi4-mini:latest"  # System 1: Fast model - Microsoft Phi-4 mini, better than llama3.2:3b
-    # Vision model used by scan pipeline + multimodal PDF extraction.
-    # The pipeline is model-agnostic: it loads whatever name is
-    # configured here (or via LOCALBOOK_VISION_MODEL env / the Settings
-    # → Models combo picker) and uses the registry entry's
-    # `vision_api_style` to route through /api/generate or /api/chat.
-    # When the configured model fails the user gets a typed
-    # `VisionModelError` surfaced as a clear "Vision model X failed"
-    # banner with a hint to swap models — no need to ship a code change
-    # to react to a broken upstream model file. The default below is
-    # just a known-good starting point; users are expected to swap it
-    # to whatever they prefer (gemma4:e4b, llava, moondream, etc.).
-    vision_model: str = "granite3.2-vision:2b"
-    openai_api_key: str = ""
-    anthropic_api_key: str = ""
-
-    # ── Engine selection (Wave 9 — dual-engine Ollama|MLX, per role) ──────────
-    # Default "ollama" everywhere = byte-identical to today. A role is flipped to
-    # "mlx" in LLM Labs after the user validates it (opt-in; MLX models are never
-    # auto-downloaded on startup). These are INERT until the MLX engine is wired
-    # into the llm_service seam (Wave 9.1+); adding them here is scaffolding only.
-    # See READFIRST/in-progress/wave9-mlx-production.md.
-    # ── Stage 4 Phase 1 (2026-08-19): MLX is now the DEFAULT for every role. ──
-    # Fully reversible — set LOCALBOOK_<ROLE>_ENGINE=ollama, or flip a role in LLM Studio.
-    # The Ollama code paths are all still present; this changes which one is chosen.
+    # ── Models, one attribute per role ───────────────────────────────────────
+    # v2.3.0: these hold the MLX checkpoint id DIRECTLY. Before the cutover each role was a
+    # PAIR — an Ollama name (`ollama_model`) plus an `mlx_main_model`, with an engine flag
+    # deciding which one `mlx_model_for_role` returned. With one engine that indirection only
+    # created ways to disagree with itself, so the pair is collapsed.
     #
-    # Evidence for the flip: four MLX evaluation runs on this 16 GB M4 scored 87.3-88.6 with
-    # ZERO engine fallbacks and, in two of them, Ollama fully unreachable — so MLX served every
-    # request end to end. Embedding equivalence measured separately (bf16: mean cosine 0.999940
-    # vs a fresh Ollama embedding, 0/50 top-1 retrieval changes).
-    main_engine: str = "mlx"        # ollama | mlx — main chat / RAG / structured
-    fast_engine: str = "mlx"        # ollama | mlx — intent, follow-ups, classify
-    vision_engine: str = "mlx"      # ollama | mlx — semantic image description (Option A: the
-                                    # vision-capable MLX main model serves this too)
-    image_engine: str = "mlx"       # ollama | mlx — Klein / FLUX via mflux, in-process.
-    embed_engine: str = "mlx"       # ollama | mlx — MLX-native embeddings IN-PROCESS (keeps Ollama
-                                    # out of the embedding path so it can idle/unload). MLX runs the
-                                    # SAME arctic-embed-l-v2.0 at the SAME 1024 dim → same vector
-                                    # space, NO re-index. fallback-safe (any MLX embed error → Ollama).
-                                    # Override back with LOCALBOOK_EMBED_ENGINE=ollama.
-    # MLX model ids per role — used only when that role's engine == "mlx".
-    mlx_main_model: str = "mlx-community/gemma-4-e4b-it-4bit"
-    mlx_fast_model: str = "mlx-community/Phi-4-mini-instruct-4bit"
-    mlx_vision_model: str = "mlx-community/gemma-4-e4b-it-4bit"
-    mlx_image_model: str = "Runpod/FLUX.2-klein-4B-mflux-4bit"
-    # arctic-embed-l-v2.0 = exactly the Ollama `snowflake-arctic-embed2` (1024-dim), same vector
-    # space, NO re-index. Weights are 1.1 GB (not the ~2.3 GB previously claimed here); they
-    # download from HF on first use, and embed falls back to Ollama until cached.
+    # ⚠️ The registry (`known_models.json`) is keyed by these ids and carries the curated
+    # per-model tuning — rag_profile (num_ctx cap, stop sequences, temperature), vision_profile,
+    # structured_profile. A role pointed at an id with no registry row silently loses ALL of
+    # that: no error, the tuning just stops applying. Add a row before changing a default.
+    main_model: str = "mlx-community/gemma-4-e4b-it-4bit"      # chat / RAG / structured + vision
+    fast_model: str = "mlx-community/Phi-4-mini-instruct-4bit"  # intent, follow-ups, classify
+    # Option A: the vision-capable main model absorbs the vision slot, so this is deliberately
+    # the SAME checkpoint — one gemma resident, not two.
+    vision_model: str = "mlx-community/gemma-4-e4b-it-4bit"
+    image_model: str = "Runpod/FLUX.2-klein-4B-mflux-4bit"      # FLUX.2 Klein via mflux
+
+    # arctic-embed-l-v2.0 — the SAME model and the SAME 1024 dim as the old Ollama
+    # `snowflake-arctic-embed2`, so the existing index needed no re-embedding.
     #
     # MEASURED 2026-08-19 (`backend/scripts/embedding_equivalence.py`, 500 real chunks + 50 real
     # queries) — the previous "bit-identical, cosine 1.0000" claim was an unverified assertion:
-    #   bf16 vs a fresh Ollama embedding : mean 0.999940, p1 0.999816 · top-5 overlap 0.992,
-    #                                      0/50 top-1 changes   → PASSES the cutover gate
-    #   8-bit                            : mean 0.999437, p1 0.999187 · top-5 overlap 0.980,
-    #                                      1/50 top-1 changes   → FAILS (gate allows zero)
-    # Hence bf16 is the pin despite costing ~0.5 GB more than the 8-bit build. Do not switch to
-    # 8-bit to save memory without re-running that script and accepting a retrieval change.
-    mlx_embedding_model: str = "mlx-community/snowflake-arctic-embed-l-v2.0-bf16"
+    #   bf16  : mean 0.999940, p1 0.999816 · top-5 overlap 0.992, 0/50 top-1 changes → PASSES
+    #   8-bit : mean 0.999437, p1 0.999187 · top-5 overlap 0.980, 1/50 top-1 changes → FAILS
+    # Hence bf16 is pinned despite costing ~0.5 GB more. Do NOT switch to 8-bit to save memory
+    # without re-running that script and accepting a retrieval change.
+    embedding_model: str = "mlx-community/snowflake-arctic-embed-l-v2.0-bf16"
+
+    openai_api_key: str = ""
+    anthropic_api_key: str = ""
 
     # Embedding settings
-    # snowflake-arctic-embed2: 1024 dims, frontier model, excellent retrieval quality
-    # Upgrade from nomic-embed-text (768 dims) for better semantic matching
-    embedding_model: str = "snowflake-arctic-embed2"  # Via Ollama - best balance of speed/quality
-    embedding_dim: int = 1024  # snowflake-arctic-embed2 uses 1024 dimensions
-    use_ollama_embeddings: bool = True  # Use Ollama for embeddings instead of sentence-transformers
+    embedding_dim: int = 1024  # arctic-embed-l-v2.0 is 1024-dim
     use_spacy_extractor: bool = True  # NER via spaCy (en_core_web_sm) instead of phi4 LLM — faster, deterministic, frees the fast lane
     chunk_size: int = 1000
     chunk_overlap: int = 200

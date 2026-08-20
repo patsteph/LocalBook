@@ -521,8 +521,8 @@ async def answer_tabular(
     # it's only the FALLBACK — used when gemma times out or errors under load, so a contended box
     # still answers (or cleanly falls back to vector RAG) without a long hang. The event-loop
     # freeze that made the original gemma timeout fatal is fixed separately (query_stream encode_async).
-    primary = settings.tabular_sql_model or settings.ollama_model
-    fast = settings.ollama_fast_model
+    primary = settings.tabular_sql_model or settings.main_model
+    fast = settings.fast_model
     sql = await _gen_sql(prompt, primary, 25.0)
     if sql is None and primary != fast:
         print(f"[tabular-sql] primary ({primary}) failed/timed out -> retry with {fast}")

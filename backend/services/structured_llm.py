@@ -246,7 +246,7 @@ class StructuredLLMService:
           - prefer_json_mode=True (Gemma, Phi, Llama) uses native JSON mode.
         """
         # Re-read settings per call so Locker swaps are respected
-        active_model = settings.ollama_model
+        active_model = settings.main_model
 
         # Look up the active model's structured profile
         prefer_json_mode = True  # Default: use JSON mode if model supports it
@@ -2084,7 +2084,7 @@ Extract the main themes/concepts from the topic."""
             from services.llm_runtime import llm_runtime
             _resp = await llm_runtime.generate(
                 prompt=prompt,
-                model=settings.ollama_fast_model,  # phi4-mini - FAST
+                model=settings.fast_model,  # phi4-mini - FAST
                 temperature=0.3,
                 num_predict=500,  # Small output
                 format="json",

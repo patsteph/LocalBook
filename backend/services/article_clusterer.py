@@ -98,7 +98,7 @@ async def _label_cluster(article_titles: List[str], article_summaries: List[str]
         result = await llm_runtime.generate(
             prompt=user_prompt,
             system="You produce short topic labels. 5 words max. No quotes or punctuation.",
-            model=settings.ollama_fast_model,
+            model=settings.fast_model,
             temperature=0.2,
             num_predict=40,
         )

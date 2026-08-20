@@ -261,8 +261,8 @@ async def run_preflight(settings_obj) -> PreflightReport:
 
     report.checks.append(_check_memory())
 
-    main_model = getattr(settings_obj, "ollama_model", "") or ""
-    fast_model = getattr(settings_obj, "ollama_fast_model", "") or ""
+    main_model = getattr(settings_obj, "main_model", "") or ""
+    fast_model = getattr(settings_obj, "fast_model", "") or ""
     embedding_model = getattr(settings_obj, "embedding_model", "") or ""
     # Resolve the vision model the app actually uses (env > vision-capable main >
     # configured). On a gemma4 box this equals main_model, so the `!= main_model`
@@ -281,9 +281,9 @@ async def run_preflight(settings_obj) -> PreflightReport:
         if eng == "mlx":
             return "mlx", (getattr(settings_obj, mlx_attr, "") or ollama_name)
         return "ollama", ollama_name
-    main_eng, main_disp = _role_engine_disp("main_engine", "mlx_main_model", main_model)
-    fast_eng, fast_disp = _role_engine_disp("fast_engine", "mlx_fast_model", fast_model)
-    embed_eng, embed_disp = _role_engine_disp("embed_engine", "mlx_embedding_model", embedding_model)
+    main_eng, main_disp = _role_engine_disp("main_engine", "main_model", main_model)
+    fast_eng, fast_disp = _role_engine_disp("fast_engine", "fast_model", fast_model)
+    embed_eng, embed_disp = _role_engine_disp("embed_engine", "embedding_model", embedding_model)
 
     report.checks.append(await _check_model_backend("main", main_disp, main_eng))
     if fast_model and fast_model != main_model:
@@ -326,10 +326,10 @@ def providers_used_summary(settings_obj) -> dict:
     making it impossible to tell in the evaluator which engine actually ran (#7/#4)."""
     out: dict = {}
     for role_attr, engine_attr, mlx_attr, role_key in (
-        ("ollama_model",      "main_engine",   "mlx_main_model",      "main"),
-        ("ollama_fast_model", "fast_engine",   "mlx_fast_model",      "fast"),
-        ("embedding_model",   "embed_engine",  "mlx_embedding_model", "embedding"),
-        ("vision_model",      "vision_engine", "mlx_vision_model",    "vision"),
+        ("main_model",      "main_engine",   "main_model",      "main"),
+        ("fast_model", "fast_engine",   "fast_model",      "fast"),
+        ("embedding_model",   "embed_engine",  "embedding_model", "embedding"),
+        ("vision_model",      "vision_engine", "vision_model",    "vision"),
     ):
         from utils.model_display import friendly_model_name
         engine = getattr(settings_obj, engine_attr, "ollama") if engine_attr else "ollama"
@@ -345,7 +345,7 @@ def providers_used_summary(settings_obj) -> dict:
             # raw configured granite the app doesn't actually use.
             from evaluator.model_registry import model_registry
             model_name = model_registry.resolve_vision_model(
-                getattr(settings_obj, "ollama_model", "") or "", model_name
+                getattr(settings_obj, "main_model", "") or "", model_name
             )
         if not model_name:
             continue

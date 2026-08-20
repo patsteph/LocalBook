@@ -69,7 +69,7 @@ Be concise and cite which notebook each insight comes from."""
             response = await llm_runtime.generate(
                 prompt=prompt,
                 system=f"You are {self.name}, a research curator. Personality: {self.personality}",
-                model=settings.ollama_model,
+                model=settings.main_model,
                 temperature=0.5
             )
             
@@ -429,7 +429,7 @@ Rules:
             response = await llm_runtime.generate(
                 prompt=prompt,
                 system=system_prompt,
-                model=settings.ollama_model,
+                model=settings.main_model,
                 temperature=0.5
             )
             from utils.json_repair import sanitize_prose_output

@@ -354,7 +354,7 @@ RULES:
         # the prompt demands a JSON object.
         _resp = await llm_runtime.generate(
             prompt=extraction_prompt,
-            model=settings.ollama_fast_model,
+            model=settings.fast_model,
             temperature=0,
             # Trimmed 800→300 (audit 2026-07-19): themes are short topic names +
             # one insight line; even a theme-rich doc lands ~150-200 tokens, and

@@ -700,7 +700,7 @@ Write the weekly wrap up now:"""
             narrative = await rag_engine._call_ollama(
                 system_prompt="You are a concise, insightful research assistant. Write engaging weekly summaries that help people reflect on their research progress.",
                 prompt=prompt,
-                model=settings.ollama_model,
+                model=settings.main_model,
                 # 2026-06-08: dropped 0.7 → 0.55 for gemma4 (better
                 # instruction-following than olmo; CLAUDE.md doc-gen range).
                 temperature=0.55,
@@ -1664,7 +1664,7 @@ Write the brief now:"""
                     f"say so briefly and stop. Never manufacture urgency."
                 ),
                 prompt=prompt,
-                model=settings.ollama_model,
+                model=settings.main_model,
                 # 2026-06-08: dropped 0.7 → 0.55 for gemma4 (better
                 # instruction-following than olmo; CLAUDE.md doc-gen range).
                 temperature=0.55,

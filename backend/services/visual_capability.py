@@ -143,9 +143,9 @@ async def _detect() -> VisualCapability:
 
     total_ram = _total_ram_bytes()
     _roles = {
-        "gemma": settings.mlx_main_model,
-        "klein": settings.mlx_image_model,
-        "vision": settings.mlx_vision_model,
+        "gemma": settings.main_model,
+        "klein": settings.image_model,
+        "vision": settings.vision_model,
     }
     _have = {k: (bool(v) and is_present(v)) for k, v in _roles.items()}
     installed = [v for k, v in _roles.items() if _have[k]]

@@ -213,7 +213,7 @@ async def query_stream(chat_query: ChatQuery):
                     from services.memory_steward import free_for_pipeline
                     from config import settings as _settings
                     await free_for_pipeline(
-                        keep=[_settings.ollama_model, _settings.ollama_fast_model, _settings.embedding_model],
+                        keep=[_settings.main_model, _settings.fast_model, _settings.embedding_model],
                         reason="chat",
                     )
                 except Exception as _ev_err:

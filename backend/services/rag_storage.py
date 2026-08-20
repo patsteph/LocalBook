@@ -559,7 +559,7 @@ async def generate_chunk_questions(chunks: List[str]) -> List[str]:
             try:
                 _resp = await llm_runtime.generate(
                     prompt=prompt,
-                    model=settings.ollama_fast_model,
+                    model=settings.fast_model,
                     temperature=0.3,
                     num_predict=90 * len(batch),  # ~3 short Qs/passage
                     timeout=60.0,
@@ -666,7 +666,7 @@ Summary:"""
         from services.llm_runtime import llm_runtime
         _resp = await llm_runtime.generate(
             prompt=prompt,
-            model=settings.ollama_fast_model,
+            model=settings.fast_model,
             temperature=0.3,
             num_predict=200,
             timeout=60.0,

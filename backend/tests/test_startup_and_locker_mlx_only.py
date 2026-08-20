@@ -66,12 +66,12 @@ def test_required_models_are_resolved_at_call_time_not_import_time():
     from config import settings
     from services import startup_checks as sc
 
-    original = settings.mlx_fast_model
+    original = settings.fast_model
     try:
-        settings.mlx_fast_model = "mlx-community/some-other-model"
+        settings.fast_model = "mlx-community/some-other-model"
         assert any("some-other-model" in name for name, _ in sc._required_models())
     finally:
-        settings.mlx_fast_model = original
+        settings.fast_model = original
 
 
 # ── 2 & 3. The Locker lists only what can actually run ──────────────────────────

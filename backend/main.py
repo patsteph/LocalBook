@@ -97,28 +97,18 @@ if _prefs_path.exists():
     try:
         _prefs = _json.loads(_prefs_path.read_text())
         _default_combo = _prefs.get("default_combo", {})
-        # Only overwrite the OLLAMA model name for a role that's actually on Ollama. When the
-        # saved default is MLX, main_model is a HuggingFace id (mlx-community/…); writing that
-        # into settings.ollama_model would break the Ollama FALLBACK path (Ollama 404s on an HF
-        # id). For MLX roles the engine flags + mlx_* ids below carry the config, and ollama_model
-        # stays at its valid config default so a fallback still works. (Wave 9.6.)
-        if _default_combo.get("main_model") and _default_combo.get("main_engine", "ollama") != "mlx":
-            settings.ollama_model = _default_combo["main_model"]
-        if _default_combo.get("fast_model") and _default_combo.get("fast_engine", "ollama") != "mlx":
-            settings.ollama_fast_model = _default_combo["fast_model"]
-        if _default_combo.get("vision_model") and _default_combo.get("vision_engine", "ollama") != "mlx":
-            settings.vision_model = _default_combo["vision_model"]
-        # Wave 9 — restore per-role engine flags + MLX model ids so an adopted MLX config
-        # survives the .env purge above (persisted in user_preferences.json, the durable
-        # safe store, exactly like the Ollama model names). Absent keys keep the config
-        # defaults (all "ollama"), so an old prefs file is fully backward-compatible.
-        for _k in ("main_engine", "fast_engine", "vision_engine", "image_engine", "embed_engine",
-                   "mlx_main_model", "mlx_fast_model", "mlx_vision_model", "mlx_image_model",
-                   "mlx_embedding_model"):
+        # One attribute per role, each holding a checkpoint id. Before the v2.3.0 collapse a
+        # role was a PAIR (an Ollama name + an mlx_* id) with an engine flag choosing between
+        # them, so this loop had to skip the Ollama name whenever the role was on MLX. With
+        # one engine that reduces to: restore what the user saved.
+        #
+        # The migration (run above, BEFORE this) is what guarantees the keys are already in
+        # the new shape — a v3-or-older file still stores mlx_main_model etc.
+        for _k in ("main_model", "fast_model", "vision_model", "image_model", "embedding_model"):
             if _default_combo.get(_k):
                 setattr(settings, _k, _default_combo[_k])
-        print(f"[SafeStart] Applied user default combo: {settings.ollama_model} + {settings.ollama_fast_model} "
-              f"(engines: main={settings.main_engine} fast={settings.fast_engine} vision={settings.vision_engine})")
+        print(f"[SafeStart] Applied user default combo: "
+              f"main={settings.main_model} fast={settings.fast_model}")
     except Exception as e:
         print(f"[SafeStart] Failed to load user preferences, using built-in defaults: {e}")
 
@@ -190,7 +180,7 @@ async def _run_startup_tasks():
     print(f"🚀 LocalBook API starting on {settings.api_host}:{settings.api_port}")
     print(f"📁 Data directory: {settings.data_dir}")
     print(f"🤖 LLM Provider: {settings.llm_provider}")
-    print(f"🔥 Models: {settings.ollama_model} (think), {settings.ollama_fast_model} (fast)")
+    print(f"🔥 Models: {settings.main_model} (think), {settings.fast_model} (fast)")
     print(f"💾 Storage: {'SQLite' if settings.use_sqlite else 'JSON files'}")
     
     # ── Step 1: Upgrade check ─────────────────────────────────────────────

@@ -466,7 +466,7 @@ class CuratorOverwatchMixin:
                 result = await llm_runtime.generate(
                     prompt=prompt,
                     system=f"You are {self.name}, drafting pre-emptive Studio content.",
-                    model=settings.ollama_model,  # main model — quality matters here
+                    model=settings.main_model,  # main model — quality matters here
                     temperature=0.5,
                     timeout=120.0,
                 )

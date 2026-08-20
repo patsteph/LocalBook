@@ -980,7 +980,7 @@ Answer:"""
                     response = await llm_runtime.generate(
                         prompt=prompt,
                         system=f"You are {curator_name}, a research curator who synthesizes knowledge across multiple research notebooks. Personality: {curator.personality}",
-                        model=settings.ollama_model,
+                        model=settings.main_model,
                         temperature=0.5,
                     )
                     reply = response.get("response", "I couldn't generate a synthesis. Please try rephrasing your question.")

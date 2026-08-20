@@ -91,7 +91,7 @@ async def classify_section(
         result = await llm_runtime.generate(
             prompt=user_prompt,
             system=_SECTIONER_SYSTEM,
-            model=settings.ollama_fast_model,
+            model=settings.fast_model,
             temperature=0.1,
             num_predict=150,
             format="json",

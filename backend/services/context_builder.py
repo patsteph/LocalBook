@@ -147,7 +147,7 @@ def _window_char_budget(output_reserve_tokens: int = 7000, chars_per_token: int 
     try:
         from services.llm_runtime import effective_num_ctx_cap
         from config import settings
-        cap_tokens = effective_num_ctx_cap(settings.ollama_model)
+        cap_tokens = effective_num_ctx_cap(settings.main_model)
         usable = max(4000, cap_tokens - output_reserve_tokens)
         return usable * chars_per_token
     except Exception:

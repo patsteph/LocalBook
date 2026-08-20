@@ -89,7 +89,7 @@ class CoachingInsightGenerator:
             response = await llm_runtime.generate(
                 prompt=prompt,
                 system=system_base,
-                model=settings.ollama_model,
+                model=settings.main_model,
                 temperature=0.4,
                 timeout=60.0,
             )

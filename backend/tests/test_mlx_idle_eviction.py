@@ -28,20 +28,15 @@ FAKE = "fake/idle-model"
 @pytest.fixture
 def resident_fake(monkeypatch):
     """A fake resident entry + MLX engines on, without loading a real model."""
-    keep = {r: getattr(settings, f"{r}_engine", "ollama")
-            for r in ("main", "fast", "vision", "embed")}
-    keep_model = getattr(settings, "mlx_embedding_model", "")
-    settings.embed_engine = "mlx"
-    settings.mlx_embedding_model = FAKE
+    keep_model = getattr(settings, "embedding_model", "")
+    settings.embedding_model = FAKE
     mlx_engine._embed_resident[FAKE] = ("m", "t")
     # A sweep must never fire while the user is active — pin that off for the test.
     monkeypatch.setattr("services.presence.system_busy", lambda *a, **k: False)
     yield
     mlx_engine._embed_resident.pop(FAKE, None)
     mlx_engine._model_locks.pop(FAKE, None)
-    settings.mlx_embedding_model = keep_model
-    for r, v in keep.items():
-        setattr(settings, f"{r}_engine", v)
+    settings.embedding_model = keep_model
 
 
 def test_a_recently_used_model_is_kept(resident_fake):
@@ -82,13 +77,16 @@ def test_a_busy_model_survives_even_when_idle(resident_fake):
     assert FAKE in mlx_engine._embed_resident
 
 
-def test_no_op_when_no_role_is_on_mlx(resident_fake):
-    """An all-Ollama machine must not pay for this check at all."""
-    for r in ("main", "fast", "vision", "embed"):
-        setattr(settings, f"{r}_engine", "ollama")
-    mw._last_embedding_use = time.time() - (mw.MODEL_IDLE_TIMEOUT + 60)
+def test_a_resident_no_role_points_at_is_dead_weight_and_goes(resident_fake, monkeypatch):
+    """Replaces the old "no role is on MLX" early-out, which the engine collapse removed.
+
+    A resident model that no configured role names — the previous embedder after a Locker
+    swap, for instance — has no usage stamp, so it reads as infinitely idle and is evicted.
+    That is the intended outcome, not an accident of `stamps.get(m) or 0`: holding weights
+    nothing can route to is the exact waste this sweep exists to end."""
+    monkeypatch.setattr(settings, "embedding_model", "some/other-model", raising=False)
     asyncio.run(mw._evict_idle_mlx())
-    assert FAKE in mlx_engine._embed_resident
+    assert FAKE not in mlx_engine._embed_resident
 
 
 def test_never_raises_with_nothing_loaded(monkeypatch):

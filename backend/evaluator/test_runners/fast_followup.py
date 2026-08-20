@@ -15,7 +15,7 @@ async def run(notebook_id: str, config: dict, combo_name: str, hw_fingerprint: s
     q = config["queries"]["followup"]
 
     # ── Test 1: Fast Model (direct generate, no RAG overhead) ─────────────
-    fast_model = getattr(settings, 'ollama_fast_model', settings.ollama_model)
+    fast_model = getattr(settings, 'fast_model', settings.main_model)
     result_fast = EvalResult(
         test_id="fast_followup_fast_model",
         category="fast_followup",
@@ -64,7 +64,7 @@ async def run(notebook_id: str, config: dict, combo_name: str, hw_fingerprint: s
     results.append(result_fast)
 
     # ── Test 2: Main Model (full RAG query) ────────────────────────────────
-    main_model = settings.ollama_model
+    main_model = settings.main_model
     result_main = EvalResult(
         test_id="fast_followup_main_model",
         category="fast_followup",

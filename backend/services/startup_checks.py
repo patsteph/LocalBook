@@ -22,10 +22,10 @@ logger = logging.getLogger(__name__)
 # Deduped, because main and vision are the same gemma checkpoint under MLX and listing it
 # twice would report one missing download as two.
 _ROLE_DESCRIPTIONS = [
-    ("mlx_main_model", "Main model (chat/synthesis)"),
-    ("mlx_fast_model", "Fast response model for follow-ups"),
-    ("mlx_embedding_model", "Embedding model (1024 dimensions)"),
-    ("mlx_vision_model", "Vision model for PDF image/chart extraction"),
+    ("main_model", "Main model (chat/synthesis)"),
+    ("fast_model", "Fast response model for follow-ups"),
+    ("embedding_model", "Embedding model (1024 dimensions)"),
+    ("vision_model", "Vision model for PDF image/chart extraction"),
 ]
 
 

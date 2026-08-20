@@ -229,7 +229,7 @@ JSON (only output relationships you find, empty array if none):"""
             await await_background_clearance()
             _resp = await llm_runtime.generate(
                 prompt=prompt,
-                model=settings.ollama_fast_model,
+                model=settings.fast_model,
                 num_predict=300,
                 temperature=0.2,
                 timeout=60.0,

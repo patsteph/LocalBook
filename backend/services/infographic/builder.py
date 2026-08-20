@@ -426,7 +426,7 @@ async def build_l2(
     skeleton = get_skeleton(archetype)
     if not skeleton:
         return None
-    model = model or settings.ollama_model
+    model = model or settings.main_model
     trimmed = (content or "")[:max_content_chars]
     prov = _normalize_sources(sources)
 
@@ -513,7 +513,7 @@ async def build_l3(
     FAILS OPEN to None so the caller degrades L3 -> L2 -> prose (§3.5): an empty
     LLM response, an unparseable graph, or a graph with no renderable node all
     return None. Never raises."""
-    model = model or settings.ollama_model
+    model = model or settings.main_model
     trimmed = (content or "")[:max_content_chars]
 
     graph_raw = await _run_slotfill(sf.l3_scene_system(), trimmed, model, topic=topic or title or "")
@@ -593,7 +593,7 @@ async def build_l1(
     chart["series"] = series
 
     # Annotation text (coordinate-free; anchors computed from data, not the model).
-    ann = await _run_slotfill(sf.L1_ANNOTATION_SYSTEM, trimmed, model or settings.ollama_model, topic=topic)
+    ann = await _run_slotfill(sf.L1_ANNOTATION_SYSTEM, trimmed, model or settings.main_model, topic=topic)
     ann = ann or {}
 
     # DATA ANCHORS: compute the annotation positions (+ a numeric ratio) from the
@@ -774,7 +774,7 @@ async def build_l4(
     # instruction). Generated on the fast model; fails open to no overlay so a
     # noisy label never drags the image down. The raw request still seeded the
     # (better) art brief above.
-    short_title = await _poster_title(overlay_title or trimmed, settings.ollama_fast_model)
+    short_title = await _poster_title(overlay_title or trimmed, settings.fast_model)
 
     payload = {
         "lane": "L4",

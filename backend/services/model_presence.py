@@ -102,10 +102,10 @@ def readiness(roles: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
         try:
             from config import settings
             roles = {
-                "main": getattr(settings, "mlx_main_model", ""),
-                "fast": getattr(settings, "mlx_fast_model", ""),
-                "vision": getattr(settings, "mlx_vision_model", ""),
-                "embed": getattr(settings, "mlx_embedding_model", ""),
+                "main": getattr(settings, "main_model", ""),
+                "fast": getattr(settings, "fast_model", ""),
+                "vision": getattr(settings, "vision_model", ""),
+                "embed": getattr(settings, "embedding_model", ""),
             }
         except Exception:
             roles = {}

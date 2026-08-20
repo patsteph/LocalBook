@@ -57,8 +57,7 @@ class MemoryAgent:
         self.model_context_window = 32768  # Default context window for budget calc
         
         # LLM settings
-        self.ollama_url = settings.ollama_base_url
-        self.extraction_model = settings.ollama_fast_model  # Use fast model for extraction
+        self.extraction_model = settings.fast_model  # Use fast model for extraction
         
         self._initialized = True
     

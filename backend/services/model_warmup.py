@@ -157,7 +157,7 @@ async def warmup_cycle(force_all: bool = False):
                 result_map["rerank"] = False
     
     main_ok = result_map.get("main", True) is True
-    fast_ok = result_map.get("fast", main_ok if settings.ollama_fast_model == settings.ollama_model else True) is True
+    fast_ok = result_map.get("fast", main_ok if settings.fast_model == settings.main_model else True) is True
     embed_ok = result_map.get("embed", True) is True
     rerank_ok = result_map.get("rerank", True) is True
     
@@ -202,10 +202,7 @@ async def _evict_idle_mlx() -> None:
     """
     try:
         from config import settings
-        if not any(getattr(settings, f"{r}_engine", "ollama") == "mlx"
-                   for r in ("main", "fast", "vision", "embed")):
-            return
-
+        # The "is any role on MLX?" early-out is gone with the engine flags — every role is.
         from services.presence import system_busy
         if system_busy():
             return
@@ -219,11 +216,16 @@ async def _evict_idle_mlx() -> None:
         now = time.time()
         # Map each MLX model back to the role stamp that tracks its use.
         stamps = {
-            getattr(settings, "mlx_main_model", None): _last_main_model_use,
-            getattr(settings, "mlx_fast_model", None): _last_fast_model_use,
-            getattr(settings, "mlx_vision_model", None): _last_main_model_use,
-            getattr(settings, "mlx_embedding_model", None): _last_embedding_use,
+            getattr(settings, "main_model", None): _last_main_model_use,
+            getattr(settings, "fast_model", None): _last_fast_model_use,
+            getattr(settings, "vision_model", None): _last_main_model_use,
+            getattr(settings, "embedding_model", None): _last_embedding_use,
         }
+        # A resident model with NO stamp is treated as infinitely idle, and that is
+        # deliberate: it is a model no configured role points at any more — the previous
+        # embedder after a Locker swap, say — so it is pure dead weight. `unload()` still
+        # refuses to touch anything mid-generation, so "unknown" can never mean "yanked from
+        # under a live call".
         idle = [m for m in loaded
                 if (now - (stamps.get(m) or 0)) > MODEL_IDLE_TIMEOUT]
         if not idle:

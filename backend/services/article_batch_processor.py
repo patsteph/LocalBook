@@ -132,7 +132,7 @@ async def batch_analyze_article(
         result = await llm_runtime.generate(
             prompt=user_prompt,
             system=_BATCH_SYSTEM,
-            model=settings.ollama_fast_model,
+            model=settings.fast_model,
             temperature=0.1,
             num_predict=400,
             format="json",

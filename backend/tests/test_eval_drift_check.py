@@ -7,7 +7,7 @@ engine-aware, and both only reachable at the very END of a full evaluation — i
 1. `NameError: name '_mr' is not defined` — the import was removed with the block that
    used to need it. It crashed a real MLX eval at the finish line (user report).
 2. Phantom drift on every MLX run: the snapshot holds RESOLVED values (`mlx-community/...`)
-   while the check compared them against raw `settings.ollama_model` (`gemma4:e4b`). Those
+   while the check compared them against raw `settings.main_model` (`gemma4:e4b`). Those
    can never be equal, so every MLX run would have ended with a false "model swap detected"
    warning.
 
@@ -21,9 +21,9 @@ from evaluator.models import ModelCombo
 
 
 @pytest.fixture
-def restore_engines():
-    keep = {k: getattr(settings, k, "ollama")
-            for k in ("main_engine", "fast_engine", "vision_engine", "embed_engine")}
+def restore_models():
+    keep = {k: getattr(settings, k, "")
+            for k in ("main_model", "fast_model", "vision_model", "embedding_model")}
     yield
     for k, v in keep.items():
         setattr(settings, k, v)
@@ -33,8 +33,8 @@ def _snapshot():
     """Exactly what run_full_evaluation records at start."""
     c = ModelCombo.from_config(settings)
     return {
-        "ollama_model": c.main_model,
-        "ollama_fast_model": c.fast_model,
+        "main_model": c.main_model,
+        "fast_model": c.fast_model,
         "vision_model": c.vision_model,
         "embedding_model": c.embedding_model,
         "main_engine": c.main_engine,
@@ -50,28 +50,20 @@ def _drift(snapshot):
     return [f"{k}: '{v}' -> '{now.get(k, '')}'" for k, v in snapshot.items() if now.get(k, "") != v]
 
 
-def test_no_drift_when_nothing_changed_on_ollama(restore_engines):
-    settings.main_engine = settings.fast_engine = "ollama"
+def test_no_phantom_drift_when_nothing_changed(restore_models):
+    """THE regression this file exists for: the snapshot held a RESOLVED id while the
+    comparison read a raw settings attribute, so every all-MLX run reported drift that had not
+    happened. Two snapshots of an unchanged config must be identical."""
     assert _drift(_snapshot()) == []
 
 
-def test_no_phantom_drift_on_an_all_mlx_run(restore_engines):
-    """THE regression: comparing a resolved HF id against settings.ollama_model would report
-    drift on a run where nothing changed at all."""
-    settings.main_engine = settings.fast_engine = "mlx"
-    settings.vision_engine = settings.embed_engine = "mlx"
-    assert _drift(_snapshot()) == []
-
-
-def test_real_drift_is_still_detected(restore_engines):
-    """The check must keep doing its job — a mid-run engine swap makes the report a mix of two
-    configurations and has to be surfaced."""
-    settings.main_engine = "ollama"
+def test_real_drift_is_still_detected(restore_models):
+    """The check must keep doing its job — a model swapped mid-run makes the report a mix of
+    two configurations and has to be surfaced."""
     snap = _snapshot()
-    settings.main_engine = "mlx"          # the user swaps mid-run
+    settings.main_model = "mlx-community/some-other-model-4bit"   # the user swaps mid-run
     drifted = _drift(snap)
-    assert any("main_engine" in d for d in drifted), drifted
-    assert any("ollama_model" in d for d in drifted), "the resolved model changed too"
+    assert any("main_model" in d for d in drifted), drifted
 
 
 def test_the_service_defines_every_name_the_drift_check_uses():

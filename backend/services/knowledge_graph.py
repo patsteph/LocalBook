@@ -68,8 +68,7 @@ class KnowledgeGraphService:
         self._cache_loaded = False
         
         # LLM settings
-        self.ollama_url = settings.ollama_base_url
-        self.extraction_model = settings.ollama_fast_model
+        self.extraction_model = settings.fast_model
         
         # Clustering settings
         self.min_cluster_size = 3

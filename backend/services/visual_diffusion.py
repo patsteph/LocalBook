@@ -143,7 +143,7 @@ class KleinDiffusionService:
         if not cap.klein_model:
             return DiffusionResult(
                 success=False,
-                error=f"Klein not downloaded ({settings.mlx_image_model}) — get it from LLM Studio.",
+                error=f"Klein not downloaded ({settings.image_model}) — get it from LLM Studio.",
             )
         rw, rh, rs = resolve_dimensions(aspect_ratio, quality_tier)
         return await self._generate_mflux(
@@ -170,11 +170,11 @@ class KleinDiffusionService:
                 # first real generate (the ~4.3 GB download is the build DoD).
                 return Flux2Klein(
                     model_config=cfg, quantize=4,
-                    model_path=settings.mlx_image_model,
+                    model_path=settings.image_model,
                     lora_paths=None, lora_scales=None)
 
             self._mflux_model = await asyncio.to_thread(_load)
-            logger.info(f"[visual_diffusion] mflux Klein loaded ({settings.mlx_image_model})")
+            logger.info(f"[visual_diffusion] mflux Klein loaded ({settings.image_model})")
             return self._mflux_model
 
     async def _generate_mflux(self, prompt: str, *, width: int, height: int, steps: int) -> DiffusionResult:
@@ -183,7 +183,7 @@ class KleinDiffusionService:
         try:
             model = await self._load_mflux()
         except Exception as e:
-            return DiffusionResult(success=False, model=settings.mlx_image_model,
+            return DiffusionResult(success=False, model=settings.image_model,
                                    error=f"mflux Klein load failed: {e}")
 
         def _gen() -> bytes:
@@ -201,13 +201,13 @@ class KleinDiffusionService:
             logger.info(f"[visual_diffusion] mflux generate {width}x{height} steps={steps}")
             png = await asyncio.to_thread(_gen)
         except Exception as e:
-            return DiffusionResult(success=False, model=settings.mlx_image_model,
+            return DiffusionResult(success=False, model=settings.image_model,
                                    elapsed_ms=int((time.time() - t0) * 1000),
                                    error=f"mflux Klein generate failed: {e}")
         return DiffusionResult(
             success=True, png_bytes=png, width=width, height=height,
             elapsed_ms=int((time.time() - t0) * 1000),
-            model=settings.mlx_image_model, prompt_used=prompt)
+            model=settings.image_model, prompt_used=prompt)
 
 # ──────────────────────────────────────────────────────────────────────
 # Gemma-as-prompt-writer chain
@@ -290,7 +290,7 @@ async def write_klein_brief(
     None on Gemma failure (caller falls through to the structural path).
     """
     cap = capability or await get_capability()
-    model = cap.gemma_model or settings.ollama_model
+    model = cap.gemma_model or settings.main_model
 
     user_msg = (
         f"USER REQUEST:\n{user_prompt}\n\n"
@@ -327,7 +327,7 @@ async def write_klein_prompt(
     """Use Gemma (or whichever main is configured) to write a Klein prompt."""
     cap = capability or await get_capability()
     # Prefer Gemma when available; fall back to configured main
-    model = cap.gemma_model or settings.ollama_model
+    model = cap.gemma_model or settings.main_model
 
     user = (
         f"Visual intent: {intent}\n"

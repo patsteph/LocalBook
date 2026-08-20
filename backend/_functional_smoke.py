@@ -29,7 +29,7 @@ async def _run():
 
     # ── core primitives ──
     await check("llm_runtime.generate(phi4)",
-                llm_runtime.generate(prompt="Say hello", model=settings.ollama_fast_model,
+                llm_runtime.generate(prompt="Say hello", model=settings.fast_model,
                                         num_predict=10, timeout=60.0),
                 lambda r: bool(r.get("response", "").strip()))
     await check("llm_runtime.embed (1024)",
@@ -115,7 +115,7 @@ async def _run():
     from services.llm_service import generate_text as call_ollama
     await check("llm_service.generate_text (lane-joined)",
                 call_ollama("You are concise.", "Reply with one word: ok",
-                            model=settings.ollama_fast_model, num_predict=10),
+                            model=settings.fast_model, num_predict=10),
                 lambda s: isinstance(s, str) and bool(s.strip()))
 
     # ── Apple Vision OCR seam (engine strategy) ──

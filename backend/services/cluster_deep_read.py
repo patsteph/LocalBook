@@ -143,7 +143,7 @@ async def synthesize(
             prompt=user_prompt,
             system=system_prompt,
             # User picked gemma4 (main model) for this synthesis.
-            model=settings.ollama_model,
+            model=settings.main_model,
             temperature=0.4,
             num_predict=800,
             timeout=120.0,

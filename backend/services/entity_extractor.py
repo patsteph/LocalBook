@@ -256,7 +256,7 @@ JSON:"""
             await await_background_clearance()
             _resp = await llm_runtime.generate(
                 prompt=prompt,
-                model=settings.ollama_fast_model,
+                model=settings.fast_model,
                 num_predict=500,
                 temperature=0.2,
                 timeout=60.0,

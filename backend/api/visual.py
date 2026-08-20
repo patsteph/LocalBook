@@ -1176,7 +1176,7 @@ CRITICAL: Preserve the diagram type (flowchart, mindmap, etc). Only modify struc
         from config import settings
         _resp = await llm_runtime.generate(
             prompt=refinement_prompt,
-            model=settings.ollama_model,
+            model=settings.main_model,
             temperature=0.3,
             num_predict=1000,
             timeout=15.0,

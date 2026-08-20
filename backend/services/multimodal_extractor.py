@@ -97,7 +97,7 @@ class MultimodalExtractor:
         try:
             from evaluator.model_registry import model_registry
             self.vision_model = model_registry.resolve_vision_model(
-                settings.ollama_model, settings.vision_model
+                settings.main_model, settings.vision_model
             )
         except Exception as _e:
             logger.debug(f"[multimodal] vision-model resolve fell back to config: {_e}")
@@ -423,7 +423,7 @@ Focus on information that would be useful for answering questions about this doc
             try:
                 from services.memory_steward import free_for_pipeline
                 evicted = await free_for_pipeline(
-                    {self.vision_model, settings.ollama_fast_model, settings.embedding_model},
+                    {self.vision_model, settings.fast_model, settings.embedding_model},
                     reason="pdf_page_render",
                 )
                 if evicted:
@@ -526,7 +526,7 @@ Focus on information that would be useful for answering questions about this doc
         try:
             from services.memory_steward import free_for_pipeline
             evicted = await free_for_pipeline(
-                {self.vision_model, settings.ollama_fast_model, settings.embedding_model},
+                {self.vision_model, settings.fast_model, settings.embedding_model},
                 reason="pdf_vision_batch",
             )
             if evicted:

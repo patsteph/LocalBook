@@ -162,12 +162,13 @@ class ModelCombo:
     embedding_dim: int = 0
     vision_model: str = ""
     tts_engine: str = "kokoro-mlx"
-    # Wave 9.6 — which engine serves each text/vision role ("ollama" | "mlx"), so the
-    # evaluator can label the combo (⚡ MLX) instead of silently showing an Ollama name (#4).
-    main_engine: str = "ollama"
-    fast_engine: str = "ollama"
-    vision_engine: str = "ollama"
-    embed_engine: str = "ollama"
+    # Which engine served each role. Always "mlx" for new runs; historical results hold
+    # "ollama" or "llama_server" and must keep deserializing — the Eval History view labels
+    # an old run by what really produced it, not by today's engine.
+    main_engine: str = "mlx"
+    fast_engine: str = "mlx"
+    vision_engine: str = "mlx"
+    embed_engine: str = "mlx"
     # Friendly display names (raw ids stay in *_model for matching/history) — the UI shows
     # these so the Test Environment never renders the long HF path (user #3).
     main_model_display: str = ""
@@ -194,33 +195,19 @@ class ModelCombo:
 
     @classmethod
     def from_config(cls, settings) -> "ModelCombo":
-        """Build from current app config.py settings (engine-aware)."""
-        def _eng(attr):
-            return getattr(settings, attr, "ollama") or "ollama"
-        main_engine, fast_engine, vision_engine = _eng("main_engine"), _eng("fast_engine"), _eng("vision_engine")
-        embed_engine = _eng("embed_engine")
-        # Report the embedding model that ACTUALLY serves retrieval — the MLX arctic id when
-        # embed_engine==mlx, else the Ollama arctic name. (Previously hardcoded to the Ollama
-        # name, so an MLX-adopted combo was silently labeled Ollama — user report 2026-07-23.)
-        embed_model = (getattr(settings, "mlx_embedding_model", "") if embed_engine == "mlx"
-                       else getattr(settings, "embedding_model", ""))
-        # Report the model that ACTUALLY serves each role — the MLX id when that role's
-        # engine is mlx, else the Ollama model.
-        main = (getattr(settings, "mlx_main_model", "") if main_engine == "mlx"
-                else getattr(settings, "ollama_model", "unknown"))
-        fast = (getattr(settings, "mlx_fast_model", "") if fast_engine == "mlx"
-                else getattr(settings, "ollama_fast_model", main))
-        if vision_engine == "mlx":
-            vision = getattr(settings, "mlx_vision_model", "")
-        else:
-            # Resolve the vision model the app actually uses (env > vision-capable main >
-            # configured) so the combo reflects reality, not an uninstalled granite.
-            try:
-                from evaluator.model_registry import model_registry as _mr
-                vision = _mr.resolve_vision_model(getattr(settings, "ollama_model", "") or "",
-                                                  getattr(settings, "vision_model", "") or "")
-            except Exception:
-                vision = getattr(settings, "vision_model", "") or ""
+        """Build from the current app config.
+
+        Was engine-aware: each role was a pair (Ollama name + MLX id) and this picked between
+        them per `*_engine`. After the v2.3.0 collapse both arms of every branch resolved to
+        the same attribute, so the branching is gone. The `*_engine` fields survive on the
+        dataclass as RUN PROVENANCE — historical results recorded "ollama"/"llama_server" and
+        must keep deserializing and displaying honestly.
+        """
+        main = getattr(settings, "main_model", "") or ""
+        fast = getattr(settings, "fast_model", "") or main
+        vision = getattr(settings, "vision_model", "") or ""
+        embed_model = getattr(settings, "embedding_model", "") or ""
+        main_engine = fast_engine = vision_engine = embed_engine = "mlx"
         # Friendly display names (shared helper — same names as Labs + the menu bar).
         from utils.model_display import friendly_model_name
         main_disp = friendly_model_name(main)
@@ -319,7 +306,7 @@ class EvalResult:
                 from config import settings as _st
                 if (model_name == getattr(_st, "embedding_model", None)
                         and getattr(_st, "embed_engine", "ollama") == "mlx"):
-                    model_name = getattr(_st, "mlx_embedding_model", model_name)
+                    model_name = getattr(_st, "embedding_model", model_name)
             except Exception:
                 pass
 

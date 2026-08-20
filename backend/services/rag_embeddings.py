@@ -19,7 +19,10 @@ from config import settings
 # ─── Lazy-loaded model state ────────────────────────────────────────────────────
 
 _embedding_model = None  # SentenceTransformer fallback (lazy)
-_use_ollama = settings.use_ollama_embeddings
+# Kept as a module-level constant because the tests monkeypatch it to exercise the
+# sentence-transformers branch. Always True in production: embeddings go through
+# llm_runtime → MLX. The `use_ollama_embeddings` setting it used to read is gone.
+_use_ollama = True
 
 
 # ─── Model Loading ──────────────────────────────────────────────────────────────
@@ -56,7 +59,7 @@ def _mlx_embed_sync_or_none(texts: List[str]) -> Optional[List[List[float]]]:
         from services.mlx_engine import mlx_engine
         if not mlx_engine.available():
             return None
-        vecs = mlx_engine.embed_sync(texts, model=settings.mlx_embedding_model)
+        vecs = mlx_engine.embed_sync(texts, model=settings.embedding_model)
         if vecs and len(vecs) == len(texts):
             return vecs
         return None
@@ -76,7 +79,7 @@ def _get_embedding_sync(text: str) -> List[float]:
         return _mlx[0]
     raise RuntimeError(
         f"embed unserviceable: embed_engine={getattr(settings, 'embed_engine', '?')}, "
-        f"model={settings.mlx_embedding_model}. Refusing to return an empty embedding."
+        f"model={settings.embedding_model}. Refusing to return an empty embedding."
     )
 
 
@@ -129,7 +132,7 @@ def _get_embeddings_batch_sync(texts: List[str]) -> List[List[float]]:
 
     raise RuntimeError(
         f"embed_batch unserviceable (n={len(texts)}): embed_engine="
-        f"{getattr(settings, 'embed_engine', '?')}, model={settings.mlx_embedding_model}. "
+        f"{getattr(settings, 'embed_engine', '?')}, model={settings.embedding_model}. "
         f"Refusing to zero-fill {len(texts)} vectors into the index."
     )
 

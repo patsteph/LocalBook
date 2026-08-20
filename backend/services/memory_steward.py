@@ -291,7 +291,7 @@ async def free_for_pipeline(
             from config import settings as _st
             if getattr(_st, "embed_engine", "ollama") == "mlx":
                 # The embedder is cheap to keep and expensive to reload on the next search.
-                mlx_keep.add(getattr(_st, "mlx_embedding_model", None))
+                mlx_keep.add(getattr(_st, "embedding_model", None))
                 mlx_keep.discard(None)
         except Exception:
             pass

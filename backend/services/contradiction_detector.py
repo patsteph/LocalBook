@@ -100,7 +100,7 @@ If no clear claims, return: []"""
             # extracts the [...] from plain output reliably.
             _resp = await llm_runtime.generate(
                 prompt=prompt,
-                model=settings.ollama_fast_model,
+                model=settings.fast_model,
                 temperature=0.1,
                 num_predict=600,
                 timeout=60.0,
@@ -163,7 +163,7 @@ If they do NOT contradict (they agree, are unrelated, or compatible), respond:
             from config import settings
             _resp = await llm_runtime.generate(
                 prompt=prompt,
-                model=settings.ollama_fast_model,
+                model=settings.fast_model,
                 temperature=0.1,
                 num_predict=400,
                 format="json",

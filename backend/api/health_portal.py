@@ -323,8 +323,8 @@ async def full_health_check():
           from services.mlx_engine import mlx_engine, mlx_model_for_role
           _res = mlx_engine.resident()
           _held = set(_res.get("text", {})) | set(_res.get("embed", {}))
-          _main_id = mlx_model_for_role(settings.ollama_model)
-          _fast_id = mlx_model_for_role(settings.ollama_fast_model)
+          _main_id = mlx_model_for_role(settings.main_model)
+          _fast_id = mlx_model_for_role(settings.fast_model)
           main_loaded = bool(_main_id and _main_id in _held)
           fast_loaded = bool(_fast_id and _fast_id in _held)
 
@@ -333,7 +333,7 @@ async def full_health_check():
               "display": "Models Loaded",
               "status": "pass" if main_loaded else "warn",
               "details": {
-                  "main_model": _main_id or settings.ollama_model,
+                  "main_model": _main_id or settings.main_model,
                   "main_loaded": main_loaded,
                   "fast_loaded": fast_loaded,
                   "resident": sorted(_held),
@@ -348,9 +348,9 @@ async def full_health_check():
               results["issues"].append({
                   "severity": "low",
                   "title": "Main Model Not Loaded",
-                  "message": f"{_main_id or settings.ollama_model} is not resident. The first query will pay the load cost.",
+                  "message": f"{_main_id or settings.main_model} is not resident. The first query will pay the load cost.",
                   "repair": "warmup_model",
-                  "repair_params": {"model": settings.ollama_model},
+                  "repair_params": {"model": settings.main_model},
               })
       except Exception as e:
           add_log("WARN", f"Model loading check failed: {e}", "health_portal")
@@ -367,7 +367,7 @@ async def full_health_check():
               "display": "Embedding Generation",
               "status": "pass" if (emb_dim == EXPECTED_EMBEDDING_DIM and not _all_zero) else "fail",
               "details": {
-                  "model": settings.mlx_embedding_model,
+                  "model": settings.embedding_model,
                   "dimension": emb_dim,
                   "expected": EXPECTED_EMBEDDING_DIM,
                   "zero_vector": _all_zero,
@@ -407,13 +407,13 @@ async def full_health_check():
           from services import llm_service
           _txt = await llm_service.generate_text(
               "You are a health check.", "Say OK",
-              model=settings.ollama_fast_model, num_predict=5, voice_modifier=False)
+              model=settings.fast_model, num_predict=5, voice_modifier=False)
           _ok = bool(_txt and _txt.strip())
           add_check("ai_models", {
               "name": "llm_test",
               "display": "LLM Generation",
               "status": "pass" if _ok else "fail",
-              "details": {"model": settings.ollama_fast_model, "responded": _ok},
+              "details": {"model": settings.fast_model, "responded": _ok},
           })
           if not _ok:
               # generate_text returns "" rather than raising when nothing can serve it, so
@@ -478,7 +478,7 @@ async def full_health_check():
     # configured vision id rather than a scan of installed Ollama tags.
     try:
         from services.model_presence import is_present
-        vision_model = settings.mlx_vision_model
+        vision_model = settings.vision_model
         vision_installed = bool(vision_model) and is_present(vision_model)
         add_check("ai_models", {
             "name": "vision_model",
@@ -1568,7 +1568,7 @@ async def execute_repair(request: RepairRequest, background_tasks: BackgroundTas
             return {"status": "error", "message": str(e)}
     
     elif action == "warmup_model":
-        model = params.get("model", settings.ollama_model)
+        model = params.get("model", settings.main_model)
         try:
             add_log("INFO", f"Warming up model: {model}", "health_portal")
             from services import llm_service
@@ -1923,7 +1923,7 @@ async def execute_repair(request: RepairRequest, background_tasks: BackgroundTas
     elif action == "repair_model":
         # Re-download a corrupted MLX checkpoint. Deletes the cached snapshot so the
         # download manager cannot short-circuit on a partial one, then re-fetches.
-        model = params.get("model", settings.ollama_model)
+        model = params.get("model", settings.main_model)
         try:
             add_log("INFO", f"Starting model repair for: {model}", "health_portal")
             from services.mlx_engine import mlx_engine, mlx_model_for_role
@@ -2179,9 +2179,8 @@ async def export_diagnostics():
         "health_check": health,
         "recent_logs": LOG_BUFFER[-100:],
         "config": {
-            "ollama_base_url": settings.ollama_base_url,
-            "ollama_model": settings.ollama_model,
-            "ollama_fast_model": settings.ollama_fast_model,
+            "main_model": settings.main_model,
+            "fast_model": settings.fast_model,
             "embedding_model": settings.embedding_model,
             "embedding_dim": settings.embedding_dim,
             "data_dir": str(settings.data_dir),

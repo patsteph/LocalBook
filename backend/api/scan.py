@@ -276,7 +276,7 @@ async def warmup_vision_model():
     """
     from config import settings as _settings
 
-    model = getattr(_settings, "mlx_vision_model", "") or _settings.vision_model
+    model = getattr(_settings, "vision_model", "") or _settings.vision_model
     try:
         from services.mlx_engine import mlx_engine
         if not mlx_engine.available():

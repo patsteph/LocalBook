@@ -195,7 +195,7 @@ def _semaphore_for_model(model: str) -> PriorityLane:
     _note_llm_activity()  # every routed call funnels here → system-busy signal
     if model == settings.embedding_model:
         bucket = "embed"
-    elif model == settings.ollama_fast_model:
+    elif model == settings.fast_model:
         bucket = "fast"
     else:
         # Default: treat unknown / main model as the heavy bucket.
@@ -403,7 +403,7 @@ def _mark_model_used(model: str):
     """Track model usage for warmup service."""
     try:
         from services.model_warmup import mark_fast_model_used, mark_main_model_used
-        if model == settings.ollama_fast_model:
+        if model == settings.fast_model:
             mark_fast_model_used()
         else:
             mark_main_model_used()
@@ -440,7 +440,7 @@ class LLMRuntime:
 
         Args:
             prompt: The user prompt text.
-            model: Ollama model name. Defaults to settings.ollama_model.
+            model: Ollama model name. Defaults to settings.main_model.
             system: System prompt prepended to the prompt.
             temperature: Override model registry default temperature.
             num_predict: Max tokens to generate.
@@ -459,7 +459,7 @@ class LLMRuntime:
         Returns:
             Full Ollama response dict (with 'response', token stats, etc.)
         """
-        use_model = model or settings.ollama_model
+        use_model = model or settings.main_model
         model_defaults = _get_model_options(use_model)
         options = {**model_defaults}
         if num_predict is not None:
@@ -619,7 +619,7 @@ class LLMRuntime:
         if not model:
             try:
                 from evaluator.model_registry import model_registry
-                model = model_registry.resolve_vision_model(settings.ollama_model, settings.vision_model)
+                model = model_registry.resolve_vision_model(settings.main_model, settings.vision_model)
             except Exception:
                 model = settings.vision_model
 
@@ -675,7 +675,7 @@ class LLMRuntime:
             if not mlx_engine.available():
                 return None
             async with model_lane(settings.embedding_model, PRIORITY_NORMAL):
-                vecs = await mlx_engine.embed(texts, model=settings.mlx_embedding_model)
+                vecs = await mlx_engine.embed(texts, model=settings.embedding_model)
             if vecs and len(vecs) == len(texts):
                 return vecs
             logger.error(
@@ -711,12 +711,12 @@ class LLMRuntime:
 
         _mlx = await self._mlx_embed_or_none([text])
         if _mlx is not None:
-            logger.info(f"[LLMRuntime→MLX] embed OK model={settings.mlx_embedding_model} caller={_get_caller()}")
+            logger.info(f"[LLMRuntime→MLX] embed OK model={settings.embedding_model} caller={_get_caller()}")
             return {"embeddings": _mlx}
 
         raise RuntimeError(
             f"embed unserviceable (caller={_get_caller()}): embed_engine="
-            f"{getattr(settings, 'embed_engine', '?')}, model={settings.mlx_embedding_model}. "
+            f"{getattr(settings, 'embed_engine', '?')}, model={settings.embedding_model}. "
             f"Refusing to return an empty embedding — check /system/model-readiness."
         )
 
@@ -749,7 +749,7 @@ class LLMRuntime:
         _mlx = await self._mlx_embed_or_none(texts)
         if _mlx is not None:
             logger.info(
-                f"[LLMRuntime→MLX] embed_batch OK model={settings.mlx_embedding_model} n={len(texts)}")
+                f"[LLMRuntime→MLX] embed_batch OK model={settings.embedding_model} n={len(texts)}")
             out = [v if (v and len(v) == settings.embedding_dim) else zero for v in _mlx]
             _bad = sum(1 for v in out if not any(v))
             if _bad:
@@ -758,7 +758,7 @@ class LLMRuntime:
 
         raise RuntimeError(
             f"embed_batch unserviceable (n={len(texts)}, caller={_get_caller()}): embed_engine="
-            f"{getattr(settings, 'embed_engine', '?')}, model={settings.mlx_embedding_model}. "
+            f"{getattr(settings, 'embed_engine', '?')}, model={settings.embedding_model}. "
             f"Refusing to zero-fill {len(texts)} vectors into the index — "
             f"check /system/model-readiness."
         )

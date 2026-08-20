@@ -579,7 +579,7 @@ Theme name:"""
             fut = asyncio.run_coroutine_threadsafe(
                 llm_service.generate_text(
                     "", prompt,
-                    model=settings.ollama_fast_model,
+                    model=settings.fast_model,
                     num_predict=20,
                     temperature=0.3,
                     voice_modifier=False,

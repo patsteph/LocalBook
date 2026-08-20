@@ -46,9 +46,8 @@ class QueryOrchestrator:
     
     def __init__(self, rag_engine):
         self.rag_engine = rag_engine
-        self.ollama_base_url = settings.ollama_base_url
-        self.fast_model = settings.ollama_fast_model
-        self.main_model = settings.ollama_model
+        self.fast_model = settings.fast_model
+        self.main_model = settings.main_model
     
     def classify_complexity(self, query: str) -> str:
         """Classify query complexity level.

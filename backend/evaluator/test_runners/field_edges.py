@@ -42,7 +42,7 @@ async def run(notebook_id: str, config: dict, combo_name: str, hw_fingerprint: s
     from services.intent_classifier import classify_intent
     from config import settings
 
-    _fast_model = getattr(settings, "ollama_fast_model", "") or getattr(settings, "ollama_model", "")
+    _fast_model = getattr(settings, "fast_model", "") or getattr(settings, "main_model", "")
 
     results: list[EvalResult] = []
     correct = 0

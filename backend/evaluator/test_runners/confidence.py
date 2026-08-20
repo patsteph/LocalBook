@@ -54,7 +54,7 @@ async def run(notebook_id: str, config: dict, combo_name: str, hw_fingerprint: s
             hardware_fingerprint=hw_fingerprint,
             timestamp=datetime.utcnow().isoformat(),
         )
-        result.stamp_provider(settings.ollama_model)
+        result.stamp_provider(settings.main_model)
 
         try:
             start = time.time()

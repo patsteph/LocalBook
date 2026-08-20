@@ -120,7 +120,7 @@ async def generate_text(
     """
     # Default to fast model for non-streaming calls - faster response times
     # Main model (olmo-3:7b-instruct) used for streaming queries
-    use_model = model or settings.ollama_fast_model
+    use_model = model or settings.fast_model
     # Start with model-specific defaults from registry (temperature, top_p, top_k)
     model_defaults = _get_model_options(use_model)
     rag_profile = _get_rag_profile(use_model)
@@ -224,7 +224,7 @@ async def generate_text(
             _record_ollama_tokens(_res)
             try:
                 from services.model_warmup import mark_fast_model_used, mark_main_model_used
-                (mark_fast_model_used if use_model == settings.ollama_fast_model
+                (mark_fast_model_used if use_model == settings.fast_model
                  else mark_main_model_used)()
             except Exception:
                 pass
@@ -277,9 +277,9 @@ async def stream_text(
     # - System 1 (phi4-mini): Factual queries, fast responses
     # - System 2 (olmo-3:7b-instruct): Synthesis, complex queries, Deep Think
     if use_fast_model and not deep_think:
-        model = settings.ollama_fast_model
+        model = settings.fast_model
     else:
-        model = settings.ollama_model
+        model = settings.main_model
 
     # Voice modifier: prepend family-tone instruction so streaming chat
     # output stays consistent across model swaps.

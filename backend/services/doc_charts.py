@@ -105,7 +105,7 @@ async def compute_chart_fences(
         result = await llm_runtime.generate(
             prompt=prompt,
             system=_SYSTEM,
-            model=settings.ollama_model,
+            model=settings.main_model,
             temperature=max(0.1, temperature - 0.2),
             num_predict=800,
             timeout=120.0,

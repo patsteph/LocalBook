@@ -175,7 +175,7 @@ async def run_full_evaluation() -> ComboEvalSummary:
     # WILL affect later phases; the snapshot's job is to make the
     # corruption legible in the report rather than invisible.
     # Built from ModelCombo.from_config, which is ENGINE-AWARE and already resolves the model
-    # that actually serves each role. Hand-building this from `settings.ollama_model` recorded
+    # that actually serves each role. Hand-building this from `settings.main_model` recorded
     # Ollama names even on an all-MLX run — so a persisted result was mislabelled and an
     # engine A/B would have silently compared Ollama against Ollama.
     # Watermark the engine-fallback log so we can count ONLY this run's fallbacks. A silent
@@ -190,8 +190,8 @@ async def run_full_evaluation() -> ComboEvalSummary:
     from evaluator.models import ModelCombo as _MC
     _combo = _MC.from_config(settings)
     combo_snapshot = {
-        "ollama_model": _combo.main_model,
-        "ollama_fast_model": _combo.fast_model,
+        "main_model": _combo.main_model,
+        "fast_model": _combo.fast_model,
         "vision_model": _combo.vision_model,
         "embedding_model": _combo.embedding_model,
         # The engines are what make the snapshot falsifiable — without them a reader cannot
@@ -212,10 +212,10 @@ async def run_full_evaluation() -> ComboEvalSummary:
         from evaluator import scoring as _scoring
         # provider must match the engine actually serving the main role, or an MLX run is
         # profiled with Ollama's template/stop assumptions.
-        _rp = derive_run_profile(combo_snapshot["ollama_model"],
+        _rp = derive_run_profile(combo_snapshot["main_model"],
                                  provider=combo_snapshot.get("main_engine", "ollama"))
         _scoring.set_active_run_profile(_rp)
-        print(f"[EVALUATOR] RunProfile: {combo_snapshot['ollama_model']} "
+        print(f"[EVALUATOR] RunProfile: {combo_snapshot['main_model']} "
               f"engine={combo_snapshot.get('main_engine')} "
               f"thinking_capable={_rp.thinking_capable} stops={len(_rp.stop_sequences)} "
               f"filters={_rp.normalize_filters}")
@@ -568,14 +568,14 @@ async def run_full_evaluation() -> ComboEvalSummary:
         # Compare LIKE-FOR-LIKE by re-building the combo the same way the snapshot was built.
         # Two bugs lived here: `_mr` was undefined (crashing every run at the finish line), and
         # comparing the snapshot's RESOLVED values against raw `settings.*` reported phantom
-        # drift on every MLX run — the snapshot holds an HF id while `settings.ollama_model`
+        # drift on every MLX run — the snapshot holds an HF id while `settings.main_model`
         # holds the Ollama name, so they can never be equal. Rebuilding from ModelCombo makes
         # both sides resolved, which is the only comparison that means anything.
         try:
             _now_combo = _MC.from_config(settings)
             _now = {
-                "ollama_model": _now_combo.main_model,
-                "ollama_fast_model": _now_combo.fast_model,
+                "main_model": _now_combo.main_model,
+                "fast_model": _now_combo.fast_model,
                 "vision_model": _now_combo.vision_model,
                 "embedding_model": _now_combo.embedding_model,
                 "main_engine": _now_combo.main_engine,

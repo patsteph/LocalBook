@@ -154,7 +154,7 @@ class AudioGenerator:
         try:
             from config import settings as _s
             from evaluator.model_registry import model_registry
-            info = model_registry.get_model(_s.ollama_model)
+            info = model_registry.get_model(_s.main_model)
             if info and info.audio_profile:
                 return float(info.audio_profile.get("multi_pass_word_tolerance", 1.0))
         except Exception:
@@ -589,7 +589,7 @@ Write at least {target_exchanges} back-and-forth exchanges. Keep going — do NO
                     audio_num_predict = min(int(target_words * 2.5), 4000)
                     audio_num_ctx = max(8192, audio_num_predict + 4000)
                     script = await rag_engine._call_ollama(
-                        system_prompt, prompt, model=settings.ollama_model,
+                        system_prompt, prompt, model=settings.main_model,
                         num_predict=audio_num_predict, num_ctx=audio_num_ctx,
                         temperature=temp, repeat_penalty=1.15,
                         # Audio scripts need natural conversational flow; the
@@ -660,7 +660,7 @@ Write at least {target_exchanges} back-and-forth exchanges. Keep going — do NO
             f"Format: 1. [point]  2. [point]  etc.\n"
             f"ONLY include facts stated in the research. Do NOT add opinions.\n\n"
             f"{context[:max_ctx]}",
-            model=settings.ollama_model,
+            model=settings.main_model,
             num_predict=600,
             temperature=0.3,
         )
@@ -1149,7 +1149,7 @@ Write at least {phase_exchanges} back-and-forth exchanges between {name_a} and {
         
         for attempt in range(1 + self.MAX_SECTION_RETRIES):
             section = await rag_engine._call_ollama(
-                system_prompt, prompt, model=settings.ollama_model,
+                system_prompt, prompt, model=settings.main_model,
                 num_predict=num_predict, num_ctx=num_ctx,
                 temperature=temperature, repeat_penalty=repeat_penalty,
                 voice_modifier=False,  # podcast section: dialogue flow
@@ -1893,8 +1893,8 @@ Write at least {phase_exchanges} back-and-forth exchanges between {name_a} and {
             from services.memory_steward import free_for_pipeline
             from config import settings as _s
             keep = {
-                _s.ollama_model,             # we're about to call this
-                _s.ollama_fast_model,        # may be used for follow-ups
+                _s.main_model,             # we're about to call this
+                _s.fast_model,        # may be used for follow-ups
                 _s.embedding_model,          # context retrieval still active
             }
             keep = {m for m in keep if m}

@@ -113,7 +113,7 @@ JSON array:"""
             from services.llm_runtime import llm_runtime
             _resp = await llm_runtime.generate(
                 prompt=prompt,
-                model=settings.ollama_fast_model,
+                model=settings.fast_model,
                 num_predict=200,
                 temperature=0.3,
                 timeout=30.0,

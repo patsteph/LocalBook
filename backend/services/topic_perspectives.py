@@ -248,7 +248,7 @@ async def _perspective_for_source(query: str, source: Dict[str, Any]) -> Optiona
         result = await llm_runtime.generate(
             prompt=user_prompt,
             system=_PERSPECTIVE_SYSTEM,
-            model=settings.ollama_model,
+            model=settings.main_model,
             temperature=0.2,
             num_predict=400,
             format="json",

@@ -373,7 +373,7 @@ RULES:
             from services.llm_runtime import llm_runtime
             _resp = await llm_runtime.generate(
                 prompt=extraction_prompt,
-                model=settings.ollama_fast_model,
+                model=settings.fast_model,
                 temperature=0,
                 num_predict=1200,
                 timeout=30.0,

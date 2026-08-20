@@ -9,7 +9,7 @@ async def run(notebook_id: str, config: dict, combo_name: str, hw_fingerprint: s
     from services.llm_runtime import llm_runtime
     from config import settings
     
-    main_model = getattr(settings, 'ollama_model', 'gemma4:e4b')
+    main_model = getattr(settings, 'main_model', 'gemma4:e4b')
     tests = config.get("prompt_safety_test", [])
     
     if not tests:

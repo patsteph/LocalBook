@@ -465,7 +465,7 @@ Profile text:
             response = await llm_runtime.generate(
                 prompt=prompt,
                 system="You extract structured profile data. Respond with JSON only.",
-                model=settings.ollama_fast_model,
+                model=settings.fast_model,
                 temperature=0.1,
                 timeout=15.0,
             )

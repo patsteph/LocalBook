@@ -335,7 +335,7 @@ class MentalModelMixin:
             result = await llm_runtime.generate(
                 prompt=prompt,
                 system="You output only valid JSON for mental model inference.",
-                model=_settings.ollama_fast_model,
+                model=_settings.fast_model,
                 temperature=0.3,
                 timeout=45.0,
             )

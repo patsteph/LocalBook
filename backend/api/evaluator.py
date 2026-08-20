@@ -389,12 +389,12 @@ async def save_default_combo(payload: dict):
     from config import settings
     from evaluator.model_registry import model_registry
     
-    main_model = payload.get("main_model") or settings.ollama_model
-    fast_model = payload.get("fast_model") or settings.ollama_fast_model
+    main_model = payload.get("main_model") or settings.main_model
+    fast_model = payload.get("fast_model") or settings.fast_model
     vision_model = payload.get("vision_model") or settings.vision_model
     # Resolved active embedding (engine-aware) — persisted so the frontend can tell when a
     # standalone embedding adoption differs from the saved default (enables the Save button).
-    embeddings_model = (settings.mlx_embedding_model
+    embeddings_model = (settings.embedding_model
                         if getattr(settings, "embed_engine", "ollama") == "mlx"
                         else settings.embedding_model)
     
@@ -424,30 +424,24 @@ async def save_default_combo(payload: dict):
     except Exception:
         existing = {}
     
+    # One key per role, each a checkpoint id. This used to write BOTH an Ollama name and an
+    # `mlx_*` id per role plus an engine flag; the collapse means the explicit arguments and
+    # the live settings are the same thing, so writing both produced duplicate keys where the
+    # second silently won.
     existing["default_combo"] = {
-        "main_model": main_model,
-        "fast_model": fast_model,
-        "vision_model": vision_model,
-        "embeddings": embeddings_model,
-        # Wave 9 — persist the per-role engine flags + MLX model ids from the LIVE settings
-        # (which reflect the user's Locker swaps) so an adopted MLX config survives the restart
-        # .env purge. main.py SafeStart restores these. Old prefs files without them default to
-        # "ollama" via config, so this is backward-compatible.
-        "main_engine": settings.main_engine,
-        "fast_engine": settings.fast_engine,
-        "vision_engine": settings.vision_engine,
-        "image_engine": settings.image_engine,
-        "embed_engine": settings.embed_engine,
-        "mlx_main_model": settings.mlx_main_model,
-        "mlx_fast_model": settings.mlx_fast_model,
-        "mlx_vision_model": settings.mlx_vision_model,
-        "mlx_image_model": settings.mlx_image_model,
-        "mlx_embedding_model": settings.mlx_embedding_model,
+        "main_model": main_model or settings.main_model,
+        "fast_model": fast_model or settings.fast_model,
+        "vision_model": vision_model or settings.vision_model,
+        "image_model": settings.image_model,
+        "embedding_model": embeddings_model or settings.embedding_model,
+        # `embeddings` is the combo's historical key for the same value — kept so an older
+        # reader (and the migration's own ROLES table) still finds it.
+        "embeddings": embeddings_model or settings.embedding_model,
     }
 
     prefs_path.write_text(json.dumps(existing, indent=2))
-    logger.info(f"Saved default combo: {main_model} + {fast_model} "
-                f"(engines: main={settings.main_engine} fast={settings.fast_engine} vision={settings.vision_engine})")
+    logger.info(f"Saved default combo: main={existing['default_combo']['main_model']} "
+                f"fast={existing['default_combo']['fast_model']}")
     
     return {
         "status": "success",

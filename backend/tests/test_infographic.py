@@ -186,7 +186,6 @@ def test_l4_degrades_when_klein_unavailable(monkeypatch):
         return _fake_cap(None)
 
     monkeypatch.setattr(vc, "get_capability", _cap)
-    monkeypatch.setattr(settings, "image_engine", "ollama", raising=False)
 
     out = asyncio.run(build_l4("draw a serene mountain lake", title="Mountain Lake"))
     assert out is None
@@ -224,7 +223,6 @@ def test_l4_success_produces_textless_data_uri(monkeypatch):
         return "Golden Hour"
 
     monkeypatch.setattr(vc, "get_capability", _cap)
-    monkeypatch.setattr(settings, "image_engine", "ollama", raising=False)
     monkeypatch.setattr(vd, "write_klein_brief", _brief)
     monkeypatch.setattr(vd.klein_diffusion, "generate", _generate)
     monkeypatch.setattr(_bld, "_poster_title", _short)
@@ -260,7 +258,6 @@ def test_l4_returns_none_on_klein_failure(monkeypatch):
         return vd.DiffusionResult(success=False, error="klein boom")
 
     monkeypatch.setattr(vc, "get_capability", _cap)
-    monkeypatch.setattr(settings, "image_engine", "ollama", raising=False)
     monkeypatch.setattr(vd, "write_klein_brief", _brief)
     monkeypatch.setattr(vd.klein_diffusion, "generate", _generate)
 

@@ -640,8 +640,7 @@ class VisualGenerator:
     """Generates high-quality visuals using template-specific prompts."""
     
     def __init__(self):
-        self.base_url = settings.ollama_base_url
-        self.model = settings.ollama_model
+        self.model = settings.main_model
         self.max_retries = 3
         self.router = visual_router
         self.analyzer = visual_analyzer

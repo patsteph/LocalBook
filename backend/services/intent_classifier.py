@@ -244,7 +244,7 @@ async def classify_intent(
         result = await llm_runtime.generate(
             prompt=prompt,
             system=system,
-            model=settings.ollama_fast_model,
+            model=settings.fast_model,
             temperature=0.0,
             format="json",
             timeout=15.0,
@@ -493,7 +493,7 @@ async def classify_infographic_lane(
 
     try:
         stage_a = await _run_lane_stage(
-            content_summary, request_text, settings.ollama_fast_model, llm_runtime
+            content_summary, request_text, settings.fast_model, llm_runtime
         )
         raw_lane, conf, stage = stage_a["lane"], stage_a["confidence"], "A"
 
@@ -501,7 +501,7 @@ async def classify_infographic_lane(
         if raw_lane is None or conf < _INFOGRAPHIC_STAGE_B_THRESHOLD:
             try:
                 stage_b = await _run_lane_stage(
-                    content_summary, request_text, settings.ollama_model, llm_runtime
+                    content_summary, request_text, settings.main_model, llm_runtime
                 )
                 if stage_b["lane"] is not None:
                     raw_lane, conf, stage = stage_b["lane"], stage_b["confidence"], "B"

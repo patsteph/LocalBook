@@ -200,7 +200,7 @@ Respond with just the ticker or PRIVATE, nothing else."""
         try:
             response = await llm_runtime.generate(
                 prompt=prompt,
-                model=settings.ollama_fast_model,
+                model=settings.fast_model,
                 temperature=0.1
             )
             
@@ -269,7 +269,7 @@ Only include direct competitors in the same industry."""
         try:
             response = await llm_runtime.generate(
                 prompt=prompt,
-                model=settings.ollama_fast_model,
+                model=settings.fast_model,
                 temperature=0.3
             )
             
@@ -372,7 +372,7 @@ Be accurate - only include URLs you're confident about."""
         try:
             response = await llm_runtime.generate(
                 prompt=prompt,
-                model=settings.ollama_fast_model,
+                model=settings.fast_model,
                 temperature=0.3
             )
             
@@ -430,7 +430,7 @@ Respond with just the company name or NONE, nothing else."""
         try:
             response = await llm_runtime.generate(
                 prompt=prompt,
-                model=settings.ollama_fast_model,
+                model=settings.fast_model,
                 temperature=0.1
             )
             

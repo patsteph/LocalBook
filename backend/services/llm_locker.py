@@ -117,8 +117,8 @@ class LLMLocker:
         sys_ram = hw.memory_gb
         
         # Calculate memory delta
-        current_main = settings.ollama_model
-        current_fast = getattr(settings, 'ollama_fast_model', "")
+        current_main = settings.main_model
+        current_fast = getattr(settings, 'fast_model', "")
         current_vision = getattr(settings, 'vision_model', "")
         
         # We need a rough estimate of currently loaded required RAM
@@ -126,9 +126,9 @@ class LLMLocker:
         target_ram = model_info.min_ram_gb if model_info else int(_live["ram_required_gb"])
         
         if role == "main_model":
-            changes_key = "ollama_model"
+            changes_key = "main_model"
         elif role == "fast_model":
-            changes_key = "ollama_fast_model"
+            changes_key = "fast_model"
         elif role == "embedding_model":
             changes_key = "embedding_model"
         elif role == "vision_model":
@@ -156,7 +156,7 @@ class LLMLocker:
                        f"Vision tasks will now be handled by the main model (no standalone vision model needed).")
             else:
                 current_vision = settings.vision_model
-                current_main = settings.ollama_model
+                current_main = settings.main_model
                 if current_vision == current_main:
                     default_vision = _get_default_vision_model()
                     changes["vision_model"] = default_vision
@@ -171,7 +171,7 @@ class LLMLocker:
                        f"Vision tasks will now be handled by the fast model.")
             else:
                 current_vision = settings.vision_model
-                current_fast = settings.ollama_fast_model
+                current_fast = settings.fast_model
                 if current_vision == current_fast:
                     default_vision = _get_default_vision_model()
                     changes["vision_model"] = default_vision
@@ -296,8 +296,8 @@ class LLMLocker:
     def _is_mlx_target(name: str) -> bool:
         """True if `name` refers to an MLX model (a configured mlx_* id or a known MLX org repo)."""
         from config import settings as s
-        if name in {getattr(s, "mlx_main_model", None), getattr(s, "mlx_fast_model", None),
-                    getattr(s, "mlx_vision_model", None), getattr(s, "mlx_embedding_model", None)}:
+        if name in {getattr(s, "main_model", None), getattr(s, "fast_model", None),
+                    getattr(s, "vision_model", None), getattr(s, "embedding_model", None)}:
             return True
         return "/" in name and any(name.startswith(o) for o in (
             "mlx-community/", "Runpod/", "lmstudio-community/", "unsloth/",
@@ -351,10 +351,10 @@ class LLMLocker:
     def _execute_mlx_swap(cls, mlx_model: str, role: str) -> str:
         """Flip a role to the MLX engine + set its mlx model id. Persisted + in-memory."""
         role_map = {
-            "main_model": ("main_engine", "mlx_main_model"),
-            "fast_model": ("fast_engine", "mlx_fast_model"),
-            "vision_model": ("vision_engine", "mlx_vision_model"),
-            "embedding_model": ("embed_engine", "mlx_embedding_model"),
+            "main_model": ("main_engine", "main_model"),
+            "fast_model": ("fast_engine", "fast_model"),
+            "vision_model": ("vision_engine", "vision_model"),
+            "embedding_model": ("embed_engine", "embedding_model"),
         }
         if role not in role_map:
             raise ModelSwapError(f"MLX engine swap is not supported for role '{role}'")
@@ -377,7 +377,7 @@ class LLMLocker:
                 caps = probe_capabilities(mlx_model, provider="mlx")
                 if caps and caps.vision:
                     changes["vision_engine"] = "mlx"
-                    changes["mlx_vision_model"] = mlx_model
+                    changes["vision_model"] = mlx_model
                     extra = " (vision follows — Option A)"
             except Exception:
                 pass
@@ -413,11 +413,11 @@ class LLMLocker:
 
                 if getattr(_s, "image_engine", "ollama") != "mlx":
                     cls._patch_environment({"image_engine": "mlx"})
-                    if _prefetch(getattr(_s, "mlx_image_model", "")):
+                    if _prefetch(getattr(_s, "image_model", "")):
                         extra += " · image→MLX (klein downloading)"
                 if getattr(_s, "embed_engine", "ollama") != "mlx":
                     cls._patch_environment({"embed_engine": "mlx"})
-                    if _prefetch(getattr(_s, "mlx_embedding_model", "")):
+                    if _prefetch(getattr(_s, "embedding_model", "")):
                         extra += " · embed→MLX (arctic downloading)"
         except Exception as _e:
             logger.debug(f"[llm_locker] all-MLX prefetch hook skipped: {_e}")
@@ -444,21 +444,18 @@ class LLMLocker:
                 
         # Apply the changes
         for k, v in changes.items():
+            # BARE field names: pydantic reads .env by field name, and a LOCALBOOK_-prefixed
+            # key is ignored for these. (Before the collapse the role keys mapped to
+            # LOCALBOOK_OLLAMA_* while the mlx_* keys were bare — folding the two together
+            # left duplicate entries where the later one silently won.)
             key_map = {
-                "ollama_main_model": "LOCALBOOK_OLLAMA_MODEL",
-                "ollama_model": "LOCALBOOK_OLLAMA_MODEL",
-                "ollama_fast_model": "LOCALBOOK_OLLAMA_FAST_MODEL",
-                "vision_model": "LOCALBOOK_VISION_MODEL",
-                "embedding_model": "LOCALBOOK_EMBEDDING_MODEL",
+                "main_model": "main_model",
+                "fast_model": "fast_model",
+                "vision_model": "vision_model",
+                "image_model": "image_model",
+                "embedding_model": "embedding_model",
                 "embedding_dim": "LOCALBOOK_EMBEDDING_DIM",
                 "MAX_RAG_CONTEXT": "LOCALBOOK_MAX_RAG_CONTEXT",
-                # Wave 9.4 — engine flags + mlx model ids use BARE field names (pydantic
-                # reads these from .env by field name; LOCALBOOK_-prefixed keys are ignored).
-                "main_engine": "main_engine", "fast_engine": "fast_engine",
-                "vision_engine": "vision_engine", "image_engine": "image_engine",
-                "embed_engine": "embed_engine",
-                "mlx_main_model": "mlx_main_model", "mlx_fast_model": "mlx_fast_model",
-                "mlx_vision_model": "mlx_vision_model", "mlx_embedding_model": "mlx_embedding_model",
             }
             env_key = key_map.get(k, k.upper())
             
@@ -470,10 +467,10 @@ class LLMLocker:
                 env_dict[env_key] = str(v)
                 
         # Sync back to memory 
-        if "ollama_model" in changes:
-            settings.ollama_model = changes["ollama_model"]
-        if "ollama_fast_model" in changes:
-            setattr(settings, 'ollama_fast_model', changes["ollama_fast_model"])
+        if "main_model" in changes:
+            settings.main_model = changes["main_model"]
+        if "fast_model" in changes:
+            setattr(settings, 'fast_model', changes["fast_model"])
         if "vision_model" in changes:
             setattr(settings, 'vision_model', changes["vision_model"])
         if "embedding_model" in changes:
@@ -482,7 +479,7 @@ class LLMLocker:
             setattr(settings, 'embedding_dim', int(changes["embedding_dim"]))
         # Wave 9.4 — sync engine flags + mlx model ids to the live settings (session-immediate).
         for _attr in ("main_engine", "fast_engine", "vision_engine", "image_engine", "embed_engine",
-                      "mlx_main_model", "mlx_fast_model", "mlx_vision_model", "mlx_embedding_model"):
+                      "main_model", "fast_model", "vision_model", "embedding_model"):
             if _attr in changes:
                 setattr(settings, _attr, changes[_attr])
             

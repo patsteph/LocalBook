@@ -60,7 +60,7 @@ Return ONLY valid JSON, no explanation."""
             response = await llm_runtime.generate(
                 prompt=prompt,
                 system="You extract research themes from notes and suggest collector search keywords. Return only valid JSON.",
-                model=settings.ollama_fast_model,
+                model=settings.fast_model,
                 temperature=0.3,
                 timeout=30.0,
                 num_predict=500,
@@ -313,7 +313,7 @@ Respond with ONLY a JSON array of strings, no other text:
                 llm_runtime.generate(
                     prompt=prompt,
                     system="You are a creative research librarian specializing in cross-disciplinary discovery. Respond only with a valid JSON array of search query strings.",
-                    model=settings.ollama_model,
+                    model=settings.main_model,
                     temperature=0.9  # Higher creativity for exploration
                 ),
                 timeout=45
@@ -496,7 +496,7 @@ Respond with ONLY a JSON array of strings, no other text:
                 llm_runtime.generate(
                     prompt=prompt,
                     system="You are a research librarian. Respond only with a valid JSON array of search query strings.",
-                    model=settings.ollama_model,  # Main model — this is the strategic brain
+                    model=settings.main_model,  # Main model — this is the strategic brain
                     temperature=0.7  # Some creativity in query generation
                 ),
                 timeout=45  # 45s max for main model query generation — fall back to defaults if slow

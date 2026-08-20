@@ -179,291 +179,108 @@ async def get_ollama_models():
         if _ollama_models_cache["ts"] and (now - _ollama_models_cache["ts"]) < CACHE_TTL:
             return _ollama_models_cache["data"]
 
-    base_url = app_settings.ollama_base_url
+    # Every card comes from the MLX block below. The Ollama half — a /api/tags list, a
+    # /api/show per model, then classification by disk size — is gone with the models it
+    # described; nothing could load them.
+    enriched: list = []
 
-    async def _fetch_tags(client: httpx.AsyncClient) -> list:
-        """Ollama's model list — BEST EFFORT, never fatal.
-
-        This used to raise 503 when Ollama was unreachable, which killed the whole endpoint
-        BEFORE it reached its own MLX enumeration block further down. So on an MLX-only
-        machine the Locker rendered empty — including its MLX cards — and a user could not
-        see, let alone change, the models the app was actually running. One of the four
-        blocker-class gaps for the cutover.
-        """
-        try:
-            r = await client.get(f"{base_url}/api/tags", timeout=5.0)
-            r.raise_for_status()
-            return r.json().get("models", [])
-        except Exception as e:
-            logger.info(f"[settings] Ollama not reachable ({type(e).__name__}); "
-                        f"returning MLX models only")
-            return []
-
-    async def _fetch_show(client: httpx.AsyncClient, name: str) -> dict:
-        try:
-            r = await client.post(
-                f"{base_url}/api/show",
-                json={"name": name},
-                timeout=8.0,
-            )
-            if r.status_code == 200:
-                return r.json()
-        except Exception as _e:
-            logger.warning(f"[settings] {type(_e).__name__}: {_e}")
-        return {}
-
-    def _is_vision_model(name: str, show: dict) -> bool:
-        """Detect if a model has vision capabilities from Ollama metadata."""
-        lower = name.lower()
-        if "vision" in lower or "llava" in lower:
-            return True
-        mi = show.get("model_info", {})
-        return (
-            any("projector" in k for k in mi)
-            or mi.get("clip.has_vision_encoder", False)
-        )
-
-    def _classify_model(name: str, show: dict, size_bytes: int, reg) -> str:
-        """
-        Classify an installed model into main / fast / vision / embeddings.
-
-        Waterfall (checked in order):
-        1. Embedding keyword or architecture       → "embeddings"
-        2. Registry: ONLY vision_model (no main/fast) → "vision"
-        3. Registry: has main_model or fast_model   → use that role
-        4. No registry + has vision + disk < 4 GB   → "vision"
-        5. Disk size >= 4 GB                        → "main"
-        6. Disk size < 4 GB                         → "fast"
-        """
-        lower = name.lower()
-
-        # Step 1: Embeddings
-        embed_keywords = ("embed", "nomic", "mxbai", "bge", "minilm", "gte-")
-        if any(k in lower for k in embed_keywords):
-            return "embeddings"
-        mi = show.get("model_info", {})
-        if mi.get("general.architecture") == "bert":
-            return "embeddings"
-
-        # Step 2 & 3: Registry-based classification
-        if reg:
-            roles = reg.supported_roles or []
-            has_main = "main_model" in roles
-            has_fast = "fast_model" in roles
-            has_vision_only = "vision_model" in roles and not has_main and not has_fast
-            if has_vision_only:
-                return "vision"
-            # If model has both main + fast roles, use whichever is listed first
-            # (registry convention: primary role is listed first)
-            if has_main and has_fast:
-                return "main" if roles.index("main_model") < roles.index("fast_model") else "fast"
-            if has_main:
-                return "main"
-            if has_fast:
-                return "fast"
-
-        # Step 4: Non-registry vision model (small) — surface in the Vision column
-        # (frontend Role type is main|fast|vision|embeddings; "specialty" silently
-        # filters out of every column)
-        size_gb = size_bytes / (1024 ** 3)
-        if not reg and _is_vision_model(name, show) and size_gb < 4.0:
-            return "vision"
-
-        # Step 5 & 6: Disk-size threshold
-        if size_gb >= 4.0:
-            return "main"
-        return "fast"
-
-    def _estimate_ram(size_bytes: int, reg) -> float:
-        """Estimate required RAM in GB.
-        
-        Registry models use hand-verified min_ram_gb.
-        Unknown models: disk_size * 1.3 (weights + KV cache + overhead).
-        """
-        if reg and reg.min_ram_gb > 0:
-            return float(reg.min_ram_gb)
-        return round(size_bytes / (1024 ** 3) * 1.3, 1)
-
-    def _parse_context(show: dict) -> int:
-        """Extract context window from model metadata."""
-        params = show.get("model_info", {})
-        for key in ("llama.context_length", "context_length"):
-            val = params.get(key)
-            if val and isinstance(val, int):
-                return val
-        # Fallback: check modelfile for num_ctx
-        modelfile = show.get("modelfile", "")
-        for line in modelfile.splitlines():
-            if line.strip().upper().startswith("PARAMETER NUM_CTX"):
-                parts = line.split()
-                if len(parts) >= 3:
-                    try:
-                        return int(parts[2])
-                    except ValueError as _e:
-                        logger.debug(f"[settings] {type(_e).__name__}: {_e}")
-        return 4096
-
-    from evaluator.model_registry import model_registry  # hoisted — one import for all enrichments
-
-    # Pre-load evaluator scores so we can attach best score per model
-    _eval_scores: dict[str, float] = {}  # model_name → best overall_score
+    # MLX models — the only ones listed. Caps via a config.json probe (no model load);
+    # RAM-fit via model_sizing; presence via a real weight check. Never fatal.
     try:
-        from evaluator.evaluator_service import get_results_list
-        for run in get_results_list():
-            for key in ("main_model", "fast_model"):
-                mname = run.get(key, "")
-                score = run.get("overall_score", 0)
-                if mname and score > _eval_scores.get(mname, 0):
-                    _eval_scores[mname] = score
+        from services.mlx_engine import MLXEngine as _MLXEngine
+        _mlx_ok = _MLXEngine.available()
     except Exception:
-        pass  # evaluator may not have any runs yet
-
-    def _extract_quant(name: str, show: dict) -> str:
-        """Extract quantization level from model name tag or modelfile FROM line."""
-        import re as _re
-        # Common quant patterns: Q4_K_M, Q5_0, Q8_0, F16, FP16, BF16, etc.
-        _quant_re = _re.compile(r'(Q\d+_K(?:_[A-Z])?|Q\d+_[0-9]|(?:B?F|FP)16|F32)', _re.IGNORECASE)
-
-        # 1. Check model name/tag (e.g., "model:7b-q4_K_M")
-        qmatch = _quant_re.search(name)
-        if qmatch:
-            return qmatch.group(1).upper()
-
-        # 2. Check modelfile FROM line which contains the GGUF blob/filename
-        modelfile = show.get("modelfile", "")
-        for line in modelfile.splitlines():
-            stripped = line.strip()
-            if stripped.upper().startswith("FROM"):
-                qmatch = _quant_re.search(stripped)
-                if qmatch:
-                    return qmatch.group(1).upper()
-
-        return ""
-
-    def _extract_param_count(name: str, show: dict) -> str:
-        """Extract parameter count string from Ollama metadata or name."""
-        mi = show.get("model_info", {})
-        meta_params = mi.get("general.parameter_count")
-        if meta_params and isinstance(meta_params, (int, float)):
-            if meta_params >= 1_000_000_000:
-                return f"{meta_params / 1_000_000_000:.1f}B".replace(".0B", "B")
-            elif meta_params >= 1_000_000:
-                return f"{meta_params / 1_000_000:.0f}M"
-        # Fallback: extract from name (e.g., "7b", "3.8b")
-        import re as _re
-        m = _re.search(r'(\d+(?:\.\d+)?)\s*[bB]', name)
-        return f"{m.group(1)}B" if m else ""
-
-    # Ollama tags are no longer listed. Nothing can load them, so a card for one is an offer
-    # the app cannot honour — and on a machine where the user has deleted their Ollama models
-    # (the normal state now) the list was mostly stale entries. The enrichment machinery below
-    # is retained but fed an empty list; it goes with the /api/show probe in Phase 4.
-    raw_models: list = []
-    async with httpx.AsyncClient() as client:
-        semaphore = asyncio.Semaphore(4)
-
-        # Every card is built by the MLX block below. The Ollama enrichment that used to
-        # populate this (a /api/tags list, then a /api/show per model, then classification by
-        # size) is gone with the models it described.
-        enriched: list = []
-
-        # MLX models — the only ones listed. Caps via a config.json probe (no model load);
-        # RAM-fit via model_sizing; presence via a real weight check. Never fatal.
+        _mlx_ok = False
+    if _mlx_ok:
         try:
-            from services.mlx_engine import MLXEngine as _MLXEngine
-            _mlx_ok = _MLXEngine.available()
-        except Exception:
-            _mlx_ok = False
-        if _mlx_ok:
-            try:
-                from evaluator.capability_probe import probe_capabilities as _mprobe
-                from services.model_presence import is_present as _is_present
-                # `services.hardware_profiler` NEVER EXISTED — this import raised on every
-                # call, so the whole fit block below was dead and no MLX card was ever
-                # size-checked. `services.model_sizing` reads exact weight bytes + real KV
-                # geometry and derives the budget from the GPU's addressable working set.
-                from services import model_sizing as _sizing
-                _seen = {e.get("name") for e in enriched}
-                _mlx_ids = dict.fromkeys(
-                    getattr(app_settings, k, None)
-                    for k in ("mlx_main_model", "mlx_fast_model", "mlx_vision_model",
-                              "mlx_embedding_model"))
-                for _mid in [x for x in _mlx_ids if x and x not in _seen]:
-                    _c = _mprobe(_mid, provider="mlx")
-                    if not _c:
-                        continue
-                    # Constrain each MLX card to the role SLOT it fills in config, not every
-                    # role its capabilities allow — so the MLX gemma shows only under Main
-                    # (+ Vision) and MLX phi only under Fast, mirroring their Ollama
-                    # counterparts instead of flooding both columns (user #2).
-                    _role_slots = []
-                    if _mid == getattr(app_settings, "mlx_main_model", None):
-                        _role_slots.append("main_model")
-                    if _mid == getattr(app_settings, "mlx_fast_model", None):
-                        _role_slots.append("fast_model")
-                    if _mid == getattr(app_settings, "mlx_vision_model", None):
-                        _role_slots.append("vision_model")
-                    if _mid == getattr(app_settings, "mlx_embedding_model", None):
-                        _role_slots.append("embedding_model")
-                    _roles = list(dict.fromkeys(_role_slots)) or _c.roles()
-                    _sr = ("fast" if _role_slots == ["fast_model"]
-                           else "vision" if _role_slots == ["vision_model"]
-                           else "embeddings" if _role_slots == ["embedding_model"]
-                           else "main")
-                    # `try_to_load_from_cache(_mid, "config.json")` was the old test — it is
-                    # true for a download that fetched the config and then died, which is
-                    # exactly the state that must NOT read as installed. `is_present` requires
-                    # real weight bytes.
-                    _installed = _is_present(_mid)
-                    # Real disk size if downloaded; otherwise an estimate so the card is
-                    # never a blank "0 GB" (user #1 — MLX cards must carry the same data).
-                    _size_gb = _mlx_cache_size_gb(_mid, _installed) or \
-                        _mlx_estimate_size_gb(_c.param_count_b, _c.quantization)
-                    _card = {
-                        "name": _mid, "display_name": friendly_model_name(_mid),
-                        "family": _c.family, "size_gb": _size_gb,
-                        "ram_required_gb": round(_size_gb * 1.3, 1) if _size_gb else 0,
-                        "context_window": _c.native_ctx, "suggested_role": _sr,
-                        "supported_roles": _roles,
-                        "capabilities": {"vision": _c.vision, "embedding": _c.embedding,
-                                         "thinking": _c.thinking, "tools": False, "audio": False},
-                        "supports_vision": _c.vision, "also_vision": _c.vision,
-                        "supports_json_mode": True, "vendor": "MLX Community",
-                        "origin_country": "", "parameter_count": _c.param_size or f"{_c.param_count_b}B",
-                        "quantization": _c.quantization, "provider": "mlx",
-                        "installed": _installed,
-                        "in_registry": False, "eval_score": 0, "modified_at": "",
-                    }
-                    try:
-                        # Size against the DEPLOYED window, not the native one: gemma's native
-                        # 131k costs 1.78 GiB of KV where its deployed 16k costs 0.25 GiB, and
-                        # judging a card by a context it will never run at is how a usable model
-                        # gets marked "over".
-                        _ctx = min(int(_c.native_ctx or 8192), 16384)
-                        _f = _sizing.fit(_mid, _ctx)
-                        if _f.get("fits") is not None:
-                            _card["ram_fit"] = {"fits": _f["fits"],
-                                                "recommendation": _f["recommendation"]}
-                        if _f.get("total_needed_gb"):
-                            _card["ram_required_gb"] = round(float(_f["total_needed_gb"]), 1)
-                    except Exception as _fit_e:
-                        logger.debug(f"[settings] fit calc failed for {_mid}: {_fit_e}")
-                    # LLM Studio lists ONLY models verified present in the local cache. A
-                    # card for something not downloaded is an offer the app cannot honour;
-                    # acquiring new models belongs to the download manager, not this list.
-                    if _installed:
-                        enriched.append(_card)
-            except Exception as _mlx_e:
-                logger.debug(f"[settings] MLX model enumeration failed: {_mlx_e}")
+            from evaluator.capability_probe import probe_capabilities as _mprobe
+            from services.model_presence import is_present as _is_present
+            # `services.hardware_profiler` NEVER EXISTED — this import raised on every
+            # call, so the whole fit block below was dead and no MLX card was ever
+            # size-checked. `services.model_sizing` reads exact weight bytes + real KV
+            # geometry and derives the budget from the GPU's addressable working set.
+            from services import model_sizing as _sizing
+            _seen = {e.get("name") for e in enriched}
+            _mlx_ids = dict.fromkeys(
+                getattr(app_settings, k, None)
+                for k in ("main_model", "fast_model", "vision_model",
+                          "embedding_model"))
+            for _mid in [x for x in _mlx_ids if x and x not in _seen]:
+                _c = _mprobe(_mid, provider="mlx")
+                if not _c:
+                    continue
+                # Constrain each MLX card to the role SLOT it fills in config, not every
+                # role its capabilities allow — so the MLX gemma shows only under Main
+                # (+ Vision) and MLX phi only under Fast, mirroring their Ollama
+                # counterparts instead of flooding both columns (user #2).
+                _role_slots = []
+                if _mid == getattr(app_settings, "main_model", None):
+                    _role_slots.append("main_model")
+                if _mid == getattr(app_settings, "fast_model", None):
+                    _role_slots.append("fast_model")
+                if _mid == getattr(app_settings, "vision_model", None):
+                    _role_slots.append("vision_model")
+                if _mid == getattr(app_settings, "embedding_model", None):
+                    _role_slots.append("embedding_model")
+                _roles = list(dict.fromkeys(_role_slots)) or _c.roles()
+                _sr = ("fast" if _role_slots == ["fast_model"]
+                       else "vision" if _role_slots == ["vision_model"]
+                       else "embeddings" if _role_slots == ["embedding_model"]
+                       else "main")
+                # `try_to_load_from_cache(_mid, "config.json")` was the old test — it is
+                # true for a download that fetched the config and then died, which is
+                # exactly the state that must NOT read as installed. `is_present` requires
+                # real weight bytes.
+                _installed = _is_present(_mid)
+                # Real disk size if downloaded; otherwise an estimate so the card is
+                # never a blank "0 GB" (user #1 — MLX cards must carry the same data).
+                _size_gb = _mlx_cache_size_gb(_mid, _installed) or \
+                    _mlx_estimate_size_gb(_c.param_count_b, _c.quantization)
+                _card = {
+                    "name": _mid, "display_name": friendly_model_name(_mid),
+                    "family": _c.family, "size_gb": _size_gb,
+                    "ram_required_gb": round(_size_gb * 1.3, 1) if _size_gb else 0,
+                    "context_window": _c.native_ctx, "suggested_role": _sr,
+                    "supported_roles": _roles,
+                    "capabilities": {"vision": _c.vision, "embedding": _c.embedding,
+                                     "thinking": _c.thinking, "tools": False, "audio": False},
+                    "supports_vision": _c.vision, "also_vision": _c.vision,
+                    "supports_json_mode": True, "vendor": "MLX Community",
+                    "origin_country": "", "parameter_count": _c.param_size or f"{_c.param_count_b}B",
+                    "quantization": _c.quantization, "provider": "mlx",
+                    "installed": _installed,
+                    "in_registry": False, "eval_score": 0, "modified_at": "",
+                }
+                try:
+                    # Size against the DEPLOYED window, not the native one: gemma's native
+                    # 131k costs 1.78 GiB of KV where its deployed 16k costs 0.25 GiB, and
+                    # judging a card by a context it will never run at is how a usable model
+                    # gets marked "over".
+                    _ctx = min(int(_c.native_ctx or 8192), 16384)
+                    _f = _sizing.fit(_mid, _ctx)
+                    if _f.get("fits") is not None:
+                        _card["ram_fit"] = {"fits": _f["fits"],
+                                            "recommendation": _f["recommendation"]}
+                    if _f.get("total_needed_gb"):
+                        _card["ram_required_gb"] = round(float(_f["total_needed_gb"]), 1)
+                except Exception as _fit_e:
+                    logger.debug(f"[settings] fit calc failed for {_mid}: {_fit_e}")
+                # LLM Studio lists ONLY models verified present in the local cache. A
+                # card for something not downloaded is an offer the app cannot honour;
+                # acquiring new models belongs to the download manager, not this list.
+                if _installed:
+                    enriched.append(_card)
+        except Exception as _mlx_e:
+            logger.debug(f"[settings] MLX model enumeration failed: {_mlx_e}")
 
     # Attach active-role flags from current settings (engine-aware: mlx role → mlx model)
     def _active_for(engine_attr, mlx_attr, ollama_val):
         return getattr(app_settings, mlx_attr) if getattr(app_settings, engine_attr, "ollama") == "mlx" else ollama_val
     active = {
-        "main": _active_for("main_engine", "mlx_main_model", app_settings.ollama_model),
-        "fast": _active_for("fast_engine", "mlx_fast_model", app_settings.ollama_fast_model),
-        "embeddings": _active_for("embed_engine", "mlx_embedding_model", app_settings.embedding_model),
-        "vision": _active_for("vision_engine", "mlx_vision_model", app_settings.vision_model),
+        "main": _active_for("main_engine", "main_model", app_settings.main_model),
+        "fast": _active_for("fast_engine", "fast_model", app_settings.fast_model),
+        "embeddings": _active_for("embed_engine", "embedding_model", app_settings.embedding_model),
+        "vision": _active_for("vision_engine", "vision_model", app_settings.vision_model),
     }
 
     def _names_match(config_name: str, ollama_name: str) -> bool:
@@ -495,8 +312,8 @@ async def get_ollama_models():
 async def get_llm_info():
     """Get current LLM model information"""
     return {
-        "model_name": settings.ollama_model,
-        "fast_model_name": settings.ollama_fast_model,
+        "model_name": settings.main_model,
+        "fast_model_name": settings.fast_model,
         "provider": settings.llm_provider
     }
 

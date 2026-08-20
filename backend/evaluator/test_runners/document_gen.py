@@ -22,7 +22,7 @@ async def run(notebook_id: str, config: dict, combo_name: str, hw_fingerprint: s
         hardware_fingerprint=hw_fingerprint,
         timestamp=datetime.utcnow().isoformat(),
     )
-    result.stamp_provider(settings.ollama_model)
+    result.stamp_provider(settings.main_model)
 
     try:
         start = time.time()
@@ -65,7 +65,7 @@ Source material:
         content = await rag_engine._call_ollama(
             system_prompt,
             user_prompt,
-            model=settings.ollama_model,
+            model=settings.main_model,
             num_predict=2000,
             temperature=0.6,
             voice_modifier=False,

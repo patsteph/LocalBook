@@ -173,7 +173,7 @@ class VideoGenerator:
             from services.memory_steward import free_for_pipeline
             from config import settings as _s
             keep = {
-                _s.ollama_model,         # narration script writer
+                _s.main_model,         # narration script writer
                 _s.embedding_model,      # RAG context still needs this
             }
             keep = {m for m in keep if m}

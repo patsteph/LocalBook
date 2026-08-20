@@ -404,7 +404,7 @@ Respond with JSON only:
             response = await llm_runtime.generate(
                 prompt=extract_prompt,
                 system="Extract company information from search results. Respond only with JSON.",
-                model=settings.ollama_fast_model,
+                model=settings.fast_model,
                 temperature=0.1,
                 timeout=15.0
             )
@@ -526,7 +526,7 @@ Respond ONLY with the JSON array."""
             response = await llm_runtime.generate(
                 prompt=categorize_prompt,
                 system="You are a research source curator. Respond only with a JSON array.",
-                model=settings.ollama_fast_model,
+                model=settings.fast_model,
                 temperature=0.2,
                 timeout=20.0
             )
@@ -702,7 +702,7 @@ Examples:
             response = await llm_runtime.generate(
                 prompt=prompt,
                 system="You are an intent analysis system. Respond only with valid JSON.",
-                model=settings.ollama_fast_model,
+                model=settings.fast_model,
                 temperature=0.3,
                 timeout=30.0
             )
@@ -1098,7 +1098,7 @@ Respond with JSON array only (max 3 podcasts):
                 response = await llm_runtime.generate(
                     prompt=extract_prompt,
                     system="Extract podcast appearances. Respond only with JSON array.",
-                    model=settings.ollama_fast_model,
+                    model=settings.fast_model,
                     temperature=0.1,
                     timeout=15.0
                 )
@@ -1148,7 +1148,7 @@ Only include feeds you're confident exist. Better to suggest fewer high-quality 
             response = await llm_runtime.generate(
                 prompt=prompt,
                 system="You are a research assistant. Respond only with valid JSON array.",
-                model=settings.ollama_fast_model,
+                model=settings.fast_model,
                 temperature=0.3
             )
             
@@ -1307,7 +1307,7 @@ Respond with JSON array only (max 3 channels):
                     response = await llm_runtime.generate(
                         prompt=extract_prompt,
                         system="Extract YouTube channel information. Respond only with JSON array.",
-                        model=settings.ollama_fast_model,
+                        model=settings.fast_model,
                         temperature=0.1,
                         timeout=15.0
                     )
@@ -1558,7 +1558,7 @@ Respond with JSON array only (max 3 podcasts):
                 response = await llm_runtime.generate(
                     prompt=extract_prompt,
                     system="Extract podcast information from search results. Respond only with JSON array.",
-                    model=settings.ollama_fast_model,
+                    model=settings.fast_model,
                     temperature=0.1,
                     timeout=15.0
                 )
@@ -1634,7 +1634,7 @@ Respond with JSON array only (max 2 newsletters):
                     response = await llm_runtime.generate(
                         prompt=extract_prompt,
                         system="Extract newsletter information. Respond only with JSON array.",
-                        model=settings.ollama_fast_model,
+                        model=settings.fast_model,
                         temperature=0.1,
                         timeout=15.0
                     )
@@ -1730,7 +1730,7 @@ If not public or unknown, respond with NULL."""
         try:
             response = await llm_runtime.generate(
                 prompt=prompt,
-                model=settings.ollama_fast_model,
+                model=settings.fast_model,
                 temperature=0.1
             )
             

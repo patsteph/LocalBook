@@ -32,32 +32,34 @@ logger = logging.getLogger(__name__)
 
 
 # ─── Role → engine resolver (grows per wave) ─────────────────────────────────────
-def mlx_model_for_role(ollama_model: str) -> Optional[str]:
-    """If the role that `ollama_model` fills is configured `engine == "mlx"`, return the
-    MLX model id to use in its place; else None (→ stay on Ollama). The single decision
-    point the llm_service seam consults. Fast (9.1) + main (9.2); vision is resolved in
-    the vision_describe path (9.3)."""
-    try:
-        from config import settings
-    except Exception:
-        return None
-    if ollama_model == settings.ollama_fast_model and getattr(settings, "fast_engine", "ollama") == "mlx":
-        return settings.mlx_fast_model
-    if ollama_model == settings.ollama_model and getattr(settings, "main_engine", "ollama") == "mlx":
-        return settings.mlx_main_model
-    return None
+def mlx_model_for_role(model: str) -> Optional[str]:
+    """Identity, retained as a seam.
+
+    This used to map an Ollama role key to its MLX twin, gated on that role's `*_engine`
+    flag — `settings.ollama_model` held "gemma4:e4b" and `settings.mlx_main_model` held the
+    checkpoint id. The v2.3.0 collapse put the checkpoint id in the role attribute itself, so
+    the mapping has nothing left to do.
+
+    Kept (rather than deleted across ~15 call sites) because it is the ONE place that would
+    reacquire meaning if a role ever needs to resolve to something other than its configured
+    id — a per-task override, a quantisation swap, an A/B. Returning None still means
+    "nothing can serve this", which every caller already handles.
+    """
+    return model or None
 
 
 def mlx_vision_model_if_enabled() -> Optional[str]:
-    """Return the MLX vision model id iff `vision_engine == "mlx"`, else None. Vision has its
-    own engine flag (Option A: it rides the gemma main model, but the toggle is independent)."""
+    """The configured vision checkpoint, or None if none is set.
+
+    The `if_enabled` in the name is historical: vision had its own engine flag, so this could
+    return None for a configured model. It now only returns None when no vision model is
+    configured at all.
+    """
     try:
         from config import settings
     except Exception:
         return None
-    if getattr(settings, "vision_engine", "ollama") == "mlx":
-        return settings.mlx_vision_model
-    return None
+    return getattr(settings, "vision_model", None) or None
 
 
 def _combine(system: Optional[str], prompt: str) -> str:

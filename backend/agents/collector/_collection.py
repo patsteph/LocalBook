@@ -311,7 +311,7 @@ Respond ONLY with a JSON array: ["query1", "query2", ...]"""
                 llm_runtime.generate(
                     prompt=prompt,
                     system="You are a research assistant. Respond only with a JSON array.",
-                    model=settings.ollama_fast_model,
+                    model=settings.fast_model,
                     temperature=0.6,
                 ),
                 timeout=20,

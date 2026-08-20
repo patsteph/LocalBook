@@ -1024,7 +1024,7 @@ async def _stream_collector(chat_query: ChatQuery, injected_action: Optional[Dic
                 try:
                     resp = await llm_runtime.generate(
                         prompt=synth_prompt,
-                        model=getattr(settings, "ollama_fast_model", None) or settings.ollama_model,
+                        model=getattr(settings, "fast_model", None) or settings.main_model,
                         temperature=0.3,
                         num_predict=600,
                         timeout=45.0,

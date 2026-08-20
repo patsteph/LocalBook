@@ -111,7 +111,7 @@ def _vision_model() -> str:
     """
     try:
         from evaluator.model_registry import model_registry
-        return model_registry.resolve_vision_model(settings.ollama_model, settings.vision_model)
+        return model_registry.resolve_vision_model(settings.main_model, settings.vision_model)
     except Exception:
         return os.getenv("LOCALBOOK_VISION_MODEL") or settings.vision_model
 
@@ -122,7 +122,7 @@ def _cleanup_model() -> str:
     When the user swaps their fast model in the LLM Locker, cleanup
     follows automatically. Was previously hardcoded to phi4-mini.
     """
-    return settings.ollama_fast_model
+    return settings.fast_model
 
 
 def _photo_enrich_model() -> str:
@@ -131,7 +131,7 @@ def _photo_enrich_model() -> str:
     Photo enrichment benefits from the larger reasoning model since
     it produces structured prose, not just typo cleanup.
     """
-    return settings.ollama_model
+    return settings.main_model
 
 # Page separator used when merging multi-page scans into one note.
 # Kept as a literal markdown horizontal rule so it renders cleanly in BlockNote
@@ -188,7 +188,7 @@ async def _refine_visual(raw: str, mode: str) -> str:
     try:
         result = await llm_runtime.generate(
             prompt=_REFINE_PROMPTS[mode].format(raw=raw),
-            model=settings.ollama_model,
+            model=settings.main_model,
             system=_REFINE_SYSTEMS[mode],
             temperature=0.1,
             num_predict=2000,
@@ -231,7 +231,7 @@ async def _translate_to(text: str, target_language: Optional[str]) -> str:
     try:
         result = await llm_runtime.generate(
             prompt=user_prompt,
-            model=settings.ollama_model,
+            model=settings.main_model,
             system=system_prompt,
             temperature=0.2,
             num_predict=4000,
@@ -1105,8 +1105,8 @@ class ScanPipeline:
         """
         keep = {
             vision_model,
-            _cleanup_model(),       # follows settings.ollama_fast_model
-            _photo_enrich_model(),  # follows settings.ollama_model
+            _cleanup_model(),       # follows settings.fast_model
+            _photo_enrich_model(),  # follows settings.main_model
             settings.embedding_model,
         }
         # Drop empties (defensive — in case a setting is unset).

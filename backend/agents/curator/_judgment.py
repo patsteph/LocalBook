@@ -145,7 +145,7 @@ Respond with JSON only:
             response = await llm_runtime.generate(
                 prompt=prompt,
                 system="You are an editorial judgment system. Respond only with valid JSON.",
-                model=settings.ollama_fast_model,  # Fast model — sufficient for approve/reject JSON
+                model=settings.fast_model,  # Fast model — sufficient for approve/reject JSON
                 temperature=0.3
             )
             
@@ -242,7 +242,7 @@ Respond with JSON only:
 
                 response = await llm_runtime.generate(
                     prompt=prompt,
-                    model=settings.ollama_fast_model,
+                    model=settings.fast_model,
                     temperature=0.2
                 )
                 
@@ -590,7 +590,7 @@ State the thesis in one clear sentence."""
 
             response = await llm_runtime.generate(
                 prompt=prompt,
-                model=settings.ollama_fast_model,
+                model=settings.fast_model,
                 temperature=0.3
             )
             from utils.json_repair import sanitize_prose_output
@@ -609,7 +609,7 @@ Return only the queries, one per line."""
 
             response = await llm_runtime.generate(
                 prompt=prompt,
-                model=settings.ollama_fast_model,
+                model=settings.fast_model,
                 temperature=0.5
             )
             
@@ -712,7 +712,7 @@ Respond with JSON only:
 
                 response = await llm_runtime.generate(
                     prompt=prompt,
-                    model=settings.ollama_fast_model,
+                    model=settings.fast_model,
                     temperature=0.3
                 )
                 

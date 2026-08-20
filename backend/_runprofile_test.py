@@ -62,11 +62,21 @@ check("merges stops, no dupes", opts["stop"] == ["\n\n", "<|end|>"] and opts["te
 check("thinking default OFF for eval", rp.thinking_enabled is False)
 check("always strips thinking", "strip_thinking" in rp.normalize_filters)
 
-print("── LIVE derive against real Ollama ──")
-for m in ["gemma4:e4b", "phi4-mini:latest"]:
+print("── LIVE derive against the configured models ──")
+from config import settings
+for m in [settings.main_model, settings.fast_model]:
     p = derive_run_profile(m)
-    print(f"  {m:24} thinking_capable={p.thinking_capable} stops={p.stop_sequences[:3]} src={p.source}")
-check("gemma4 derived as thinking-capable", derive_run_profile("gemma4:e4b").thinking_capable is True)
+    print(f"  {m:44} thinking_capable={p.thinking_capable} stops={p.stop_sequences[:2]} src={p.source}")
+
+# `thinking_capable` used to come from Ollama's /api/show `capabilities` array. An MLX
+# checkpoint's config.json carries no equivalent, and the registry stores only the SETTING
+# (`rag_profile.think: False`), not the capability — so it is no longer discoverable. That
+# costs nothing today: `think` was an Ollama request field, so thinking control has been
+# inert since the cutover, and gemma's own profile sets it False regardless.
+_p = derive_run_profile(settings.main_model)
+check("thinking control is inert (no /api/show to ask)", _p.thinking_capable is False)
+check("stop sequences still come from the curated profile", len(_p.stop_sequences) > 0)
+check("profile reports the mlx provider", _p.provider == "mlx")
 
 print(f"\n{'='*48}\n_runprofile_test: {passed} passed, {failed} failed")
 raise SystemExit(1 if failed else 0)

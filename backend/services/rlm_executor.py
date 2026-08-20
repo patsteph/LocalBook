@@ -56,12 +56,10 @@ class RLMExecutor:
         root_model: str = None,
         sub_model: str = None,
         max_iterations: int = 15,
-        ollama_url: str = None
     ):
-        self.root_model = root_model or settings.ollama_model
-        self.sub_model = sub_model or settings.ollama_fast_model
+        self.root_model = root_model or settings.main_model
+        self.sub_model = sub_model or settings.fast_model
         self.max_iterations = max_iterations
-        self.ollama_url = ollama_url or settings.ollama_base_url
         
     async def analyze_notebook(
         self,

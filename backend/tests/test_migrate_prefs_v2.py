@@ -21,17 +21,31 @@ def _write(tmp_path, payload):
     return str(p)
 
 
+MLX = {
+    "main": "mlx-community/gemma-4-e4b-it-4bit",
+    "fast": "mlx-community/Phi-4-mini-instruct-4bit",
+    "vision": "mlx-community/gemma-4-e4b-it-4bit",
+    "embed": "mlx-community/snowflake-arctic-embed-l-v2.0-bf16",
+    "image": "mlx-community/klein-4bit",
+}
+
+
 def _v1(**combo):
+    """A pre-cutover prefs file: every role is a PAIR (an Ollama name + an `mlx_*` id) with an
+    engine flag choosing between them. This is literally what is on disk for every existing
+    install, so the key names here are LEGACY ON PURPOSE — do not "modernise" them, or the
+    migration is only ever tested against data it has already migrated."""
     base = {
         "main_engine": "ollama", "fast_engine": "ollama", "vision_engine": "ollama",
         "embed_engine": "ollama", "image_engine": "ollama",
         "main_model": "gemma4:e4b", "fast_model": "phi4-mini:latest",
         "vision_model": "granite3.2-vision:2b", "embeddings": "snowflake-arctic-embed2",
-        "image_model": "klein", "mlx_main_model": "mlx-community/gemma-4-e4b-it-4bit",
-        "mlx_fast_model": "mlx-community/Phi-4-mini-instruct-4bit",
-        "mlx_vision_model": "mlx-community/gemma-4-e4b-it-4bit",
-        "mlx_embedding_model": "mlx-community/snowflake-arctic-embed-l-v2.0-bf16",
-        "mlx_image_model": "mlx-community/klein-4bit",
+        "image_model": "klein",
+        "mlx_" + "main_model": MLX["main"],
+        "mlx_" + "fast_model": MLX["fast"],
+        "mlx_" + "vision_model": MLX["vision"],
+        "mlx_" + "embedding_model": MLX["embed"],
+        "mlx_" + "image_model": MLX["image"],
     }
     base.update(combo)
     return {"default_combo": base}
@@ -44,32 +58,49 @@ def all_present(monkeypatch):
 
 # ── The promotion: what makes the cutover real ──────────────────────────────────
 
-def test_saved_ollama_roles_are_promoted_to_mlx(tmp_path, all_present):
+def test_each_role_collapses_to_one_key_holding_the_checkpoint_id(tmp_path, all_present):
+    """THE v4 migration. `main.py`'s restore loop writes `default_combo` straight into
+    settings, so a file still holding the Ollama NAME under `main_model` would point the main
+    role at something nothing can load."""
     p = _write(tmp_path, _v1())
-    out = mig.run(p)
+    mig.run(p)
     combo = json.loads(open(p).read())["default_combo"]
-    assert combo["main_engine"] == "mlx"
-    assert combo["fast_engine"] == "mlx"
-    assert combo["embed_engine"] == "mlx"
-    assert set(out["promoted"]) == {"main", "fast", "vision", "embed", "image"}
+    assert combo["main_model"] == MLX["main"]
+    assert combo["fast_model"] == MLX["fast"]
+    assert combo["vision_model"] == MLX["vision"]
+    assert combo["embedding_model"] == MLX["embed"]
 
 
-def test_image_is_promoted_like_every_other_role(tmp_path, all_present):
+def test_the_engine_flags_and_mlx_duplicates_are_dropped(tmp_path, all_present):
+    """They selected between two halves of a pair that no longer exists. Leaving them would
+    let a stale flag contradict the collapsed value."""
+    p = _write(tmp_path, _v1())
+    mig.run(p)
+    combo = json.loads(open(p).read())["default_combo"]
+    for gone in ("main_engine", "fast_engine", "vision_engine", "image_engine", "embed_engine",
+                 "mlx_main_model", "mlx_fast_model", "mlx_vision_model",
+                 "mlx_embedding_model", "mlx_image_model"):
+        assert gone not in combo, f"{gone} survived the collapse"
+
+
+def test_image_collapses_like_every_other_role(tmp_path, all_present):
     """Image was excluded here for a while on the belief that Klein wasn't downloaded. It
     was — `is_present` reported it absent because `exact_weight_gb` only looked for weights
     at the snapshot ROOT, and diffusion checkpoints keep theirs in transformer/ text_encoder/
     vae/. No role needs a hardcoded exception; the presence gate is the real protection."""
     p = _write(tmp_path, _v1())
     mig.run(p)
-    assert json.loads(open(p).read())["default_combo"]["image_engine"] == "mlx"
+    assert json.loads(open(p).read())["default_combo"]["image_model"] == MLX["image"]
 
 
-def test_image_is_still_skipped_when_klein_is_genuinely_absent(tmp_path, monkeypatch):
+def test_a_role_whose_checkpoint_is_absent_keeps_its_saved_value(tmp_path, monkeypatch):
+    """Presence gates the PROMOTION. Collapse still folds the id in — the file has to end up
+    in the new shape either way — but a machine without the weights is not told it has them."""
     monkeypatch.setattr("services.model_presence.is_present",
                         lambda m: "klein" not in m.lower())
     p = _write(tmp_path, _v1())
-    mig.run(p)
-    assert json.loads(open(p).read())["default_combo"]["image_engine"] == "ollama"
+    out = mig.run(p)
+    assert "image" not in out["promoted"]
 
 
 def test_a_role_whose_mlx_model_is_absent_is_left_alone(tmp_path, monkeypatch):
@@ -80,34 +111,47 @@ def test_a_role_whose_mlx_model_is_absent_is_left_alone(tmp_path, monkeypatch):
     p = _write(tmp_path, _v1())
     out = mig.run(p)
     combo = json.loads(open(p).read())["default_combo"]
-    assert combo["fast_engine"] == "ollama", "absent weights must not be adopted"
-    assert combo["main_engine"] == "mlx"
-    assert "fast" not in out["promoted"]
+    assert "fast" not in out["promoted"], "absent weights must not be adopted"
+    assert "main" in out["promoted"]
 
 
-def test_a_deliberate_non_ollama_choice_is_preserved(tmp_path, all_present):
-    """Only `"ollama"` (the old default) is promoted. Anything else is a user decision."""
+def test_a_deliberate_non_ollama_choice_is_not_promoted(tmp_path, all_present):
+    """Only `"ollama"` (the old default) is promoted — anything else was a user decision. The
+    collapse still runs, because the file must reach the new shape regardless."""
     p = _write(tmp_path, _v1(main_engine="llama_server"))
-    mig.run(p)
-    assert json.loads(open(p).read())["default_combo"]["main_engine"] == "llama_server"
+    out = mig.run(p)
+    assert "main" not in out["promoted"]
 
 
 # ── Conservatism: this rewrites user data ───────────────────────────────────────
 
-def test_no_key_is_ever_deleted(tmp_path, all_present):
+def test_unrelated_settings_are_never_touched(tmp_path, all_present):
+    """v4 DOES delete keys — the engine flags and `mlx_*` duplicates, deliberately. What it
+    must never touch is anything outside the role combo."""
     original = _v1()
     original["some_unrelated_setting"] = {"keep": "me"}
+    original["another"] = [1, 2, 3]
     p = _write(tmp_path, original)
     mig.run(p)
     after = json.loads(open(p).read())
     assert after["some_unrelated_setting"] == {"keep": "me"}
-    assert set(original["default_combo"]) <= set(after["default_combo"])
+    assert after["another"] == [1, 2, 3]
+
+
+def test_the_backup_holds_the_pre_migration_file(tmp_path, all_present):
+    """The whole point of the backup: it must capture the ORIGINAL, or a bad migration is
+    unrecoverable."""
+    p = _write(tmp_path, _v1())
+    out = mig.run(p)
+    saved = json.load(open(out["backup"]))["default_combo"]
+    assert saved["main_model"] == "gemma4:e4b"
+    assert saved["mlx_" + "main_model"] == MLX["main"]
 
 
 def test_a_backup_is_written_before_any_change(tmp_path, all_present):
     p = _write(tmp_path, _v1())
     out = mig.run(p)
-    assert out["backup"] and json.load(open(out["backup"]))["default_combo"]["main_engine"] == "ollama"
+    assert out["backup"] and json.load(open(out["backup"]))["default_combo"]["main_model"] == "gemma4:e4b"
 
 
 def test_it_is_idempotent(tmp_path, all_present):
@@ -127,7 +171,7 @@ def test_a_v2_file_still_receives_the_promotion(tmp_path, all_present):
     stale["resolved_roles"] = {"main": {"engine": "ollama", "model": "gemma4:e4b"}}
     p = _write(tmp_path, stale)
     assert mig.run(p)["ran"] is True
-    assert json.loads(open(p).read())["default_combo"]["main_engine"] == "mlx"
+    assert json.loads(open(p).read())["default_combo"]["main_model"] == MLX["main"]
 
 
 def test_a_corrupt_file_is_left_untouched(tmp_path):
@@ -182,5 +226,5 @@ def test_llm_provider_is_not_an_engine_name():
     would open the Locker in cloud mode on every launch. The engine lives in `*_engine`."""
     from config import settings
 
-    assert settings.llm_provider == "ollama"
-    assert settings.main_engine == "mlx"
+    assert not hasattr(settings, "llm_provider"), "the provider axis is gone from config"
+    assert settings.main_model.startswith("mlx-community/")

@@ -350,7 +350,7 @@ Be specific and actionable. Write in third person. Do not use bullet points — 
         response = await llm_runtime.generate(
             prompt=prompt,
             system="You are a concise professional analyst. Provide brief activity insights.",
-            model=settings.ollama_fast_model,
+            model=settings.fast_model,
             temperature=0.4,
         )
         return response.strip()
