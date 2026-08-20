@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { evalApi, EvalStatus, EvalResult, HardwareResponse, gradeBand, GRADE_BADGE } from './evalApi';
 import { EvalResultDetail } from './EvalResultDetail';
-import { SidecarStatus } from './SidecarStatus';
 
 const POLL_MS = 2000;
 
@@ -23,7 +22,7 @@ function EngineTag() {
   );
 }
 
-// The Evaluator tab: hardware/combo context, sidecar controls, a full-eval
+// The Evaluator tab: hardware/combo context, a full-eval
 // runner with live progress, and the latest result detail. Faithful React port
 // of the health-portal evaluator, themed with Tailwind light/dark pairs.
 export function EvaluatorPanel() {
@@ -135,8 +134,6 @@ export function EvaluatorPanel() {
           </div>
         </div>
       </div>
-
-      <SidecarStatus />
 
       {/* Run control */}
       <div className="flex items-center justify-between gap-3 flex-wrap">

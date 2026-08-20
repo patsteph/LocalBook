@@ -77,6 +77,10 @@ export function EvalResultDetail({ run }: { run: EvalResult }) {
               <div key={role} className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-2">
                 <div className="flex items-center justify-between">
                   <span className="text-xs font-medium text-gray-600 dark:text-gray-400 uppercase">{role.replace(/_/g, ' ')}</span>
+                  {/* `llama_server` and `ollama` are LEGACY values — the sidecar and the
+                      Ollama transport were removed in v2.3.0. Kept so eval runs recorded
+                      before the cutover still render honestly instead of showing a blank
+                      badge or being relabelled as MLX, which they were not. */}
                   <span className={`px-1.5 py-0.5 text-xs rounded ${
                     info.provider === 'llama_server'
                       ? 'bg-purple-100 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300'

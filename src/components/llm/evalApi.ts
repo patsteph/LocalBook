@@ -1,4 +1,4 @@
-// Typed client for the LLM Evaluator + sidecar endpoints (backend/api/evaluator.py).
+// Typed client for the LLM Evaluator endpoints (backend/api/evaluator.py).
 // Shapes mirror the Python `to_dict()` contracts. Used by the in-app "Labs (LLM)"
 // Evaluator + History tabs — the React home for what used to live in the
 // health-portal HTML page.
@@ -136,20 +136,6 @@ export interface EvalResult {
   preflight?: { checks: PreflightCheck[]; blocking_failure?: string | null };
 }
 
-// ── Sidecar (llama-server) ───────────────────────────────────────────────────
-export interface SidecarStatus {
-  running: boolean;
-  owned: boolean;
-  healthy: boolean;
-  pid?: number | null;
-  uptime_seconds?: number;
-  binary_path?: string;
-  model_path?: string;
-  model_exists?: boolean;
-  port?: number;
-  last_error?: string;
-}
-
 // ── Fetch helpers ────────────────────────────────────────────────────────────
 async function getJSON<T>(path: string): Promise<T> {
   const res = await localFetch(`${API_BASE_URL}${path}`);
@@ -212,9 +198,6 @@ export const evalApi = {
   getLatest: () => getJSON<{ result: EvalResult | null }>('/evaluator/results/latest'),
   getStatus: () => getJSON<EvalStatus>('/evaluator/status'),
   run: () => postJSON<{ status: string; message: string }>('/evaluator/run'),
-  getSidecar: () => getJSON<SidecarStatus>('/evaluator/sidecar/status'),
-  startSidecar: () => postJSON<SidecarStatus & { status: string; message: string }>('/evaluator/sidecar/start'),
-  stopSidecar: () => postJSON<{ status: string; message: string }>('/evaluator/sidecar/stop'),
 };
 
 // Score → letter-grade band (mirrors the portal's getGradeClass thresholds).

@@ -146,10 +146,8 @@ class ModelRegistry:
     def refresh_installed_status(self):
         """Refresh is_installed for every registry entry.
 
-        - Ollama-provider models: presence in GET /api/tags.
-        - llama-server-provider models: sidecar GET /health returns 200.
-          (llama-server loads exactly one model at boot, so if it's healthy we
-          treat the registered model as installed.)
+        - MLX models (org/repo ids): presence in the HuggingFace cache.
+        - Ollama-named models: presence in GET /api/tags, when Ollama is reachable.
         """
         # ── 1. Ollama models ──
         installed_ollama: set[str] = set()
@@ -191,19 +189,8 @@ class ModelRegistry:
         except Exception as _e:
             logger.debug(f"[model-registry] MLX cache scan failed: {_e}")
 
-        # ── 2. llama-server sidecar health (cheap, cached) ──
-        sidecar_healthy = False
-        try:
-            from services.llm_provider import health_check_sync, Provider
-            sidecar_healthy = health_check_sync(Provider.LLAMA_SERVER)
-        except Exception as _e:
-            logger.debug(f"[model-registry] sidecar health check failed: {_e}")
-
-        # ── 3. Update flags per-entry based on provider ──
+        # ── 2. Update flags per-entry ──
         for name, model in self._models.items():
-            if getattr(model, "provider", "ollama") == "llama_server":
-                model.is_installed = sidecar_healthy
-                continue
             # Exact tag match, or ":latest" equivalence for a tag-less registry
             # name. A DIFFERENT explicit tag is a different model — gemma4:12b
             # must NOT mark gemma4:e4b installed.
@@ -220,11 +207,15 @@ class ModelRegistry:
     def get_installed_models(self) -> list[dict]:
         """Live installed models for the evaluator cards.
 
-        Enumerates the actual Ollama tags. A tag with an EXACT registry entry
-        uses that curated card; a tag with no registry entry (e.g. a freshly
-        pulled gemma4:12b) gets a card built from its OWN live Ollama metadata
-        — never a sibling registry entry's name/params. llama-server sidecar
-        models (no Ollama tag) are appended from the registry.
+        Enumerates the actual Ollama tags. A tag with an EXACT registry entry uses that
+        curated card; a tag with no registry entry (e.g. a freshly pulled gemma4:12b) gets a
+        card built from its OWN live Ollama metadata — never a sibling registry entry's
+        name/params.
+
+        MLX models have no Ollama tag at all, so they can only arrive via the second loop.
+        That loop used to append ONLY llama-server entries, which meant a machine running
+        MLX showed an EMPTY model list — the Evaluator had nothing to offer. It now appends
+        any registry entry marked installed, whatever put it there.
         """
         self.refresh_installed_status()
         out: list[dict] = []
@@ -236,11 +227,11 @@ class ModelRegistry:
             seen.add(name)
             entry = self._models.get(name)  # EXACT match only
             out.append(entry.to_dict() if entry else self._live_card(tag))
-        # Sidecar (llama_server) entries have no Ollama tag — include if installed.
+        # Anything installed that has no Ollama tag — i.e. every MLX model.
         for name, model in self._models.items():
             if name in seen:
                 continue
-            if getattr(model, "provider", "ollama") == "llama_server" and model.is_installed:
+            if model.is_installed:
                 out.append(model.to_dict())
         return out
 

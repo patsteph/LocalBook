@@ -24,7 +24,7 @@ interface OllamaModel {
   parameter_count: string;
   active_as: string | null;
   in_registry: boolean;
-  // v1.7.0: backend that serves this model — "ollama" (default) or "llama_server" (sidecar)
+  // Engine that serves this model. "mlx" for in-process models; older records may say "ollama".
   provider?: string;
   // Wave 9: MLX models — whether the HF snapshot is already downloaded to the local cache.
   installed?: boolean;
@@ -399,14 +399,10 @@ export const LLMSelector: React.FC<LLMSelectorProps> = ({ selectedProvider, onPr
     const key = `${m.name}:${role}`;
     const isSwitching = switching === key;
     const isActive = active[role] === m.name;
-    const isSidecar = m.provider === 'llama_server';
     const isMLX = m.provider === 'mlx';
     const dl = downloads[m.name];
     const isDownloading = !!dl;
-    // Phase 2 (v1.8.0): sidecar models are fully selectable. The backend
-    // auto-starts llama-server when the swap endpoint receives a
-    // llama_server-provider target. Wave 9: MLX models run in-process (Apple
-    // Silicon) — selecting one flips that role's engine to MLX.
+    // MLX models run in-process on Apple Silicon — selecting one points that role at it.
 
     return (
       <div
@@ -433,14 +429,6 @@ export const LLMSelector: React.FC<LLMSelectorProps> = ({ selectedProvider, onPr
               {m.display_name}
             </span>
             {isActive && <ActiveBadge />}
-            {isSidecar && (
-              <span
-                title="Served by a llama-server sidecar (experimental — Phase 1 evaluator-only)"
-                className="px-1.5 py-0.5 text-xs rounded bg-purple-100 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300"
-              >
-                ⚗ Sidecar
-              </span>
-            )}
             {renderCapabilityBadges(m)}
             {m.ram_fit && m.ram_fit.recommendation !== 'unknown' && FIT_META[m.ram_fit.recommendation]?.label && (
               <span title={fitTooltip(m.ram_fit)}
@@ -491,8 +479,6 @@ export const LLMSelector: React.FC<LLMSelectorProps> = ({ selectedProvider, onPr
           title={
             isDownloading
               ? 'Downloading from Hugging Face — will switch automatically when finished.'
-              : isSidecar
-              ? 'Switching to this model will auto-start the llama-server sidecar (may take 10–20 s on first use).'
               : isMLX && m.installed === false
               ? 'Downloads this model from Hugging Face now (a few minutes), then switches this role to the MLX engine.'
               : isMLX

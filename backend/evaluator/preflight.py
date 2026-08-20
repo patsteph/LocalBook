@@ -1,20 +1,15 @@
 """Evaluator preflight checks.
 
-Fail fast and explain clearly before a run starts. For the split
-Ollama/llama-server setup, the most common time sink is discovering 30 minutes
-into a run that the sidecar wasn't actually healthy, or that the registered
-Bonsai model file had been moved. Preflight catches those cases up front.
+Fail fast and explain clearly before a run starts. The most expensive failure is
+discovering 30 minutes into a run that the engine was never going to serve a role.
 
 Checks performed
 ----------------
 1. RAM headroom (≥ 1 GB free).
-2. Active main-model backend reachable:
-     - Ollama path → GET /api/version
-     - llama-server path → GET /health (sidecar)
-3. Active fast-model backend reachable (may be same as main).
-4. Embedding backend reachable (always Ollama today).
+2. MLX engine available for the main model.
+3. Same for the fast model (may be the same model).
+4. Embedding backend reachable.
 5. Vision backend reachable when a vision model is configured.
-6. Model file exists for sidecar models (Bonsai GGUF path).
 
 Each check returns a `PreflightCheck` with status in
 {"pass", "warn", "fail"} so the evaluator service can decide whether to
@@ -27,12 +22,6 @@ from dataclasses import dataclass, field, asdict
 from typing import Optional
 import os
 import logging
-
-from services.llm_provider import (
-    resolve as _resolve_provider,
-    Provider as _Provider,
-    health_check as _provider_health,
-)
 
 logger = logging.getLogger(__name__)
 
@@ -101,11 +90,10 @@ async def _check_model_backend(role: str, model_name: str, engine: str = "ollama
 
     Returns pass/warn/fail plus the resolved provider+url for UI display.
 
-    Wave 9.6 — engine-aware: when `engine == "mlx"`, the model runs IN-PROCESS (no HTTP
-    backend to probe), so report MLX-engine availability + the MLX id instead of probing
-    Ollama and citing the Ollama name. Without this, an all-MLX run's preflight showed
-    "ollama healthy for gemma4:e4b" while Providers-used showed the MLX ids — the two lists
-    disagreed (user report 2026-07-24).
+    Everything runs IN-PROCESS now, so there is no HTTP backend to probe — this reports
+    MLX-engine availability. (It used to probe Ollama for non-MLX roles, which made an
+    all-MLX run's preflight say "ollama healthy for gemma4:e4b" while Providers-used showed
+    MLX ids — the two lists disagreed. User report 2026-07-24.)
     """
     if not model_name:
         return PreflightCheck(
@@ -113,58 +101,23 @@ async def _check_model_backend(role: str, model_name: str, engine: str = "ollama
             status="warn",
             message=f"No {role} configured",
         )
-    if engine == "mlx":
-        try:
-            from services.mlx_engine import mlx_engine
-            ok = mlx_engine.available()
-        except Exception:
-            ok = False
-        details = {"role": role, "model": model_name, "provider": "mlx", "backend_url": "in-process"}
-        if ok:
-            return PreflightCheck(
-                name=f"{role}_backend", status="pass",
-                message=f"mlx (in-process) ready for {model_name}", details=details,
-            )
+    try:
+        from services.mlx_engine import mlx_engine
+        ok = mlx_engine.available()
+    except Exception:
+        ok = False
+    details = {"role": role, "model": model_name, "provider": "mlx", "backend_url": "in-process"}
+    if ok:
         return PreflightCheck(
-            name=f"{role}_backend", status="warn",
-            message=f"MLX engine not available for {model_name} — this role will fall back to Ollama.",
-            details=details,
+            name=f"{role}_backend", status="pass",
+            message=f"mlx (in-process) ready for {model_name}", details=details,
         )
-    route = _resolve_provider(model_name)
-    provider_str = route.provider.value
-    healthy = await _provider_health(route.provider)
-    base_details = {
-        "role": role,
-        "model": model_name,
-        "provider": provider_str,
-        "backend_url": route.base_url,
-    }
-    if healthy:
-        return PreflightCheck(
-            name=f"{role}_backend",
-            status="pass",
-            message=f"{provider_str} @ {route.base_url} healthy for {model_name}",
-            details=base_details,
-        )
-    # Sidecar-specific hint
-    if route.provider is _Provider.LLAMA_SERVER:
-        return PreflightCheck(
-            name=f"{role}_backend",
-            status="fail",
-            message=(
-                f"llama-server sidecar at {route.base_url} not responding. "
-                f"Open the Locker tab and start the sidecar, then retry."
-            ),
-            details=base_details,
-        )
+    # FAIL, not warn. There is no second engine to fall back to, so an unavailable MLX
+    # engine means the run cannot produce a single valid result.
     return PreflightCheck(
-        name=f"{role}_backend",
-        status="fail",
-        message=(
-            f"Ollama at {route.base_url} not responding. "
-            "Run `ollama serve` or check the Health Portal."
-        ),
-        details=base_details,
+        name=f"{role}_backend", status="fail",
+        message=f"MLX engine not available for {model_name} — nothing can serve this role.",
+        details=details,
     )
 
 
@@ -296,35 +249,6 @@ async def _warm_main_model(model_name: str) -> PreflightCheck:
     return await _warm_text_model(model_name, role="main")
 
 
-def _check_sidecar_model_file(model_name: str) -> Optional[PreflightCheck]:
-    """If the main model is served by the sidecar, verify the GGUF file exists."""
-    if not model_name:
-        return None
-    route = _resolve_provider(model_name)
-    if route.provider is not _Provider.LLAMA_SERVER:
-        return None
-    try:
-        from services.sidecar_manager import resolve_config
-        cfg = resolve_config()
-        exists = os.path.exists(cfg.model_path)
-        return PreflightCheck(
-            name="sidecar_model_file",
-            status="pass" if exists else "fail",
-            message=(
-                f"Model file present: {cfg.model_path}"
-                if exists
-                else f"Model file missing: {cfg.model_path}"
-            ),
-            details={"model_path": cfg.model_path, "exists": exists},
-        )
-    except Exception as e:
-        return PreflightCheck(
-            name="sidecar_model_file",
-            status="warn",
-            message=f"Could not inspect sidecar config: {e}",
-        )
-
-
 # ─── Orchestration ─────────────────────────────────────────────────────────
 
 async def run_preflight(settings_obj) -> PreflightReport:
@@ -369,9 +293,6 @@ async def run_preflight(settings_obj) -> PreflightReport:
     if vision_model and vision_model != main_model:
         report.checks.append(await _check_model_backend("vision", vision_model))
 
-    sidecar_file_check = _check_sidecar_model_file(main_model)
-    if sidecar_file_check is not None:
-        report.checks.append(sidecar_file_check)
 
     # Warmup parity (fairness): warm every model we'll test, not just main.
     # Without this, the first test using fast/vision incurs cold-load time
@@ -428,12 +349,11 @@ def providers_used_summary(settings_obj) -> dict:
             )
         if not model_name:
             continue
-        route = _resolve_provider(model_name)
         out[role_key] = {
             "model": model_name,
             "model_display": friendly_model_name(model_name),
-            "provider": route.provider.value,
-            "backend_url": route.base_url,
+            "provider": "mlx",
+            "backend_url": "in-process",
         }
     return out
 
@@ -442,7 +362,7 @@ def providers_used_summary(settings_obj) -> dict:
 
 def _run_smoke_tests():
     class _FakeSettings:
-        ollama_model = "bonsai-8b"
+        ollama_model = "gemma4:e4b"
         ollama_fast_model = "phi4-mini:latest"
         embedding_model = "embeddinggemma"
         vision_model = ""
@@ -456,8 +376,8 @@ def _run_smoke_tests():
     assert "main_backend" in names
     # providers_used_summary works without raising
     summary = providers_used_summary(_FakeSettings())
-    assert summary["main"]["provider"] == "llama_server"
-    assert summary["fast"]["provider"] == "ollama"
+    assert summary["main"]["provider"] == "mlx"
+    assert summary["fast"]["provider"] == "mlx"
     print("[evaluator.preflight] Smoke tests passed.")
 
 

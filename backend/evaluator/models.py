@@ -122,8 +122,9 @@ class ModelInfo:
     # Empty dict means: prefer JSON mode if supports_json_mode is True.
     structured_profile: dict = field(default_factory=dict)
 
-    # v1.7.0: Backend provider — "ollama" (default) or "llama_server" (sidecar).
-    # See services/llm_provider.py. Registry entries without this field are
+    # Historical field. Runs recorded before the v2.3.0 cutover hold "ollama" or
+    # "llama_server"; everything now is "mlx". Kept so old runs still deserialize and the
+    # Eval History view can label them honestly. Registry entries without this field are
     # treated as Ollama-hosted for backward compatibility.
     provider: str = "ollama"
 
@@ -289,7 +290,7 @@ class EvalResult:
     # v1.8.2: Provider / backend visibility — stamped by every test runner so
     # results show exactly which backend served each test and whether Bonsai
     # or an Ollama model was running.
-    provider: str = ""                   # "ollama" | "llama_server" | ""
+    provider: str = ""                   # historical: "ollama" | "llama_server"; now "mlx"
     backend_url: str = ""                # e.g. "http://127.0.0.1:8090"
     model_context_window: int = 0        # capability-aware, helps explain truncation
 
@@ -328,12 +329,6 @@ class EvalResult:
             self.provider = caps.provider
             self.backend_url = caps.backend_url
             self.model_context_window = caps.context_window
-            # MLX models are HuggingFace ids (org/repo) served in-process — the Ollama-oriented
-            # resolver defaults them to "ollama". Recognize the HF-path shape so per-test provenance
-            # reflects the real engine (user report 2026-07-23: MLX arctic stamped "ollama").
-            if self.provider == "ollama" and "/" in (model_name or ""):
-                self.provider = "mlx"
-                self.backend_url = "in-process"
         except Exception:
             # Never let telemetry break a run
             self.model_used = model_name or self.model_used

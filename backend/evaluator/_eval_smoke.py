@@ -1,7 +1,7 @@
 """Smoke tests for the evaluator upgrade (v1.8.2).
 
 Runs without a notebook, without live backends — pure unit-level invariants
-for the capability matrix, skip-aware scoring, and provider stamping.
+for the capability matrix, skip-aware scoring, and engine stamping.
 
 Invoke: `python -m evaluator._eval_smoke`
 """
@@ -12,16 +12,15 @@ from __future__ import annotations
 def _test_capabilities():
     from evaluator.capabilities import capabilities_for, FEATURES
 
-    bonsai = capabilities_for("bonsai-8b")
-    assert bonsai.provider == "llama_server", bonsai.provider
-    assert not bonsai.supports(FEATURES.VISION)
-    assert not bonsai.supports(FEATURES.EMBEDDINGS)
-    assert bonsai.supports(FEATURES.LARGE_CONTEXT), bonsai.context_window
-    assert not bonsai.supports(FEATURES.KEEP_ALIVE)
-
+    # A legacy (non-HF) name resolves to no MLX engine — provider must NOT claim "mlx".
     olmo = capabilities_for("olmo-3:7b-instruct")
-    assert olmo.provider == "ollama"
-    assert olmo.supports(FEATURES.KEEP_ALIVE)
+    assert olmo.provider == "ollama", olmo.provider
+    assert not olmo.supports(FEATURES.VISION)
+
+    # An MLX checkpoint id is the real path.
+    mlx = capabilities_for("mlx-community/gemma-4-e4b-it-4bit")
+    assert mlx.provider == "mlx", mlx.provider
+    assert mlx.backend_url == "in-process"
 
     # Permissive fallback for community models
     unknown = capabilities_for("some-community-model:1b")
@@ -33,15 +32,10 @@ def _test_stamp_provider():
     from evaluator.models import EvalResult
 
     r = EvalResult(test_id="t", category="c", test_name="n")
-    r.stamp_provider("bonsai-8b")
-    assert r.provider == "llama_server"
-    assert r.backend_url.startswith("http")
-    assert r.model_context_window >= 32768   # Bonsai native 64k
-    assert r.model_used == "bonsai-8b"
-
-    r2 = EvalResult(test_id="t2", category="c", test_name="n")
-    r2.stamp_provider("olmo-3:7b-instruct")
-    assert r2.provider == "ollama"
+    r.stamp_provider("mlx-community/gemma-4-e4b-it-4bit")
+    assert r.provider == "mlx", r.provider
+    assert r.backend_url == "in-process"
+    assert r.model_used
     print("[smoke] stamp_provider OK")
 
 
@@ -94,35 +88,12 @@ def _test_overall_excludes_skipped():
     print("[smoke] overall-excludes-skipped OK")
 
 
-def _test_provider_translator_passthrough():
-    """Make sure the llama-server translator keeps top_k and repeat_penalty."""
-    from services.llm_provider import ollama_to_openai_payload
-
-    payload = {
-        "model": "bonsai-8b",
-        "prompt": "hi",
-        "options": {
-            "temperature": 0.5,
-            "top_k": 20,
-            "repeat_penalty": 1.1,
-            "num_predict": 50,
-        },
-    }
-    out = ollama_to_openai_payload(payload, is_chat=False)
-    assert out["top_k"] == 20
-    assert out["repeat_penalty"] == 1.1
-    assert out["max_tokens"] == 50
-    assert out["temperature"] == 0.5
-    print("[smoke] translator passthrough OK")
-
-
 def main():
     _test_capabilities()
     _test_stamp_provider()
     _test_mark_skipped()
     _test_scoring_skip_awareness()
     _test_overall_excludes_skipped()
-    _test_provider_translator_passthrough()
     print("\n[evaluator._eval_smoke] All v1.8.2 smoke tests passed.")
 
 

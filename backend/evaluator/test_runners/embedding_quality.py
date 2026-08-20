@@ -5,7 +5,6 @@ import math
 from datetime import datetime
 from evaluator.models import EvalResult
 from evaluator.capabilities import capabilities_for, FEATURES
-import httpx
 
 
 def _cosine_similarity(a: list[float], b: list[float]) -> float:
@@ -19,41 +18,21 @@ def _cosine_similarity(a: list[float], b: list[float]) -> float:
 
 
 async def _embed(text: str, model: str) -> list[float]:
-    """Get embedding from the resolved backend (Ollama or sidecar).
+    """Embed through the app's REAL seam, so the Evaluator measures what RAG measures.
 
-    v1.8.2: uses the provider resolver's base URL instead of hardcoding
-    localhost:11434. If the embedding model isn't actually an embedding
-    model on its backend, callers should skip the test via capabilities.
-
-    Wave 9.6: when MLX embeddings are adopted (embed_engine==mlx), embed through the app's
-    real seam (`llm_runtime.embed`, which dispatches to the in-process MLX arctic engine
-    with an Ollama fallback) so the Evaluator measures exactly what RAG runs — not Ollama.
+    Previously resolved a provider and POSTed to Ollama's /api/embeddings directly, which
+    meant the embedding score reflected a code path production no longer used. `llm_runtime`
+    raises when nothing can serve the call; that is reported as an empty vector so one dead
+    embedder fails the embedding category rather than the whole run.
     """
-    from config import settings
-    if getattr(settings, "embed_engine", "ollama") == "mlx":
-        try:
-            from services.llm_runtime import llm_runtime
-            res = await llm_runtime.embed(text)
-            embs = (res or {}).get("embeddings") or []
-            return embs[0] if embs else []
-        except Exception as e:
-            print(f"[EVAL-EMBED] MLX seam embed failed ({e})")
-            return []
-    from services.llm_provider import resolve as _resolve_provider, Provider as _Provider
-    route = _resolve_provider(model)
-    # Ollama is the only backend that serves /api/embeddings today; sidecar
-    # embeddings would require llama-server --embeddings which we don't spawn.
-    if route.provider is not _Provider.OLLAMA:
+    try:
+        from services.llm_runtime import llm_runtime
+        res = await llm_runtime.embed(text)
+        embs = (res or {}).get("embeddings") or []
+        return embs[0] if embs else []
+    except Exception as e:
+        print(f"[EVAL-EMBED] embed failed ({e})")
         return []
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        response = await client.post(
-            f"{route.base_url}/api/embeddings",
-            json={"model": model, "prompt": text},
-        )
-        if response.status_code == 200:
-            data = response.json()
-            return data.get("embedding", [])
-    return []
 
 
 async def run(notebook_id: str, config: dict, combo_name: str, hw_fingerprint: str) -> list[EvalResult]:

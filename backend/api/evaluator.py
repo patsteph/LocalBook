@@ -350,49 +350,6 @@ async def cleanup():
     return {"message": "Cleanup complete"}
 
 
-@router.get("/providers")
-async def get_providers():
-    """Report health status for every known LLM provider (Ollama, llama-server).
-
-    Used by the UI to show sidecar availability badges and by pre-flight checks
-    before allowing swaps to llama-server-backed models.
-    """
-    from services.llm_provider import providers_status
-    providers = await providers_status()
-    return {"providers": providers}
-
-
-# ── v1.8.0 (Phase 2): llama-server sidecar lifecycle control ──────────────────
-
-@router.get("/sidecar/status")
-async def get_sidecar_status():
-    """Return runtime state of the llama-server sidecar (running, healthy, pid)."""
-    from services.sidecar_manager import sidecar_manager
-    return await sidecar_manager.status()
-
-
-@router.post("/sidecar/start")
-async def start_sidecar():
-    """Start the sidecar if it isn't already healthy. Blocks up to ~45s."""
-    from services.sidecar_manager import sidecar_manager
-    from services.llm_provider import invalidate_health_cache
-    ok = await sidecar_manager.ensure_started(timeout=45.0)
-    invalidate_health_cache()
-    if not ok:
-        raise HTTPException(status_code=503, detail=sidecar_manager.last_error or "Failed to start sidecar")
-    return {"status": "success", "message": "Sidecar started and healthy", **(await sidecar_manager.status())}
-
-
-@router.post("/sidecar/stop")
-async def stop_sidecar():
-    """Stop the sidecar child process. Idempotent."""
-    from services.sidecar_manager import sidecar_manager
-    from services.llm_provider import invalidate_health_cache
-    await sidecar_manager.stop(grace_seconds=5.0)
-    invalidate_health_cache()
-    return {"status": "success", "message": "Sidecar stopped"}
-
-
 @router.post("/swap")
 async def swap_model(payload: dict):
     """Swap the active model for a specific role (main_model or fast_model)."""
@@ -411,27 +368,6 @@ async def swap_model(payload: dict):
         if role == "fast": normalized_role = "fast_model"
         if role == "embeddings": normalized_role = "embedding_model"
         if role == "vision": normalized_role = "vision_model"
-
-        # v1.8.0 (Phase 2): auto-spawn the sidecar when the target is a
-        # llama_server-provider model. This is what makes "click Use → run
-        # evaluator" actually work without the user launching anything.
-        try:
-            from evaluator.model_registry import model_registry
-            _info = model_registry.get_model(target_model)
-            if _info and getattr(_info, "provider", "ollama") == "llama_server":
-                from services.sidecar_manager import sidecar_manager
-                from services.llm_provider import invalidate_health_cache
-                ok = await sidecar_manager.ensure_started(timeout=45.0)
-                invalidate_health_cache()
-                if not ok:
-                    raise HTTPException(
-                        status_code=503,
-                        detail=f"Sidecar failed to start: {sidecar_manager.last_error}",
-                    )
-        except HTTPException:
-            raise
-        except Exception as _e:
-            logger.warning(f"[evaluator] sidecar pre-spawn skipped: {_e}")
 
         message = locker.execute_swap(target_model, normalized_role)
         return {"status": "success", "message": message}
@@ -467,20 +403,18 @@ async def save_default_combo(payload: dict):
     # check would always 404 ("not installed in Ollama"), blocking Save-as-default for an MLX combo.
     # Skip the Ollama check for a role whose engine is mlx (or whose name is an HF path) — those are
     # validated at adopt/download time, and the combo being saved is the one currently running.
-    import httpx as _httpx
-    from config import settings as _s
-    for name, role, engine in [(main_model, "main", settings.main_engine),
-                               (fast_model, "fast", settings.fast_engine)]:
-        if engine == "mlx" or "/" in (name or ""):
+    # Model validation is a filesystem question now: an MLX id either has weights in the
+    # HF cache or it does not. The old branch POSTed to Ollama's /api/show and 503'd the
+    # save when Ollama was unreachable — which, with Ollama gone, would block every save.
+    from services.model_presence import is_present
+    for name, role in ((main_model, "main"), (fast_model, "fast")):
+        if not name:
             continue
-        info = model_registry.get_model(name)
-        if not info:
-            try:
-                r = _httpx.post(f"{_s.ollama_base_url}/api/show", json={"name": name}, timeout=5.0)
-                if r.status_code != 200:
-                    raise HTTPException(status_code=400, detail=f"{role} model '{name}' is not installed in Ollama.")
-            except _httpx.RequestError:
-                raise HTTPException(status_code=503, detail="Ollama is not reachable — cannot validate models.")
+        if "/" in name and not is_present(name):
+            raise HTTPException(
+                status_code=400,
+                detail=f"{role} model '{name}' is not downloaded. Download it in LLM Studio first.",
+            )
     
     prefs_path = settings.data_dir / "user_preferences.json"
     

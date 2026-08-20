@@ -923,52 +923,6 @@
       }
     },
     {
-      "ollama_name": "bonsai-8b",
-      "display_name": "Bonsai-8B (1-bit, experimental)",
-      "family": "bonsai",
-      "parameter_count": "8B",
-      "vendor": "PrismML",
-      "origin_country": "US",
-      "license": "Apache-2.0",
-      "supported_roles": [
-        "main_model"
-      ],
-      "context_window": 65536,
-      "supports_json_mode": false,
-      "supports_vision": false,
-      "disk_size_gb": 1.16,
-      "min_ram_gb": 4,
-      "recommended_ram_gb": 6,
-      "policy_tags": [
-        "us-origin",
-        "open-source",
-        "experimental",
-        "sidecar"
-      ],
-      "ollama_options": {
-        "temperature": 0.5,
-        "top_p": 0.85,
-        "top_k": 20,
-        "repeat_penalty": 1.1
-      },
-      "rag_profile": {
-        "temperature": 0.3,
-        "repeat_penalty": 1.1,
-        "num_ctx_cap": 8192,
-        "use_chat_endpoint": false,
-        "aggressive_repetition_cleanup": true,
-        "stop_sequences": [
-          "\n\nReferences",
-          "\n\nBibliography"
-        ]
-      },
-      "structured_profile": {
-        "prefer_json_mode": false,
-        "max_repair_attempts": 3
-      },
-      "provider": "llama_server"
-    },
-    {
       "ollama_name": "mlx-community/gemma-4-e4b-it-4bit",
       "display_name": "Gemma 4 e4b (MLX)",
       "family": "gemma",
@@ -1021,7 +975,8 @@
       "structured_profile": {
         "prefer_json_mode": true,
         "max_repair_attempts": 2
-      }
+      },
+      "provider": "mlx"
     },
     {
       "ollama_name": "mlx-community/Phi-4-mini-instruct-4bit",
@@ -1070,7 +1025,8 @@
       "structured_profile": {
         "prefer_json_mode": true,
         "max_repair_attempts": 2
-      }
+      },
+      "provider": "mlx"
     },
     {
       "ollama_name": "mlx-community/snowflake-arctic-embed-l-v2.0-bf16",
@@ -1091,7 +1047,8 @@
         "us-origin",
         "open-source",
         "enterprise-ok"
-      ]
+      ],
+      "provider": "mlx"
     }
   ]
 }
