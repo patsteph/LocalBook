@@ -81,6 +81,18 @@ from config import settings
 # defaults and then overlay the user's validated choice.
 import json as _json
 _prefs_path = settings.data_dir / "user_preferences.json"
+
+# Prefs schema v3 — must run HERE, before the restore loop below reads default_combo. It
+# rewrites saved "ollama" role engines to "mlx" where the MLX weights are on disk; running it
+# after the restore (where it used to live) applied the promotion a launch late, so the first
+# launch on a new build still came up all-Ollama. Backs up first, never deletes a key,
+# idempotent, never raises.
+try:
+    from storage.migrate_prefs_v2 import run as _migrate_prefs
+    _migrate_prefs()
+except Exception as e:
+    print(f"⚠️ prefs migration skipped: {e}")
+
 if _prefs_path.exists():
     try:
         _prefs = _json.loads(_prefs_path.read_text())
@@ -130,15 +142,6 @@ if settings.use_sqlite:
     except Exception as e:
         print(f"⚠️ SQLite migration failed, falling back to JSON: {e}")
         settings.use_sqlite = False
-
-# Prefs schema v2 — make the saved role combo survive the MLX cutover. Backs up first,
-# never deletes a key, idempotent, never raises. Must run BEFORE the SafeStart restore loop
-# reads default_combo (it runs earlier in this file), so v2 data is available to it.
-try:
-    from storage.migrate_prefs_v2 import run as _migrate_prefs
-    _migrate_prefs()
-except Exception as e:
-    print(f"⚠️ prefs v2 migration skipped: {e}")
 
 # One-shot: purge Cursor Style residue (feature removed in v2.3.0). Must run AFTER the SQLite
 # migration (it reads those tables) and BEFORE the stores cache anything. Marker-guarded and

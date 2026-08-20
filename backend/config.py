@@ -87,10 +87,22 @@ class Settings(BaseSettings):
     # auto-downloaded on startup). These are INERT until the MLX engine is wired
     # into the llm_service seam (Wave 9.1+); adding them here is scaffolding only.
     # See READFIRST/in-progress/wave9-mlx-production.md.
-    main_engine: str = "ollama"     # ollama | mlx — main chat / RAG / structured
-    fast_engine: str = "ollama"     # ollama | mlx — intent, follow-ups, classify
-    vision_engine: str = "ollama"   # ollama | mlx — semantic image description
-    image_engine: str = "ollama"    # ollama | mlx — Klein / FLUX image generation
+    # ── Stage 4 Phase 1 (2026-08-19): MLX is now the DEFAULT for every role. ──
+    # Fully reversible — set LOCALBOOK_<ROLE>_ENGINE=ollama, or flip a role in LLM Studio.
+    # The Ollama code paths are all still present; this changes which one is chosen.
+    #
+    # Evidence for the flip: four MLX evaluation runs on this 16 GB M4 scored 87.3-88.6 with
+    # ZERO engine fallbacks and, in two of them, Ollama fully unreachable — so MLX served every
+    # request end to end. Embedding equivalence measured separately (bf16: mean cosine 0.999940
+    # vs a fresh Ollama embedding, 0/50 top-1 retrieval changes).
+    main_engine: str = "mlx"        # ollama | mlx — main chat / RAG / structured
+    fast_engine: str = "mlx"        # ollama | mlx — intent, follow-ups, classify
+    vision_engine: str = "mlx"      # ollama | mlx — semantic image description (Option A: the
+                                    # vision-capable MLX main model serves this too)
+    image_engine: str = "ollama"    # ollama | mlx — Klein / FLUX. Left on ollama: the MLX image
+                                    # model is NOT downloaded on this machine (verified via
+                                    # /system/model-readiness), and defaulting a role to a model
+                                    # that does not exist is how a first run stalls with no UI.
     embed_engine: str = "mlx"       # ollama | mlx — MLX-native embeddings IN-PROCESS (keeps Ollama
                                     # out of the embedding path so it can idle/unload). MLX runs the
                                     # SAME arctic-embed-l-v2.0 at the SAME 1024 dim → same vector

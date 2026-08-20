@@ -34,7 +34,9 @@ from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
+# v2 = resolved_roles recorded. v3 = Stage 4 Phase 1 engine promotion. A file migrated to v2
+# BEFORE the promotion existed must still receive it, so the version bump is what re-opens it.
 
 # role → (engine key, ollama model key, mlx model key)
 # ⚠️ The ollama keys are the COMBO's names, which are NOT the settings attribute names:
@@ -77,7 +79,7 @@ def run(path: Optional[str] = None) -> Dict[str, Any]:
         return out
 
     if data.get("schema_version", 1) >= SCHEMA_VERSION:
-        out["reason"] = "already v2"
+        out["reason"] = f"already v{SCHEMA_VERSION}"
         return out
 
     combo = data.get("default_combo") or {}
@@ -97,6 +99,38 @@ def run(path: Optional[str] = None) -> Dict[str, Any]:
     data["schema_version"] = SCHEMA_VERSION
     # Additive: the v1 reader ignores this, the post-excise reader uses it.
     data["resolved_roles"] = resolved
+
+    # ── Stage 4 Phase 1: adopt the new MLX defaults for roles the user never chose. ──
+    # `main.py`'s restore loop applies default_combo over config.py with a truthy check, so a
+    # saved "ollama" beats the new default on EVERY launch and the flip would never take effect
+    # on an existing install. Verified live: this machine's file pinned all five roles to
+    # "ollama" while config already defaulted embed to mlx — the file silently won.
+    #
+    # Only rewrites a role whose saved engine is "ollama" AND whose MLX model is present on
+    # disk. A deliberate Ollama choice on a machine without the MLX weights is left alone —
+    # silently repointing a role at a model that is not there is how a first run stalls.
+    promoted = {}
+    try:
+        from services.model_presence import is_present
+        for role, (eng_key, _ok, mlx_key) in ROLES.items():
+            if role == "image":
+                continue          # image stays on ollama until its MLX model is downloaded
+            if combo.get(eng_key) != "ollama":
+                continue
+            mlx_model = combo.get(mlx_key)
+            if mlx_model and is_present(mlx_model):
+                combo[eng_key] = "mlx"
+                promoted[role] = mlx_model
+        if promoted:
+            data["default_combo"] = combo
+            data["resolved_roles"] = {
+                r: ({"engine": "mlx", "model": promoted[r]} if r in promoted else v)
+                for r, v in resolved.items()
+            }
+    except Exception as e:
+        logger.warning(f"[migrate-prefs] engine promotion skipped: {e}")
+    out["promoted"] = promoted
+
     if not _write(p, data, out):
         return out
 
@@ -109,7 +143,7 @@ def run(path: Optional[str] = None) -> Dict[str, Any]:
 def _write(path: str, data: Dict[str, Any], out: Dict[str, Any]) -> bool:
     """Back up, then write atomically. Returns False (and leaves the file alone) on failure."""
     try:
-        backup = f"{path}.v1-backup-{time.strftime('%Y%m%d-%H%M%S')}"
+        backup = f"{path}.pre-v{SCHEMA_VERSION}-backup-{time.strftime('%Y%m%d-%H%M%S')}"
         shutil.copy2(path, backup)
         out["backup"] = backup
     except Exception as e:
