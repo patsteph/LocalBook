@@ -133,13 +133,22 @@ async def _title_synthesis(member_titles: List[str]) -> Tuple[str, str]:
             prompt=prompt, model=settings.fast_model, temperature=0.3,
             num_predict=80, think=False, timeout=20.0)
         text = (res or {}).get("response", "") or ""
+        # Take the FIRST block only. Asked for one NAME/SUMMARY pair, the fast model sometimes
+        # keeps going and emits several — and the last one is whatever `num_predict` cut off
+        # mid-word. This loop used to overwrite on every match, so it kept that truncated tail:
+        # a real topic card shipped titled "Mo". (Observed 2026-08-21.)
         name, summary = fallback, ""
+        got_name = got_summary = False
         for line in text.splitlines():
             ls = line.strip()
-            if ls.upper().startswith("NAME:"):
+            if not got_name and ls.upper().startswith("NAME:"):
                 name = ls.split(":", 1)[1].strip().strip('"') or fallback
-            elif ls.upper().startswith("SUMMARY:"):
+                got_name = True
+            elif not got_summary and ls.upper().startswith("SUMMARY:"):
                 summary = ls.split(":", 1)[1].strip().strip('"')
+                got_summary = True
+            if got_name and got_summary:
+                break
         return name[:60], summary[:200]
     except Exception as e:
         logger.debug(f"[canvas_subtopics] title synthesis skipped: {type(e).__name__}: {e}")

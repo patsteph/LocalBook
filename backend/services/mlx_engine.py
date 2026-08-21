@@ -456,6 +456,54 @@ def _vlm_vision_sync(model, processor, config, prompt_str, image, *, max_tokens,
     return text, getattr(out, "prompt_tokens", 0) or 0, getattr(out, "generation_tokens", 0) or 0
 
 
+_EMBED_ATTN_BUDGET_CACHE: Optional[int] = None
+
+
+def _embed_attn_budget() -> int:
+    """Ceiling on `batch × padded_seq²` for one embedding forward pass — the term that
+    decides peak attention memory.
+
+    HARDWARE-DERIVED for the same reason `_ensure_memory_limit` is: a flat constant is
+    either an inert guardrail on a 16 GB Mac or a needless cap on a 64 GB one. ~64 bytes per
+    attention element (fp32 across xlm-roberta-large's 16 heads), against a third of the
+    GPU's addressable working set.
+
+    Ordinary RAG chunks (~250 tokens) sit three orders of magnitude under this, so they keep
+    riding in full `batch_size` groups and NOTHING about their vectors changes.
+    """
+    global _EMBED_ATTN_BUDGET_CACHE
+    if _EMBED_ATTN_BUDGET_CACHE is not None:
+        return _EMBED_ATTN_BUDGET_CACHE
+    ws = 0.0
+    try:
+        from services.model_sizing import working_set_gb
+        ws = working_set_gb()
+    except Exception:
+        ws = 0.0
+    if ws <= 0:
+        ws = 11.0
+    _EMBED_ATTN_BUDGET_CACHE = max(int((ws * 0.33 * 1024 ** 3) / 64), 8_000_000)
+    return _EMBED_ATTN_BUDGET_CACHE
+
+
+def _token_lens(tokenizer, texts, max_length: int) -> List[int]:
+    """Real token counts (post-truncation), for cost-aware batching.
+
+    Falls back to a character estimate if the tokenizer has no cheap encode path — a wrong
+    estimate only makes batches suboptimal, never unsafe, because the budget check still
+    runs against whatever number this returns.
+    """
+    out: List[int] = []
+    for t in texts:
+        n = 0
+        try:
+            n = len(tokenizer.encode(t))
+        except Exception:
+            n = max(1, len(t) // 3)
+        out.append(max(1, min(n, max_length)))
+    return out
+
+
 def _embed_on_thread(engine, texts, model_id, batch_size, max_length):
     """Load (cache) the MLX embedding model and encode `texts` → list[list[float]].
     Runs ONLY on the single MLX executor thread (both async embed() and sync
@@ -483,9 +531,36 @@ def _embed_on_thread(engine, texts, model_id, batch_size, max_length):
         engine._last_used[model_id] = time.monotonic()
         logger.info(f"[mlx-engine] loaded embedding model {model_id} in {time.perf_counter() - _t0:.1f}s")
     model, tokenizer = pair
-    out: List[List[float]] = []
-    for i in range(0, len(texts), batch_size):
-        chunk = texts[i:i + batch_size]
+    # Batch by ATTENTION COST, not by row count. Every sequence in a batch is padded to the
+    # longest one, and attention is O(batch × seq²) — so a single long text drags the whole
+    # batch up with it. Measured 2026-08-21: 32 canvas snapshots, one of them a ~5.5k-token
+    # artifact payload, asked Metal for 62 GB against a 9.5 GB buffer cap. embed_batch raised,
+    # and because the canvas treats an embedding failure as "no topics", populate silently
+    # fell back to the linear grid on every machine.
+    #
+    # Grouping by length also removes most of the padding waste, so this is usually FASTER
+    # than the flat slicing it replaces — short texts still ride in full batch_size groups.
+    lens = _token_lens(tokenizer, texts, max_length)
+    budget = _embed_attn_budget()
+    order = sorted(range(len(texts)), key=lambda i: lens[i])
+    out: List[Optional[List[float]]] = [None] * len(texts)
+    group: List[int] = []
+    longest = 0
+    for idx in order + [None]:
+        if idx is not None:
+            cand = max(longest, lens[idx])
+            # Always allow one item through: a lone max-length sequence is ~4 GB, which fits,
+            # and there is no smaller batch to fall back to.
+            if group and (len(group) + 1 > batch_size
+                          or (len(group) + 1) * cand * cand > budget):
+                pass  # flush below, then start a new group with this item
+            else:
+                group.append(idx)
+                longest = cand
+                continue
+        if not group:
+            continue
+        chunk = [texts[i] for i in group]
         inputs = tokenizer.batch_encode_plus(
             chunk, return_tensors="mlx", padding=True, truncation=True, max_length=max_length)
         res = model(inputs["input_ids"], attention_mask=inputs.get("attention_mask"))
@@ -495,8 +570,13 @@ def _embed_on_thread(engine, texts, model_id, batch_size, max_length):
         embs = lhs[:, 0, :]  # CLS pooling (arctic / XLM-RoBERTa) — matches Ollama exactly
         embs = embs / mx.linalg.norm(embs, axis=-1, keepdims=True)
         mx.eval(embs)
-        out.extend([[float(v) for v in row] for row in embs.tolist()])
-    return out
+        for slot, row in zip(group, embs.tolist()):
+            out[slot] = [float(v) for v in row]
+        del inputs, res, lhs, embs
+        group = [] if idx is None else [idx]
+        longest = 0 if idx is None else lens[idx]
+    # Order is the caller's contract — every vector must land back on its own text.
+    return [v if v is not None else [] for v in out]
 
 
 # ─── The engine ──────────────────────────────────────────────────────────────────

@@ -111,3 +111,31 @@ def test_assign_and_persist_stamps_topic_ids(monkeypatch):
     assert not nodes[2].get("topic_id")
     assert len(surviving) == 1 and surviving[0]["title"] == "Synth Topic"
     assert surviving[0]["member_count"] == 2
+
+
+# ── Title parsing (2026-08-21) ─────────────────────────────────────────────────
+
+def test_title_takes_the_first_block_not_the_truncated_last_one(monkeypatch):
+    """Asked for ONE name/summary pair, the fast model sometimes emits several — and the last
+    is whatever `num_predict` cut off mid-word. The parse loop used to overwrite on each
+    match, so it kept that fragment and shipped a topic card titled "Mo"."""
+    import asyncio
+
+    from services import canvas_subtopics as cs
+    from services.llm_runtime import llm_runtime
+
+    runaway = (
+        "NAME: Attention Mechanisms\n"
+        "SUMMARY: Exploring neural network attention to enhance learning\n\n"
+        "NAME: Transformer Deep Dive\n"
+        "SUMMARY: Dissecting the transformer's role in NLP\n\n"
+        "NAME: Mod"
+    )
+
+    async def _fake_generate(**kw):
+        return {"response": runaway}
+
+    monkeypatch.setattr(llm_runtime, "generate", _fake_generate)
+    name, summary = asyncio.run(cs._title_synthesis(["Attention is all you need"]))
+    assert name == "Attention Mechanisms", f"took the truncated tail instead: {name!r}"
+    assert summary.startswith("Exploring neural network attention")
