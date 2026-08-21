@@ -199,14 +199,123 @@ def test_allowed_lineages_resolve_too(arch, vendor):
     assert mc.origin_of(f"repackager/thing-{arch}-mlx", ["mlx", arch])["vendor"] == vendor
 
 
-def test_an_unattributable_model_names_its_lab_and_says_so():
+def test_an_unattributable_model_names_its_lab_and_claims_no_country():
     """When nothing identifies the lineage, name the publishing ACCOUNT — a checkable fact —
-    and mark it unverified rather than implying it was cleared."""
+    and claim NO country.
+
+    This replaces an earlier assertion that demanded a placeholder flag. Reversed by the user
+    on 2026-08-20: the browser is where people exclude models by country, so a flag we cannot
+    justify is worse than no flag. An unknown account now renders with none.
+    """
     o = mc.origin_of("VertexAGI/prism-caption-1-micro", ["mlx", "safetensors"])
     assert o["lab"] == "VertexAGI"
     assert o["vendor"] == "VertexAGI"
     assert o["verified"] is False
-    assert o["flag"], "still needs a placeholder flag so the row renders"
+    assert o["flag"] == "", "no flag may be shown for an origin we could not establish"
+    assert o["countries"] == [], "and nothing for the origin filter to match on"
+
+
+# ── Publisher and lineage are separate facts (the 2026-08-20 live report) ───────
+
+def test_a_us_lab_publishing_a_qwen_finetune_is_not_flagged_chinese():
+    """THE reported bug. `prism-ml/Bonsai-8B-mlx-1bit` is published by Prism ML, a US company,
+    on a qwen3 architecture — and the row rendered as 🇨🇳 Alibaba / Qwen, stating something
+    false about a real company on the very screen where users exclude models by country.
+
+    Both facts are true and both must survive: US publisher, Qwen lineage.
+    """
+    o = mc.origin_of("prism-ml/Bonsai-8B-mlx-1bit",
+                     ["mlx", "safetensors", "qwen3",
+                      "base_model:prism-ml/Bonsai-8B-unpacked"])
+    assert o["publisher"]["vendor"] == "Prism ML"
+    assert o["publisher"]["country"] == "US"
+    assert o["flag"] == "🇺🇸", "the row leads with the publisher, who is American"
+    # …and the lineage is still reported, so the user can act on it.
+    assert o["lineage"]["vendor"] == "Alibaba / Qwen"
+    assert o["lineage"]["flag"] == "🇨🇳"
+    assert o["allowed"] is False, "lineage drives the policy, not the publisher's flag"
+    assert set(o["countries"]) == {"US", "CN"}
+
+
+def test_an_own_account_base_model_does_not_mask_the_architecture():
+    """A base_model tag pointing INTO the publisher's own account names a packaging step,
+    not the upstream. Honouring it would let any lab launder a lineage by re-uploading the
+    base under its own name first — which is exactly what Bonsai's tags look like."""
+    o = mc.origin_of("prism-ml/Bonsai-8B-mlx-1bit",
+                     ["mlx", "qwen3", "base_model:prism-ml/Bonsai-8B-unpacked"])
+    assert o["lineage"]["org"] == "qwen"
+    assert o["lineage"]["source"] == "architecture"
+
+
+def test_a_repackager_contributes_no_country():
+    """`mlx-community` hosts Google, Alibaba and Mistral conversions side by side, so reading
+    a country off the account would be meaningless."""
+    o = mc.origin_of("mlx-community/gemma-4-e4b-it-4bit",
+                     ["mlx", "gemma4", "base_model:google/gemma-4-E4B-it"])
+    assert o["publisher"]["repackager"] is True
+    assert o["publisher"]["country"] == ""
+    assert o["flag"] == "🇺🇸" and o["lineage"]["vendor"] == "Google", "flag falls to lineage"
+
+
+def test_the_origin_filter_matches_lineage_not_the_leading_flag(monkeypatch):
+    """A user hiding 🇨🇳 wants Qwen fine-tunes gone however they were republished — including
+    the one whose row correctly shows a US flag."""
+    fake = [{"id": "prism-ml/Bonsai-8B-mlx-1bit", "tags": ["mlx", "qwen3"],
+             "pipeline_tag": "text-generation",
+             "safetensors": {"parameters": {"BF16": 1_000_000}}, "downloads": 5, "likes": 1}]
+    monkeypatch.setattr(mc, "_get_json", lambda *a, **k: fake)
+    mc.reset_cache()
+    assert mc.search()["models"], "shown by default — nothing is withheld"
+    mc.reset_cache()
+    hidden = mc.search(exclude_countries="CN")
+    assert hidden["models"] == []
+    assert hidden["hidden_by_filter"] == 1, "counted once, not once per pipeline queried"
+
+
+# ── Role → HF pipeline fan-out (the second half of the 2026-08-20 report) ───────
+
+def test_every_role_queries_its_own_pipelines():
+    """The other reported bug: embedders and image models were missing from the browser.
+
+    They were never absent from the Hub — the search fetched ONE page sorted by downloads and
+    filtered it client-side. Measured across the top 300 `mlx` repos: 150 text-generation and
+    84 image-text-to-text, but only 2 sentence-similarity, 2 feature-extraction and 3
+    text-to-image. That page yielded 1 embedding model and 0 image models.
+    """
+    assert mc.ROLE_PIPELINES["embedding"] == ("sentence-similarity", "feature-extraction")
+    assert mc.ROLE_PIPELINES["image"] == ("text-to-image",)
+    # The default view must reach every pipeline, or the small categories stay invisible.
+    for p in ("sentence-similarity", "feature-extraction", "text-to-image"):
+        assert p in mc.DEFAULT_PIPELINES
+
+
+def test_the_role_filter_is_pushed_to_the_api(monkeypatch):
+    """The fix has to happen in the QUERY. Filtering a chat-dominated page client-side is
+    what produced zero image models in the first place."""
+    seen = []
+
+    def fake(url, *a, **k):
+        seen.append(url)
+        return []
+
+    monkeypatch.setattr(mc, "_get_json", fake)
+    mc.reset_cache()
+    mc.search(role="image")
+    assert seen, "no request was made at all"
+    assert all("pipeline_tag=text-to-image" in u for u in seen)
+
+
+def test_offline_needs_every_pipeline_to_fail(monkeypatch):
+    """One pipeline 404ing is not an offline Mac — only a total loss of the Hub is."""
+    calls = {"n": 0}
+
+    def flaky(url, *a, **k):
+        calls["n"] += 1
+        return None if calls["n"] == 1 else []
+
+    monkeypatch.setattr(mc, "_get_json", flaky)
+    mc.reset_cache()
+    assert mc.search()["offline"] is False
 
 
 def test_nothing_gates_a_download():

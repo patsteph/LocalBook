@@ -36,10 +36,24 @@ _CACHE: Dict[str, Tuple[float, Any]] = {}
 # CN/AE models outright). `allowed` therefore no longer gates the listing; it drives the
 # OPTIONAL origin filter and the label, and callers can still ask for a restricted set.
 #
-# Accurate attribution matters MORE under this policy, not less: if the user is doing the
-# filtering, the flag has to be right. That is why lineage is resolved from the architecture
-# rather than the repo name — a Qwen fine-tune republished under a US account is still a Qwen
-# fine-tune, and showing it as unknown-origin would quietly deny the user the choice.
+# TWO SEPARATE FACTS, NEVER MERGED (rewritten 2026-08-20 after a live report).
+# The first cut collapsed "who published this checkpoint" and "what these weights derive
+# from" into ONE country flag. `prism-ml/Bonsai-8B-mlx-1bit` is published by Prism ML, a US
+# company, on a `qwen3` architecture — and the row rendered as 🇨🇳 Alibaba / Qwen. The flag
+# stated something false about a real company, and it did so on the exact screen where users
+# exclude models by country. So:
+#
+#   publisher — the HF account. A hard fact. We attach a COUNTRY ONLY when the account is in
+#               the curated table below. There is no reliable publisher-country signal in HF
+#               metadata (`region:` is a CDN region — it reads `region:us` on all 300 top MLX
+#               repos, Qwen included), so an unknown account gets NO country claim at all.
+#   lineage   — what the weights derive from, via the `base_model:` chain and then the
+#               architecture. This is what an origin filter is actually about, and it is the
+#               hardest signal to disguise: the architecture has to match the weights.
+#
+# The row leads with the publisher's flag when we know it and the lineage flag otherwise; the
+# lineage always rides along as its own labelled chip. `allowed` follows LINEAGE, because
+# republishing under a new account must not launder provenance.
 #
 # Keyed by the org that appears in a model id or a `base_model:` tag. The value is
 # (display vendor, ISO country, flag, unrestricted).
@@ -68,6 +82,8 @@ VENDORS: Dict[str, Tuple[str, str, str, bool]] = {
     "huggingface":       ("Hugging Face", "US", "🇺🇸", True),
     "kyutai":            ("Kyutai", "FR", "🇫🇷", True),
     "cohereforai":       ("Cohere", "CA", "🇨🇦", True),
+    "prism-ml":          ("Prism ML", "US", "🇺🇸", True),
+    "prismml":           ("Prism ML", "US", "🇺🇸", True),
 
     # Blocked by policy (China / Middle East and derivatives)
     "qwen":              ("Alibaba / Qwen", "CN", "🇨🇳", False),
@@ -84,6 +100,15 @@ VENDORS: Dict[str, Tuple[str, str, str, bool]] = {
     "minimaxai":         ("MiniMax", "CN", "🇨🇳", False),
     "bytedance":         ("ByteDance (Seed)", "CN", "🇨🇳", False),
     "01ai":              ("01.AI (Yi)", "CN", "🇨🇳", False),
+}
+
+# Accounts whose business is republishing OTHER people's weights (quantising, converting to
+# MLX). The account is a real, checkable fact, but reading a country off it would be
+# meaningless — `mlx-community` hosts Google, Alibaba and Mistral conversions side by side.
+# These never contribute a publisher country; their rows lead with the lineage flag.
+REPACKAGERS = {
+    "mlx-community", "lmstudio-community", "mflux-community", "mlxbits",
+    "argmaxinc", "nightmedia", "inferencerlabs", "mlx-vision",
 }
 
 # ARCHITECTURE → origin. THE most reliable signal, and the one that closes the real hole:
@@ -141,52 +166,121 @@ _DTYPE_BYTES = {"F64": 8, "F32": 4, "BF16": 2, "F16": 2, "F8_E4M3": 1, "F8_E5M2"
                 "BOOL": 1, "I4": 0.5, "U4": 0.5}
 
 
-def origin_of(model_id: str, tags: Optional[List[str]] = None) -> Dict[str, Any]:
-    """Vendor + country for a model. Prefers the `base_model:` tag over the repo owner.
+def _base_model_orgs(tags: Optional[List[str]]) -> List[str]:
+    """Every org named by a `base_model:` tag, in tag order.
 
-    `mlx-community/gemma-4-e4b-it-4bit` is owned by a repackager, so the id alone says nothing
-    about who built the weights — the base_model tag (`base_model:google/gemma-4-E4B-it`) does.
+    HF writes these three ways, and the meaningful part is always the last colon-segment:
+        base_model:google/gemma-4-E4B-it
+        base_model:finetune:prism-ml/Bonsai-8B-unpacked
+        base_model:quantized:Qwen/Qwen3-8B
     """
-    org = ""
+    orgs: List[str] = []
     for t in (tags or []):
-        if t.startswith("base_model:"):
-            ref = t.split(":", 2)[-1]
-            if "/" in ref:
-                org = ref.split("/", 1)[0].lower()
-                if org in VENDORS:
-                    break
-                org = ""
-    if not org:
-        owner = (model_id.split("/", 1)[0] or "").lower()
-        if owner in VENDORS:
-            org = owner
-    # ARCHITECTURE next — see ARCH_ORIGIN. This runs BEFORE the owner check on purpose: the
-    # owner of a fine-tune is the fine-tuner, whereas the architecture names the lineage, and
-    # lineage is what the origin policy is actually about.
-    if not org:
-        for t in (tags or []):
-            key = ARCH_ORIGIN.get(t.lower())
-            if key:
-                org = key
-                break
-    if not org:
-        low = model_id.lower()
-        for needle, key in NAME_HINTS:
-            if needle in low:
-                org = key
-                break
+        if not t.startswith("base_model:"):
+            continue
+        ref = t.split(":")[-1]
+        if "/" in ref:
+            org = ref.split("/", 1)[0].lower()
+            if org not in orgs:
+                orgs.append(org)
+    return orgs
 
-    if org:
-        vendor, country, flag, allowed = VENDORS.get(org, UNKNOWN_ORIGIN)
-        return {"vendor": vendor, "country": country, "flag": flag,
-                "allowed": allowed, "org": org, "lab": "", "verified": True}
 
-    # Genuinely unattributable. Name the LAB that published it — the account is a real,
-    # checkable fact even when the lineage is not — and say plainly that the origin is
-    # unverified rather than implying it was cleared.
-    lab = model_id.split("/", 1)[0] if "/" in model_id else ""
-    return {"vendor": lab or "Unknown", "country": "", "flag": "🏳️",
-            "allowed": True, "org": "", "lab": lab, "verified": False}
+def publisher_of(model_id: str, tags: Optional[List[str]] = None) -> Dict[str, Any]:
+    """Who published THIS checkpoint — the HF account, plus a country only if we know it.
+
+    The account is a hard fact. The country is not: there is no publisher-country signal in
+    HF metadata, so we attach one only for accounts in the curated `VENDORS` table and make
+    NO claim otherwise. Guessing here is what put a 🇨🇳 flag on a US company's model.
+    """
+    account = model_id.split("/", 1)[0] if "/" in model_id else ""
+    low = account.lower()
+    if low in REPACKAGERS:
+        return {"account": account, "vendor": account, "country": "", "flag": "",
+                "known": False, "repackager": True}
+    if low in VENDORS:
+        vendor, country, flag, allowed = VENDORS[low]
+        return {"account": account, "vendor": vendor, "country": country, "flag": flag,
+                "known": True, "repackager": False, "allowed": allowed}
+    return {"account": account, "vendor": account or "Unknown", "country": "", "flag": "",
+            "known": False, "repackager": False}
+
+
+def lineage_of(model_id: str, tags: Optional[List[str]] = None) -> Dict[str, Any]:
+    """What the weights derive from. Ordered by how hard the signal is to fake.
+
+    `source` is reported so the UI can be honest about strength — an architecture match is a
+    property of the weights, a name match is only a naming convention.
+    """
+    tags = tags or []
+    publisher_org = (model_id.split("/", 1)[0] or "").lower()
+    # 1) The publisher's own statement of what this is built on.
+    for org in _base_model_orgs(tags):
+        if org == publisher_org:
+            # An intermediate repo in the publisher's OWN account (`prism-ml/Bonsai-8B-mlx-1bit`
+            # → `base_model:prism-ml/Bonsai-8B-unpacked`) names a packaging step, not the
+            # upstream these weights came from. Keep walking to the architecture — otherwise
+            # any lab could mask a base model's lineage just by re-uploading it under its own
+            # name first, which is the laundering the architecture check exists to stop.
+            continue
+        if org in VENDORS:
+            vendor, country, flag, allowed = VENDORS[org]
+            return {"vendor": vendor, "country": country, "flag": flag, "allowed": allowed,
+                    "org": org, "source": "base_model", "known": True}
+    # 2) ARCHITECTURE — the strongest signal, because it has to match the weights. A
+    #    third-party fine-tune keeps its base model's `model_type` even when the repackager
+    #    drops the base_model tag and publishes under their own account.
+    for t in tags:
+        key = ARCH_ORIGIN.get(t.lower())
+        if key:
+            vendor, country, flag, allowed = VENDORS[key]
+            return {"vendor": vendor, "country": country, "flag": flag, "allowed": allowed,
+                    "org": key, "source": "architecture", "known": True}
+    # 3) Name hint — weakest. A convention, not a fact about the weights.
+    low = model_id.lower()
+    for needle, key in NAME_HINTS:
+        if needle in low:
+            vendor, country, flag, allowed = VENDORS[key]
+            return {"vendor": vendor, "country": country, "flag": flag, "allowed": allowed,
+                    "org": key, "source": "name", "known": True}
+    return {"vendor": "", "country": "", "flag": "", "allowed": True,
+            "org": "", "source": "", "known": False}
+
+
+def origin_of(model_id: str, tags: Optional[List[str]] = None) -> Dict[str, Any]:
+    """Publisher + lineage, and the single flag the row leads with.
+
+    The two are kept as separate fields precisely so the UI never has to merge them again.
+    """
+    pub = publisher_of(model_id, tags)
+    lin = lineage_of(model_id, tags)
+
+    # Lead with the publisher's flag when the account is known; otherwise the lineage flag.
+    # Never a placeholder country — an unknown publisher simply contributes no flag.
+    flag = pub["flag"] if pub["known"] else lin["flag"]
+
+    # `allowed` follows LINEAGE first: republishing under a new account must not launder
+    # provenance. A known publisher that is itself restricted also disqualifies.
+    allowed = bool(lin["allowed"]) and bool(pub.get("allowed", True))
+
+    # Every country this model touches, for the origin filter. Both axes count, so excluding
+    # CN hides a Qwen fine-tune however it was published.
+    countries = {c for c in (lin.get("country"), pub.get("country") if pub["known"] else "") if c}
+
+    return {
+        "publisher": pub,
+        "lineage": lin,
+        "flag": flag,
+        "allowed": allowed,
+        "countries": sorted(countries),
+        # Back-compat single-label fields. The label prefers the lineage vendor, since that is
+        # what "where did this model come from" means; the publisher is shown alongside it.
+        "vendor": lin["vendor"] or pub["vendor"],
+        "country": lin.get("country") or (pub.get("country") if pub["known"] else ""),
+        "org": lin.get("org") or pub["account"].lower(),
+        "lab": pub["account"],
+        "verified": bool(lin["known"] or pub["known"]),
+    }
 
 
 def size_gb_of(safetensors: Optional[dict]) -> Optional[float]:
@@ -329,6 +423,57 @@ def _enrich(raw: dict, installed: set) -> dict:
     }
 
 
+# ── Which HF pipelines serve which role ─────────────────────────────────────────
+# The browser MUST query per-pipeline. A single global page sorted by downloads is
+# overwhelmingly chat models — measured 2026-08-20 across the top 300 `mlx` repos: 150
+# text-generation and 84 image-text-to-text, but only 2 sentence-similarity, 2
+# feature-extraction and 3 text-to-image. Filtering that page client-side returned ONE
+# embedding model and ZERO image models, so both roles were effectively invisible even
+# though the Hub has plenty of each.
+ROLE_PIPELINES: Dict[str, Tuple[str, ...]] = {
+    "embedding": ("sentence-similarity", "feature-extraction"),
+    "image":     ("text-to-image",),
+    "vision":    ("image-text-to-text",),
+    "main":      ("text-generation", "image-text-to-text"),
+    "fast":      ("text-generation",),
+}
+
+# The "All roles" view fans out across every pipeline we can place, so the default page
+# represents the catalog instead of just its most-downloaded corner.
+DEFAULT_PIPELINES: Tuple[str, ...] = (
+    "text-generation", "image-text-to-text", "sentence-similarity",
+    "feature-extraction", "text-to-image",
+)
+
+# Slots reserved per pipeline in the "All roles" page before the rest is filled by rank.
+# Without this, a global sort re-buries the small categories the fan-out just surfaced.
+_GUARANTEE_PER_PIPELINE = 3
+
+_SORT_FIELD = {
+    "trendingScore": "trending", "downloads": "downloads", "likes": "likes",
+    "lastModified": "updated", "createdAt": "created",
+}
+
+
+def _fetch_pipeline(pipeline: str, query: str, sort: str, limit: int):
+    """One HF page for a single pipeline. Returns None on failure (caller decides offline)."""
+    # `filter=mlx` (the TAG), not `library=mlx`. The library form matches loosely and returns
+    # plain sentence-transformers/BERT repos that this engine cannot load at all — verified:
+    # its top results were all `mlx_tag=False`. The tag is what a genuine MLX conversion sets.
+    parts = [
+        f"{HF_API}/models?filter=mlx&sort={sort}&direction=-1&limit={limit}",
+        "expand[]=downloads", "expand[]=likes", "expand[]=safetensors",
+        "expand[]=tags", "expand[]=pipeline_tag", "expand[]=gated",
+        "expand[]=lastModified", "expand[]=createdAt", "expand[]=trendingScore",
+    ]
+    if pipeline:
+        parts.append(f"pipeline_tag={pipeline}")
+    if query:
+        from urllib.parse import quote
+        parts.insert(1, f"search={quote(query)}")
+    return _get_json("&".join(parts))
+
+
 def search(
     query: str = "",
     sort: str = "downloads",
@@ -341,37 +486,24 @@ def search(
     """Search the MLX catalog on Hugging Face.
 
     sort: trendingScore | downloads | likes | lastModified | createdAt
-    role: main | fast | vision | embedding | image  (filters by eligibility)
-    exclude_countries: comma-separated ISO codes to hide, e.g. "CN,AE". Empty shows every
-        origin — the default, because the browser's job is to show what exists and let the
-        user decide.
+    role: main | fast | vision | embedding | image  (queries that role's HF pipelines)
+    exclude_countries: comma-separated ISO codes to hide, e.g. "CN,AE". Matched against
+        BOTH the lineage and a known publisher country, so a Qwen fine-tune is hidden
+        however it was republished. Empty shows every origin — the default, because the
+        browser's job is to show what exists and let the user decide.
     """
-    sort = sort if sort in {"trendingScore", "downloads", "likes",
-                            "lastModified", "createdAt"} else "downloads"
-    # `filter=mlx` (the TAG), not `library=mlx`. The library form matches loosely and returns
-    # plain sentence-transformers/BERT repos that this engine cannot load at all — verified:
-    # its top results were all `mlx_tag=False`. The tag is what a genuine MLX conversion sets.
-    #
-    # Over-fetch, because policy + role + fit filtering all happen client-side of the API.
-    fetch = min(max(limit * 4, 80), 300)
-    parts = [
-        f"{HF_API}/models?filter=mlx&sort={sort}&direction=-1&limit={fetch}",
-        "expand[]=downloads", "expand[]=likes", "expand[]=safetensors",
-        "expand[]=tags", "expand[]=pipeline_tag", "expand[]=gated",
-        "expand[]=lastModified", "expand[]=createdAt", "expand[]=trendingScore",
-    ]
-    if query:
-        from urllib.parse import quote
-        parts.insert(1, f"search={quote(query)}")
-    url = "&".join(parts)
+    sort = sort if sort in _SORT_FIELD else "downloads"
+    pipelines = ROLE_PIPELINES.get(role) or DEFAULT_PIPELINES
+    per = min(max(limit * 2, 60), 200)
 
-    ck = f"search::{url}::{role}::{include_blocked}::{fits_only}::{limit}"
+    ck = (f"search::{query}::{sort}::{role}::{include_blocked}::{fits_only}"
+          f"::{limit}::{exclude_countries}")
     hit = _cached(ck)
     if hit is not None:
         return hit
 
-    raw = _get_json(url)
-    if raw is None:
+    pages = {p: _fetch_pipeline(p, query, sort, per) for p in pipelines}
+    if all(v is None for v in pages.values()):
         return {"models": [], "offline": True,
                 "reason": "Could not reach Hugging Face. The browser needs a connection; "
                           "models already downloaded still work offline."}
@@ -383,33 +515,66 @@ def search(
         installed = set()
 
     excluded = {c.strip().upper() for c in exclude_countries.split(",") if c.strip()}
-    out, restricted_n, filtered_n = [], 0, 0
-    for r in raw:
-        card = _enrich(r, installed)
-        if not card["model_id"]:
-            continue
-        if not card["origin"]["allowed"]:
-            restricted_n += 1
-            if not include_blocked:
+    ranked: Dict[str, List[dict]] = {}
+    seen: set = set()
+    restricted_n = filtered_n = 0
+
+    for pipeline in pipelines:
+        keep: List[dict] = []
+        for r in (pages.get(pipeline) or []):
+            card = _enrich(r, installed)
+            mid = card["model_id"]
+            if not mid or mid in seen:
                 continue
-        if excluded and card["origin"].get("country", "").upper() in excluded:
-            filtered_n += 1
-            continue
-        if not card["roles"]:
-            # Eligible for no slot — an ASR model, a re-ranker, a depth estimator. Listing it
-            # would offer a download the app has nowhere to put.
-            continue
-        if role and role not in card["roles"]:
-            continue
-        card["fit"] = fit_for(card["size_gb"])
-        if fits_only and card["fit"]["verdict"] in ("over", "unknown"):
-            continue
-        out.append(card)
+            # Claim the id up front, so the counts below tally MODELS rather than
+            # occurrences — the pipelines are queried separately and a model that is
+            # filtered out must not be re-counted once per pipeline.
+            seen.add(mid)
+            if not card["origin"]["allowed"]:
+                restricted_n += 1
+                if not include_blocked:
+                    continue
+            if excluded and {c.upper() for c in card["origin"].get("countries", [])} & excluded:
+                filtered_n += 1
+                continue
+            if not card["roles"]:
+                # Eligible for no slot — an ASR model, a re-ranker, a depth estimator.
+                # Listing it would offer a download the app has nowhere to put.
+                continue
+            if role and role not in card["roles"]:
+                continue
+            card["fit"] = fit_for(card["size_gb"])
+            if fits_only and card["fit"]["verdict"] in ("over", "unknown"):
+                continue
+            keep.append(card)
+        ranked[pipeline] = keep
+
+    # Reserve a few slots per pipeline, then fill the rest strictly by rank. A purely global
+    # sort would re-bury the small categories this fan-out exists to surface: embedders lose
+    # to chat models by three orders of magnitude in downloads. With a single role selected
+    # there is nothing to balance, so the quota is off.
+    #
+    # The quota decides WHICH models make the page, never where they sit on it — the final
+    # sort below keeps display order exactly the one the user asked for.
+    field = _SORT_FIELD[sort]
+    def _rank(m: dict):
+        return m.get(field) or 0
+
+    guarantee = 0 if role else _GUARANTEE_PER_PIPELINE
+    out: List[dict] = []
+    for pipeline in pipelines:
+        out.extend(ranked[pipeline][:guarantee])
+    chosen = {m["model_id"] for m in out}
+    rest = [m for p in pipelines for m in ranked[p] if m["model_id"] not in chosen]
+    rest.sort(key=_rank, reverse=True)
+    out.extend(rest[:max(0, limit - len(out))])
+    out.sort(key=_rank, reverse=True)
 
     res = {
         "models": out[:limit],
         "offline": False,
         "sort": sort,
+        "pipelines": list(pipelines),
         # How many carry a restricted-origin label, whether or not they were shown — so the
         # UI can say "12 from CN/AE" rather than the user having to count flags.
         "restricted_count": restricted_n,

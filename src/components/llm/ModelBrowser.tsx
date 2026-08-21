@@ -18,12 +18,50 @@ import { API_BASE_URL, localFetch } from '../../services/api';
 type Sort = 'trendingScore' | 'downloads' | 'likes' | 'lastModified' | 'createdAt';
 type RoleFilter = '' | 'main' | 'fast' | 'vision' | 'embedding' | 'image';
 
+/** Who published this checkpoint. The account is a fact; the country is only claimed when
+ *  the account is one we actually know — there is no publisher-country signal in HF
+ *  metadata, and guessing put a 🇨🇳 flag on a US company's model. */
+interface Publisher {
+  account: string; vendor: string; country: string; flag: string;
+  known: boolean; repackager: boolean;
+}
+/** What the weights derive from — a separate question from who published them. */
+interface Lineage {
+  vendor: string; country: string; flag: string; org: string;
+  source: '' | 'base_model' | 'architecture' | 'name'; known: boolean;
+}
 interface Origin {
-  vendor: string; country: string; flag: string; allowed: boolean; org: string;
-  /** The publishing account, shown when the lineage could not be established. */
+  publisher: Publisher;
+  lineage: Lineage;
+  /** Publisher's flag when the account is known, else the lineage flag. Never a guess. */
+  flag: string;
+  allowed: boolean;
+  /** Every country this model touches — what the origin filter matches on. */
+  countries: string[];
+  vendor: string; country: string; org: string;
   lab?: string;
-  /** False when origin is a guess from the repo name rather than a resolved lineage. */
   verified?: boolean;
+}
+
+const LINEAGE_SOURCE: Record<string, string> = {
+  base_model: 'the base-model tag the publisher declared',
+  architecture: 'the model architecture, which has to match the weights',
+  name: 'a naming convention — the weakest signal',
+};
+
+function publisherTitle(p: Publisher): string {
+  if (p.repackager) {
+    return `${p.account} republishes other labs' weights (quantising, converting to MLX). `
+      + `The account says nothing about who trained this model — see what it's based on.`;
+  }
+  if (p.known) return `Published by ${p.vendor}${p.country ? ` (${p.country})` : ''}.`;
+  return `Published by the account “${p.account}”. No confirmed country for it, so none is shown.`;
+}
+
+function lineageTitle(l: Lineage): string {
+  if (!l.known) return 'Could not establish what these weights derive from.';
+  return `Weights derive from ${l.vendor}${l.country ? ` (${l.country})` : ''}, `
+    + `resolved from ${LINEAGE_SOURCE[l.source] || 'available metadata'}.`;
 }
 interface Fit { verdict: 'fits' | 'tight' | 'over' | 'unknown'; needed_gb?: number; budget_gb?: number }
 interface Caps { text: boolean; vision: boolean; embedding: boolean; image: boolean; audio: boolean }
@@ -335,18 +373,16 @@ export function ModelBrowser() {
                       {m.name}
                     </button>
                     <div className="text-xs text-gray-500 dark:text-gray-400 truncate">
-                      <span
-                        title={
-                          m.origin.verified === false
-                            ? `Origin not established — no base-model or architecture tag. "${m.origin.lab || m.origin.vendor}" is the publishing account, not necessarily who trained it.`
-                            : `${m.origin.vendor}${m.origin.country ? ` · ${m.origin.country}` : ''}`
-                        }
-                      >
-                        {m.origin.flag} {m.origin.vendor}
-                        {m.origin.verified === false && (
-                          <span className="ml-1 text-gray-400 dark:text-gray-500">· lab, origin unverified</span>
-                        )}
+                      <span title={publisherTitle(m.origin.publisher)}>
+                        {m.origin.publisher.known && m.origin.publisher.flag
+                          ? `${m.origin.publisher.flag} ` : ''}
+                        {m.origin.publisher.vendor}
                       </span>
+                      {m.origin.lineage.known && (
+                        <span className="ml-2" title={lineageTitle(m.origin.lineage)}>
+                          ↳ based on {m.origin.lineage.vendor} {m.origin.lineage.flag}
+                        </span>
+                      )}
                       {m.license && <span className="ml-2">· {m.license}</span>}
                     </div>
                   </div>
@@ -447,8 +483,15 @@ function ModelCard({ model, loading, onClose, onDownload, download }: {
         <div className="p-4 space-y-3 overflow-y-auto">
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
             <Stat
-              label={model.origin.verified === false ? 'Lab (origin unverified)' : 'Origin'}
-              value={`${model.origin.flag} ${model.origin.vendor}`}
+              label="Published by"
+              value={`${model.origin.publisher.known && model.origin.publisher.flag
+                ? `${model.origin.publisher.flag} ` : ''}${model.origin.publisher.vendor}`}
+            />
+            <Stat
+              label="Based on"
+              value={model.origin.lineage.known
+                ? `${model.origin.lineage.flag} ${model.origin.lineage.vendor}`
+                : 'not established'}
             />
             <Stat label="Size" value={model.size_gb != null ? `${model.size_gb} GB` : 'unknown'} />
             <Stat label="Downloads" value={compact(model.downloads)} />
