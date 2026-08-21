@@ -130,11 +130,16 @@ done
 # tsc needs node_modules; ensure the frontend toolchain is present. This is
 # idempotent with Step 2's `npm install` below (a no-op when already satisfied),
 # so it neither reorders nor replaces that step — it just guarantees tsc can run.
+#
+# This used to be gated on `[ ! -d node_modules ]`, which tests PRESENCE, not freshness.
+# After a `git pull` that adds a dependency, the directory exists but is missing the new
+# package, so the install was skipped and tsc failed on it — reported 2026-08-21 by a
+# remote tester upgrading from v2.1.1: the pull brought the first frontend tests with it,
+# and the gate died on `TS2307: Cannot find module 'vitest'` before Step 2 could install
+# it. Always run the install; npm is a fast no-op when the tree already satisfies the lock.
 echo -e "\n${YELLOW}Pre-build typecheck (tsc --noEmit)...${NC}"
-if [ ! -d "node_modules" ]; then
-    echo -e "${YELLOW}  Installing frontend deps so the typecheck can run...${NC}"
-    npm install --silent
-fi
+echo -e "${YELLOW}  Syncing frontend deps so the typecheck sees anything the pull added...${NC}"
+npm install --silent
 if npx tsc --noEmit; then
     echo -e "${GREEN}✓ TypeScript typecheck passed${NC}"
 else

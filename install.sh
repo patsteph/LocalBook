@@ -1072,8 +1072,15 @@ print(f'cached at: {local_dir}')
         info "Current version:  ${BOLD}v${current_ver}${NC}"
 
         # Fetch latest branch + all tags so we can resolve the target release tag.
+        # MUST include the TRACKED branch, not just master: under `--branch dev` the
+        # comparison below resolves `origin/dev`, and if that ref was never fetched it is
+        # stale (or absent), so the check either reports "already up to date" against old
+        # code or upgrades to it. Same failure clone_repo guards against — this path was
+        # missed. (Reported 2026-08-21.)
         info "Checking for updates..."
-        git fetch origin "$REPO_BRANCH" --tags 2>/dev/null || git fetch --tags 2>/dev/null
+        local fetch_refs=("$REPO_BRANCH")
+        [ "$TRACK_BRANCH" != "$REPO_BRANCH" ] && fetch_refs=("$TRACK_BRANCH" "$REPO_BRANCH")
+        git fetch origin "${fetch_refs[@]}" --tags 2>/dev/null || git fetch --tags 2>/dev/null
 
         # Resolve the ref we should upgrade to (latest release tag by default;
         # a branch HEAD under --dev/--branch; branch fallback if no tag resolves).
