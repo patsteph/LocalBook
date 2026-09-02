@@ -2,11 +2,70 @@
 
 All notable changes to LocalBook will be documented in this file.
 
-## v2.2.0 — Journey Canvas, next-gen Infographics, Quality Signals Phase 2 *(in progress — unreleased)*
+## v2.3.0 — MLX-only engine, Model Browser
 
-> **Unreleased — assembled as the cycle lands; promoted to the tagged release at ship time.** Since
-> v2.2.0 the installer pins to the latest **release tag** (see *Changed*), so this reaches users only
-> when v2.2.0 is tagged. Ollama-default behavior is unchanged where untouched.
+**LocalBook no longer uses Ollama.** One in-process MLX engine now serves every role — chat,
+vision, image generation, and embeddings — so there is no second inference server to install,
+start, or keep in sync. Models are managed inside the app.
+
+Users upgrading from v2.1.1 also receive everything from the v2.2.0 development line, which was
+never tagged; its notes are kept in full below.
+
+### Added
+- **Model Browser + download manager** in LLM Studio: live Hugging Face search filtered to MLX
+  models, sortable by trending / downloads / likes / recency, with a fit badge computed from the
+  checkpoint's real weight size against this Mac's addressable GPU working set, a capability and
+  role read (main / fast / vision / embedding / image), a model-card popup, and an in-app download
+  queue.
+- **Origin labelling.** Every model shows who published it and what its weights derive from, as
+  two separate facts. A publisher country is claimed only for accounts we can actually identify;
+  lineage is resolved from the model architecture, so a fine-tune republished under another
+  account is still attributed to its base. An optional origin filter is offered. **Nothing is
+  hidden and no download is blocked** — the browser shows what exists and the user decides.
+
+### Changed
+- **One model per role**, each holding an MLX checkpoint id: `main_model`, `fast_model`,
+  `vision_model`, `image_model`, `embedding_model`. The paired Ollama/MLX settings and the
+  per-role engine flags are gone. Preferences migrate automatically.
+- The **llama-server sidecar is removed**, along with the Ollama transport, startup pre-flight,
+  health checks, warmup, capability probing, and the model pulls that ran after every build.
+- Startup no longer requires any model to be present, and nothing is auto-downloaded.
+- EPUB books are read in **spine (reading) order** with their heading structure preserved, rather
+  than in manifest order and flattened. DRM-protected files are detected and declined.
+
+### Fixed
+- **The app could not launch** — a startup banner printed a setting deleted in the config
+  collapse, which raised inside a background task, so the backend served HTTP but never reported
+  ready and the shell restarted it every ~30s, with a clean log. Now covered by a static check
+  that resolves every `settings.<attr>` against the model, including in `main.py`.
+- **Bulk embedding exceeded the Metal buffer cap.** Attention is O(batch × seq²) and every
+  sequence in a batch is padded to the longest, so one long document could ask for tens of GB and
+  fail the whole batch. Embedding batches are now grouped by attention cost against a
+  working-set-derived budget. Vectors are unchanged, so no re-indexing is required.
+- The canvas silently fell back to a flat grid whenever that embedding failure occurred, because
+  a failed embed reads as "no topics" and no topics reads as "use the grid". Clustering is
+  restored.
+- The config collapse had disabled **every** embedding call; 148 zero vectors written during that
+  window were repaired.
+- Model weight sizing missed multi-component diffusion layouts and `.npz`/`.bin` checkpoints, so
+  downloaded models could report as absent.
+- Deep-dive source quality scoring parsed LLM JSON by hand and fell back silently on any
+  malformation; it now goes through the shared repair path.
+- `build.sh` stages the app and swaps it atomically, restoring the previous build on failure, and
+  syncs frontend dependencies before the typecheck so a pull that adds one doesn't break the
+  build. `install.sh --branch <name>` now fetches the branch it is asked to track.
+
+### Removed
+- `ebooklib` (AGPL-3.0), which was shipping inside the signed app. EPUB is read with the standard
+  library and `lxml`.
+
+---
+
+## v2.2.0 — Journey Canvas, next-gen Infographics, Quality Signals Phase 2 *(shipped as part of v2.3.0)*
+
+> Developed as its own cycle but never tagged; released to users inside **v2.3.0**. Notes are
+> preserved in full. Where these entries describe Ollama-era behaviour, see v2.3.0 above — that
+> engine is gone.
 
 The big-surface release: a living per-notebook **Journey Canvas**, a **next-generation infographic**
 system (four lanes + a content-shape router + a Library home), **Quality Signals Phase 2** (the full

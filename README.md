@@ -25,7 +25,7 @@ Chat with your documents using AI — completely offline and private. Upload PDF
 
 ---
 
-## 🎉 What's New in v2.1.1
+## 🎉 What's New in v2.3.0
 A contained fix for a memory-pressure bug in the v2.1.0 MLX path. With all engine roles set to MLX,
 the `model_warmup` service still kept the **Ollama twins** of MLX-served models resident (~4 GB on an
 18 GB machine) — it only distinguished Ollama vs the llama-server sidecar, never Ollama vs in-process
@@ -188,7 +188,7 @@ To upgrade an existing install, append `-- --upgrade`.
 
 ### Option 2: Download Release
 
-1. Download `LocalBook-v2.1.1.zip` from [Releases](https://github.com/patsteph/LocalBook/releases)
+1. Download `LocalBook-v2.3.0.zip` from [Releases](https://github.com/patsteph/LocalBook/releases)
 2. Unzip and drag `LocalBook.app` to `/Applications`
 3. Launch LocalBook — it will download required AI models on first run
 
@@ -238,7 +238,7 @@ The **LocalBook Companion** extension lets you use LocalBook while browsing the 
 
 ### Installation
 
-1. Download `LocalBook-Extension-v2.1.1.zip` from [Releases](https://github.com/patsteph/LocalBook/releases)
+1. Download `LocalBook-Extension-v2.3.0.zip` from [Releases](https://github.com/patsteph/LocalBook/releases)
 2. Unzip to a folder (e.g., `~/LocalBook-Extension`)
 3. Open Chrome/Edge and go to `chrome://extensions`
 4. Enable **Developer mode** (toggle in top right)
