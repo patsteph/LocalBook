@@ -9,13 +9,14 @@ Three modes:
 All modes deduplicate against existing notebook sources before presenting results.
 """
 import asyncio
-import json
 import logging
 import re
 import time
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
 from typing import Dict, List, Optional, Any
+
+from utils.json_repair import robust_json_parse
 
 logger = logging.getLogger(__name__)
 
@@ -363,14 +364,25 @@ Respond with ONLY valid JSON:
                     temperature=0.0,
                     timeout=15.0,
                 )
-                raw = resp.get("response", "").strip()
-                if raw.startswith("```"):
-                    raw = raw.split("\n", 1)[1] if "\n" in raw else raw[3:]
-                    if raw.endswith("```"):
-                        raw = raw[:-3]
-                    raw = raw.strip()
+                # Centralization Rule: LLM JSON goes through robust_json_parse, never a
+                # hand-rolled fence stripper + bare json.loads. The old code here handled
+                # exactly one failure shape (a ``` fence) and threw on every other one —
+                # preamble, a trailing comma, a truncated object — landing in the `except`
+                # below, which silently keeps the heuristic score. A deep dive would rank
+                # its sources on a scoring path that had quietly stopped running.
+                scores = robust_json_parse(
+                    resp.get("response", ""),
+                    expect="object",
+                    fallback=None,
+                    label="research_engine.quality",
+                )
+                if not isinstance(scores, dict):
+                    logger.warning(
+                        f"[research] quality eval returned no usable JSON for {result.url} "
+                        f"— keeping heuristic score"
+                    )
+                    continue
 
-                scores = json.loads(raw)
                 llm_score = (
                     scores.get("relevance", 0.5) * 0.4
                     + scores.get("depth", 0.5) * 0.3

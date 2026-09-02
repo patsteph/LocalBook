@@ -108,8 +108,6 @@ dlinfo==2.0.0
     #   phonemizer
 docopt==0.6.2
     # via num2words
-ebooklib==0.20
-    # via -r requirements.in
 et-xmlfile==2.0.0
     # via openpyxl
 fastapi==0.128.0
@@ -246,7 +244,6 @@ loguru==0.7.3
     # via -r requirements.in
 lxml[html-clean]==6.0.2
     # via
-    #   ebooklib
     #   htmldate
     #   justext
     #   lxml-html-clean
@@ -567,7 +564,6 @@ simplejson==3.19.3
     # via mail-parser
 six==1.17.0
     # via
-    #   ebooklib
     #   mail-parser
     #   python-dateutil
 smart-open==7.5.1

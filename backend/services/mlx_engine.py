@@ -917,7 +917,19 @@ class MLXEngine:
         format: Optional[str] = None, stop: Optional[List[str]] = None,
         images: Optional[List[str]] = None, **kwargs: Any,
     ) -> Dict[str, Any]:
-        """Non-streaming text generate → Ollama-shaped dict. Routes gemma→mlx-vlm, phi→mlx-lm."""
+        """Non-streaming text generate → Ollama-shaped dict. Routes gemma→mlx-vlm, phi→mlx-lm.
+
+        `num_ctx` is ACCEPTED AND DELIBERATELY IGNORED — do not "fix" this by wiring it up.
+        It is an Ollama-shaped parameter kept so the ~12 call sites need not change. MLX uses
+        the model's own window, and honouring the Ollama cap here re-creates the live quality
+        bug fixed on 2026-08-18: `llm_service` sized `num_ctx` from `effective_num_ctx_cap`
+        and clamped `num_predict` to fit, truncating long-form MLX output against a limit that
+        does not apply to it. Pinned by tests/test_llm_service_mlx_num_predict.py.
+
+        Consequence worth knowing: the "16K deployed context" figure is a SIZING assumption
+        used for the memory budget (LOCALBOOK_MLX_BUDGET_CTX), not an enforced ceiling. Nothing
+        here truncates a long conversation before the documented performance cliff.
+        """
         kind = self._model_kind(model)
         pair = await self._load(model)
         lock = self._model_locks.setdefault(model, asyncio.Lock())
@@ -1005,7 +1017,11 @@ class MLXEngine:
     ) -> AsyncIterator[Dict[str, Any]]:
         """Streaming text generate → yields Ollama-shaped chunks. Wave 9.2 (main/gemma via
         mlx-vlm; fast/phi via mlx-lm). Bridges the blocking MLX generator to async via an
-        asyncio.Queue fed with call_soon_threadsafe (no per-token thread round-trip)."""
+        asyncio.Queue fed with call_soon_threadsafe (no per-token thread round-trip).
+
+        `num_ctx` is accepted and deliberately ignored here too — see `generate` above for why
+        wiring it up would regress a fixed bug.
+        """
         kind = self._model_kind(model)
         pair = await self._load(model)
         lock = self._model_locks.setdefault(model, asyncio.Lock())
