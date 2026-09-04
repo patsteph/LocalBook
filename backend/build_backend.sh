@@ -380,7 +380,6 @@ python -W ignore -m PyInstaller \
     --hidden-import=openai \
     --hidden-import=multiprocessing \
     --hidden-import=rank_bm25 \
-    --hidden-import=ebooklib \
     --hidden-import=nbformat \
     --hidden-import=odf \
     --hidden-import=pytesseract \

@@ -144,11 +144,39 @@ def test_an_empty_book_reports_no_text_rather_than_returning_nothing():
 
 def test_the_agpl_dependency_stays_gone():
     """requirements.in refuses aioimaplib (GPL-3.0) for the bundled .app; ebooklib is AGPL and
-    was shipping anyway. Re-adding it would reintroduce the same conflict."""
+    was shipping anyway. Re-adding it would reintroduce the same conflict.
+
+    Checks the BUILD SCRIPTS as well as requirements, because dropping the import was not
+    sufficient: `build_backend.sh` carried an explicit `--hidden-import=ebooklib`, so
+    PyInstaller kept bundling it into the signed app with nothing in the source tree importing
+    it. Verified by extracting the PYZ from the built binary — the source check alone passed
+    while the artifact still shipped it.
+    """
     import pathlib
 
-    reqs = pathlib.Path(__file__).resolve().parent.parent / "requirements.in"
-    body = "\n".join(
-        line for line in reqs.read_text().splitlines() if not line.strip().startswith("#")
-    )
-    assert "ebooklib" not in body.lower(), "ebooklib is back in requirements.in"
+    root = pathlib.Path(__file__).resolve().parent.parent
+
+    def _uncommented(path: pathlib.Path) -> str:
+        return "\n".join(
+            line for line in path.read_text().splitlines()
+            if not line.strip().startswith("#")
+        ).lower()
+
+    assert "ebooklib" not in _uncommented(root / "requirements.in"), \
+        "ebooklib is back in requirements.in"
+    assert "ebooklib" not in _uncommented(root / "build_backend.sh"), \
+        "build_backend.sh forces ebooklib into the bundle via --hidden-import"
+    assert "ebooklib" not in _uncommented(root.parent / "build.sh"), \
+        "build.sh still expects ebooklib to be installed"
+
+
+def test_extraction_works_without_ebooklib_installed():
+    """The point of the swap. If this ever fails with ImportError, something reintroduced the
+    dependency rather than reading the container directly."""
+    import importlib
+
+    with pytest.raises(ImportError):
+        importlib.import_module("ebooklib")
+
+    out = asyncio.run(DocumentProcessor()._extract_from_epub(SCRAMBLED))
+    assert "Chapter One" in out

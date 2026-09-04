@@ -189,7 +189,8 @@ if [ ! -f "$BACKEND_EXE" ] || [ "$DO_REBUILD" = true ] || [ "$DO_CLEAN" = true ]
     echo -e "${YELLOW}Verifying critical packages...${NC}"
     MISSING=""
     python -c "import rank_bm25" 2>/dev/null || MISSING="$MISSING rank-bm25"
-    python -c "import ebooklib" 2>/dev/null || MISSING="$MISSING ebooklib"
+    # EPUB is read with the stdlib zipfile + lxml — ebooklib (AGPL-3.0) is deliberately gone.
+    python -c "import lxml" 2>/dev/null || MISSING="$MISSING lxml"
     python -c "import odf" 2>/dev/null || MISSING="$MISSING odfpy"
     python -c "import nbformat" 2>/dev/null || MISSING="$MISSING nbformat"
     python -c "import misaki" 2>/dev/null || MISSING="$MISSING misaki"
