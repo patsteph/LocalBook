@@ -26,19 +26,83 @@ Chat with your documents using AI — completely offline and private. Upload PDF
 ---
 
 ## 🎉 What's New in v2.3.0
-A contained fix for a memory-pressure bug in the v2.1.0 MLX path. With all engine roles set to MLX,
-the `model_warmup` service still kept the **Ollama twins** of MLX-served models resident (~4 GB on an
-18 GB machine) — it only distinguished Ollama vs the llama-server sidecar, never Ollama vs in-process
-MLX. So gemma (and the embedding model) loaded twice: once in MLX, once in Ollama. Ollama-default
-installs are unaffected.
+**LocalBook no longer uses Ollama.** One in-process MLX engine now serves every role — chat,
+vision, image generation, and embeddings — so there is no second inference server to install,
+start, or keep in sync. Models are managed inside the app.
+Users upgrading from v2.1.1 also receive everything from the v2.2.0 development line, which was
+never tagged; its notes are kept in full below.
+### Added
+- **Model Browser + download manager** in LLM Studio: live Hugging Face search filtered to MLX
+  models, sortable by trending / downloads / likes / recency, with a fit badge computed from the
+  checkpoint's real weight size against this Mac's addressable GPU working set, a capability and
+  role read (main / fast / vision / embedding / image), a model-card popup, and an in-app download
+  queue.
+- **Origin labelling.** Every model shows who published it and what its weights derive from, as
+  two separate facts. A publisher country is claimed only for accounts we can actually identify;
+  lineage is resolved from the model architecture, so a fine-tune republished under another
+  account is still attributed to its base. An optional origin filter is offered. **Nothing is
+  hidden and no download is blocked** — the browser shows what exists and the user decides.
+### Changed
+- **One model per role**, each holding an MLX checkpoint id: `main_model`, `fast_model`,
+  `vision_model`, `image_model`, `embedding_model`. The paired Ollama/MLX settings and the
+  per-role engine flags are gone. Preferences migrate automatically.
+- The **llama-server sidecar is removed**, along with the Ollama transport, startup pre-flight,
+  health checks, warmup, capability probing, and the model pulls that ran after every build.
+- Startup no longer requires any model to be present, and nothing is auto-downloaded.
+- EPUB books are read in **spine (reading) order** with their heading structure preserved, rather
+  than in manifest order and flattened. DRM-protected files are detected and declined.
 ### Fixed
-- **Warmup now honors the MLX engine flags.** `model_warmup` skips warming an Ollama model whose role
-  (`main` / `fast` / `embed`) is served in-process by MLX, mirroring the llm_service runtime decision
-  (`{role}_engine == "mlx"` AND `mlx_engine.available()`). Fallback-safe: if MLX is configured but
-  unavailable, calls fall back to Ollama and its model is still warmed. Also reconciles the legacy
-  the legacy embeddings flag with the engine selection. Net effect on an all-MLX box: Ollama no longer
-  holds a redundant ~4 GB resident and the periodic memory-pressure log lines stop.
+- **HTTPS failed entirely on networks that inspect TLS.** Such a network re-signs every
+  connection with its own root certificate; macOS trusts it, so Safari and the browser extension
+  work, but Python verified against a bundle of public roots only and rejected all of them. The
+  visible symptom was the model browser reporting "Could not reach Hugging Face" on a Mac with a
+  working connection, but model downloads, the embedding checkpoint, the reranker and article
+  fetching were affected the same way. TLS is now verified against the system trust store, the
+  same one `curl` uses. Untrusted and expired certificates are still rejected.
+- **Every evaluation run failed immediately** with `name '_mlx_embed' is not defined`. The config
+  collapse removed the per-role engine setting but left one reader behind, in the gate that used
+  to decide whether to probe Ollama for an embeddings endpoint. There is no second engine to
+  probe now, so the gate is gone.
+- **Mermaid diagrams could not be rendered to images** — the shared-browser refactor removed the
+  render page but not the code reading it, so PPTX and image export raised on every diagram. The
+  page is rebuilt from the vendored copy of mermaid.js, which keeps it working offline and inside
+  the app bundle.
+- **Bulk-approving correspondent queue items failed** — a missing type import left the request
+  model unbuildable.
+- **`/system/model-readiness` could report ready while the engine was dead.** The same config
+  collapse orphaned a name in the engine check, and the error was swallowed by the surrounding
+  `except`. This is the endpoint the troubleshooting docs reach for first.
+- Diagnostic logging in the health portal referenced a logger that was never defined, so several
+  repair and check paths raised instead of reporting.
+- **A failed model browse said "check your connection" no matter what went wrong.** Rate limiting,
+  a refused request and a rejected certificate now each say so, and the log keeps the underlying
+  error rather than only its type — the two failures that matter most are indistinguishable by
+  type alone.
+- **The app could not launch** — a startup banner printed a setting deleted in the config
+  collapse, which raised inside a background task, so the backend served HTTP but never reported
+  ready and the shell restarted it every ~30s, with a clean log. Now covered by a static check
+  that resolves every `settings.<attr>` against the model, including in `main.py`.
+- **Bulk embedding exceeded the Metal buffer cap.** Attention is O(batch × seq²) and every
+  sequence in a batch is padded to the longest, so one long document could ask for tens of GB and
+  fail the whole batch. Embedding batches are now grouped by attention cost against a
+  working-set-derived budget. Vectors are unchanged, so no re-indexing is required.
+- The canvas silently fell back to a flat grid whenever that embedding failure occurred, because
+  a failed embed reads as "no topics" and no topics reads as "use the grid". Clustering is
+  restored.
+- The config collapse had disabled **every** embedding call; 148 zero vectors written during that
+  window were repaired.
+- Model weight sizing missed multi-component diffusion layouts and `.npz`/`.bin` checkpoints, so
+  downloaded models could report as absent.
+- Deep-dive source quality scoring parsed LLM JSON by hand and fell back silently on any
+  malformation; it now goes through the shared repair path.
+- `build.sh` stages the app and swaps it atomically, restoring the previous build on failure, and
+  syncs frontend dependencies before the typecheck so a pull that adds one doesn't break the
+  build. `install.sh --branch <name>` now fetches the branch it is asked to track.
+### Removed
+- `ebooklib` (AGPL-3.0), which was shipping inside the signed app. EPUB is read with the standard
+  library and `lxml`.
 
+---
 ---
 
 ## v1.8.0 — Studio Redesign, iPhone Scan Capture, Sidecar Lifecycle, Multi-Provider LLM
