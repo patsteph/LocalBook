@@ -137,9 +137,9 @@ class DigestMixin:
                     # not compete with the user's gemma query. Deadlock-proof.
                     from services.memory_steward import await_background_clearance
                     await await_background_clearance()
-                    response = await ollama_service.generate(
+                    response = await llm_runtime.generate(
                         prompt=prompt,
-                        model=settings.ollama_fast_model,
+                        model=settings.fast_model,
                         temperature=0.3,
                         timeout=30.0,
                         num_predict=200,

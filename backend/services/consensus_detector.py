@@ -70,8 +70,8 @@ async def _embed(text: str) -> List[float]:
     if not text or not text.strip():
         return []
     try:
-        from services.ollama_service import ollama_service
-        result = await ollama_service.embed(text=text[:2000])
+        from services.llm_runtime import llm_runtime
+        result = await llm_runtime.embed(text=text[:2000])
     except Exception as e:
         logger.debug(f"[consensus_detector] embed failed: {e}")
         return []
@@ -84,13 +84,13 @@ async def _embed_many(texts: List[str]) -> List[List[float]]:
     concurrent single embeds that serialized on the embed lane (2026-06-30 perf
     fix). Blank inputs and failures map to [] so the clustering's empty-vector skip
     still holds (a zero-fill would divide-by-zero in _cosine)."""
-    from services.ollama_service import ollama_service
+    from services.llm_runtime import llm_runtime
     idx = [(i, t[:2000]) for i, t in enumerate(texts) if t and t.strip()]
     out: List[List[float]] = [[] for _ in texts]
     if not idx:
         return out
     try:
-        vecs = await ollama_service.embed_batch([t for _, t in idx])
+        vecs = await llm_runtime.embed_batch([t for _, t in idx])
     except Exception as e:
         logger.debug(f"[consensus_detector] batch embed failed: {e}")
         return out

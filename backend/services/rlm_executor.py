@@ -56,12 +56,10 @@ class RLMExecutor:
         root_model: str = None,
         sub_model: str = None,
         max_iterations: int = 15,
-        ollama_url: str = None
     ):
-        self.root_model = root_model or settings.ollama_model
-        self.sub_model = sub_model or settings.ollama_fast_model
+        self.root_model = root_model or settings.main_model
+        self.sub_model = sub_model or settings.fast_model
         self.max_iterations = max_iterations
-        self.ollama_url = ollama_url or settings.ollama_base_url
         
     async def analyze_notebook(
         self,
@@ -300,13 +298,13 @@ answer_ready = True
     
     async def _call_root_llm(self, messages: List[Dict]) -> str:
         """Call root LLM for orchestration."""
-        from services.ollama_service import ollama_service
+        from services.llm_runtime import llm_runtime
         # Convert to Ollama format
         prompt = "\n\n".join([
             f"{m['role'].upper()}: {m['content']}"
             for m in messages
         ])
-        _resp = await ollama_service.generate(
+        _resp = await llm_runtime.generate(
             prompt=prompt,
             model=self.root_model,
             temperature=0.3,
@@ -317,8 +315,8 @@ answer_ready = True
 
     async def _sub_llm_call(self, chunk: str, question: str) -> str:
         """Call sub-LLM for chunk analysis."""
-        from services.ollama_service import ollama_service
-        _resp = await ollama_service.generate(
+        from services.llm_runtime import llm_runtime
+        _resp = await llm_runtime.generate(
             prompt=f"Context:\n{chunk[:3000]}\n\nQuestion: {question}\n\nAnswer concisely:",
             model=self.sub_model,
             temperature=0.1,

@@ -8,14 +8,14 @@ from evaluator.models import EvalResult
 async def run(notebook_id: str, config: dict, combo_name: str, hw_fingerprint: str) -> list[EvalResult]:
     """Run fast follow-up tests: fast model (direct generate) + main model (RAG query)."""
     from services.rag_engine import rag_engine
-    from services.ollama_service import ollama_service
+    from services.llm_runtime import llm_runtime
     from config import settings
 
     results = []
     q = config["queries"]["followup"]
 
     # ── Test 1: Fast Model (direct generate, no RAG overhead) ─────────────
-    fast_model = getattr(settings, 'ollama_fast_model', settings.ollama_model)
+    fast_model = getattr(settings, 'fast_model', settings.main_model)
     result_fast = EvalResult(
         test_id="fast_followup_fast_model",
         category="fast_followup",
@@ -28,7 +28,7 @@ async def run(notebook_id: str, config: dict, combo_name: str, hw_fingerprint: s
 
     try:
         start = time.time()
-        response = await ollama_service.generate(
+        response = await llm_runtime.generate(
             prompt=f"Summarize the following in 3 bullet points:\n\n{q['question']}",
             model=fast_model,
             num_predict=150,
@@ -64,7 +64,7 @@ async def run(notebook_id: str, config: dict, combo_name: str, hw_fingerprint: s
     results.append(result_fast)
 
     # ── Test 2: Main Model (full RAG query) ────────────────────────────────
-    main_model = settings.ollama_model
+    main_model = settings.main_model
     result_main = EvalResult(
         test_id="fast_followup_main_model",
         category="fast_followup",

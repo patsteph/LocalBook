@@ -24,16 +24,19 @@ import type { Artifact } from '../types/artifact';
 // user       = violet  (bold; drawn by the user)
 // curator    = lavender(dashed; proposed by the curator brain)
 // researched = rose     (backed by an idle-research finding; may carry an insight)
-export type EdgeState = 'candidate' | 'provenance' | 'user' | 'curator' | 'researched';
+export type EdgeState = 'candidate' | 'provenance' | 'user' | 'curator' | 'researched' | 'tension';
 
 export interface CanvasNode {
   id: string;
   x: number;
   y: number;
+  /** Node role. Thread nodes are `chat`/`source`/`artifact`/…; a `'topic'`
+   *  node is a GROUP CARD container whose children position RELATIVE to it. */
   kind: string;
   ref_type: string;
   ref_id: string;
-  /** The renderable body — an Artifact envelope. */
+  /** The renderable body — an Artifact envelope. Topic cards carry a
+   *  `json:topic-card` snapshot `{ payload: { title, synthesis, count } }`. */
   snapshot: Artifact;
   title: string;
   z: number;
@@ -41,6 +44,14 @@ export interface CanvasNode {
   /** Optional persisted dimensions (round-tripped via the full-layout PUT). */
   width?: number;
   height?: number;
+  /** The topic this thread belongs to (null when it's an orphan). */
+  topic_id?: string | null;
+  /** The react-flow parent (a `topic:<tid>` card id) when this thread sits
+   *  INSIDE a card — its x,y are then RELATIVE to the card. null = orphan
+   *  (absolute position in a lane). */
+  parent_id?: string | null;
+  /** P4 — the user's elicited "what were you exploring here?" answer (null until asked). */
+  intent?: string | null;
 }
 
 export interface CanvasEdge {
@@ -90,6 +101,38 @@ export interface CanvasCandidate {
   score: number;
   signal: 'concept' | 'embed' | 'shared_source';
 }
+
+// Run R3 — a weakly-answered question surfaced as "what to explore next."
+export interface CanvasGap {
+  query: string;
+  reason: string;
+  topics: string[];
+  ref_id: string;
+}
+
+// Run R2 — answer from chatting with a selection (RAG scoped to the selection's sources).
+export interface CanvasChatResult {
+  answer: string;
+  sources: string[];
+  source_ids: string[];
+  scoped: boolean;
+}
+
+// Run R1 — a learning node due for spaced-repetition review.
+export interface RecallItem {
+  id: string;
+  title: string;
+  snapshot: Artifact;
+  ref_type: string;
+  reps: number;
+  overdue: number;
+}
+export interface RecallResult {
+  due: RecallItem[];
+  due_count: number;
+  total: number;
+}
+export type RecallGrade = 'again' | 'good' | 'easy';
 
 // ─── Debounce helper (per-key trailing-edge) ─────────────────────────────────
 // Keeps drag (per-node) and viewport (single) write-backs off the hot path.
@@ -234,4 +277,65 @@ export const canvasService = {
     });
     return asJson<CanvasLayout>(resp, 'autoConnect');
   },
+
+  // Run R3 — gap detection: questions the notebook answered weakly ("what to explore next").
+  async getGaps(notebookId: string): Promise<CanvasGap[]> {
+    const resp = await localFetch(`${API_BASE_URL}/canvas/gaps/${notebookId}`);
+    const data = await asJson<{ gaps: CanvasGap[] }>(resp, 'getGaps');
+    return data.gaps ?? [];
+  },
+
+  // Run R2 — chat with a selection: RAG scoped to the sources behind the selected nodes.
+  async chat(
+    notebookId: string,
+    query: string,
+    nodes: { ref_type?: string | null; ref_id?: string | null }[],
+  ): Promise<CanvasChatResult> {
+    const resp = await localFetch(`${API_BASE_URL}/canvas/chat/${notebookId}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query, nodes }),
+    });
+    return asJson<CanvasChatResult>(resp, 'chat');
+  },
+
+  // Run R1 — recall: learning nodes due for spaced-repetition review.
+  async getRecall(notebookId: string): Promise<RecallResult> {
+    const resp = await localFetch(`${API_BASE_URL}/canvas/recall/${notebookId}`);
+    return asJson<RecallResult>(resp, 'getRecall');
+  },
+
+  async reviewRecall(notebookId: string, nodeId: string, grade: RecallGrade): Promise<void> {
+    await localFetch(`${API_BASE_URL}/canvas/recall/${notebookId}/${nodeId}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ grade }),
+    });
+  },
+
+  // P4 — orphan intent-elicitation: the user answers "what were you exploring here?" on an orphan
+  // thread. The backend stores the intent, tries to JOIN the nearest sub-topic (accretive), and
+  // enqueues away-gated research. Returns the updated layout + nearest-topic suggestions.
+  async elicit(
+    notebookId: string, nodeId: string, intent: string,
+  ): Promise<ElicitResult> {
+    const resp = await localFetch(`${API_BASE_URL}/canvas/elicit/${notebookId}/${nodeId}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ intent }),
+    });
+    return asJson<ElicitResult>(resp, 'elicit');
+  },
 };
+
+export interface ElicitSuggestion {
+  id: string;
+  title: string;
+  score: number;
+}
+
+export interface ElicitResult {
+  layout: CanvasLayout;
+  suggestions: ElicitSuggestion[];
+  assigned_topic_id: string | null;
+}

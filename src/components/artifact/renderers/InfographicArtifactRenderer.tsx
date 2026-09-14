@@ -24,12 +24,29 @@ import { ChartRenderer, type ChartConfig } from '../../shared/ChartRenderer';
 import { INFOGRAPHIC_L2_CSS } from './infographicDesignSystem';
 import { buildRestyleCss, accentHex, type InfographicStyle } from './infographicRestyle';
 
+export interface InfographicAnchor {
+  x: number; // 0..1 fraction of the plot rect (left -> right)
+  y: number; // 0..1 fraction of the plot rect (top -> bottom)
+}
+
 export interface InfographicAnnotations {
   callout_text?: string;
   callout_subtext?: string;
   primary_label?: string;
   baseline_label?: string;
   midpoint_note?: string;
+  // DATA ANCHORS (0..1 plot-rect fractions) computed from the real series data
+  // by the builder — the model never emits coordinates (HARD RULE §2.1). Absent
+  // on older artifacts, in which case the fixed fallback positions are used.
+  anchors?: {
+    callout?: InfographicAnchor;
+    primary?: InfographicAnchor;
+    baseline?: InfographicAnchor;
+    midpoint?: InfographicAnchor;
+  };
+  // Real source id bound to the callout number (Hard Rule §2.6). "" when there
+  // is no provenance (a bare callout rather than a dangling superscript).
+  callout_cite?: string;
 }
 
 export interface InfographicSource {
@@ -61,6 +78,11 @@ export interface InfographicPayload {
   // Restyle overrides (accent / tone / scale / glow). Set by the tombstone;
   // rides in the payload so export mirrors the on-screen restyle.
   style?: InfographicStyle;
+  // L4-accent (gated, off by default): the decorative "glow crystal" variant
+  // name; for L2/L3 the spot is baked into body_html/scene_svg, for L1 the
+  // inner SVG (currentColor) rides in `accent_svg` for the renderer to overlay.
+  accent?: string;
+  accent_svg?: string;
 }
 
 const INK = '#1b1a18';
@@ -103,18 +125,52 @@ function Bracket({ pos }: { pos: 'tl' | 'tr' | 'bl' | 'br' }) {
   return <div style={{ ...base, ...map[pos] }} />;
 }
 
+// Plot-rect insets (fractions of the bordered chart box) used to map a 0..1
+// DATA anchor to a CSS percentage. Approximates the recharts plotting area
+// (y-axis on the left, x-axis labels at the bottom).
+const L1_PLOT = { l: 0.13, r: 0.955, t: 0.10, b: 0.84 };
+const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
+
+function anchorPct(a?: InfographicAnchor): { x: number; y: number } | null {
+  if (!a || typeof a.x !== 'number' || typeof a.y !== 'number') return null;
+  return {
+    x: (L1_PLOT.l + a.x * (L1_PLOT.r - L1_PLOT.l)) * 100,
+    y: (L1_PLOT.t + a.y * (L1_PLOT.b - L1_PLOT.t)) * 100,
+  };
+}
+
 function L1Chart({
   chart,
   annotations,
   height,
   accent,
+  cite,
+  accentSvg,
 }: {
   chart: ChartConfig;
   annotations: InfographicAnnotations;
   height: number;
   accent: string;
+  cite?: string;
+  accentSvg?: string;
 }) {
   const ann = annotations || {};
+  const anchors = ann.anchors || {};
+
+  // DATA-ANCHORED annotation positions (fall back to the historical fixed
+  // percentages when an older artifact carries no anchors).
+  const calloutPt = anchorPct(anchors.callout);
+  const primaryPt = anchorPct(anchors.primary);
+  const baselinePt = anchorPct(anchors.baseline);
+  const midPt = anchorPct(anchors.midpoint);
+
+  const calRight = calloutPt ? calloutPt.x >= 50 : true;
+  const calBoxTop = calloutPt ? clamp(calloutPt.y - 4, 3, 44) : undefined;
+  // Where the leader line touches the callout box (approx inner corner).
+  const leaderBox = calloutPt
+    ? { x: calRight ? 72 : 28, y: (calBoxTop ?? 6) + 11 }
+    : null;
+
   return (
     <div
       style={{
@@ -125,6 +181,7 @@ function L1Chart({
         borderRadius: 18,
         border: '1px solid #d8d5cd',
         padding: 18,
+        overflow: 'hidden',
       }}
     >
       <Bracket pos="tl" />
@@ -135,10 +192,34 @@ function L1Chart({
         <ChartRenderer config={chart} height={height} darkMode={false} />
       </div>
 
+      {/* L4-accent decorative spot (gated, off by default), tucked bottom-left */}
+      {accentSvg && (
+        <div
+          aria-hidden
+          style={{ position: 'absolute', bottom: 10, left: 12, width: 96, height: 96, color: accent, opacity: 0.85, pointerEvents: 'none' }}
+          dangerouslySetInnerHTML={{ __html: `<svg viewBox="0 0 100 100" style="width:100%;height:100%;overflow:visible">${accentSvg}</svg>` }}
+        />
+      )}
+
+      {/* Data-anchored leader: line from the callout box to the primary series
+          endpoint dot (the callout points at a REAL data point). */}
+      {calloutPt && leaderBox && ann.callout_text && (
+        <svg
+          viewBox="0 0 100 100"
+          preserveAspectRatio="none"
+          style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none' }}
+        >
+          <line x1={leaderBox.x} y1={leaderBox.y} x2={calloutPt.x} y2={calloutPt.y} stroke={accent} strokeWidth={0.4} strokeDasharray="1.4 1.4" vectorEffect="non-scaling-stroke" />
+          <circle cx={calloutPt.x} cy={calloutPt.y} r={0.9} fill={accent} vectorEffect="non-scaling-stroke" />
+        </svg>
+      )}
+
       {ann.callout_text && (
         <div
           style={{
-            position: 'absolute', top: 22, right: 26, maxWidth: 240,
+            position: 'absolute', maxWidth: 240,
+            top: calBoxTop !== undefined ? `${calBoxTop}%` : 22,
+            ...(calRight ? { right: '4%' } : { left: '4%' }),
             background: '#fff', border: `2px solid ${accent}`, borderRadius: 12,
             padding: '9px 13px',
             boxShadow: `0 0 0 1px ${accent}2e, 0 0 20px 1px ${accent}66`,
@@ -146,6 +227,7 @@ function L1Chart({
         >
           <b style={{ display: 'block', fontSize: 15, fontWeight: 800, color: INK, lineHeight: 1.15 }}>
             {ann.callout_text}
+            {cite && <sup style={{ color: accent, fontSize: '.62em', fontWeight: 800, marginLeft: 3 }}>{cite}</sup>}
           </b>
           {ann.callout_subtext && (
             <small style={{ display: 'block', fontSize: 11, color: '#8b8880', marginTop: 2 }}>
@@ -155,17 +237,35 @@ function L1Chart({
         </div>
       )}
       {ann.primary_label && (
-        <div style={{ position: 'absolute', top: '46%', left: '44%', fontSize: 14, fontWeight: 800, color: accent }}>
+        <div
+          style={{
+            position: 'absolute', fontSize: 14, fontWeight: 800, color: accent, transform: 'translate(-50%,-50%)',
+            left: primaryPt ? `${primaryPt.x}%` : '44%',
+            top: primaryPt ? `${clamp(primaryPt.y - 6, 6, 90)}%` : '46%',
+          }}
+        >
           {ann.primary_label}
         </div>
       )}
       {ann.baseline_label && (
-        <div style={{ position: 'absolute', bottom: '15%', right: '7%', fontSize: 14, fontWeight: 800, color: INK }}>
+        <div
+          style={{
+            position: 'absolute', fontSize: 14, fontWeight: 800, color: INK, transform: 'translate(-50%,-50%)',
+            left: baselinePt ? `${clamp(baselinePt.x, 8, 92)}%` : '93%',
+            top: baselinePt ? `${clamp(baselinePt.y + 6, 8, 92)}%` : '85%',
+          }}
+        >
           {ann.baseline_label}
         </div>
       )}
       {ann.midpoint_note && (
-        <div style={{ position: 'absolute', bottom: '24%', left: '20%', maxWidth: 160, fontSize: 12.5, fontWeight: 600, color: '#4a4844' }}>
+        <div
+          style={{
+            position: 'absolute', maxWidth: 160, fontSize: 12.5, fontWeight: 600, color: '#4a4844',
+            left: midPt ? `${clamp(midPt.x, 4, 70)}%` : '20%',
+            top: midPt ? `${clamp(midPt.y, 10, 88)}%` : '76%',
+          }}
+        >
           {ann.midpoint_note}
         </div>
       )}
@@ -315,7 +415,7 @@ export const InfographicArtifactRenderer = ({ artifact, context, className = '' 
       : payload.chart;
     return (
       <div className={className}>
-        <L1Chart chart={chart} annotations={payload.annotations || {}} height={height} accent={accent} />
+        <L1Chart chart={chart} annotations={payload.annotations || {}} height={height} accent={accent} cite={payload.annotations?.callout_cite} accentSvg={payload.accent_svg} />
         <SourcesLegend sources={payload.sources} />
       </div>
     );

@@ -2,11 +2,96 @@
 
 All notable changes to LocalBook will be documented in this file.
 
-## v2.2.0 — Journey Canvas, next-gen Infographics, Quality Signals Phase 2 *(in progress — unreleased)*
+## v2.3.0 — MLX-only engine, Model Browser
 
-> **Unreleased — assembled as the cycle lands; promoted to the tagged release at ship time.** Since
-> v2.2.0 the installer pins to the latest **release tag** (see *Changed*), so this reaches users only
-> when v2.2.0 is tagged. Ollama-default behavior is unchanged where untouched.
+**LocalBook no longer uses Ollama.** One in-process MLX engine now serves every role — chat,
+vision, image generation, and embeddings — so there is no second inference server to install,
+start, or keep in sync. Models are managed inside the app.
+
+Users upgrading from v2.1.1 also receive everything from the v2.2.0 development line, which was
+never tagged; its notes are kept in full below.
+
+### Added
+- **Model Browser + download manager** in LLM Studio: live Hugging Face search filtered to MLX
+  models, sortable by trending / downloads / likes / recency, with a fit badge computed from the
+  checkpoint's real weight size against this Mac's addressable GPU working set, a capability and
+  role read (main / fast / vision / embedding / image), a model-card popup, and an in-app download
+  queue.
+- **Origin labelling.** Every model shows who published it and what its weights derive from, as
+  two separate facts. A publisher country is claimed only for accounts we can actually identify;
+  lineage is resolved from the model architecture, so a fine-tune republished under another
+  account is still attributed to its base. An optional origin filter is offered. **Nothing is
+  hidden and no download is blocked** — the browser shows what exists and the user decides.
+
+### Changed
+- **One model per role**, each holding an MLX checkpoint id: `main_model`, `fast_model`,
+  `vision_model`, `image_model`, `embedding_model`. The paired Ollama/MLX settings and the
+  per-role engine flags are gone. Preferences migrate automatically.
+- The **llama-server sidecar is removed**, along with the Ollama transport, startup pre-flight,
+  health checks, warmup, capability probing, and the model pulls that ran after every build.
+- Startup no longer requires any model to be present, and nothing is auto-downloaded.
+- EPUB books are read in **spine (reading) order** with their heading structure preserved, rather
+  than in manifest order and flattened. DRM-protected files are detected and declined.
+
+### Fixed
+- **HTTPS failed entirely on networks that inspect TLS.** Such a network re-signs every
+  connection with its own root certificate; macOS trusts it, so Safari and the browser extension
+  work, but Python verified against a bundle of public roots only and rejected all of them. The
+  visible symptom was the model browser reporting "Could not reach Hugging Face" on a Mac with a
+  working connection, but model downloads, the embedding checkpoint, the reranker and article
+  fetching were affected the same way. TLS is now verified against the system trust store, the
+  same one `curl` uses. Untrusted and expired certificates are still rejected.
+- **Every evaluation run failed immediately** with `name '_mlx_embed' is not defined`. The config
+  collapse removed the per-role engine setting but left one reader behind, in the gate that used
+  to decide whether to probe Ollama for an embeddings endpoint. There is no second engine to
+  probe now, so the gate is gone.
+- **Mermaid diagrams could not be rendered to images** — the shared-browser refactor removed the
+  render page but not the code reading it, so PPTX and image export raised on every diagram. The
+  page is rebuilt from the vendored copy of mermaid.js, which keeps it working offline and inside
+  the app bundle.
+- **Bulk-approving correspondent queue items failed** — a missing type import left the request
+  model unbuildable.
+- **`/system/model-readiness` could report ready while the engine was dead.** The same config
+  collapse orphaned a name in the engine check, and the error was swallowed by the surrounding
+  `except`. This is the endpoint the troubleshooting docs reach for first.
+- Diagnostic logging in the health portal referenced a logger that was never defined, so several
+  repair and check paths raised instead of reporting.
+- **A failed model browse said "check your connection" no matter what went wrong.** Rate limiting,
+  a refused request and a rejected certificate now each say so, and the log keeps the underlying
+  error rather than only its type — the two failures that matter most are indistinguishable by
+  type alone.
+- **The app could not launch** — a startup banner printed a setting deleted in the config
+  collapse, which raised inside a background task, so the backend served HTTP but never reported
+  ready and the shell restarted it every ~30s, with a clean log. Now covered by a static check
+  that resolves every `settings.<attr>` against the model, including in `main.py`.
+- **Bulk embedding exceeded the Metal buffer cap.** Attention is O(batch × seq²) and every
+  sequence in a batch is padded to the longest, so one long document could ask for tens of GB and
+  fail the whole batch. Embedding batches are now grouped by attention cost against a
+  working-set-derived budget. Vectors are unchanged, so no re-indexing is required.
+- The canvas silently fell back to a flat grid whenever that embedding failure occurred, because
+  a failed embed reads as "no topics" and no topics reads as "use the grid". Clustering is
+  restored.
+- The config collapse had disabled **every** embedding call; 148 zero vectors written during that
+  window were repaired.
+- Model weight sizing missed multi-component diffusion layouts and `.npz`/`.bin` checkpoints, so
+  downloaded models could report as absent.
+- Deep-dive source quality scoring parsed LLM JSON by hand and fell back silently on any
+  malformation; it now goes through the shared repair path.
+- `build.sh` stages the app and swaps it atomically, restoring the previous build on failure, and
+  syncs frontend dependencies before the typecheck so a pull that adds one doesn't break the
+  build. `install.sh --branch <name>` now fetches the branch it is asked to track.
+
+### Removed
+- `ebooklib` (AGPL-3.0), which was shipping inside the signed app. EPUB is read with the standard
+  library and `lxml`.
+
+---
+
+## v2.2.0 — Journey Canvas, next-gen Infographics, Quality Signals Phase 2 *(shipped as part of v2.3.0)*
+
+> Developed as its own cycle but never tagged; released to users inside **v2.3.0**. Notes are
+> preserved in full. Where these entries describe Ollama-era behaviour, see v2.3.0 above — that
+> engine is gone.
 
 The big-surface release: a living per-notebook **Journey Canvas**, a **next-generation infographic**
 system (four lanes + a content-shape router + a Library home), **Quality Signals Phase 2** (the full
@@ -28,6 +113,28 @@ foundation, and a decoupled tag-pinned install model.
   `/source-derivations/{source_id}`), wired into infographic / document / quiz generation. The
   **user-drawn-edge feedback loop:** a hand-drawn edge → curator event bus + a user-authored
   knowledge-graph link + a Quality Signal.
+- **Round 3 — depth under the surface** *(built-app verified 2026-08-18)*: provenance rows are now
+  **drawn as edges** (a pure `canvas_provenance.derive_edges` joined at populate — the rows existed
+  for weeks with nothing rendering them); real source ids ride through `BuiltContext` so provenance
+  no longer resolves identity by filename-matching (silently lossy for duplicate/renamed/`Unknown`
+  filenames) and **video** is wired; **sequence numbers** (`3/7`) and **open-loop badges** put the
+  journey's direction of travel and its unanswered questions on the nodes; topic cards show the
+  **icons of what they hold**; and every thread **opens in a floating, resizable window** — podcast
+  and video keep playing while you explore, documents/quizzes/visuals/infographics open sized to
+  their content (infographics at 820px: the L2 design system lays out up to 5 columns).
+- Canvas node ids are now **stable across populates** (`uuid5(notebook:ref_type:ref_id)`); they were
+  regenerated every time, orphaning `canvas_recall` review history and elicited intents.
+
+### Removed — Cursor Style notebooks
+- The external-`.db` + `AGENTS.md`-governed notebook type is **gone** (~3,900 LOC across 13 files,
+  plus `sqlglot`). Its hard analytical queries are subsumed by the general **Python tier**
+  (`py_compute`), and as one of the heaviest LLM callers it was deleted ahead of the Ollama excise
+  to shrink that surface. The shared spreadsheet path (xlsx/csv → typed SQLite → text-to-SQL) is
+  **untouched** — `tabular_store.py` has a zero-line diff.
+- A one-shot startup migration purges the residue. Orphaned `cursor:%` rows in `_tabular_catalog`
+  would otherwise keep routing every aggregate question in an ex-cursor notebook into the
+  structured engine, spending a model call on a phantom schema before falling back to vector RAG.
+  Ex-cursor notebooks become standard notebooks; their ingested `.md` sources stay chattable.
 
 ### Added — Next-gen Infographic system
 - **Four lanes** behind one `json:infographic` artifact + a **content-shape router** with an explicit

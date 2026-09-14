@@ -255,7 +255,11 @@ export const NotebookManager: React.FC<NotebookManagerProps> = ({
     }
   };
 
-  const handleCreateNotebook = async (title: string, color: string, files: File[]) => {
+  const handleCreateNotebook = async (
+    title: string,
+    color: string,
+    files: File[],
+  ) => {
     setCreating(true);
     setError(null);
     try {

@@ -233,30 +233,20 @@ class StructuredLLMService:
     """Service for generating structured outputs from LLM using Pydantic models."""
     
     def __init__(self):
-        # NB: base_url / model are resolved per call (post v1.8.0) so Locker
-        # swaps and sidecar routing take effect without needing a restart.
+        # NB: the model is resolved per call so Locker swaps take effect without a restart.
         self.max_retries = 3
 
     async def _call_ollama_json(self, system_prompt: str, user_prompt: str, temperature: float = 0.7, timeout_seconds: float = 60.0, num_predict: int = 3000, json_schema: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Call the active LLM with JSON mode enabled.
 
-        Provider-aware (v1.8.0):
-          - Ollama models use native `format: "json"` on /api/generate.
-          - llama-server sidecar models use OpenAI `response_format={"type":"json_object"}`
-            on /v1/chat/completions.
-
         Profile-aware: the active model's structured_profile (in known_models.json)
         controls JSON-mode strategy:
-          - prefer_json_mode=False (default for olmo) skips Ollama's native JSON
-            mode and relies on prompt + robust_json_parse instead. olmo's strict
-            JSON output is unreliable.
+          - prefer_json_mode=False (default for olmo) skips native JSON mode and relies on
+            prompt + robust_json_parse instead. olmo's strict JSON output is unreliable.
           - prefer_json_mode=True (Gemma, Phi, Llama) uses native JSON mode.
         """
-        from services.llm_provider import resolve as _resolve_provider
-
         # Re-read settings per call so Locker swaps are respected
-        active_model = settings.ollama_model
-        route = _resolve_provider(active_model)  # retained for provider-aware logging
+        active_model = settings.main_model
 
         # Look up the active model's structured profile
         prefer_json_mode = True  # Default: use JSON mode if model supports it
@@ -273,16 +263,16 @@ class StructuredLLMService:
         except Exception as _e:
             logger.debug(f"[StructuredLLM] structured_profile lookup failed: {_e}")
 
-        # Route through ollama_service so structured generation rides the
+        # Route through llm_runtime so structured generation rides the
         # per-model priority lane. Studio output (quiz / visual / doc /
         # comparison) is user-initiated foreground work, so it runs at
         # FOREGROUND priority and jumps ahead of background ingest fan-out
         # (PDF vision, community summaries) on the single-wide gemma4 lane.
-        # ollama_service handles provider routing (Ollama vs sidecar) and
-        # JSON mode internally. respect_rag_profile=False keeps structured
+        # llm_runtime handles engine dispatch and JSON mode
+        # internally. respect_rag_profile=False keeps structured
         # JSON free of chat stop-sequences (mirrors the old raw path).
-        from services.ollama_service import ollama_service, PRIORITY_FOREGROUND
-        result = await ollama_service.generate(
+        from services.llm_runtime import llm_runtime, PRIORITY_FOREGROUND
+        result = await llm_runtime.generate(
             prompt=f"User request:\n{user_prompt}",
             system=system_prompt,
             model=active_model,
@@ -300,7 +290,7 @@ class StructuredLLMService:
         raw_response = result.get("response", "")
 
         if not raw_response.strip():
-            logger.warning(f"[StructuredLLM] Empty response (model={active_model}, provider={route.provider.value})")
+            logger.warning(f"[StructuredLLM] Empty response (model={active_model})")
             return {}
         try:
             parsed = json.loads(raw_response)
@@ -2091,10 +2081,10 @@ Return JSON with themes, sequence, and dates:
 Extract the main themes/concepts from the topic."""
 
         try:
-            from services.ollama_service import ollama_service
-            _resp = await ollama_service.generate(
+            from services.llm_runtime import llm_runtime
+            _resp = await llm_runtime.generate(
                 prompt=prompt,
-                model=settings.ollama_fast_model,  # phi4-mini - FAST
+                model=settings.fast_model,  # phi4-mini - FAST
                 temperature=0.3,
                 num_predict=500,  # Small output
                 format="json",

@@ -6,7 +6,11 @@ import { Modal } from '../shared/Modal';
 interface CreateNotebookModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onSubmit: (title: string, color: string, files: File[]) => Promise<void>;
+  onSubmit: (
+    title: string,
+    color: string,
+    files: File[],
+  ) => Promise<void>;
   creating: boolean;
 }
 

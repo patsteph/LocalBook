@@ -570,10 +570,10 @@ Rules:
 - Output ONLY the questions, one per line, no numbering"""
 
     try:
-        from services.ollama_service import ollama_service
-        _resp = await ollama_service.generate(
+        from services.llm_runtime import llm_runtime
+        _resp = await llm_runtime.generate(
             prompt=prompt,
-            model=settings.ollama_fast_model,
+            model=settings.fast_model,
             temperature=0.5,
             num_predict=200,
             timeout=30.0,

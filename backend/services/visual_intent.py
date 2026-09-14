@@ -25,7 +25,7 @@ import re
 from dataclasses import dataclass
 from typing import Optional
 
-from services.ollama_service import ollama_service
+from services.llm_runtime import llm_runtime
 
 logger = logging.getLogger(__name__)
 
@@ -319,8 +319,8 @@ async def classify_intent(content: str, model: Optional[str]) -> IllustrationInt
         return DEFAULT_INTENT
 
     try:
-        from services.ollama_service import PRIORITY_FOREGROUND
-        result = await ollama_service.generate(
+        from services.llm_runtime import PRIORITY_FOREGROUND
+        result = await llm_runtime.generate(
             prompt=f"REQUEST:\n{content}\n\nClassify and return JSON only.",
             system=_INTENT_SYSTEM,
             model=model,

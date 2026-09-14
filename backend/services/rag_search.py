@@ -58,8 +58,22 @@ def _get_reranker():
             print(f"[RAG] Loaded FlashRank reranker: {settings.reranker_model} (cache: {cache_dir})")
         return _flashrank_reranker
 
-    # Fallback to cross-encoder (slower but works without FlashRank)
+    # Fallback to cross-encoder (slower but works without FlashRank).
+    # ⚠️ REFUSED on a tight box: bge-reranker-v2-m3 is a ~2.05 GiB torch/MPS load that sits
+    # OUTSIDE every MLX guardrail — it is not counted by the resident budget, not visible to
+    # eviction, and one settings flip away. On a 16 GB machine that is a large uncounted
+    # allocation next to a resident chat model. FlashRank (~34 MB, CPU) stays available.
     if _crossencoder_reranker is None:
+        try:
+            from services.model_sizing import working_set_gb
+            _ws = working_set_gb()
+        except Exception:
+            _ws = 0.0
+        if 0 < _ws <= 13.0:      # ~16 GB machines (working set ≈ 11.8 GiB)
+            print("[RAG] cross-encoder reranker REFUSED on this machine "
+                  f"(working set {_ws:.1f} GiB): ~2.05 GiB torch load outside the MLX budget. "
+                  "Using FlashRank; set reranker_type=flashrank to silence this.")
+            return None
         from sentence_transformers import CrossEncoder
         reranker_model = "BAAI/bge-reranker-v2-m3"  # Cross-encoder fallback
         _crossencoder_reranker = CrossEncoder(reranker_model, max_length=512)
@@ -223,6 +237,11 @@ def rerank(query: str, documents: List[Dict], top_k: int = 5) -> List[Dict]:
         return documents
 
     reranker = _get_reranker()
+    # `_get_reranker` returns None when the cross-encoder is refused on a tight box. Degrade to
+    # the retrieval order rather than crashing on `None.predict` — unreranked results are worse
+    # than reranked ones, but they are results.
+    if reranker is None:
+        return documents[:top_k]
 
     # Use FlashRank if available (ultra-fast, no torch)
     if HAS_FLASHRANK and settings.reranker_type == "flashrank":

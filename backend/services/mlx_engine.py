@@ -18,6 +18,7 @@ Design invariants:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import functools
 import logging
 import os
@@ -31,32 +32,34 @@ logger = logging.getLogger(__name__)
 
 
 # ─── Role → engine resolver (grows per wave) ─────────────────────────────────────
-def mlx_model_for_role(ollama_model: str) -> Optional[str]:
-    """If the role that `ollama_model` fills is configured `engine == "mlx"`, return the
-    MLX model id to use in its place; else None (→ stay on Ollama). The single decision
-    point the llm_service seam consults. Fast (9.1) + main (9.2); vision is resolved in
-    the vision_describe path (9.3)."""
-    try:
-        from config import settings
-    except Exception:
-        return None
-    if ollama_model == settings.ollama_fast_model and getattr(settings, "fast_engine", "ollama") == "mlx":
-        return settings.mlx_fast_model
-    if ollama_model == settings.ollama_model and getattr(settings, "main_engine", "ollama") == "mlx":
-        return settings.mlx_main_model
-    return None
+def mlx_model_for_role(model: str) -> Optional[str]:
+    """Identity, retained as a seam.
+
+    This used to map an Ollama role key to its MLX twin, gated on that role's `*_engine`
+    flag — `settings.ollama_model` held "gemma4:e4b" and `settings.mlx_main_model` held the
+    checkpoint id. The v2.3.0 collapse put the checkpoint id in the role attribute itself, so
+    the mapping has nothing left to do.
+
+    Kept (rather than deleted across ~15 call sites) because it is the ONE place that would
+    reacquire meaning if a role ever needs to resolve to something other than its configured
+    id — a per-task override, a quantisation swap, an A/B. Returning None still means
+    "nothing can serve this", which every caller already handles.
+    """
+    return model or None
 
 
 def mlx_vision_model_if_enabled() -> Optional[str]:
-    """Return the MLX vision model id iff `vision_engine == "mlx"`, else None. Vision has its
-    own engine flag (Option A: it rides the gemma main model, but the toggle is independent)."""
+    """The configured vision checkpoint, or None if none is set.
+
+    The `if_enabled` in the name is historical: vision had its own engine flag, so this could
+    return None for a configured model. It now only returns None when no vision model is
+    configured at all.
+    """
     try:
         from config import settings
     except Exception:
         return None
-    if getattr(settings, "vision_engine", "ollama") == "mlx":
-        return settings.mlx_vision_model
-    return None
+    return getattr(settings, "vision_model", None) or None
 
 
 def _combine(system: Optional[str], prompt: str) -> str:
@@ -68,6 +71,62 @@ def _combine(system: Optional[str], prompt: str) -> str:
 # layout trips mlx-vlm's loader (a bug in an audio path LocalBook never uses). Nulling
 # `audio_config` + dropping the audio weights loads a clean VISION+TEXT-only model.
 _AUDIO_WEIGHT_PREFIXES = ("audio_tower", "embed_audio")
+
+
+@contextlib.contextmanager
+def offline_if_cached(model_id: str):
+    """Load `model_id` WITHOUT contacting huggingface.co when it is already on disk.
+
+    `mlx_lm.load` / `mlx_vlm.get_model_path` / `mlx_embeddings.load` all resolve through the
+    Hub, which revalidates the revision over the network even for a fully cached model. Three
+    consequences, all observed in the backend log (11 occurrences since 2026-08-19, most
+    recently 11:51:18 while loading phi):
+
+      · an "unauthenticated requests to the HF Hub" warning on every cold load;
+      · **model loading depends on network reachability** — on a flaky link the load stalls
+        behind an HTTP timeout before touching a single local byte;
+      · a request leaves the machine, in an app whose premise is that nothing does.
+
+    Only engaged when the weights are ALREADY present. An uncached model still resolves
+    normally so a genuine first download can proceed — acquisition is the download manager's
+    job, and offline mode would only turn that into a confusing LocalEntryNotFoundError.
+
+    Both the env var and `constants.HF_HUB_OFFLINE` are set: the constant is captured at
+    import, so the env var alone is too late to matter here. Verified — a runtime flip
+    suppresses the network call AND is genuinely enforced (an uncached id raises
+    LocalEntryNotFoundError rather than downloading).
+
+    Restores prior state in `finally`. Every load already runs on the single `_exec` thread
+    under `_load_lock`, so this process-wide toggle is serialised in practice.
+    """
+    try:
+        from services.model_presence import is_present
+        cached = is_present(model_id)
+    except Exception:
+        cached = False
+    if not cached:
+        yield
+        return
+
+    import huggingface_hub.constants as _hc
+    prev_env = os.environ.get("HF_HUB_OFFLINE")
+    prev_const = getattr(_hc, "HF_HUB_OFFLINE", False)
+    os.environ["HF_HUB_OFFLINE"] = "1"
+    try:
+        _hc.HF_HUB_OFFLINE = True
+    except Exception:
+        pass
+    try:
+        yield
+    finally:
+        if prev_env is None:
+            os.environ.pop("HF_HUB_OFFLINE", None)
+        else:
+            os.environ["HF_HUB_OFFLINE"] = prev_env
+        try:
+            _hc.HF_HUB_OFFLINE = prev_const
+        except Exception:
+            pass
 
 
 def install_gemma_vision_only_shim() -> None:
@@ -397,6 +456,54 @@ def _vlm_vision_sync(model, processor, config, prompt_str, image, *, max_tokens,
     return text, getattr(out, "prompt_tokens", 0) or 0, getattr(out, "generation_tokens", 0) or 0
 
 
+_EMBED_ATTN_BUDGET_CACHE: Optional[int] = None
+
+
+def _embed_attn_budget() -> int:
+    """Ceiling on `batch × padded_seq²` for one embedding forward pass — the term that
+    decides peak attention memory.
+
+    HARDWARE-DERIVED for the same reason `_ensure_memory_limit` is: a flat constant is
+    either an inert guardrail on a 16 GB Mac or a needless cap on a 64 GB one. ~64 bytes per
+    attention element (fp32 across xlm-roberta-large's 16 heads), against a third of the
+    GPU's addressable working set.
+
+    Ordinary RAG chunks (~250 tokens) sit three orders of magnitude under this, so they keep
+    riding in full `batch_size` groups and NOTHING about their vectors changes.
+    """
+    global _EMBED_ATTN_BUDGET_CACHE
+    if _EMBED_ATTN_BUDGET_CACHE is not None:
+        return _EMBED_ATTN_BUDGET_CACHE
+    ws = 0.0
+    try:
+        from services.model_sizing import working_set_gb
+        ws = working_set_gb()
+    except Exception:
+        ws = 0.0
+    if ws <= 0:
+        ws = 11.0
+    _EMBED_ATTN_BUDGET_CACHE = max(int((ws * 0.33 * 1024 ** 3) / 64), 8_000_000)
+    return _EMBED_ATTN_BUDGET_CACHE
+
+
+def _token_lens(tokenizer, texts, max_length: int) -> List[int]:
+    """Real token counts (post-truncation), for cost-aware batching.
+
+    Falls back to a character estimate if the tokenizer has no cheap encode path — a wrong
+    estimate only makes batches suboptimal, never unsafe, because the budget check still
+    runs against whatever number this returns.
+    """
+    out: List[int] = []
+    for t in texts:
+        n = 0
+        try:
+            n = len(tokenizer.encode(t))
+        except Exception:
+            n = max(1, len(t) // 3)
+        out.append(max(1, min(n, max_length)))
+    return out
+
+
 def _embed_on_thread(engine, texts, model_id, batch_size, max_length):
     """Load (cache) the MLX embedding model and encode `texts` → list[list[float]].
     Runs ONLY on the single MLX executor thread (both async embed() and sync
@@ -418,13 +525,42 @@ def _embed_on_thread(engine, texts, model_id, batch_size, max_length):
         from mlx_embeddings import load as _eload
         logger.info(f"[mlx-engine] loading embedding model {model_id} …")
         _t0 = time.perf_counter()
-        pair = _eload(model_id)
+        with offline_if_cached(model_id):
+            pair = _eload(model_id)
         engine._embed_resident[model_id] = pair
+        engine._last_used[model_id] = time.monotonic()
         logger.info(f"[mlx-engine] loaded embedding model {model_id} in {time.perf_counter() - _t0:.1f}s")
     model, tokenizer = pair
-    out: List[List[float]] = []
-    for i in range(0, len(texts), batch_size):
-        chunk = texts[i:i + batch_size]
+    # Batch by ATTENTION COST, not by row count. Every sequence in a batch is padded to the
+    # longest one, and attention is O(batch × seq²) — so a single long text drags the whole
+    # batch up with it. Measured 2026-08-21: 32 canvas snapshots, one of them a ~5.5k-token
+    # artifact payload, asked Metal for 62 GB against a 9.5 GB buffer cap. embed_batch raised,
+    # and because the canvas treats an embedding failure as "no topics", populate silently
+    # fell back to the linear grid on every machine.
+    #
+    # Grouping by length also removes most of the padding waste, so this is usually FASTER
+    # than the flat slicing it replaces — short texts still ride in full batch_size groups.
+    lens = _token_lens(tokenizer, texts, max_length)
+    budget = _embed_attn_budget()
+    order = sorted(range(len(texts)), key=lambda i: lens[i])
+    out: List[Optional[List[float]]] = [None] * len(texts)
+    group: List[int] = []
+    longest = 0
+    for idx in order + [None]:
+        if idx is not None:
+            cand = max(longest, lens[idx])
+            # Always allow one item through: a lone max-length sequence is ~4 GB, which fits,
+            # and there is no smaller batch to fall back to.
+            if group and (len(group) + 1 > batch_size
+                          or (len(group) + 1) * cand * cand > budget):
+                pass  # flush below, then start a new group with this item
+            else:
+                group.append(idx)
+                longest = cand
+                continue
+        if not group:
+            continue
+        chunk = [texts[i] for i in group]
         inputs = tokenizer.batch_encode_plus(
             chunk, return_tensors="mlx", padding=True, truncation=True, max_length=max_length)
         res = model(inputs["input_ids"], attention_mask=inputs.get("attention_mask"))
@@ -434,15 +570,54 @@ def _embed_on_thread(engine, texts, model_id, batch_size, max_length):
         embs = lhs[:, 0, :]  # CLS pooling (arctic / XLM-RoBERTa) — matches Ollama exactly
         embs = embs / mx.linalg.norm(embs, axis=-1, keepdims=True)
         mx.eval(embs)
-        out.extend([[float(v) for v in row] for row in embs.tolist()])
-    return out
+        for slot, row in zip(group, embs.tolist()):
+            out[slot] = [float(v) for v in row]
+        del inputs, res, lhs, embs
+        group = [] if idx is None else [idx]
+        longest = 0 if idx is None else lens[idx]
+    # Order is the caller's contract — every vector must land back on its own text.
+    return [v if v is not None else [] for v in out]
 
 
 # ─── The engine ──────────────────────────────────────────────────────────────────
+# The embedding model's REAL context, not a guess. arctic-embed-l-v2.0 supports 8194 while the
+# old hardcoded default truncated at 2048 — an asymmetry with the Ollama path, which applies no
+# client cap. Currently LATENT: 0 of 5,366 real chunks measured on 2026-08-19 exceed 2048
+# (max ~1512), so this bites long queries or a larger chunk_size, not today's index.
+_EMBED_MAXLEN_CACHE: Dict[str, int] = {}
+
+
+def _embed_max_length(model_id: str) -> int:
+    env = os.environ.get("LOCALBOOK_MLX_EMBED_MAX_LENGTH")
+    if env:
+        try:
+            return int(env)
+        except ValueError:
+            pass
+    hit = _EMBED_MAXLEN_CACHE.get(model_id)
+    if hit:
+        return hit
+    val = 2048
+    try:
+        import json as _json
+        from huggingface_hub import try_to_load_from_cache
+        p = try_to_load_from_cache(model_id, "config.json")
+        if isinstance(p, str):
+            cfg = _json.load(open(p))
+            mp = cfg.get("max_position_embeddings")
+            if isinstance(mp, int) and mp > 0:
+                val = mp
+    except Exception:
+        pass
+    _EMBED_MAXLEN_CACHE[model_id] = val
+    return val
+
+
 class MLXEngine:
     def __init__(self) -> None:
         self._resident: Dict[str, Any] = {}              # model_id -> (model, tokenizer/processor)
         self._embed_resident: Dict[str, Any] = {}        # embedding model_id -> (model, tokenizer)
+        self._last_used: Dict[str, float] = {}           # model_id -> monotonic ts (LRU order)
         self._vlm_config: Dict[str, Any] = {}            # model_id -> config (vlm only)
         self._kind: Dict[str, str] = {}                  # model_id -> "lm" | "vlm"
         self._model_locks: Dict[str, asyncio.Lock] = {}  # per-model serialization
@@ -478,9 +653,26 @@ class MLXEngine:
         self._mem_limit_set = True
         try:
             import mlx.core as mx
-            limit_gb = float(os.environ.get("LOCALBOOK_MLX_MEMORY_LIMIT_GB", "12"))
+            # HARDWARE-DERIVED, not a flat constant. The old default was 12 GB on every
+            # machine — on this 16 GB M4 that is ABOVE Apple's own recommended working set
+            # (11.84 GiB), so the "limit" could never bind before the system was already past
+            # the ceiling: an inert guardrail. On a 64 GB machine the same constant needlessly
+            # capped MLX at 12. Derive from the GPU's addressable working set instead; the env
+            # var remains an explicit override.
+            _env = os.environ.get("LOCALBOOK_MLX_MEMORY_LIMIT_GB")
+            if _env:
+                limit_gb = float(_env)
+                _src = "env override"
+            else:
+                from services.model_sizing import working_set_gb
+                _ws = working_set_gb()
+                # 90 % of the working set: mlx-lm warns above this, and the ecosystem's
+                # posture is to refuse rather than warn (mlx-lm#883 — wired memory blocks
+                # Jetsam, so exhaustion panics the driver instead of killing the process).
+                limit_gb = round(_ws * 0.90, 2) if _ws > 0 else 12.0
+                _src = f"90% of {_ws:.2f} GiB working set" if _ws > 0 else "fallback"
             mx.set_memory_limit(int(limit_gb * 1024 ** 3))
-            logger.info(f"[mlx-engine] memory limit set to {limit_gb} GB")
+            logger.info(f"[mlx-engine] memory limit {limit_gb} GB ({_src})")
         except Exception as e:
             logger.debug(f"[mlx-engine] could not set memory limit: {e}")
 
@@ -491,32 +683,108 @@ class MLXEngine:
             return self._kind[model_id]
         kind = "vlm" if "gemma" in model_id.lower() else "lm"
         try:
-            from huggingface_hub import hf_hub_download
-            import json as _json
-            cfg = _json.load(open(hf_hub_download(model_id, "config.json")))
-            kind = "vlm" if cfg.get("vision_config") is not None else "lm"
+            # `hf_hub_download` was the original here and it REVALIDATES against
+            # huggingface.co even for a cached file — this call, not the load itself, is what
+            # emitted the "unauthenticated requests to the HF Hub" warning on every cold
+            # start. It also runs BEFORE the load lock, so it is not covered by
+            # `offline_if_cached`. `load_config` reads the cached snapshot off disk.
+            from services.model_sizing import load_config
+            cfg = load_config(model_id) or {}
+            if cfg:
+                kind = "vlm" if cfg.get("vision_config") is not None else "lm"
         except Exception:
             pass
         self._kind[model_id] = kind
         return kind
 
-    def _evict_ollama_twin(self, mlx_model_id: str) -> None:
-        """Single-engine-per-family invariant: evict the Ollama model this MLX one
-        replaces (reboot-avoidance). Sync httpx — called inside the load thread."""
+    # -- resident budget (Stage 3.2) ---------------------------------------------
+    def _resident_cost_gb(self) -> float:
+        """What the currently-resident set costs — weights only, exactly.
+
+        Deliberately NOT an estimate: `model_sizing.exact_weight_gb` reads
+        `metadata.total_size` from the checkpoint index. The old estimator was wrong by −17 %
+        to +89 %, and reported 0.00 GB for both arctic builds, which `ram_fit` read as
+        "fits" — a guardrail that was disabled rather than merely inaccurate.
+        """
         try:
-            from config import settings
-            import httpx
-            twin = None
-            if mlx_model_id == getattr(settings, "mlx_main_model", None):
-                twin = settings.ollama_model
-            elif mlx_model_id == getattr(settings, "mlx_vision_model", None):
-                twin = settings.vision_model
-            if twin:
-                httpx.post(f"{settings.ollama_base_url}/api/generate",
-                           json={"model": twin, "prompt": "", "keep_alive": 0}, timeout=10.0)
-                logger.info(f"[mlx-engine] evicted Ollama twin '{twin}' for {mlx_model_id}")
+            from services.model_sizing import exact_weight_gb
+        except Exception:
+            return 0.0
+        total = 0.0
+        for mid in list(self._resident) + list(self._embed_resident):
+            w = exact_weight_gb(mid)
+            if w:
+                total += w
+        return round(total, 3)
+
+    def _budget_gb(self) -> float:
+        """The ceiling for resident weights + the incoming model's KV.
+
+        Derived from Apple's own per-device `max_recommended_working_set_size`, not a constant
+        and not a fraction of total RAM — on this 16 GB M4 the working set is 11.84 GiB, so
+        "60 % of RAM" and "75 % of the working set" are different numbers and only the latter
+        tracks what the GPU can address on any given machine.
+        """
+        try:
+            from services.model_sizing import budget_gb
+            return budget_gb()
+        except Exception:
+            return 0.0
+
+    async def _make_room_for(self, model_id: str) -> None:
+        """Evict LRU models until the incoming one fits the budget. Never raises.
+
+        Counts the incoming model's KV at its DEPLOYED context, not its native one: phi
+        declares a 262144 window it cannot use and costs ~8× gemma per token of KV (32 kv-head
+        layers vs 7), so judging by weights alone under-counts the model that actually hurts.
+        """
+        try:
+            from services.model_sizing import exact_weight_gb, kv_cache_gb, load_config
+            budget = self._budget_gb()
+            if budget <= 0:
+                return
+            incoming_w = exact_weight_gb(model_id) or 0.0
+            if incoming_w <= 0:
+                return          # unknown size — do not evict on a guess
+            cfg = load_config(model_id)
+            ctx = int(os.environ.get("LOCALBOOK_MLX_BUDGET_CTX", "16384"))
+            incoming_kv = (kv_cache_gb(cfg, ctx) if cfg else None) or 0.0
+            need = incoming_w * 1.2 + incoming_kv        # ×1.2 for activations/scratch
+
+            resident = self._resident_cost_gb()
+            if resident + need <= budget:
+                return
+
+            # LRU first — the model used longest ago is the cheapest to lose.
+            order = sorted(
+                (m for m in list(self._resident) + list(self._embed_resident) if m != model_id),
+                key=lambda m: self._last_used.get(m, 0.0),
+            )
+            logger.info(f"[mlx-engine] budget: resident {resident} GB + incoming {round(need,2)} GB "
+                        f"> {budget} GB — evicting LRU to make room")
+            for victim in order:
+                if await self.unload(victim, wait=1.0):
+                    self._last_used.pop(victim, None)
+                    resident = self._resident_cost_gb()
+                    if resident + need <= budget:
+                        return
+            if resident + need > budget:
+                # Proceed anyway rather than refuse the user's request — but say so, because
+                # this is the condition that precedes swap-death on a tight machine.
+                logger.warning(
+                    f"[mlx-engine] budget EXCEEDED after eviction: resident {resident} GB + "
+                    f"incoming {round(need,2)} GB > {budget} GB. Loading anyway; expect "
+                    f"memory pressure.")
+                try:
+                    from services.quality_signals import record_signal
+                    record_signal("degraded", "mlx_engine",
+                                  f"resident budget exceeded loading {model_id} "
+                                  f"({resident}+{round(need,2)} > {budget} GB)",
+                                  severity="warn", key="mlx_budget_exceeded")
+                except Exception:
+                    pass
         except Exception as e:
-            logger.debug(f"[mlx-engine] evict twin skipped: {e}")
+            logger.debug(f"[mlx-engine] budget check skipped: {e}")
 
     async def _load(self, model_id: str) -> Tuple[Any, Any]:
         """Load (cache) an MLX model — mlx-vlm for gemma, mlx-lm for phi. Loads run
@@ -528,23 +796,119 @@ class MLXEngine:
             if model_id in self._resident:
                 return self._resident[model_id]
             self._ensure_memory_limit()
+            await self._make_room_for(model_id)
             logger.info(f"[mlx-engine] loading {model_id} ({kind}) …")
             t0 = time.perf_counter()
 
             def _load():
-                if kind == "vlm":
-                    self._evict_ollama_twin(model_id)
-                    from mlx_vlm.utils import get_model_path, load_config
-                    pair = load_gemma_vision_only(model_id)
-                    self._vlm_config[model_id] = load_config(str(get_model_path(model_id)))
-                    return pair
-                from mlx_lm import load
-                return load(model_id)
+                with offline_if_cached(model_id):
+                    if kind == "vlm":
+                        from mlx_vlm.utils import get_model_path, load_config
+                        pair = load_gemma_vision_only(model_id)
+                        self._vlm_config[model_id] = load_config(str(get_model_path(model_id)))
+                        return pair
+                    from mlx_lm import load
+                    return load(model_id)
 
             pair = await self._run(_load)
             self._resident[model_id] = pair
+            self._last_used[model_id] = time.monotonic()
             logger.info(f"[mlx-engine] loaded {model_id} in {time.perf_counter() - t0:.1f}s")
             return pair
+
+    # -- unload / eviction (Stage 3.1) -------------------------------------------
+    def resident(self) -> Dict[str, Any]:
+        """What is currently held in memory, and what MLX says it costs.
+
+        The MLX twin of Ollama's `/api/ps`. Without it neither the resident budget nor any
+        eviction sweep is falsifiable — you cannot prove a free happened.
+        """
+        out: Dict[str, Any] = {
+            "text": sorted(self._resident.keys()),
+            "embed": sorted(self._embed_resident.keys()),
+        }
+        try:
+            import mlx.core as mx
+            out["active_gb"] = round(mx.get_active_memory() / 1024 ** 3, 3)
+            out["peak_gb"] = round(mx.get_peak_memory() / 1024 ** 3, 3)
+            try:
+                out["cache_gb"] = round(mx.get_cache_memory() / 1024 ** 3, 3)
+            except Exception:
+                pass
+        except Exception:
+            pass
+        return out
+
+    async def unload(self, model_id: str, *, wait: float = 2.0) -> bool:
+        """Drop one model's weights and reclaim the memory. Returns True if it was freed.
+
+        MEASURED JUSTIFICATION (2026-08-19): an evaluation run ended holding **7.64 GB** of MLX
+        weights — exactly the sum of gemma 4.793 + phi 2.010 + arctic 1.058 GiB — because
+        nothing ever cleared `_resident`. KV and activations churn normally; the WEIGHTS never
+        came back until the process exited. On a 16 GB box that is most of the working set.
+
+        Safety, per the ecosystem prior art:
+        · NEVER free weights out from under a live generation — take that model's lock, and
+          SKIP (return False) rather than block forever if it is busy. A skipped eviction is a
+          missed optimisation; a freed-mid-stream model is a crash.
+        · Free on the MLX thread (`_exec`), the same thread that allocated.
+        · `gc.collect()` BEFORE `clear_cache()` — the buffers are only reclaimable once the
+          last Python reference is gone, and dropping the dict entry is not enough on its own.
+        · Short-circuit when nothing is loaded: touching Metal to free nothing still costs.
+        """
+        if model_id not in self._resident and model_id not in self._embed_resident:
+            return False
+
+        lock = self._model_locks.setdefault(model_id, asyncio.Lock())
+        try:
+            await asyncio.wait_for(lock.acquire(), timeout=wait)
+        except asyncio.TimeoutError:
+            logger.info(f"[mlx-engine] unload({model_id}) SKIPPED — model busy "
+                        f"(a live generation outranks reclaiming memory)")
+            return False
+        try:
+            before = self._active_gb()
+            self._resident.pop(model_id, None)
+            self._embed_resident.pop(model_id, None)
+            self._vlm_config.pop(model_id, None)
+
+            def _free() -> None:
+                import gc
+                gc.collect()          # must precede clear_cache — see docstring
+                try:
+                    import mlx.core as mx
+                    mx.clear_cache()
+                except Exception:
+                    pass
+
+            await self._run(_free)
+            after = self._active_gb()
+            freed = None if (before is None or after is None) else round(before - after, 3)
+            logger.info(f"[mlx-engine] unloaded {model_id} — active {before} → {after} GB "
+                        f"(freed {freed})")
+            return True
+        finally:
+            lock.release()
+
+    async def unload_all(self, *, keep: Optional[List[str]] = None, wait: float = 2.0) -> List[str]:
+        """Unload every resident model except `keep`. Returns what was actually freed."""
+        keep_set = set(keep or [])
+        targets = [m for m in list(self._resident) + list(self._embed_resident)
+                   if m not in keep_set]
+        if not targets:
+            return []
+        freed: List[str] = []
+        for m in targets:
+            if await self.unload(m, wait=wait):
+                freed.append(m)
+        return freed
+
+    def _active_gb(self) -> Optional[float]:
+        try:
+            import mlx.core as mx
+            return round(mx.get_active_memory() / 1024 ** 3, 3)
+        except Exception:
+            return None
 
     # -- text / structured (fast 9.1 · main 9.2 · structured 9.2b) ---------------
     async def generate(
@@ -553,10 +917,23 @@ class MLXEngine:
         format: Optional[str] = None, stop: Optional[List[str]] = None,
         images: Optional[List[str]] = None, **kwargs: Any,
     ) -> Dict[str, Any]:
-        """Non-streaming text generate → Ollama-shaped dict. Routes gemma→mlx-vlm, phi→mlx-lm."""
+        """Non-streaming text generate → Ollama-shaped dict. Routes gemma→mlx-vlm, phi→mlx-lm.
+
+        `num_ctx` is ACCEPTED AND DELIBERATELY IGNORED — do not "fix" this by wiring it up.
+        It is an Ollama-shaped parameter kept so the ~12 call sites need not change. MLX uses
+        the model's own window, and honouring the Ollama cap here re-creates the live quality
+        bug fixed on 2026-08-18: `llm_service` sized `num_ctx` from `effective_num_ctx_cap`
+        and clamped `num_predict` to fit, truncating long-form MLX output against a limit that
+        does not apply to it. Pinned by tests/test_llm_service_mlx_num_predict.py.
+
+        Consequence worth knowing: the "16K deployed context" figure is a SIZING assumption
+        used for the memory budget (LOCALBOOK_MLX_BUDGET_CTX), not an enforced ceiling. Nothing
+        here truncates a long conversation before the documented performance cliff.
+        """
         kind = self._model_kind(model)
         pair = await self._load(model)
         lock = self._model_locks.setdefault(model, asyncio.Lock())
+        self._last_used[model] = time.monotonic()   # LRU: real usage, not load order
         # Grammar-constrained JSON (Path B): force schema-compliant JSON via llguidance — but ONLY
         # when the caller passes an explicit `json_schema`. A permissive `{"type":"object"}` grammar
         # is a trap: the model can satisfy it with an empty `{}` and skip every field, which broke the
@@ -640,10 +1017,15 @@ class MLXEngine:
     ) -> AsyncIterator[Dict[str, Any]]:
         """Streaming text generate → yields Ollama-shaped chunks. Wave 9.2 (main/gemma via
         mlx-vlm; fast/phi via mlx-lm). Bridges the blocking MLX generator to async via an
-        asyncio.Queue fed with call_soon_threadsafe (no per-token thread round-trip)."""
+        asyncio.Queue fed with call_soon_threadsafe (no per-token thread round-trip).
+
+        `num_ctx` is accepted and deliberately ignored here too — see `generate` above for why
+        wiring it up would regress a fixed bug.
+        """
         kind = self._model_kind(model)
         pair = await self._load(model)
         lock = self._model_locks.setdefault(model, asyncio.Lock())
+        self._last_used[model] = time.monotonic()   # LRU: real usage, not load order
         loop = asyncio.get_running_loop()
         q: asyncio.Queue = asyncio.Queue()
         _SENTINEL = object()
@@ -745,6 +1127,7 @@ class MLXEngine:
         cfg = self._vlm_config.get(model)
         img = _resolve_image(image_path_or_b64)
         lock = self._model_locks.setdefault(model, asyncio.Lock())
+        self._last_used[model] = time.monotonic()   # LRU: real usage, not load order
         lps = None
         if format == "json":
             if json_schema:
@@ -768,12 +1151,13 @@ class MLXEngine:
     # consistency. Both entrypoints RAISE on any failure so callers fall back to
     # Ollama embeddings (retrieval never breaks). Prefix discipline (arctic is
     # asymmetric) is the CALLER's job — embed() embeds text exactly as given.
+
     async def embed(self, texts: List[str], *, model: str,
                     batch_size: int = 32, max_length: Optional[int] = None,
                     **kwargs: Any) -> List[List[float]]:
         if not texts:
             return []
-        ml = max_length or int(os.environ.get("LOCALBOOK_MLX_EMBED_MAX_LENGTH", "2048"))
+        ml = max_length or _embed_max_length(model)
         return await self._run(_embed_on_thread, self, list(texts), model, batch_size, ml)
 
     def embed_sync(self, texts: List[str], *, model: str,
@@ -783,7 +1167,7 @@ class MLXEngine:
         already have. Must NOT be called from the MLX thread itself."""
         if not texts:
             return []
-        ml = max_length or int(os.environ.get("LOCALBOOK_MLX_EMBED_MAX_LENGTH", "2048"))
+        ml = max_length or _embed_max_length(model)
         return self._exec.submit(_embed_on_thread, self, list(texts), model, batch_size, ml).result()
 
 

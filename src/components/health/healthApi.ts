@@ -67,6 +67,31 @@ export interface SignalsResponse {
   groups: SignalGroup[];
 }
 
+/** One queued incident, already scrubbed server-side. `title`/`body` are exactly what would be filed. */
+export interface IncidentPreview {
+  incident_id: string;
+  title: string;
+  body: string;
+  already_filed: boolean;
+  filed?: { url?: string; number?: number } | null;
+}
+export interface IncidentsResponse {
+  /** Default-OFF flag. False → /incidents/file refuses with 409 and nothing can be sent. */
+  enabled: boolean;
+  auth: { provider: 'gh' | 'pat' | null; available: boolean };
+  count: number;
+  incidents: IncidentPreview[];
+}
+export interface FileResult {
+  ok: boolean;
+  enabled: boolean;
+  confirmed: boolean;
+  refused?: string | null;
+  sent: Array<Record<string, unknown>>;
+  skipped: Array<Record<string, unknown>>;
+  failed: Array<Record<string, unknown>>;
+}
+
 async function getJSON<T>(path: string): Promise<T> {
   const res = await localFetch(`${API_BASE_URL}${path}`);
   if (!res.ok) throw new Error(`${path} → ${res.status}`);
@@ -90,6 +115,25 @@ export const healthApi = {
   },
   exportUrl: `${API_BASE_URL}/health/export`,
   portalUrl: `${API_BASE_URL}/health/portal`,
+
+  /** SAFE — shows what WOULD be filed. Touches no network and never sends. */
+  incidents: () => getJSON<IncidentsResponse>('/incidents/preview'),
+
+  /**
+   * The ONLY send path. Requires explicit confirm — the backend rejects anything else (400), and
+   * refuses entirely (409) while the default-OFF flag is unset. Surfaces the server's `detail` so
+   * a refusal reads as a reason rather than a generic failure.
+   */
+  fileIncidents: async (): Promise<FileResult> => {
+    const res = await localFetch(`${API_BASE_URL}/incidents/file`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ confirm: true }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error((data as { detail?: string }).detail || `Filing failed (${res.status})`);
+    return data as FileResult;
+  },
 };
 
 // Byte/count formatting shared with the panel.

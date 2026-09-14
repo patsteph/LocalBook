@@ -97,10 +97,10 @@ Respond with JSON only:
     "knowledge_overlap": {knowledge_overlap}
 }}"""
 
-            response = await ollama_service.generate(
+            response = await llm_runtime.generate(
                 prompt=prompt,
                 system="You are a research analyst identifying what's new. Respond only with valid JSON.",
-                model=settings.ollama_fast_model,
+                model=settings.fast_model,
                 temperature=0.2
             )
             

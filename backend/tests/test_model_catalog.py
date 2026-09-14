@@ -1,0 +1,426 @@
+"""The model browser's judgement: origin, size, capability, fit.
+
+Every assertion here is offline — the HF call is the only networked part and it is mocked.
+A test that needed the Hub would fail on a plane and teach us nothing about our own logic.
+
+The origin tests are the ones that matter most — but what they guard changed on 2026-08-20.
+The browser now shows EVERY model and the user filters; nothing is withheld and nothing blocks
+a download. That makes accurate attribution more important, not less: if the user is making
+the call, the flag has to be right, and a Qwen fine-tune republished under another account has
+to still read as Qwen. These tests pin the LABEL and the optional filter, not a gate.
+"""
+import pytest
+
+from services import model_catalog as mc
+
+
+# ── Origin: a hard policy, not a decoration ─────────────────────────────────────
+
+@pytest.mark.parametrize("model_id,tags,vendor,allowed", [
+    # The repo OWNER is a repackager; the base_model tag names who actually built it.
+    ("mlx-community/gemma-4-e4b-it-4bit", ["base_model:google/gemma-4-E4B-it"], "Google", True),
+    ("mlx-community/Phi-4-mini-instruct-4bit", ["base_model:microsoft/Phi-4-mini"], "Microsoft", True),
+    ("mlx-community/Mistral-7B-v0.3-4bit", ["base_model:mistralai/Mistral-7B"], "Mistral AI", True),
+    # Blocked origins, reached through the base_model tag…
+    ("mlx-community/Qwen3-8B-4bit", ["base_model:Qwen/Qwen3-8B"], "Alibaba / Qwen", False),
+    ("mlx-community/DeepSeek-R1-4bit", ["base_model:deepseek-ai/DeepSeek-R1"], "DeepSeek", False),
+    # …and through the name, when the repackager published no base_model tag at all.
+    ("mlx-community/Qwen3-14B-4bit", [], "Alibaba / Qwen", False),
+    ("someone/falcon-40b-mlx", [], "TII (Falcon)", False),
+    ("someone/jais-13b-mlx", [], "Core42 (Jais)", False),
+])
+def test_origin_resolution(model_id, tags, vendor, allowed):
+    o = mc.origin_of(model_id, tags)
+    assert o["vendor"] == vendor, o
+    assert o["allowed"] is allowed, o
+    assert o["flag"], "every origin needs a flag for the UI"
+
+
+def test_everything_is_shown_by_default_and_labelled(monkeypatch):
+    """The default is to show what exists. A restricted-origin model appears like any other,
+    carrying `allowed: False` so the UI can flag it and the user can decide."""
+    fake = [
+        {"id": "mlx-community/Qwen3-8B-4bit", "tags": ["mlx", "base_model:Qwen/Qwen3-8B"],
+         "pipeline_tag": "text-generation", "safetensors": {"parameters": {"BF16": 1_000_000}},
+         "downloads": 999999, "likes": 999},
+        {"id": "mlx-community/gemma-4-e4b-it-4bit", "tags": ["mlx", "base_model:google/gemma-4-E4B-it"],
+         "pipeline_tag": "text-generation", "safetensors": {"parameters": {"BF16": 1_000_000}},
+         "downloads": 10, "likes": 1},
+    ]
+    monkeypatch.setattr(mc, "_get_json", lambda *a, **k: (fake, None))
+    mc.reset_cache()
+    res = mc.search()
+    ids = [m["model_id"] for m in res["models"]]
+    assert "mlx-community/Qwen3-8B-4bit" in ids, "nothing is withheld"
+    assert "mlx-community/gemma-4-e4b-it-4bit" in ids
+    assert res["restricted_count"] == 1, "the count is reported so the UI can say how many"
+    qwen = next(m for m in res["models"] if "Qwen" in m["model_id"])
+    assert qwen["origin"]["allowed"] is False, "still labelled, so the user can judge"
+    assert qwen["origin"]["flag"] == "🇨🇳"
+
+
+def test_the_user_can_filter_by_origin_themselves(monkeypatch):
+    """The filter is a control the user opts into, not a default."""
+    fake = [
+        {"id": "mlx-community/Qwen3-8B-4bit", "tags": ["mlx", "qwen3"],
+         "pipeline_tag": "text-generation", "safetensors": {"parameters": {"BF16": 1_000_000}},
+         "downloads": 5, "likes": 1},
+        {"id": "mlx-community/gemma-4-e4b-it-4bit", "tags": ["mlx", "gemma4"],
+         "pipeline_tag": "text-generation", "safetensors": {"parameters": {"BF16": 1_000_000}},
+         "downloads": 10, "likes": 1},
+    ]
+    monkeypatch.setattr(mc, "_get_json", lambda *a, **k: (fake, None))
+    mc.reset_cache()
+    res = mc.search(exclude_countries="CN,AE")
+    ids = [m["model_id"] for m in res["models"]]
+    assert "mlx-community/Qwen3-8B-4bit" not in ids
+    assert "mlx-community/gemma-4-e4b-it-4bit" in ids
+    assert res["hidden_by_filter"] == 1
+
+
+def test_a_caller_can_still_request_a_restricted_set(monkeypatch):
+    """`include_blocked=False` remains for any caller that wants the narrow set; the browser
+    does not use it."""
+    fake = [{"id": "mlx-community/Qwen3-8B-4bit", "tags": ["mlx"], "pipeline_tag": "text-generation",
+             "safetensors": {"parameters": {"BF16": 1_000_000}}, "downloads": 1, "likes": 0}]
+    monkeypatch.setattr(mc, "_get_json", lambda *a, **k: (fake, None))
+    mc.reset_cache()
+    res = mc.search(include_blocked=False)
+    assert res["models"] == []
+    assert res["blocked_hidden"] == 1
+
+
+# ── Size, from the real dtype breakdown ─────────────────────────────────────────
+
+def test_size_uses_the_published_dtype_composition():
+    """A 4-bit MLX checkpoint packs weights into U32 words, so counting parameters alone
+    under-reports badly. Using HF's dtype map reproduces the real on-disk size: this is
+    gemma-4-e4b's actual metadata, and 4.79 GB is what it occupies."""
+    assert mc.size_gb_of({"parameters": {"BF16": 706135370, "U32": 933543936}}) == 4.79
+
+
+def test_size_is_none_when_the_repo_publishes_nothing():
+    assert mc.size_gb_of(None) is None
+    assert mc.size_gb_of({}) is None
+
+
+# ── Capabilities → role eligibility ─────────────────────────────────────────────
+
+def test_an_embedder_is_never_offered_as_a_chat_model():
+    """THE slotting bug in its newest form: an embedding model assigned to Main produces
+    nothing at all, with no error."""
+    caps = mc.capabilities_of("sentence-similarity", ["sentence-transformers", "mteb"])
+    assert caps["embedding"] and not caps["text"]
+    assert mc.roles_for(caps, 1.1) == ["embedding"]
+
+
+def test_a_vision_model_covers_main_and_vision():
+    caps = mc.capabilities_of("image-text-to-text", ["mlx-vlm"])
+    assert caps["vision"] and caps["text"]
+    assert set(mc.roles_for(caps, 4.8)) == {"main", "vision"}
+
+
+def test_only_small_models_are_suggested_for_the_fast_slot():
+    caps = mc.capabilities_of("text-generation", ["mlx-lm"])
+    assert "fast" in mc.roles_for(caps, 2.0)
+    assert "fast" not in mc.roles_for(caps, 14.0)
+
+
+def test_a_model_that_fills_no_slot_is_not_listed(monkeypatch):
+    """ASR models, re-rankers and depth estimators are all `mlx`-tagged. Listing one offers a
+    download the app has nowhere to put."""
+    fake = [{"id": "mlx-community/parakeet-tdt-0.6b-v2", "tags": ["mlx"],
+             "pipeline_tag": "automatic-speech-recognition",
+             "safetensors": {"parameters": {"F32": 617869958}}, "downloads": 2243785, "likes": 45}]
+    monkeypatch.setattr(mc, "_get_json", lambda *a, **k: (fake, None))
+    mc.reset_cache()
+    assert mc.search()["models"] == []
+
+
+# ── Fit ─────────────────────────────────────────────────────────────────────────
+
+def test_fit_is_judged_against_addressable_memory_not_total_ram():
+    small, big = mc.fit_for(1.0), mc.fit_for(400.0)
+    assert small["verdict"] == "fits"
+    assert big["verdict"] == "over"
+    assert big["budget_gb"] and big["budget_gb"] < 64, "budget must come from the working set"
+
+
+def test_unknown_size_never_claims_to_fit():
+    """Reporting 'fits' for a model whose size we do not know is the failure mode that made
+    the old ram_fit useless — it read 0.00 GB as 'fits'."""
+    assert mc.fit_for(None)["verdict"] == "unknown"
+
+
+# ── Offline behaviour ───────────────────────────────────────────────────────────
+
+def test_offline_returns_a_reason_rather_than_raising(monkeypatch):
+    """The browser is the one networked surface. Losing the Hub must not break the panel or
+    imply the user's downloaded models are gone."""
+    monkeypatch.setattr(
+        mc, "_get_json", lambda *a, **k: (None, "Could not reach Hugging Face. The browser needs a connection."))
+    mc.reset_cache()
+    res = mc.search()
+    assert res["offline"] is True
+    assert res["models"] == []
+    assert "Hugging Face" in res["reason"]
+    # The panel appends "Models already downloaded still work — the browser is the only part
+    # that needs a connection." Saying it here too is what produced the doubled sentence the
+    # user read on 2026-09-14.
+    assert "already downloaded" not in res["reason"]
+
+
+# ── Architecture-based lineage (2026-08-20) ─────────────────────────────────────
+
+@pytest.mark.parametrize("model_id,arch,vendor", [
+    # A third-party fine-tune keeps its base model's architecture but publishes under the
+    # fine-tuner's account with no base_model tag. Measured live: 24 of 31 unresolved models
+    # were Chinese-origin derivatives being offered as allowed because nothing named them.
+    ("prism-ml/Bonsai-8B-mlx-1bit",                    "qwen3",       "Alibaba / Qwen"),
+    ("majentik/UI-Mate-27B-MLX-3bit",                  "qwen3_5",     "Alibaba / Qwen"),
+    ("Shiftedx/ornith-1.0-35b-mxfp4-mtplx",            "qwen3_5_moe", "Alibaba / Qwen"),
+    ("lmstudio-community/Seed-OSS-36B-Instruct-MLX",   "seed_oss",    "ByteDance (Seed)"),
+    ("majentik/MiniMax-M2.7-TurboQuant-MLX-3bit",      "minimax_m2",  "MiniMax"),
+])
+def test_a_fine_tune_is_traced_through_its_architecture(model_id, arch, vendor):
+    o = mc.origin_of(model_id, ["mlx", "safetensors", arch])
+    assert o["vendor"] == vendor, o
+    assert o["allowed"] is False, "a derivative of a blocked origin is itself blocked"
+    assert o["verified"] is True
+
+
+def test_architecture_outranks_the_publishing_account():
+    """The owner of a fine-tune is the fine-tuner. Lineage is what the policy is about, so
+    the architecture has to win — otherwise republishing under a new account launders it."""
+    o = mc.origin_of("some-us-lab/friendly-name-mlx-4bit", ["mlx", "qwen3"])
+    assert o["allowed"] is False
+
+
+@pytest.mark.parametrize("arch,vendor", [
+    ("gemma4", "Google"), ("llama", "Meta"), ("phi4", "Microsoft"),
+    ("mistral", "Mistral AI"), ("smolvlm", "Hugging Face"),
+])
+def test_allowed_lineages_resolve_too(arch, vendor):
+    assert mc.origin_of(f"repackager/thing-{arch}-mlx", ["mlx", arch])["vendor"] == vendor
+
+
+def test_an_unattributable_model_names_its_lab_and_claims_no_country():
+    """When nothing identifies the lineage, name the publishing ACCOUNT — a checkable fact —
+    and claim NO country.
+
+    This replaces an earlier assertion that demanded a placeholder flag. Reversed by the user
+    on 2026-08-20: the browser is where people exclude models by country, so a flag we cannot
+    justify is worse than no flag. An unknown account now renders with none.
+    """
+    o = mc.origin_of("VertexAGI/prism-caption-1-micro", ["mlx", "safetensors"])
+    assert o["lab"] == "VertexAGI"
+    assert o["vendor"] == "VertexAGI"
+    assert o["verified"] is False
+    assert o["flag"] == "", "no flag may be shown for an origin we could not establish"
+    assert o["countries"] == [], "and nothing for the origin filter to match on"
+
+
+# ── Publisher and lineage are separate facts (the 2026-08-20 live report) ───────
+
+def test_a_us_lab_publishing_a_qwen_finetune_is_not_flagged_chinese():
+    """THE reported bug. `prism-ml/Bonsai-8B-mlx-1bit` is published by Prism ML, a US company,
+    on a qwen3 architecture — and the row rendered as 🇨🇳 Alibaba / Qwen, stating something
+    false about a real company on the very screen where users exclude models by country.
+
+    Both facts are true and both must survive: US publisher, Qwen lineage.
+    """
+    o = mc.origin_of("prism-ml/Bonsai-8B-mlx-1bit",
+                     ["mlx", "safetensors", "qwen3",
+                      "base_model:prism-ml/Bonsai-8B-unpacked"])
+    assert o["publisher"]["vendor"] == "Prism ML"
+    assert o["publisher"]["country"] == "US"
+    assert o["flag"] == "🇺🇸", "the row leads with the publisher, who is American"
+    # …and the lineage is still reported, so the user can act on it.
+    assert o["lineage"]["vendor"] == "Alibaba / Qwen"
+    assert o["lineage"]["flag"] == "🇨🇳"
+    assert o["allowed"] is False, "lineage drives the policy, not the publisher's flag"
+    assert set(o["countries"]) == {"US", "CN"}
+
+
+def test_an_own_account_base_model_does_not_mask_the_architecture():
+    """A base_model tag pointing INTO the publisher's own account names a packaging step,
+    not the upstream. Honouring it would let any lab launder a lineage by re-uploading the
+    base under its own name first — which is exactly what Bonsai's tags look like."""
+    o = mc.origin_of("prism-ml/Bonsai-8B-mlx-1bit",
+                     ["mlx", "qwen3", "base_model:prism-ml/Bonsai-8B-unpacked"])
+    assert o["lineage"]["org"] == "qwen"
+    assert o["lineage"]["source"] == "architecture"
+
+
+def test_a_repackager_contributes_no_country():
+    """`mlx-community` hosts Google, Alibaba and Mistral conversions side by side, so reading
+    a country off the account would be meaningless."""
+    o = mc.origin_of("mlx-community/gemma-4-e4b-it-4bit",
+                     ["mlx", "gemma4", "base_model:google/gemma-4-E4B-it"])
+    assert o["publisher"]["repackager"] is True
+    assert o["publisher"]["country"] == ""
+    assert o["flag"] == "🇺🇸" and o["lineage"]["vendor"] == "Google", "flag falls to lineage"
+
+
+def test_the_origin_filter_matches_lineage_not_the_leading_flag(monkeypatch):
+    """A user hiding 🇨🇳 wants Qwen fine-tunes gone however they were republished — including
+    the one whose row correctly shows a US flag."""
+    fake = [{"id": "prism-ml/Bonsai-8B-mlx-1bit", "tags": ["mlx", "qwen3"],
+             "pipeline_tag": "text-generation",
+             "safetensors": {"parameters": {"BF16": 1_000_000}}, "downloads": 5, "likes": 1}]
+    monkeypatch.setattr(mc, "_get_json", lambda *a, **k: (fake, None))
+    mc.reset_cache()
+    assert mc.search()["models"], "shown by default — nothing is withheld"
+    mc.reset_cache()
+    hidden = mc.search(exclude_countries="CN")
+    assert hidden["models"] == []
+    assert hidden["hidden_by_filter"] == 1, "counted once, not once per pipeline queried"
+
+
+# ── Role → HF pipeline fan-out (the second half of the 2026-08-20 report) ───────
+
+def test_every_role_queries_its_own_pipelines():
+    """The other reported bug: embedders and image models were missing from the browser.
+
+    They were never absent from the Hub — the search fetched ONE page sorted by downloads and
+    filtered it client-side. Measured across the top 300 `mlx` repos: 150 text-generation and
+    84 image-text-to-text, but only 2 sentence-similarity, 2 feature-extraction and 3
+    text-to-image. That page yielded 1 embedding model and 0 image models.
+    """
+    assert mc.ROLE_PIPELINES["embedding"] == ("sentence-similarity", "feature-extraction")
+    assert mc.ROLE_PIPELINES["image"] == ("text-to-image",)
+    # The default view must reach every pipeline, or the small categories stay invisible.
+    for p in ("sentence-similarity", "feature-extraction", "text-to-image"):
+        assert p in mc.DEFAULT_PIPELINES
+
+
+def test_the_role_filter_is_pushed_to_the_api(monkeypatch):
+    """The fix has to happen in the QUERY. Filtering a chat-dominated page client-side is
+    what produced zero image models in the first place."""
+    seen = []
+
+    def fake(url, *a, **k):
+        seen.append(url)
+        return [], None
+
+    monkeypatch.setattr(mc, "_get_json", fake)
+    mc.reset_cache()
+    mc.search(role="image")
+    assert seen, "no request was made at all"
+    assert all("pipeline_tag=text-to-image" in u for u in seen)
+
+
+def test_offline_needs_every_pipeline_to_fail(monkeypatch):
+    """One pipeline 404ing is not an offline Mac — only a total loss of the Hub is."""
+    calls = {"n": 0}
+
+    def flaky(url, *a, **k):
+        calls["n"] += 1
+        return (None, "Hugging Face returned HTTP 404.") if calls["n"] == 1 else ([], None)
+
+    monkeypatch.setattr(mc, "_get_json", flaky)
+    mc.reset_cache()
+    assert mc.search()["offline"] is False
+
+
+def test_nothing_gates_a_download():
+    """The download endpoint must not refuse on origin or on fit. Showing a model and then
+    refusing to fetch it is the worst of both — the user sees the option and cannot take it.
+    (User call, 2026-08-20: "nothing should limit a user from downloading, it's up to them.")
+    """
+    import inspect
+
+    import api.settings as st
+
+    src = inspect.getsource(st.catalog_download)
+    code = "\n".join(l for l in src.splitlines() if not l.strip().startswith("#"))
+    assert "origin_of" not in code, "origin must not gate the download"
+    assert "403" not in code, "no refusal path belongs here"
+
+
+# ── Why a browse failed, not just that it did (2026-09-14) ──────────────────────
+#
+# The panel reported "Could not reach Hugging Face" for every failure, and the log kept only
+# `type(e).__name__`. That name is `ConnectError` for a refused socket AND for a rejected
+# certificate, so the real cause — a network inspecting TLS, whose root macOS trusts and
+# certifi does not — was invisible from inside the app and took six commands to find. These
+# tests pin the distinction rather than the wording.
+
+class _Resp:
+    def __init__(self, status_code: int, payload=None):
+        self.status_code = status_code
+        self._payload = payload if payload is not None else []
+
+    def json(self):
+        return self._payload
+
+
+def _client_returning(resp=None, raises=None):
+    """A stand-in httpx.Client context manager."""
+    class _C:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def get(self, url, **kw):
+            if raises is not None:
+                raise raises
+            return resp
+
+    return lambda **kw: _C()
+
+
+def test_a_rejected_certificate_does_not_read_as_a_dead_network(monkeypatch):
+    """The failure that started this. httpx reports a TLS rejection as ConnectError, so the
+    type name cannot carry the diagnosis — the message has to."""
+    import httpx
+
+    err = httpx.ConnectError(
+        "[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: "
+        "unable to get local issuer certificate (_ssl.c:1032)")
+    monkeypatch.setattr(httpx, "Client", _client_returning(raises=err))
+    data, reason = mc._get_json("https://huggingface.co/api/models")
+    assert data is None
+    assert "certificate" in reason.lower()
+    assert "inspect" in reason.lower(), "the user needs to know WHERE to look"
+    assert "no network" not in reason.lower(), "this machine's network is fine"
+
+
+def test_rate_limiting_is_not_reported_as_offline(monkeypatch):
+    """A 429 means the Hub answered. Telling the user to check their connection sends them
+    to the wrong place, and the old code could not tell the two apart."""
+    import httpx
+
+    monkeypatch.setattr(httpx, "Client", _client_returning(resp=_Resp(429)))
+    data, reason = mc._get_json("https://huggingface.co/api/models")
+    assert data is None
+    assert "429" in reason
+    assert "could not reach" not in reason.lower()
+
+
+def test_a_transport_failure_logs_the_message_not_just_the_type(monkeypatch, caplog):
+    """`ConnectError` alone is not a diagnosis. Without str(e) the log cannot distinguish a
+    refused socket from a rejected certificate — which is exactly what happened."""
+    import logging
+
+    import httpx
+
+    err = httpx.ConnectError("[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed")
+    monkeypatch.setattr(httpx, "Client", _client_returning(raises=err))
+    with caplog.at_level(logging.WARNING, logger=mc.logger.name):
+        mc._get_json("https://huggingface.co/api/models")
+    logged = " ".join(r.message for r in caplog.records)
+    assert "CERTIFICATE_VERIFY_FAILED" in logged, "the cause must survive into the log"
+
+
+def test_the_reason_survives_to_the_panel(monkeypatch):
+    """search() must hand the real cause up, not flatten it back to a generic sentence."""
+    monkeypatch.setattr(
+        mc, "_get_json",
+        lambda *a, **k: (None, "Hugging Face is rate-limiting this machine (HTTP 429)."))
+    mc.reset_cache()
+    res = mc.search()
+    assert res["offline"] is True
+    assert "429" in res["reason"]

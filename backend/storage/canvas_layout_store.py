@@ -29,7 +29,11 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 # Edge states (keep in sync with the frontend + the spec's five-state table).
-EDGE_STATES = ("candidate", "provenance", "user", "curator", "researched")
+EDGE_STATES = ("candidate", "provenance", "user", "curator", "researched", "tension")
+
+# Fixed namespace for deriving stable derived-node ids (uuid5). Must never change: it IS the
+# identity of every derived canvas node across populates.
+_NODE_NS = uuid.UUID("6f1b1d2e-0c3a-4a6b-9f7d-2e5c8a1b4d90")
 
 _SCHEMA_READY = False
 
@@ -66,6 +70,16 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         cur.execute("ALTER TABLE canvas_nodes ADD COLUMN width REAL")
     if "height" not in existing_cols:
         cur.execute("ALTER TABLE canvas_nodes ADD COLUMN height REAL")
+    # Canvas evolution (2.2.0): a thread node belongs to a sub-topic card (topic_id, NULL = orphan)
+    # and, when rendered as a react-flow child, to a parent group node (parent_id).
+    if "topic_id" not in existing_cols:
+        cur.execute("ALTER TABLE canvas_nodes ADD COLUMN topic_id TEXT")
+    if "parent_id" not in existing_cols:
+        cur.execute("ALTER TABLE canvas_nodes ADD COLUMN parent_id TEXT")
+    # P4 orphan intent-elicitation: the user's "what were you exploring here?" answer, stored on
+    # the (formerly orphan) thread so accretive re-assignment + idle research can use it.
+    if "intent" not in existing_cols:
+        cur.execute("ALTER TABLE canvas_nodes ADD COLUMN intent TEXT")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_canvas_nodes_nb ON canvas_nodes(notebook_id)")
     cur.execute(
         """
@@ -126,6 +140,9 @@ def _node_to_dict(row: sqlite3.Row) -> Dict[str, Any]:
         "z": row["z"] or 0,
         "width": row["width"],
         "height": row["height"],
+        "topic_id": (row["topic_id"] if "topic_id" in row.keys() else None),
+        "parent_id": (row["parent_id"] if "parent_id" in row.keys() else None),
+        "intent": (row["intent"] if "intent" in row.keys() else None),
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
     }
@@ -154,6 +171,18 @@ def _get_layout(conn: sqlite3.Connection, notebook_id: str) -> Dict[str, Any]:
             (notebook_id,),
         ).fetchall()
     ]
+    # PARENTS MUST PRECEDE THEIR CHILDREN. React Flow v12 resolves `parentId` against the nodes it
+    # has already seen, so a child listed first renders DETACHED — its position, which is relative
+    # to the parent, gets treated as absolute and the thread lands somewhere else on the canvas
+    # while its topic card shows up empty. (Observed 2026-08-12: expanding a card showed nothing
+    # inside while its threads sat at their old pre-card coordinates.)
+    #
+    # The SQL order alone can't guarantee this: threads keep their ORIGINAL `created_at` (months
+    # old) while a topic card is minted at populate time, so `ORDER BY z, created_at` reliably puts
+    # every child ahead of its parent. Stable-partition parents first — the hierarchy is two levels
+    # (card → thread), so one pass is sufficient, and the relative order within each group (hence z
+    # and recency) is preserved.
+    nodes.sort(key=lambda n: 1 if n.get("parent_id") else 0)
     edges = [
         _edge_to_dict(r)
         for r in conn.execute(
@@ -172,6 +201,40 @@ def _get_layout(conn: sqlite3.Connection, notebook_id: str) -> Dict[str, Any]:
     return {"nodes": nodes, "edges": edges, "viewport": viewport}
 
 
+def assign_node_ids(notebook_id: str, nodes: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Resolve every node's final `id` IN PLACE, and return the list.
+
+    Stable identity for DERIVED nodes. Populate rebuilds every derived node from capture and
+    `canvas_populate` strips the working id before persisting (`:353`), so a fresh uuid4 used to be
+    minted on EVERY populate. Anything keyed by node id was therefore orphaned each time — the
+    user's `canvas_recall` review history, P4 elicited intents, and any persisted edge.
+
+    A node's real identity is what it POINTS AT, so derive it: uuid5(notebook:ref_type:ref_id).
+    Same thread → same id, populate after populate. Nodes without a ref (user-placed notes) keep
+    a random id, and a caller-supplied id always wins.
+
+    Public (not `_`-prefixed) because DERIVED EDGES need the same ids: an edge builder that
+    re-derived them itself could silently disagree with what gets written. One resolver, one
+    answer — callers that need node ids before the save pass their nodes through here first, and
+    `_save_layout` is then a no-op on the `id` field.
+    """
+    seen_ids: set = set()
+    for n in nodes or []:
+        node_id = n.get("id")
+        if not node_id:
+            ref_type, ref_id = n.get("ref_type"), n.get("ref_id")
+            if ref_type and ref_id:
+                node_id = str(uuid.uuid5(_NODE_NS, f"{notebook_id}:{ref_type}:{ref_id}"))
+        # `id` is the PRIMARY KEY: two nodes sharing a ref within one save would collide and abort
+        # the whole populate. Falling back to a random id keeps both rows (the old behaviour for
+        # that node) instead of losing the batch.
+        if not node_id or node_id in seen_ids:
+            node_id = str(uuid.uuid4())
+        seen_ids.add(node_id)
+        n["id"] = node_id
+    return nodes or []
+
+
 def _save_layout(
     conn: sqlite3.Connection,
     notebook_id: str,
@@ -183,13 +246,14 @@ def _save_layout(
     now = _now()
     conn.execute("DELETE FROM canvas_nodes WHERE notebook_id = ?", (notebook_id,))
     conn.execute("DELETE FROM canvas_edges WHERE notebook_id = ?", (notebook_id,))
-    for n in nodes or []:
+    for n in assign_node_ids(notebook_id, nodes):
+        node_id = n["id"]
         conn.execute(
             "INSERT INTO canvas_nodes (id, notebook_id, x, y, kind, ref_type, ref_id, "
-            "snapshot_json, title, z, width, height, created_at, updated_at) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "snapshot_json, title, z, width, height, topic_id, parent_id, intent, created_at, updated_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
-                n.get("id") or str(uuid.uuid4()),
+                node_id,
                 notebook_id,
                 float(n.get("x", 0.0)),
                 float(n.get("y", 0.0)),
@@ -201,6 +265,9 @@ def _save_layout(
                 int(n.get("z", 0)),
                 _as_float_or_none(n.get("width")),
                 _as_float_or_none(n.get("height")),
+                n.get("topic_id"),
+                n.get("parent_id"),
+                n.get("intent"),
                 n.get("created_at") or now,
                 now,
             ),
@@ -246,6 +313,46 @@ def _patch_node(conn: sqlite3.Connection, notebook_id: str, node_id: str,
     )
     conn.commit()
     return cur.rowcount > 0
+
+
+def _set_node_intent(conn: sqlite3.Connection, notebook_id: str, node_id: str, intent: str,
+                     assign_topic: Optional[str] = None) -> bool:
+    """P4 — store the elicited intent on a thread (targeted, no full-layout rewrite). When
+    `assign_topic` is given, also stamp topic_id + parent_id (the thread JOINED that sub-topic card),
+    so it loses its orphan styling on the next layout read."""
+    sets = ["intent = ?", "updated_at = ?"]
+    params: List[Any] = [intent, _now()]
+    if assign_topic:
+        sets.extend(["topic_id = ?", "parent_id = ?"])
+        params.extend([assign_topic, assign_topic])
+    params.extend([node_id, notebook_id])
+    cur = conn.execute(
+        f"UPDATE canvas_nodes SET {', '.join(sets)} WHERE id = ? AND notebook_id = ?", params)
+    conn.commit()
+    return cur.rowcount > 0
+
+
+def _patch_node_snapshot(conn: sqlite3.Connection, notebook_id: str, node_id: str,
+                         patch: Dict[str, Any]) -> bool:
+    """Merge `patch` into a node's snapshot JSON (targeted). Used by the P4 idle-research factory to
+    stash a `research_insight` on the elicited thread without a full-layout rewrite."""
+    row = conn.execute(
+        "SELECT snapshot_json FROM canvas_nodes WHERE id = ? AND notebook_id = ?",
+        (node_id, notebook_id)).fetchone()
+    if not row:
+        return False
+    try:
+        snap = json.loads(row["snapshot_json"] or "{}")
+        if not isinstance(snap, dict):
+            snap = {}
+    except Exception:
+        snap = {}
+    snap.update(patch or {})
+    conn.execute(
+        "UPDATE canvas_nodes SET snapshot_json = ?, updated_at = ? WHERE id = ? AND notebook_id = ?",
+        (json.dumps(snap, default=str), _now(), node_id, notebook_id))
+    conn.commit()
+    return True
 
 
 def _upsert_edge(conn: sqlite3.Connection, notebook_id: str, edge: Dict[str, Any]) -> Dict[str, Any]:
@@ -323,6 +430,23 @@ def patch_node(notebook_id: str, node_id: str, x: float, y: float,
         return _patch_node(_get_conn(), notebook_id, node_id, x, y, width, height)
     except Exception as e:
         logger.warning(f"[canvas_layout] patch_node failed ({node_id}): {e}")
+        return False
+
+
+def set_node_intent(notebook_id: str, node_id: str, intent: str,
+                    assign_topic: Optional[str] = None) -> bool:
+    try:
+        return _set_node_intent(_get_conn(), notebook_id, node_id, intent, assign_topic)
+    except Exception as e:
+        logger.warning(f"[canvas_layout] set_node_intent failed ({node_id}): {e}")
+        return False
+
+
+def patch_node_snapshot(notebook_id: str, node_id: str, patch: Dict[str, Any]) -> bool:
+    try:
+        return _patch_node_snapshot(_get_conn(), notebook_id, node_id, patch)
+    except Exception as e:
+        logger.warning(f"[canvas_layout] patch_node_snapshot failed ({node_id}): {e}")
         return False
 
 

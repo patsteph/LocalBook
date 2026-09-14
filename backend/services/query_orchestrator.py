@@ -46,9 +46,8 @@ class QueryOrchestrator:
     
     def __init__(self, rag_engine):
         self.rag_engine = rag_engine
-        self.ollama_base_url = settings.ollama_base_url
-        self.fast_model = settings.ollama_fast_model
-        self.main_model = settings.ollama_model
+        self.fast_model = settings.fast_model
+        self.main_model = settings.main_model
     
     def classify_complexity(self, query: str) -> str:
         """Classify query complexity level.
@@ -119,8 +118,8 @@ RULES:
 SUB-QUESTIONS:"""
 
         try:
-            from services.ollama_service import ollama_service
-            _resp = await ollama_service.generate(
+            from services.llm_runtime import llm_runtime
+            _resp = await llm_runtime.generate(
                 prompt=prompt,
                 model=self.fast_model,
                 temperature=0.3,
@@ -272,8 +271,8 @@ FINDINGS:
 Provide a comprehensive answer that synthesizes all the findings. Use [1], [2], etc. to cite sources."""
 
         try:
-            # v1.8.0: route via ollama_service so sidecar-backed models work
-            from services.ollama_service import ollama_service as _os
+            # v1.8.0: route via llm_runtime so sidecar-backed models work
+            from services.llm_runtime import llm_runtime as _os
             _resp = await _os.generate(
                 prompt=prompt,
                 model=self.main_model,
@@ -281,7 +280,7 @@ Provide a comprehensive answer that synthesizes all the findings. Use [1], [2], 
                 num_predict=1000,
                 timeout=60.0,
             )
-            # ollama_service returns the same shape as Ollama /api/generate on success
+            # llm_runtime returns the same shape as Ollama /api/generate on success
             if True:
                 if _resp is not None:
                     answer = _resp.get("response", "")

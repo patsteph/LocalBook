@@ -40,35 +40,24 @@ async def get_tray_status():
     out = {
         "ok": True,
         "models": {"main": "", "fast": "", "vision": ""},
-        # Wave 9.6 — which engine is actually serving: "mlx" (all roles), "mixed"
-        # (some MLX, some Ollama), or "ollama". Lets the menu-bar show ⚡ MLX so the
-        # user can tell at a glance which stack is live (persisted knowledge, #5).
-        "engine": "ollama",
+        # One engine. Kept as a field because the tray and `tray.rs` still render it, and a
+        # missing key would blank the status line rather than degrade.
+        "engine": "mlx",
         # Aligned 1:1 with the Health Portal's counters (same rag_metrics source)
         # so the two never disagree: Tokens In/Out + AVG Tokens/Sec + Avg Latency.
         "metrics": {"tokens_in": 0, "tokens_out": 0, "tokens_per_sec": 0.0, "avg_latency_ms": 0},
         "enrichment": {"queue_depth": 0},
     }
     try:
-        from evaluator.model_registry import model_registry
-        # Engine-aware: when a role's engine == "mlx", the live model is the mlx_* one,
-        # not the Ollama default — report what's actually resident so the tray is truthful.
-        def _eng(attr):
-            return getattr(settings, attr, "ollama") or "ollama"
-        main_eng, fast_eng, vision_eng = _eng("main_engine"), _eng("fast_engine"), _eng("vision_engine")
-        ollama_main = getattr(settings, "ollama_model", "") or ""
-        main = getattr(settings, "mlx_main_model", "") if main_eng == "mlx" else ollama_main
-        fast = getattr(settings, "mlx_fast_model", "") if fast_eng == "mlx" else (getattr(settings, "ollama_fast_model", "") or "")
-        vision = (getattr(settings, "mlx_vision_model", "") if vision_eng == "mlx"
-                  else model_registry.resolve_vision_model(ollama_main, getattr(settings, "vision_model", "") or ""))
-        # Friendly names in the menu bar too (user #4) — same short names as the Evaluator.
+        # Each role attribute IS the live checkpoint now — the engine-flag branching that
+        # used to pick between an Ollama name and an mlx_* id had both arms resolving to the
+        # same value after the collapse.
         from utils.model_display import friendly_model_name
-        out["models"] = {"main": friendly_model_name(main),
-                         "fast": friendly_model_name(fast),
-                         "vision": friendly_model_name(vision)}
-        engines = [main_eng, fast_eng, vision_eng]
-        out["engine"] = ("mlx" if all(e == "mlx" for e in engines)
-                         else "mixed" if any(e == "mlx" for e in engines) else "ollama")
+        out["models"] = {
+            "main": friendly_model_name(getattr(settings, "main_model", "") or ""),
+            "fast": friendly_model_name(getattr(settings, "fast_model", "") or ""),
+            "vision": friendly_model_name(getattr(settings, "vision_model", "") or ""),
+        }
     except Exception as e:
         logger.debug(f"[system.tray] models snapshot failed: {e}")
     try:
@@ -538,4 +527,154 @@ async def get_notebook_schedule(notebook_id: str):
         )
     except Exception as e:
         logger.debug(f"[system.schedule/nb] community snapshot failed: {e}")
+    return out
+
+
+@router.get("/engine-truth")
+async def engine_truth():
+    """Which engine is ACTUALLY serving each role, right now.
+
+    Exists because `config.py` defaults are not the truth: `user_preferences.json`'s
+    `default_combo` is re-applied over them on every launch (`main.py:103-110`, truthy check),
+    so a saved `"ollama"` silently beats a config default of `"mlx"`. Any engine A/B, gate day,
+    or "we're on MLX now" claim can be falsified by a stale prefs file — this is the endpoint
+    that settles it rather than inferring from config.
+
+    Also reports whether the resolved model is actually present on disk, since a role can be
+    configured for MLX and still fall back at runtime because nothing was ever downloaded.
+    """
+    from config import settings
+
+    def _role(model_attr: str) -> dict:
+        model = getattr(settings, model_attr, "") or ""
+        present = None
+        if model:
+            try:
+                from services.model_sizing import exact_weight_gb
+                present = exact_weight_gb(model) is not None
+            except Exception:
+                present = None
+        return {"engine": "mlx", "model": model, "present_on_disk": present}
+
+    roles = {
+        "main":   _role("main_model"),
+        "fast":   _role("fast_model"),
+        "vision": _role("vision_model"),
+        "embed":  _role("embedding_model"),
+        "image":  _role("image_model"),
+    }
+    engines = {r: v["engine"] for r, v in roles.items()}
+    distinct = sorted(set(engines.values()))
+    prefs = _prefs_override_summary()
+
+    # Name the disagreements explicitly. Leaving a reader to diff two dicts is how this gets
+    # missed — and being missed is the entire failure mode this endpoint exists for.
+    # The engine can no longer disagree (there is one), but the MODEL still can: prefs are
+    # re-applied at every launch and win over config.
+    conflicts = []
+    for role, v in roles.items():
+        want = (prefs.get("models") or {}).get(role)
+        if want and want != v["model"]:
+            conflicts.append({
+                "role": role, "resolved": v["model"], "prefs_say": want,
+                "note": "user_preferences.json is re-applied at every launch and wins — "
+                        "expect the prefs value in the running app",
+            })
+    # A role pointed at MLX with nothing downloaded will fall back at runtime, so the reported
+    # engine would be a lie the moment it is used.
+    missing = [r for r, v in roles.items()
+               if v["engine"] == "mlx" and v["present_on_disk"] is False]
+
+    return {
+        "roles": roles,
+        "all_mlx": distinct == ["mlx"],
+        "all_ollama": distinct == ["ollama"],
+        "mixed": len(distinct) > 1,
+        "prefs_override_active": prefs,
+        "conflicts": conflicts,
+        "mlx_roles_missing_on_disk": missing,
+        # The one field a measurement harness should assert on.
+        "trustworthy": not conflicts and not missing,
+    }
+
+
+def _prefs_override_summary() -> dict:
+    """Which model values user_preferences.json is forcing over the config defaults."""
+    try:
+        import json
+        from pathlib import Path
+        from config import settings
+        p = Path(settings.data_dir) / "user_preferences.json"
+        if not p.is_file():
+            return {"present": False}
+        combo = (json.loads(p.read_text()) or {}).get("default_combo") or {}
+        # `embeddings` is the combo's historical key for the embed role.
+        _keys = {"main": "main_model", "fast": "fast_model", "vision": "vision_model",
+                 "image": "image_model", "embed": "embedding_model"}
+        models = {r: combo.get(k) for r, k in _keys.items() if combo.get(k)}
+        if "embed" not in models and combo.get("embeddings"):
+            models["embed"] = combo["embeddings"]
+        return {"present": True, "models": models}
+    except Exception:
+        return {"present": None}
+
+
+@router.get("/model-readiness")
+async def model_readiness():
+    """Can the app actually answer right now, and if not, what is missing?
+
+    Stage 3.9. With Ollama gone, a role pointed at a model that was never downloaded fails at
+    FIRST USE — today that means a multi-GB stall inside the user's first chat message with no
+    UI and no explanation. `mark_models_ready()` is called unconditionally at startup
+    (main.py:408,413), including on failure, so "ready" has meant "we got to the end of
+    startup" rather than "the models exist".
+
+    Reports per-role presence plus a `blocking` list. Vision is deliberately NOT blocking — the
+    app degrades to text-only rather than failing.
+    """
+    from config import settings
+
+    _ATTR = {"main": "main_model", "fast": "fast_model",
+             "vision": "vision_model", "embed": "embedding_model"}
+    roles = {r: (getattr(settings, a, "") or "") for r, a in _ATTR.items()}
+
+    out = {"roles": {}, "blocking": [], "ready": True}
+    for role, model in roles.items():
+        present: object = None
+        if model:
+            try:
+                from services.model_presence import is_present
+                present = is_present(model)
+            except Exception:
+                present = None
+        out["roles"][role] = {"engine": "mlx", "model": model, "present": present}
+        if present is False and role in ("main", "fast", "embed"):
+            out["blocking"].append(role)
+
+    out["ready"] = not out["blocking"]
+    try:
+        from services.model_presence import engine_ok
+        out["engine_ok"] = engine_ok()
+        # Was `any(e == "mlx" for e in engines.values())` over the pre-collapse per-role engine
+        # map. That name died with the map; every role is MLX now, so the question is simply
+        # whether any role needs the engine at all. The NameError landed inside the bare
+        # `except` below, so readiness could report ready with a dead engine — on the endpoint
+        # the debugging playbook sends you to first.
+        if any(roles.values()) and not out["engine_ok"]:
+            out["ready"] = False
+            out["blocking"].append("mlx_engine_unavailable")
+    except Exception:
+        pass
+    # What a first-run UI would need to offer: the exact ids to download, largest first so the
+    # user sees the long pole rather than discovering it after two quick ones.
+    if out["blocking"]:
+        try:
+            from services.model_sizing import exact_weight_gb
+            missing = [roles[r] for r in out["blocking"] if r in roles and roles[r]]
+            out["download"] = sorted(
+                ({"model_id": m, "gb": exact_weight_gb(m)} for m in dict.fromkeys(missing)),
+                key=lambda d: -(d["gb"] or 0),
+            )
+        except Exception:
+            pass
     return out

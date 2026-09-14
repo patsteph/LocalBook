@@ -24,7 +24,7 @@ async def _stream_curator(chat_query: ChatQuery, injected_action: Optional[Dict[
     """
     from agents.curator import curator
     from services.cross_notebook_search import cross_notebook_search
-    from services.ollama_service import ollama_service
+    from services.llm_runtime import llm_runtime
     from services.intent_classifier import classify_intent
 
     curator_name = curator.name or "Curator"
@@ -977,10 +977,10 @@ Synthesize a comprehensive answer that:
 Answer:"""
 
                 try:
-                    response = await ollama_service.generate(
+                    response = await llm_runtime.generate(
                         prompt=prompt,
                         system=f"You are {curator_name}, a research curator who synthesizes knowledge across multiple research notebooks. Personality: {curator.personality}",
-                        model=settings.ollama_model,
+                        model=settings.main_model,
                         temperature=0.5,
                     )
                     reply = response.get("response", "I couldn't generate a synthesis. Please try rephrasing your question.")

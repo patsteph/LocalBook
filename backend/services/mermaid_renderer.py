@@ -26,6 +26,68 @@ async def _get_browser():
     return await get_shared_browser()
 
 
+# The render page. S3/C4 moved the browser out but deleted `_HTML_TEMPLATE` and
+# `_MERMAID_SRC` while leaving both readers behind, so every call to
+# `render_mermaid_to_png` raised `NameError` — mermaid diagrams in PPTX and image exports
+# have been dead since. The old source resolved mermaid.js from `node_modules`, which does
+# not ship inside the .app; `export_assets` owns the vendored, frozen-aware copy and inlines
+# it, so the offline guarantee holds in the bundle too.
+_HTML_SHELL = """<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  __MERMAID_SCRIPT__
+  <style>
+    body { margin: 0; padding: 20px; background: white; }
+    #diagram { display: inline-block; }
+  </style>
+</head>
+<body>
+  <pre class="mermaid" id="diagram">
+  </pre>
+  <script>
+    mermaid.initialize({
+      startOnLoad: false,
+      theme: 'default',
+      securityLevel: 'loose',
+      flowchart: { curve: 'basis', padding: 15 },
+      themeVariables: {
+        fontSize: '14px',
+        fontFamily: 'Inter, system-ui, sans-serif'
+      }
+    });
+
+    async function renderDiagram(code) {
+      const el = document.getElementById('diagram');
+      el.textContent = code;
+      try {
+        const { svg } = await mermaid.render('rendered', code);
+        el.innerHTML = svg;
+        return true;
+      } catch (e) {
+        el.textContent = 'Render error: ' + e.message;
+        return false;
+      }
+    }
+
+    window.renderDiagram = renderDiagram;
+  </script>
+</body>
+</html>"""
+
+_html_cache: Optional[str] = None
+
+
+def _html_template() -> str:
+    """Build the page once. The vendored mermaid source is ~3.5 MB, so it is read on first
+    render rather than at import."""
+    global _html_cache
+    if _html_cache is None:
+        from services.export_assets import mermaid_script_tag
+        _html_cache = _HTML_SHELL.replace("__MERMAID_SCRIPT__", mermaid_script_tag())
+    return _html_cache
+
+
 async def render_mermaid_to_png(
     mermaid_code: str,
     width: int = 1200,
@@ -57,7 +119,7 @@ async def render_mermaid_to_png(
         )
 
         # Load the HTML template
-        await page.set_content(_HTML_TEMPLATE, wait_until='networkidle')
+        await page.set_content(_html_template(), wait_until='networkidle')
 
         # Call the renderDiagram function with our code
         success = await page.evaluate(f'renderDiagram({repr(mermaid_code)})')
@@ -96,16 +158,14 @@ async def render_mermaid_to_png(
 
 
 async def shutdown():
-    """Close the browser instance. Call on app shutdown."""
-    global _browser
-    async with _browser_lock:
-        if _browser:
-            try:
-                await _browser.close()
-            except Exception as _e:
-                logger.debug(f"[mermaid-renderer] {type(_e).__name__}: {_e}")
-            _browser = None
-            print("[MermaidRenderer] Browser closed")
+    """Close the shared browser. Call on app shutdown.
+
+    Kept as a module-level name because callers import it from here, but the browser it used
+    to own moved to `playwright_utils` in S3/C4 — this still referenced the deleted
+    `_browser_lock`, so shutdown raised instead of closing anything.
+    """
+    from services.playwright_utils import shutdown_shared_browser
+    await shutdown_shared_browser()
 
 
 def is_available() -> bool:

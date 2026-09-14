@@ -62,17 +62,6 @@ class RunProfile:
 _STOP_RE = re.compile(r'^\s*stop\s+"?(.*?)"?\s*$', re.MULTILINE)
 
 
-def _parse_stops(parameters: str) -> list[str]:
-    if not parameters:
-        return []
-    seen: list[str] = []
-    for m in _STOP_RE.finditer(parameters):
-        val = m.group(1)
-        if val and val not in seen:
-            seen.append(val)
-    return seen
-
-
 def derive_run_profile(model: str, provider: str = "ollama", caps=None) -> RunProfile:
     """Derive a RunProfile by asking the engine. `caps` (a ProbedCapabilities) may
     be passed to avoid a redundant probe. Never raises — falls back to a safe
@@ -99,7 +88,6 @@ def derive_run_profile(model: str, provider: str = "ollama", caps=None) -> RunPr
             normalize_filters=["strip_thinking"],
         )
 
-    # ── Ollama ──
     if caps is None:
         try:
             from evaluator.capability_probe import probe_capabilities
@@ -108,21 +96,23 @@ def derive_run_profile(model: str, provider: str = "ollama", caps=None) -> RunPr
             caps = None
     thinking_capable = bool(getattr(caps, "thinking", False))
 
+    # Stop sequences came from Ollama's /api/show `parameters` blob. There is no
+    # equivalent in an MLX checkpoint, so they now come from the curated registry profile —
+    # which is where the app's own stop sequences already live (llm_service reads the same
+    # rag_profile), making this consistent with what generation actually applies.
     stops: list[str] = []
     source = "derived"
     try:
-        from evaluator.capability_probe import ollama_show
-        show = ollama_show(model)
-        if show is not None:
-            stops = _parse_stops(str(show.get("parameters") or ""))
-        else:
+        from services.llm_service import _get_rag_profile
+        stops = list(_get_rag_profile(model).get("stop_sequences") or [])
+        if not stops:
             source = "derived+fallback"
     except Exception:
         source = "derived+fallback"
 
     return RunProfile(
         model=model,
-        provider="ollama",
+        provider="mlx",
         source=source,
         thinking_capable=thinking_capable,
         # For evaluation we score the FINAL answer, so reasoning is OFF by default

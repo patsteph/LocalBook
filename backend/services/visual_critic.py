@@ -23,7 +23,7 @@ import time
 from dataclasses import dataclass
 from typing import Optional
 
-from services.ollama_service import ollama_service
+from services.llm_runtime import llm_runtime
 from services.visual_capability import VisualCapability, get_capability
 
 logger = logging.getLogger(__name__)
@@ -209,8 +209,8 @@ class VisualCritic:
         )
 
         logger.info(f"[visual_critic] critic_model={critic_model}")
-        from services.ollama_service import PRIORITY_FOREGROUND
-        result = await ollama_service.generate(
+        from services.llm_runtime import PRIORITY_FOREGROUND
+        result = await llm_runtime.generate(
             prompt=prompt,
             system=CRITIC_SYSTEM,
             model=critic_model,

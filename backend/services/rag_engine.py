@@ -80,7 +80,7 @@ class RAGEngine:
         self.reranker = None  # Lazy load reranker
         self.flashrank_reranker = None  # FlashRank reranker (preferred)
         self.db = None
-        self._use_ollama_embeddings = settings.use_ollama_embeddings
+        self._use_ollama_embeddings = True   # embeddings always run through llm_runtime
         self._use_reranker = settings.use_reranker
         self._query_pattern_cache = {}  # Cache for common query patterns
     
@@ -623,7 +623,7 @@ Extract:
 
 JSON:"""
             
-            # v1.8.0: route via ollama_service so sidecar-backed models work
+            # v1.8.0: route via llm_runtime so sidecar-backed models work
             # WS2 (2026-06-23): query analysis BLOCKS the answer (rag_engine awaits
             # this task before retrieval). It was on gemma — the same cap-1 lane the
             # streamed answer needs — so it serialized 10s of analysis AHEAD of the
@@ -632,10 +632,10 @@ JSON:"""
             # for the answer) at FOREGROUND priority so it jumps any queued background
             # phi4 work. Structured entity/intent extraction is well within phi4's
             # range; the except-path _fallback_query_analysis covers any miss.
-            from services.ollama_service import ollama_service as _os, PRIORITY_FOREGROUND
+            from services.llm_runtime import llm_runtime as _os, PRIORITY_FOREGROUND
             _resp = await _os.generate(
                 prompt=prompt,
-                model=settings.ollama_fast_model,
+                model=settings.fast_model,
                 temperature=0,
                 num_predict=200,
                 timeout=10.0,
@@ -824,6 +824,10 @@ JSON:"""
         try:
             from config import settings as _st
             if _st.tabular_structured_enabled:
+                _tres = None
+                _label = "spreadsheet"
+                # Spreadsheet-backed notebook: only divert aggregate-ish intents to the
+                # structured path; everything else is vector RAG.
                 from storage import tabular_store as _tab
                 if _tab.has_tables(notebook_id, source_ids):
                     from services.source_router import source_router as _sr
@@ -832,34 +836,36 @@ JSON:"""
                         print(f"[tabular-route] q={question[:60]!r} intent={_intent} -> STRUCTURED")
                         from services import tabular_query as _tq
                         _tres = await _tq.answer_tabular(notebook_id, question, source_ids)
-                        if _tres.get("ok"):
-                            _cit = [{
-                                "number": 1,
-                                "source_id": _tres["source_id"],
-                                "filename": _tres["filename"],
-                                "chunk_index": 0,
-                                "text": f"Structured query result — SQL: {_tres['sql']}",
-                                "parent_text": "",
-                                "snippet": f"Structured query over {_tres['filename']}",
-                                "page": None,
-                                "confidence": 1.0,
-                                "confidence_level": "high",
-                            }]
-                            yield {"type": "status", "message": "📊 Structured answer (from spreadsheet)"}
-                            yield {"type": "citations", "citations": _cit,
-                                   "sources": [_tres["source_id"]], "low_confidence": False}
-                            yield {"type": "token", "content": _tres["answer"]}
-                            try:
-                                await rag_metrics.end_query((time.time() - total_start) * 1000)
-                            except Exception:
-                                pass
-                            yield {"type": "done", "follow_up_questions": [], "structured": True}
-                            return
-                        print(f"[tabular] structured path empty/failed ({_tres.get('reason')}) "
-                              f"-> falling back to vector RAG")
+                        if not (_tres and _tres.get("ok")):
+                            print(f"[tabular] structured path empty/failed "
+                                  f"({(_tres or {}).get('reason')}) -> vector RAG")
+                            _tres = None
                     else:
-                        print(f"[tabular-route] q={question[:60]!r} intent={_intent} "
-                              f"-> vector RAG (non-aggregate intent)")
+                        print(f"[tabular-route] q={question[:60]!r} intent={_intent} -> vector RAG")
+
+                if _tres and _tres.get("ok"):
+                    _cit = [{
+                        "number": 1,
+                        "source_id": _tres["source_id"],
+                        "filename": _tres["filename"],
+                        "chunk_index": 0,
+                        "text": f"Structured query result — SQL: {_tres['sql']}",
+                        "parent_text": "",
+                        "snippet": f"Structured query over {_tres['filename']}",
+                        "page": None,
+                        "confidence": 1.0,
+                        "confidence_level": "high",
+                    }]
+                    yield {"type": "status", "message": f"📊 Structured answer (from {_label})"}
+                    yield {"type": "citations", "citations": _cit,
+                           "sources": [_tres["source_id"]], "low_confidence": False}
+                    yield {"type": "token", "content": _tres["answer"]}
+                    try:
+                        await rag_metrics.end_query((time.time() - total_start) * 1000)
+                    except Exception:
+                        pass
+                    yield {"type": "done", "follow_up_questions": [], "structured": True}
+                    return
         except Exception as _te:
             print(f"[tabular] query hook error (non-fatal): {type(_te).__name__}: {_te}")
 

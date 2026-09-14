@@ -12,12 +12,72 @@ rag_engine hook); any failure returns ok=False so the caller falls back to vecto
 """
 from __future__ import annotations
 
+import json
+import logging
 import re
 from typing import Any, Dict, List, Optional
 
 from config import settings
-from services.ollama_service import ollama_service
+from services.llm_runtime import llm_runtime
 from storage import tabular_store
+
+logger = logging.getLogger(__name__)
+
+# A DB with more tables than this gets schema-linked — only the tables relevant to the question
+# go into the SQL prompt. A 27-table schema in one prompt overwhelms a small model → wrong SQL.
+_SCHEMA_LINK_THRESHOLD = 8
+_MAX_LINKED_TABLES = 8
+
+
+def select_relevant_tables(question: str, schema: List[Dict[str, Any]],
+                           governance: str = "", max_tables: int = _MAX_LINKED_TABLES) -> List[Dict[str, Any]]:
+    """Schema linking: for a large DB, keep only the tables most relevant to the question so the
+    SQL prompt stays small and focused. Scores each table by question-token overlap with its
+    table/column names + low-cardinality values; ALWAYS keeps tables named in the governance
+    (canonical joins). Returns the full schema unchanged when it's already small. Never raises."""
+    try:
+        if len(schema) <= max_tables:
+            return schema
+        qtokens = {t for t in re.split(r"[^a-z0-9]+", question.lower()) if len(t) >= 3}
+        gov_low = (governance or "").lower()
+        scored = []
+        for t in schema:
+            name = str(t.get("table_name", ""))
+            hay = name.lower() + " " + " ".join(
+                str(c.get("sanitized", "")).lower() for c in t.get("columns", []))
+            for c in t.get("columns", []):
+                if c.get("low_cardinality"):
+                    hay += " " + " ".join(str(v).lower() for v in (c.get("values") or [])[:20])
+            htokens = set(re.split(r"[^a-z0-9]+", hay))
+            overlap = len(qtokens & htokens)
+            gov_bonus = 100 if name and name.lower() in gov_low else 0
+            view_bonus = 2 if (t.get("kind") == "view" and overlap > 0) else 0
+            scored.append((overlap + gov_bonus + view_bonus, t))
+        scored.sort(key=lambda x: -x[0])
+        signal = [t for s, t in scored if s > 0]
+        if not signal:
+            return [t for _, t in scored][:max_tables]
+        # RESERVE slots for relevant VIEWS. A purpose-built v_ view pre-joins exactly what a question
+        # needs, but base tables have more columns so they out-score views on raw token overlap and
+        # crowded them out entirely (views=0 in the linked set → the model never sees the v_ view
+        # and hand-writes base-table joins). Guarantee up to 3 relevant views, then fill with tables.
+        views = [t for t in signal if t.get("kind") == "view"]
+        tables = [t for t in signal if t.get("kind") != "view"]
+        # Views ARE the recipes — a single question can reference several of them. Let
+        # the RELEVANT views take most of the slots, reserving ≥2 for base tables (for detail a view
+        # doesn't cover). No hard 3-view cap. Only views with score>0 are here, so irrelevant ones
+        # never fill slots.
+        n_views = min(len(views), max(1, max_tables - 2))
+        picked = views[:n_views] + tables[: max_tables - n_views]
+        if len(picked) < max_tables:  # backfill from remaining signal (e.g. more views)
+            seen = {id(x) for x in picked}
+            for t in signal:
+                if id(t) not in seen and len(picked) < max_tables:
+                    picked.append(t)
+                    seen.add(id(t))
+        return picked[:max_tables]
+    except Exception:
+        return schema
 
 # Words that must never appear in generated SQL (single read-only SELECT only).
 _FORBIDDEN = re.compile(
@@ -26,7 +86,7 @@ _FORBIDDEN = re.compile(
     re.IGNORECASE,
 )
 _SQL_FENCE = re.compile(r"```(?:sql)?\s*(.*?)```", re.IGNORECASE | re.DOTALL)
-# How many low-cardinality values to show per column in the prompt (accuracy lever).
+# How many low-cardinality values to show per column in the prompt (spreadsheet/CSV path).
 _MAX_PROMPT_VALUES = 60
 # Rows rendered in a list/table answer.
 _MAX_ANSWER_ROWS = 50
@@ -275,6 +335,115 @@ def _cell(v: Any) -> str:
     return "" if v is None else str(v)
 
 
+# --- Chart rendering (Phase 2) -------------------------------------------------
+# A chartable result gets a `json-chart` fence appended to the markdown answer;
+# the chat's MarkdownArtifactRenderer dispatches that fence to ChartArtifactRenderer.
+_MAX_CHART_CATEGORIES = 30  # don't chart a big dump — a 500-row table is not a chart
+
+# Category columns whose name/values read as a time sequence render as a line chart.
+_TIME_HINT = re.compile(r"\b(month|date|year|day|week|quarter|period|qtr|fy|time)\b", re.IGNORECASE)
+_MONTH_NAMES = {
+    "jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "sept", "oct", "nov", "dec",
+    "january", "february", "march", "april", "june", "july", "august", "september",
+    "october", "november", "december",
+}
+
+
+def _as_number(v: Any) -> Optional[float]:
+    """Return v as a number (bool excluded), parsing numeric strings; else None."""
+    if isinstance(v, bool):
+        return None
+    if isinstance(v, (int, float)):
+        return v
+    if isinstance(v, str):
+        s = v.strip().replace(",", "")
+        if not s:
+            return None
+        try:
+            f = float(s)
+        except ValueError:
+            return None
+        # Preserve integers as ints so labels/JSON stay clean.
+        if f.is_integer() and not any(ch in s.lower() for ch in (".", "e")):
+            return int(f)
+        return f
+    return None
+
+
+def _is_time_label_column(name: str, values: List[Any]) -> bool:
+    """True when a category column looks like a time/month/date/year sequence."""
+    if _TIME_HINT.search(str(name or "")):
+        return True
+    hits = 0
+    total = 0
+    for v in values:
+        if v is None:
+            continue
+        total += 1
+        s = str(v).strip().lower()
+        if (s in _MONTH_NAMES
+                or re.fullmatch(r"(19|20)\d{2}", s)          # a bare year
+                or re.fullmatch(r"\d{4}-\d{2}(-\d{2})?", s)  # ISO year-month(-day)
+                or re.fullmatch(r"q[1-4]([\s\-/]?\d{2,4})?", s)):  # Q1, Q1-2024
+            hits += 1
+    return total > 0 and hits >= max(2, int(0.6 * total))
+
+
+def _maybe_chart(question: str, columns: List[Any], rows: List[Any]) -> str:
+    """Return a `\\n\\n```json-chart\\n{...}\\n```\\n` block when the result set is
+    chartable, else "". Chartable = ≥2 rows, exactly one non-numeric label column +
+    ≥1 numeric column, and ≤_MAX_CHART_CATEGORIES categories. Never raises."""
+    try:
+        if not columns or not rows or len(rows) < 2 or len(rows) > _MAX_CHART_CATEGORIES:
+            return ""
+        ncols = len(columns)
+        if ncols < 2:
+            return ""
+
+        # Classify each column: numeric (every non-null cell parses as a number) vs label.
+        numeric_idx: List[int] = []
+        label_idx: List[int] = []
+        for j in range(ncols):
+            cells = [r[j] for r in rows if j < len(r)]
+            non_null = [c for c in cells if c is not None]
+            if non_null and all(_as_number(c) is not None for c in non_null):
+                numeric_idx.append(j)
+            else:
+                label_idx.append(j)
+
+        # Need exactly one label/category column and at least one numeric column.
+        if len(label_idx) != 1 or not numeric_idx:
+            return ""
+
+        cat_j = label_idx[0]
+        cat_name = str(columns[cat_j])
+        cat_values = [_cell(r[cat_j]) if cat_j < len(r) else "" for r in rows]
+        # Distinct-ish guard: charting only makes sense with distinct categories.
+        if len(set(cat_values)) < 2:
+            return ""
+
+        # One series per numeric column; build data rows keyed by the real column names.
+        data: List[Dict[str, Any]] = []
+        for r in rows:
+            row: Dict[str, Any] = {cat_name: _cell(r[cat_j]) if cat_j < len(r) else ""}
+            for j in numeric_idx:
+                row[str(columns[j])] = _as_number(r[j]) if j < len(r) else None
+            data.append(row)
+
+        is_time = _is_time_label_column(cat_name, [r[cat_j] if cat_j < len(r) else None for r in rows])
+        config = {
+            "chart_type": "line" if is_time else "bar",
+            "title": question.strip()[:120] or None,
+            "x_axis": {"key": cat_name, "label": _pretty(cat_name)},
+            "series": [{"key": str(columns[j]), "label": _pretty(columns[j])} for j in numeric_idx],
+            "data": data,
+            "show_legend": len(numeric_idx) > 1,
+        }
+        return "\n\n```json-chart\n" + json.dumps(config) + "\n```\n"
+    except Exception:
+        return ""
+
+
 def _render_answer(question: str, sql: str, filename: str, result: Dict[str, Any]) -> str:
     """Clean, user-facing answer — NO SQL / "computed from" line (that lives in the
     expandable source citation). Scalars stand alone; multi-row results render as a
@@ -302,13 +471,18 @@ def _render_answer(question: str, sql: str, filename: str, result: Dict[str, Any
     return f"{header}\n{sep}\n{body}{more}"
 
 
-async def _gen_sql(prompt: str, model: str, timeout: float) -> Optional[str]:
+async def _gen_sql(prompt: str, model: str, timeout: float,
+                   keep_alive: Optional[str] = None) -> Optional[str]:
     """One generate+validate attempt. Returns a safe SELECT string, or None on error/timeout/
-    invalid output (so the caller can fall back to another model)."""
+    invalid output (so the caller can fall back to another model).
+
+    `keep_alive` is opt-in: the shared spreadsheet path passes nothing (identical to the original
+    call)."""
+    extra = {"keep_alive": keep_alive} if keep_alive else {}
     try:
-        result = await ollama_service.generate(
+        result = await llm_runtime.generate(
             prompt=prompt, model=model, temperature=0.1, num_predict=400,
-            think=False, timeout=timeout,
+            think=False, timeout=timeout, **extra,
         )
         raw = (result or {}).get("response", "")
     except Exception as e:
@@ -326,10 +500,14 @@ async def answer_tabular(
     question: str,
     source_ids: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
-    """Answer a question via text-to-SQL over the structured store.
+    """Answer a question via text-to-SQL over the structured store (spreadsheet/CSV path).
 
     Returns {ok, answer, sql, source_id, filename, columns, rows} on success,
     or {ok: False, reason} so the caller can fall back to vector RAG.
+
+    NOTE: This is the engine for xlsx/csv tabular sources. It was kept deliberately minimal
+    while the (now-removed) Cursor Style notebooks carried the heavier text-to-SQL machinery on
+    a separate path; that isolation is why removing them left this file untouched.
     """
     schema = tabular_store.get_schema(notebook_id, source_ids)
     if not schema:
@@ -343,8 +521,8 @@ async def answer_tabular(
     # it's only the FALLBACK — used when gemma times out or errors under load, so a contended box
     # still answers (or cleanly falls back to vector RAG) without a long hang. The event-loop
     # freeze that made the original gemma timeout fatal is fixed separately (query_stream encode_async).
-    primary = settings.tabular_sql_model or settings.ollama_model
-    fast = settings.ollama_fast_model
+    primary = settings.tabular_sql_model or settings.main_model
+    fast = settings.fast_model
     sql = await _gen_sql(prompt, primary, 25.0)
     if sql is None and primary != fast:
         print(f"[tabular-sql] primary ({primary}) failed/timed out -> retry with {fast}")

@@ -16,7 +16,7 @@ from __future__ import annotations
 import re
 import uuid
 from collections import OrderedDict
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 CHAT_KIND = "chat_turn"
 SOURCE_KIND = "source"
@@ -104,6 +104,8 @@ _ADMIN_PHRASES: Tuple[str, ...] = (
     "show subscriptions", "show scorecards", "show routing", "show blocklist",
     "show digest", "show draft", "show recent", "show articles", "show entities",
     "show score", "show voice", "source health", "collection schedule",
+    "collection status", "morning brief", "weekly wrap", "weekly wrap-up",
+    "devil's advocate", "devils advocate", "discover patterns", "show themes",
     "note themes", "approve connection", "dismiss connection", "approve all",
     "set name", "set personality", "set voice", "set focus", "set intent",
     "set subject", "set mode", "set approval", "set schedule", "set filters",
@@ -179,12 +181,15 @@ def is_learning_query(query_record: Dict[str, Any]) -> bool:
         return not _has_admin_signal(remainder)
 
     # No @-agent prefix — a plain chat turn.
+    # A bare admin command / status readout ("brain status", "collection status",
+    # "morning brief") is noise EVEN when the readout happened to list sources — so
+    # this MUST precede the sources_used check (the field bug: status commands whose
+    # answer listed recent sources leaked onto the canvas as "learning").
+    if _has_admin_signal(lowered):
+        return False
     # A RAG answer that actually consulted sources is unambiguously learning.
     if query_record.get("sources_used"):
         return True
-    # A bare admin command typed without the prefix ("brain status") is still noise.
-    if _has_admin_signal(lowered):
-        return False
     # Everything else is a genuine question → learning.
     return True
 
@@ -194,48 +199,114 @@ def _truncate(text: str, n: int = 60) -> str:
     return text if len(text) <= n else text[: n - 1].rstrip() + "…"
 
 
-def _markdown_snapshot(md: str) -> Dict[str, Any]:
-    """A minimal Artifact envelope the frontend <ArtifactRender> can render as-is."""
-    return {"id": str(uuid.uuid4()), "type": "markdown", "payload": md}
+def _markdown_snapshot(md: str, meta: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """A minimal Artifact envelope the frontend <ArtifactRender> can render as-is.
+
+    `meta` rides in the envelope's `metadata` field (part of the Artifact spec) so the canvas chip
+    can show a thread's DEPTH and OUTPUT without re-parsing the markdown payload. Title-only chips
+    made every thread look identical — you could see that a question existed but not how far it
+    went or what it produced, which is most of what a learning journey is."""
+    env: Dict[str, Any] = {"id": str(uuid.uuid4()), "type": "markdown", "payload": md}
+    if meta:
+        env["metadata"] = meta
+    return env
 
 
-def build_nodes(journey: Dict[str, Any], source_events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def snapshot_text(node: Dict[str, Any]) -> str:
+    """The real text for a node's embedding — the markdown payload STRING, never the
+    Artifact envelope dict. Passing the dict (its repr) makes every node share the
+    `{'id':.., 'type':'markdown', 'payload':..}` boilerplate, which inflates cosine
+    similarity to ~0.95 across the board and destroys topic clustering. Falls back to title."""
+    snap = node.get("snapshot")
+    if isinstance(snap, dict):
+        payload = snap.get("payload")
+        if isinstance(payload, str) and payload.strip():
+            return payload
+    if isinstance(snap, str) and snap.strip():
+        return snap
+    return node.get("title", "") or ""
+
+
+def build_nodes(journey: Dict[str, Any], source_events: List[Dict[str, Any]],
+                source_titles: Optional[Dict[str, str]] = None,
+                artifact_nodes: Optional[List[Dict[str, Any]]] = None) -> List[Dict[str, Any]]:
     """Map raw capture → un-positioned nodes. `journey` = exploration_store.get_journey(...);
-    `source_events` = activity_ledger.recent_events(kinds=(source_added,)) with `payload` dicts."""
+    `source_events` = activity_ledger.recent_events(kinds=(source_added,)) with `payload` dicts;
+    `source_titles` = source_id → real name (from source_store) so sources aren't bare 'Source';
+    `artifact_nodes` = pre-built thread nodes for generated artifacts (from
+    `canvas_artifacts.list_notebook_artifacts`) — podcasts/quizzes/visuals/infographics/docs.
+
+    Sources are the BASE LAYER: only sources a learning discussion actually REFERENCED
+    (via `sources_used`) are surfaced — orphan sources stay off the map so it isn't
+    dirtied by every uploaded file (field feedback 2026-08-03). Generated artifacts are ALWAYS
+    learning — they're the threads of the journey — so they're appended without a noise gate."""
+    source_titles = source_titles or {}
     nodes: List[Dict[str, Any]] = []
+    referenced: set = set()
 
     for q in journey.get("queries", []) or []:
         # Learning-vs-noise gate: drop agent admin/status/config chatter so the
-        # canvas shows the learning journey, not the control panel. Source nodes
-        # (below) are always kept. See is_learning_query / NOISE_INTENTS.
+        # canvas shows the learning journey, not the control panel. See is_learning_query.
         if not is_learning_query(q):
             continue
         topics = q.get("topics") or []
         query_text = q.get("query", "")
         preview = q.get("answer_preview", "") or ""
+        for sid in (q.get("sources_used") or []):
+            referenced.add(str(sid))
         nodes.append({
             "kind": CHAT_KIND,
             "ref_type": "exploration_query",
             "ref_id": str(q.get("id", "")),
             "title": _truncate(query_text, 60),
-            "snapshot": _markdown_snapshot(f"**Q:** {query_text}\n\n{preview}".strip()),
+            "snapshot": _markdown_snapshot(
+                f"**Q:** {query_text}\n\n{preview}".strip(),
+                # DEPTH = how far the question reached (sources it consumed, whether it was
+                # answered at all); OUTPUT = the answer it produced. Both already captured by
+                # exploration_store — they were simply never surfaced on the chip.
+                {
+                    "sources": len(q.get("sources_used") or []),
+                    "answered": bool(preview.strip()),
+                    "preview": _truncate(preview.strip(), 180),
+                    "topics": topics[:3],
+                },
+            ),
             "_group": topics[0] if topics else "",
             "created_at": q.get("timestamp"),
         })
 
+    # Only REFERENCED sources (a source appears because a discussion used it), built straight
+    # from the referenced set + source_store titles. NOT from source_added events — their
+    # payload source_ids don't reliably line up with sources_used, which silently dropped
+    # every source node (field bug 2026-08-03 r2). created_at pulled from an event if present.
+    event_ts: Dict[str, Any] = {}
+    event_title: Dict[str, str] = {}
     for ev in source_events or []:
-        payload = ev.get("payload") or {}
-        sid = payload.get("source_id") or str(ev.get("id", ""))
-        title = payload.get("title") or payload.get("filename") or "Source"
+        p = ev.get("payload") or {}
+        esid = str(p.get("source_id") or "")
+        if esid:
+            event_ts.setdefault(esid, ev.get("ts"))
+            t = p.get("title") or p.get("filename")
+            if t:
+                event_title.setdefault(esid, t)
+    for sid in sorted(referenced):
+        title = source_titles.get(sid) or event_title.get(sid)
+        if not title:
+            continue  # source no longer exists / no title known → don't add a bare "Source" tile
         nodes.append({
             "kind": SOURCE_KIND,
             "ref_type": "source",
-            "ref_id": str(sid),
+            "ref_id": sid,
             "title": _truncate(title, 60),
             "snapshot": _markdown_snapshot(f"**Source:** {title}"),
             "_group": _SOURCES_GROUP,
-            "created_at": ev.get("ts"),
+            "created_at": event_ts.get(sid),
         })
+
+    # Generated artifacts are threads of the journey — always included (already node-shaped).
+    for a in (artifact_nodes or []):
+        if a and a.get("ref_id"):
+            nodes.append(a)
 
     return nodes
 
@@ -276,7 +347,7 @@ def cluster_seed_layout(
         ided = [{**n, "id": f"{n.get('ref_type')}:{n.get('ref_id')}"} for n in nodes]
         degrees = cc.degrees_from_pairs(ided, raw_pairs)
         sig = cc.significant_nodes(ided, degrees)
-        pos = cc.layout_clusters(cc.cluster_nodes(sig, raw_pairs))
+        pos = cc.layout_clusters(cc.cluster_journey_nodes(sig, raw_pairs))
         out: List[Dict[str, Any]] = []
         for n in sig:
             m = {k: v for k, v in n.items() if k not in ("_group", "id")}
@@ -305,7 +376,7 @@ def relayout_existing(
             for i, n in enumerate(nodes):
                 n["x"], n["y"] = (i % 4) * cc.NODE_W, (i // 4) * cc.NODE_H
             return nodes
-        pos = cc.layout_clusters(cc.cluster_nodes(nodes, raw_pairs))
+        pos = cc.layout_clusters(cc.cluster_journey_nodes(nodes, raw_pairs))
         for n in nodes:
             p = pos.get(n["id"])
             if p:

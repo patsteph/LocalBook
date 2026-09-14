@@ -1168,15 +1168,15 @@ Return ONLY a JSON object:
 CRITICAL: Preserve the diagram type (flowchart, mindmap, etc). Only modify structure/content."""
 
     try:
-        # D4 (2026-06-23): routed through ollama_service for token metrics +
+        # D4 (2026-06-23): routed through llm_runtime for token metrics +
         # model options + lane scheduling. Behavior preserved (main model,
         # num_predict 1000, temp 0.3, regex JSON extraction — no native JSON
         # mode, matching the original prose+JSON response handling).
-        from services.ollama_service import ollama_service
+        from services.llm_runtime import llm_runtime
         from config import settings
-        _resp = await ollama_service.generate(
+        _resp = await llm_runtime.generate(
             prompt=refinement_prompt,
-            model=settings.ollama_model,
+            model=settings.main_model,
             temperature=0.3,
             num_predict=1000,
             timeout=15.0,
@@ -1309,6 +1309,19 @@ async def v2_compose(request: V2ComposeRequest):
             topic=request.topic,
         )
     payload = _visual_to_dict(visual)
+
+    # Completion line. Everything below already assembled these facts for telemetry, but none
+    # of it reached backend.log — a finished visual left only a `memory_steward resumed
+    # (visual)` line, so there was no way to tell from the log whether it rendered via
+    # diffusion, freeform SVG or a template, or whether it succeeded at all. (2026-08-20)
+    logger.info(
+        f"[STUDIO] Visual {'COMPLETE' if visual.success else 'FAILED'} "
+        f"path={visual.path.value} format={visual.output_format.value} "
+        f"setup={visual.setup.value} retries={visual.retry_count} "
+        f"{visual.generation_ms}ms"
+        + (f" critic={visual.critic_score.overall}" if visual.critic_score else "")
+        + ("" if visual.success else f" error={getattr(visual, 'error', None)}")
+    )
 
     # Telemetry hook (same surface as existing endpoints)
     try:
@@ -1580,21 +1593,16 @@ async def generate_infographic(request: InfographicRequest):
                         f"{request.topic}\n\nSource content:\n{built.context}"
                         if request.topic else built.context
                     )
-                    # Provenance: bind each citation index to a REAL source ID.
-                    # `sources_map` gives index -> filename; resolve filename ->
-                    # source_id from the notebook's source list (HARD RULE §2.6).
+                    # Provenance: bind each citation index to a REAL source ID (HARD RULE §2.6).
+                    # `sources_id_map` is index -> real source_id, carried straight from the
+                    # builders. This used to resolve filename -> id against the notebook's source
+                    # list, which silently yielded None for renamed sources, "Unknown" filenames,
+                    # and all-but-the-first of any duplicate filename.
                     try:
-                        from storage.source_store import source_store
-                        all_srcs = await source_store.list(request.notebook_id)
-                        fn_to_id: dict[str, str] = {}
-                        for s in all_srcs:
-                            fn = s.get("filename") or s.get("title")
-                            if fn and fn not in fn_to_id:
-                                fn_to_id[fn] = s.get("id")
                         for n, fname in sorted(built.sources_map.items()):
                             sources_prov.append({
                                 "n": n,
-                                "source_id": fn_to_id.get(fname),
+                                "source_id": built.sources_id_map.get(n),
                                 "title": fname,
                             })
                     except Exception as e:

@@ -47,6 +47,31 @@ def test_provenance_regenerate_is_idempotent(monkeypatch, tmp_path):
     assert [e["source_id"] for e in edges] == ["s1"]
 
 
+def test_provenance_bulk_read(monkeypatch, tmp_path):
+    """The canvas populate path holds every artifact on the map at once — one query, not N."""
+    brain = _fresh_brain(monkeypatch, tmp_path)
+    brain.record_provenance("infographic", "ig_1", ["s1", "s2"], notebook_id="nb1")
+    brain.record_provenance("document", "doc_9", ["s2"], notebook_id="nb1")
+    brain.record_provenance("quiz", "qz_3", ["s4"])  # notebook_id deliberately absent
+    rows = brain.get_provenance_many(["ig_1", "doc_9", "qz_3", "not-an-artifact"])
+    assert {(r["artifact_id"], r["source_id"]) for r in rows} == {
+        ("ig_1", "s1"), ("ig_1", "s2"), ("doc_9", "s2"), ("qz_3", "s4"),
+    }
+    # a NULL notebook_id row must still come back — keying on artifact ids is what guarantees it
+    assert any(r["artifact_id"] == "qz_3" and r["notebook_id"] is None for r in rows)
+    assert brain.get_provenance_many([]) == []
+    assert brain.get_provenance_many(["nope"]) == []
+
+
+def test_provenance_bulk_read_chunks_past_the_sqlite_param_cap(monkeypatch, tmp_path):
+    brain = _fresh_brain(monkeypatch, tmp_path)
+    ids = [f"a{i}" for i in range(1200)]  # > the 999 host-parameter default
+    for a in ids[:5]:
+        brain.record_provenance("document", a, ["s1"], notebook_id="nb1")
+    rows = brain.get_provenance_many(ids)
+    assert len(rows) == 5
+
+
 def test_provenance_never_raises_on_junk(monkeypatch, tmp_path):
     brain = _fresh_brain(monkeypatch, tmp_path)
     assert brain.record_provenance("", "", None) == 0

@@ -897,23 +897,25 @@ function App() {
 
   // Show loading screen while backend starts
   if (!backendReady) {
-    // Map startup stages to 5 user-visible steps
+    // Map startup stages to 4 user-visible steps. The old step 1 ("Verifying / Downloading
+    // Models") belonged to a Tauri-side Ollama pre-flight that pulled models before the
+    // backend started; that is gone, so no model work happens during launch at all. The
+    // legacy stage names stay in the map only so an older shell reporting them still lands
+    // on a sensible step rather than falling through to 0.
     const STEPS = [
       { label: 'Preparing: Starting Services' },
-      { label: startupStage === 'downloading_model' ? 'Preparing: Downloading Models' : 'Preparing: Verifying Models' },
       { label: 'Waiting for Backend' },
       { label: 'Backend Ready' },
       { label: 'LocalBook Ready' },
     ];
     const STAGE_MAP: Record<string, number> = {
-      starting: 0, starting_ollama: 0,
-      checking_models: 1, downloading_model: 1,
-      starting_backend: 2, waiting_for_backend: 2,
-      backend_setup: 3,
-      ready: 4,
+      starting: 0, starting_ollama: 0, checking_models: 0, downloading_model: 0,
+      starting_backend: 1, waiting_for_backend: 1,
+      backend_setup: 2,
+      ready: 3,
     };
     const activeStep = STAGE_MAP[startupStage] ?? 0;
-    const STEP_PROGRESS = [10, 35, 60, 85, 100];
+    const STEP_PROGRESS = [15, 50, 85, 100];
     const derivedProgress = Math.max(STEP_PROGRESS[activeStep] || 5, startupProgress);
 
     return (

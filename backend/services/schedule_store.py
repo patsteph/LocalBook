@@ -356,6 +356,22 @@ SCHEDULE_REGISTRY: List[ScheduleDef] = [
         env_var="LOCALBOOK_PRESENCE_*",
         advanced=True,
     ),
+    ScheduleDef(
+        id="canvas-idle-research",
+        name="Canvas idle-research",
+        agent="curator",
+        category=CAT_AGENTS,
+        cadence_kind=KIND_INTERVAL,
+        default_seconds=1800,   # a full idle pass at most every 30 min
+        min_seconds=5 * 60,
+        max_seconds=6 * _H,
+        rung_c_candidate=True,  # enrichment_worker reads get_interval(id) live
+        module_const="canvas_idle_research.DEFAULT_INTERVAL_S",
+        note="While idle: draws high-confidence suggested (dashed) connections between "
+             "canvas nodes, and researches one top gap per pass (AWAY tier, 3h cooldown).",
+        tier="DEEP",
+        can_disable=True,       # enrichment_worker gates on is_enabled(id)
+    ),
 ]
 
 # id → def, for O(1) lookup.

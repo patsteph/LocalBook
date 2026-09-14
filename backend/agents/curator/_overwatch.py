@@ -307,13 +307,16 @@ class CuratorOverwatchMixin:
                     return None
                 labels = sorted(buckets.keys())[-8:]
                 data = [buckets[w] for w in labels]
-                chart = {
-                    "kind": "line",
-                    "title": f"Mentions of {entity} per week",
-                    "labels": labels,
-                    "series": [{"label": "mentions", "data": data}],
-                }
-                return "```json-chart\n" + json.dumps(chart) + "\n```"
+                from services.chart_spec import chart_fence
+                return chart_fence(
+                    chart_type="line",
+                    title=f"Mentions of {entity} per week",
+                    labels=labels,
+                    series=[{"label": "mentions", "data": data}],
+                    x_key="week",
+                    x_label="Week",
+                    y_label="Mentions",
+                ) or None
 
             if insight_type == "coverage_gap":
                 if not entity:
@@ -460,10 +463,10 @@ class CuratorOverwatchMixin:
             )
 
             try:
-                result = await ollama_service.generate(
+                result = await llm_runtime.generate(
                     prompt=prompt,
                     system=f"You are {self.name}, drafting pre-emptive Studio content.",
-                    model=settings.ollama_model,  # main model — quality matters here
+                    model=settings.main_model,  # main model — quality matters here
                     temperature=0.5,
                     timeout=120.0,
                 )

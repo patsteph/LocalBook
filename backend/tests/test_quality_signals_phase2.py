@@ -53,20 +53,26 @@ def test_scrub_is_total_on_bad_input():
     assert scrub(42) == {}
 
 
-def test_scrub_text_redacts_secrets_paths_emails():
-    raw = (
-        "user alice@example.com token ghp_ABCDEFGHIJKLMNOP "
-        "pat github_pat_11ABCDEFGH0000 header Bearer abcdef123456 "
-        "openai sk-abcdef1234567890 file /Users/alice/notes.txt"
-    )
-    out = scrub_text(raw)
-    assert "alice@example.com" not in out
-    assert "[redacted-email]" in out
-    assert "ghp_ABCDEFGHIJKLMNOP" not in out
-    assert "github_pat_11ABCDEFGH0000" not in out
-    assert "sk-abcdef1234567890" not in out
+# One row per secret shape. These are INDEPENDENT cases, not steps in a workflow: packed
+# into one function, a scrubber that stopped redacting emails but still caught tokens
+# reported as a single failure and you could not tell which pattern regressed. This is the
+# text that gets filed to a public GitHub issue, so knowing exactly which one broke matters.
+@pytest.mark.parametrize("secret,label", [
+    ("alice@example.com",            "[redacted-email]"),
+    ("ghp_ABCDEFGHIJKLMNOP",         "[redacted-token]"),
+    ("github_pat_11ABCDEFGH0000",    "[redacted-token]"),
+    ("sk-abcdef1234567890",          "[redacted-token]"),
+])
+def test_scrub_text_redacts_each_secret_shape(secret, label):
+    out = scrub_text(f"before {secret} after")
+    assert secret not in out, f"{secret!r} survived scrubbing"
+    assert label in out
+
+
+def test_scrub_text_replaces_the_home_directory_with_a_tilde():
+    """A path leaks the user's real name even with no secret in it."""
+    out = scrub_text("file /Users/alice/notes.txt")
     assert "/Users/alice" not in out
-    assert "[redacted-token]" in out
     assert "~" in out
 
 
@@ -133,16 +139,21 @@ def test_incident_id_is_stable():
 
 
 # ── promotion_verdict threshold math (Decision #6) ───────────────────────────
-def test_promotion_verdict_thresholds():
-    # eligible: count≥5, days≥2, severity≥notable
-    v = qs.promotion_verdict(5, 2, "notable")
-    assert v["eligible"] is True
-    # single burst (1 day) rejected
-    assert qs.promotion_verdict(9, 1, "warn")["eligible"] is False
-    # too few occurrences rejected
-    assert qs.promotion_verdict(4, 3, "warn")["eligible"] is False
-    # info severity rejected even if count/days pass
-    assert qs.promotion_verdict(10, 5, "info")["eligible"] is False
+# One row per rule. Packed into a single function these reported only the FIRST broken
+# threshold, so a change that loosened two gates looked like one failure.
+@pytest.mark.parametrize("count,days,severity,eligible,why", [
+    (5,  2, "notable", True,  "at both thresholds, severity notable — the eligible case"),
+    (9,  1, "warn",    False, "a single-day burst is one bad session, not a pattern"),
+    (4,  3, "warn",    False, "too few occurrences, however many days they span"),
+    (10, 5, "info",    False, "info is noise by definition — never promote it, at any volume"),
+])
+def test_promotion_verdict_thresholds(count, days, severity, eligible, why):
+    assert qs.promotion_verdict(count, days, severity)["eligible"] is eligible, why
+
+
+def test_the_verdict_reports_the_thresholds_it_used():
+    """The caller surfaces these to explain WHY something was not promoted; hardcoding them
+    at the call site is how the explanation drifts from the rule."""
     v = qs.promotion_verdict(0, 0)
     assert v["min_count"] == qs.PROMOTE_MIN_COUNT
     assert v["min_days"] == qs.PROMOTE_MIN_DAYS

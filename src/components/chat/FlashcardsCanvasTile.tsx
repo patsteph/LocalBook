@@ -85,6 +85,8 @@ export const FlashcardsCanvasTile: React.FC<FlashcardsCanvasTileProps> = ({
   const [cardIndex, setCardIndex] = useState(0);
   const [results, setResults] = useState<CardResult[]>([]);
   const [complete, setComplete] = useState(false);
+  // Guards the one-shot submission of this deck's results to the scheduler; reset on every restart.
+  const submittedRef = useRef(false);
 
   // ── Gap analysis (requested on completion, shown in summary) ────────────
   const [gapAnalysis, setGapAnalysis] = useState<GapAnalysisResponse | null>(null);
@@ -143,6 +145,7 @@ export const FlashcardsCanvasTile: React.FC<FlashcardsCanvasTileProps> = ({
       }
       setDeck(quiz);
       setResults([]);
+      submittedRef.current = false;
       setCardIndex(0);
       setComplete(false);
       onStatusChange?.('complete');
@@ -387,6 +390,17 @@ export const FlashcardsCanvasTile: React.FC<FlashcardsCanvasTileProps> = ({
       setComplete(true);
       const correctCount = results.filter(r => r.correct).length;
       onComplete?.({ total: deck.questions.length, correct: correctCount });
+
+      // Feed the results to the spaced-repetition scheduler. Without this the whole study run is
+      // thrown away on unmount — which is exactly what used to happen, leaving the FSRS engine
+      // unreachable and every card stuck at reps=0. Fire-and-forget + ref-guarded: recording is a
+      // background concern and must never interrupt or double-submit the study session.
+      if (!submittedRef.current && results.length > 0) {
+        submittedRef.current = true;
+        quizService
+          .recordDeckResults(notebookId, results.map(r => ({ card_id: r.questionId, correct: r.correct })))
+          .catch(err => console.warn('[flashcards] failed to record deck results', err));
+      }
     } else {
       setCardIndex(i => i + 1);
     }
@@ -423,6 +437,7 @@ export const FlashcardsCanvasTile: React.FC<FlashcardsCanvasTileProps> = ({
     if (missedCards.length === 0) return;
     setDeck({ ...deck, questions: missedCards });
     setResults([]);
+    submittedRef.current = false;
     setCardIndex(0);
     setComplete(false);
     setGapAnalysis(null);
@@ -432,6 +447,7 @@ export const FlashcardsCanvasTile: React.FC<FlashcardsCanvasTileProps> = ({
     startedKeyRef.current = null; // allow re-gen
     setDeck(null);
     setResults([]);
+    submittedRef.current = false;
     setCardIndex(0);
     setComplete(false);
     setGapAnalysis(null);

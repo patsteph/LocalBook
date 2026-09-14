@@ -141,13 +141,13 @@ CONTEXT_PROFILES: Dict[str, ContextProfile] = {
 def _window_char_budget(output_reserve_tokens: int = 7000, chars_per_token: int = 3) -> int:
     """Max context chars that fit the main model's effective num_ctx window while
     leaving room for the system prompt + generated output. Tier-aware — scales with
-    RAM via ollama_service.effective_num_ctx_cap — so bigger Macs assemble more.
+    RAM via llm_runtime.effective_num_ctx_cap — so bigger Macs assemble more.
     Uses the same conservative 3-chars/token ratio as compute_num_ctx so the two
     reconcile (assembly never over-fills the window the model is given)."""
     try:
-        from services.ollama_service import effective_num_ctx_cap
+        from services.llm_runtime import effective_num_ctx_cap
         from config import settings
-        cap_tokens = effective_num_ctx_cap(settings.ollama_model)
+        cap_tokens = effective_num_ctx_cap(settings.main_model)
         usable = max(4000, cap_tokens - output_reserve_tokens)
         return usable * chars_per_token
     except Exception:
@@ -171,6 +171,17 @@ class BuiltContext:
     sources_map: Dict[int, str] = field(default_factory=dict)
     topic_relevance_scores: Dict[str, float] = field(default_factory=dict)  # source_id → relevance
     build_time_ms: int = 0             # How long context building took
+    # REAL source ids for everything that went into `context` (deduped, first-seen order).
+    # The citation contract above is filename-keyed, which is fine for prompting but LOSSY as an
+    # identity: callers that needed ids (provenance) had to match `sources_map` filenames back
+    # against source_store, which silently yields nothing when two sources share a filename, when a
+    # source is renamed after generation, or when the filename is the "Unknown" default. The ids are
+    # in scope in every builder — they were simply thrown away. Additive: no existing field changes.
+    source_ids: List[str] = field(default_factory=list)
+    # Citation index → real source id, parallel to `sources_map`. Where two sources share a
+    # filename the citation contract collapses them, so this maps to the FIRST id; `source_ids`
+    # still lists both. Prefer `source_ids` unless you specifically need the [Sn] correspondence.
+    sources_id_map: Dict[int, str] = field(default_factory=dict)
 
     def valid_citation_indices(self) -> set:
         """Set of integer indices that are valid `[Sn]` references."""
@@ -228,7 +239,7 @@ class ContextBuilder:
         # makes a scaled COPY (never mutate the shared CONTEXT_PROFILES singleton).
         # All still bounded by the window budget + actual available content.
         try:
-            from services.ollama_service import _ram_ctx_multiplier
+            from services.llm_runtime import _ram_ctx_multiplier
             ram_mult = _ram_ctx_multiplier()
         except Exception:
             ram_mult = 1.0
@@ -250,7 +261,7 @@ class ContextBuilder:
         
         # Import here to avoid circular imports
         from storage.source_store import source_store
-        
+
         # Step 1: Get all sources for notebook
         all_sources = await source_store.list(notebook_id)
         if not all_sources:
@@ -272,17 +283,17 @@ class ContextBuilder:
         # Step 5: Build context using the appropriate strategy
         if profile.use_chunks and topic:
             # Use RAG engine's vector search for chunk-level precision
-            context_parts, source_names = await self._build_chunk_context(
+            context_parts, source_names, built_ids = await self._build_chunk_context(
                 notebook_id, topic, selected_sources, profile
             )
         elif profile.use_map_reduce and len(all_sources) > profile.max_sources:
             # Map-reduce: summarize all sources, then use full content of top sources
-            context_parts, source_names = await self._build_map_reduce_context(
+            context_parts, source_names, built_ids = await self._build_map_reduce_context(
                 notebook_id, topic, all_sources, selected_sources, profile
             )
         else:
             # Direct source content with adaptive per-source budgets
-            context_parts, source_names = await self._build_direct_context(
+            context_parts, source_names, built_ids = await self._build_direct_context(
                 notebook_id, selected_sources, profile
             )
         
@@ -298,14 +309,27 @@ class ContextBuilder:
         # Downstream prompts ask the LLM to suffix factual claims with `[Sn]`;
         # citation_validator strips invalid ones.
         sources_map: Dict[int, str] = {}
+        sources_id_map: Dict[int, str] = {}
         filename_to_index: Dict[str, int] = {}
-        for fname in source_names:
+        # `built_ids` is parallel to `source_names` (both appended per included source), so the
+        # citation index a filename earns also names its id. Dedup for ids is by ID, not filename:
+        # two sources sharing a filename collapse to one [Sn] but must stay two identities.
+        for i, fname in enumerate(source_names):
             if fname not in filename_to_index:
                 idx = len(filename_to_index) + 1
                 filename_to_index[fname] = idx
                 sources_map[idx] = fname
+                if i < len(built_ids) and built_ids[i]:
+                    sources_id_map[idx] = built_ids[i]
         for fname, n in filename_to_index.items():
             context = context.replace(f"## Source: {fname}", f"[S{n}] {fname}")
+
+        source_ids: List[str] = []
+        _seen_ids = set()
+        for sid in built_ids:
+            if sid and sid not in _seen_ids:
+                _seen_ids.add(sid)
+                source_ids.append(sid)
 
         build_time = int((time.time() - start_time) * 1000)
 
@@ -324,7 +348,9 @@ class ContextBuilder:
             profile_used=skill_id,
             sources_map=sources_map,
             topic_relevance_scores=relevance_scores,
-            build_time_ms=build_time
+            build_time_ms=build_time,
+            source_ids=source_ids,
+            sources_id_map=sources_id_map,
         )
         
         logger.info(f"[ContextBuilder] Built {result.total_chars} chars from "
@@ -442,15 +468,18 @@ class ContextBuilder:
         notebook_id: str,
         sources: List[Dict],
         profile: ContextProfile
-    ) -> Tuple[List[str], List[str]]:
+    ) -> Tuple[List[str], List[str], List[str]]:
         """Build context by reading source content directly with adaptive per-source budgets.
-        
+
         More relevant sources get more characters. Less relevant sources get less.
+
+        Returns (parts, filenames, source_ids) — ids parallel to filenames, never to parts.
         """
         from storage.source_store import source_store
-        
+
         content_parts = []
         source_names = []
+        source_ids = []
         total_chars = 0
         
         for i, source in enumerate(sources):
@@ -480,9 +509,10 @@ class ContextBuilder:
             
             content_parts.append(f"## Source: {filename}\n{content}")
             source_names.append(filename)
+            source_ids.append(str(source["id"]))
             total_chars += len(content_parts[-1])
-        
-        return content_parts, source_names
+
+        return content_parts, source_names, source_ids
     
     async def _build_chunk_context(
         self,
@@ -490,7 +520,7 @@ class ContextBuilder:
         topic: str,
         sources: List[Dict],
         profile: ContextProfile
-    ) -> Tuple[List[str], List[str]]:
+    ) -> Tuple[List[str], List[str], List[str]]:
         """Build context using RAG engine's vector search for chunk-level precision.
         
         Instead of blindly truncating sources, we find the most relevant CHUNKS
@@ -539,8 +569,9 @@ class ContextBuilder:
             
             content_parts = []
             source_names = []
+            source_ids = []
             total_chars = 0
-            
+
             for sid, chunks in source_chunks.items():
                 if total_chars >= profile.total_context_chars:
                     break
@@ -555,12 +586,14 @@ class ContextBuilder:
                 
                 content_parts.append(f"## Source: {fname}\n{combined}")
                 source_names.append(fname)
+                # LanceDB rows carry the real source_id; "unknown" is the row default, not an id.
+                source_ids.append("" if sid == "unknown" else str(sid))
                 total_chars += len(content_parts[-1])
-            
+
             if content_parts:
                 logger.info(f"[ContextBuilder] Chunk retrieval: {len(results)} chunks "
                            f"from {len(source_chunks)} sources")
-                return content_parts, source_names
+                return content_parts, source_names, source_ids
             
             # Fallback to direct if chunk retrieval returned nothing
             logger.warning("[ContextBuilder] Chunk retrieval empty, falling back to direct")
@@ -577,7 +610,7 @@ class ContextBuilder:
         all_sources: List[Dict],
         top_sources: List[Dict],
         profile: ContextProfile
-    ) -> Tuple[List[str], List[str]]:
+    ) -> Tuple[List[str], List[str], List[str]]:
         """Map-reduce for large notebooks: use summaries for breadth, full content for depth.
         
         Phase 1 (Map): Include pre-computed summaries from ALL sources
@@ -590,9 +623,11 @@ class ContextBuilder:
         
         content_parts = []
         source_names = []
+        source_ids = []
         total_chars = 0
-        
+
         # --- Phase 1: Summary overview of ALL sources ---
+        # NOTE: the overview appends a PART but no name/id — parallelism is names↔ids only.
         summary_parts = []
         for s in all_sources:
             summary = s.get("summary", "")
@@ -625,7 +660,7 @@ class ContextBuilder:
                 chunk_top_k=profile.chunk_top_k,
                 use_map_reduce=False
             )
-            detail_parts, detail_names = await self._build_chunk_context(
+            detail_parts, detail_names, detail_ids = await self._build_chunk_context(
                 notebook_id, topic, top_sources, detail_profile
             )
         else:
@@ -638,16 +673,17 @@ class ContextBuilder:
                 chunk_top_k=0,
                 use_map_reduce=False
             )
-            detail_parts, detail_names = await self._build_direct_context(
+            detail_parts, detail_names, detail_ids = await self._build_direct_context(
                 notebook_id, top_sources, detail_profile
             )
-        
+
         content_parts.extend(detail_parts)
         source_names.extend(detail_names)
-        
+        source_ids.extend(detail_ids)
+
         logger.info(f"[ContextBuilder] Reduce phase: {len(detail_parts)} detailed sources")
-        
-        return content_parts, source_names
+
+        return content_parts, source_names, source_ids
     
     async def expand_sources_for_flashcards(
         self,

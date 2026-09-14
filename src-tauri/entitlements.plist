@@ -19,7 +19,7 @@
     <key>com.apple.security.files.user-selected.read-write</key>
     <true/>
 
-    <!-- Outbound network access (Ollama, Whisper, HuggingFace downloads, etc.). -->
+    <!-- Outbound network access (HuggingFace model downloads, web capture, etc.). -->
     <key>com.apple.security.network.client</key>
     <true/>
 

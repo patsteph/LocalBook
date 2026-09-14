@@ -19,7 +19,7 @@ async def _stream_studio(chat_query: ChatQuery, injected_action: Optional[Dict[s
     documents, quizzes, visuals, videos) directly from the chat, using the
     current conversation as context.
     """
-    from services.ollama_service import ollama_service
+    from services.llm_runtime import llm_runtime
     from services.intent_classifier import classify_intent
     from services.event_logger import log_content_generated
 

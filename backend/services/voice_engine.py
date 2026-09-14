@@ -4,7 +4,7 @@ from typing import Optional, Dict, Any, List
 from datetime import datetime
 
 from storage.database import get_db
-from services.ollama_service import ollama_service
+from services.llm_runtime import llm_runtime
 
 logger = logging.getLogger(__name__)
 
@@ -110,7 +110,7 @@ SAMPLES:
 """
 
         try:
-            result = await ollama_service.generate(
+            result = await llm_runtime.generate(
                 prompt=prompt,
                 model="phi4-mini:latest",
                 system="You output strictly valid JSON with no markdown formatting or explanation.",

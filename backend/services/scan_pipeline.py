@@ -21,7 +21,7 @@ from typing import Any, Dict, List, Optional
 from config import settings
 from services.image_preprocessor import check_blur, enhance_for_ocr
 from services.memory_steward import free_for_pipeline
-from services.ollama_service import ollama_service
+from services.llm_runtime import llm_runtime
 from services.page_classifier import classify_page
 from services.progress_reporter import ProgressReporter, get_noop_reporter
 from services.rag_engine import rag_engine
@@ -111,7 +111,7 @@ def _vision_model() -> str:
     """
     try:
         from evaluator.model_registry import model_registry
-        return model_registry.resolve_vision_model(settings.ollama_model, settings.vision_model)
+        return model_registry.resolve_vision_model(settings.main_model, settings.vision_model)
     except Exception:
         return os.getenv("LOCALBOOK_VISION_MODEL") or settings.vision_model
 
@@ -122,7 +122,7 @@ def _cleanup_model() -> str:
     When the user swaps their fast model in the LLM Locker, cleanup
     follows automatically. Was previously hardcoded to phi4-mini.
     """
-    return settings.ollama_fast_model
+    return settings.fast_model
 
 
 def _photo_enrich_model() -> str:
@@ -131,7 +131,7 @@ def _photo_enrich_model() -> str:
     Photo enrichment benefits from the larger reasoning model since
     it produces structured prose, not just typo cleanup.
     """
-    return settings.ollama_model
+    return settings.main_model
 
 # Page separator used when merging multi-page scans into one note.
 # Kept as a literal markdown horizontal rule so it renders cleanly in BlockNote
@@ -186,9 +186,9 @@ async def _refine_visual(raw: str, mode: str) -> str:
     if mode not in _REFINE_SYSTEMS:
         return raw
     try:
-        result = await ollama_service.generate(
+        result = await llm_runtime.generate(
             prompt=_REFINE_PROMPTS[mode].format(raw=raw),
-            model=settings.ollama_model,
+            model=settings.main_model,
             system=_REFINE_SYSTEMS[mode],
             temperature=0.1,
             num_predict=2000,
@@ -229,9 +229,9 @@ async def _translate_to(text: str, target_language: Optional[str]) -> str:
         f"no commentary or wrapper:\n\n{text}"
     )
     try:
-        result = await ollama_service.generate(
+        result = await llm_runtime.generate(
             prompt=user_prompt,
-            model=settings.ollama_model,
+            model=settings.main_model,
             system=system_prompt,
             temperature=0.2,
             num_predict=4000,
@@ -945,7 +945,7 @@ class ScanPipeline:
                     "If this page continues that section, keep using the same heading level."
                 )
         logger.info(f"[scan] Vision ({mode}) on {file_path}")
-        raw = await ollama_service.vision_describe(
+        raw = await llm_runtime.vision_describe(
             image_b64=b64_image,
             prompt=prompt,
             model=vision_model_name,
@@ -967,7 +967,7 @@ class ScanPipeline:
                 f"(mode={mode}, model={vision_model_name}, len={len(raw.strip())}); "
                 "retrying with bare prompt at temp 0.0"
             )
-            retry = await ollama_service.vision_describe(
+            retry = await llm_runtime.vision_describe(
                 image_b64=b64_image,
                 prompt=bare_prompt,
                 model=vision_model_name,
@@ -1008,7 +1008,7 @@ class ScanPipeline:
         cleanup_model = _cleanup_model()
         logger.info(f"[scan] Cleanup pass with model={cleanup_model}")
         try:
-            result = await ollama_service.generate(
+            result = await llm_runtime.generate(
                 prompt=CLEANUP_PROMPT_TMPL.format(raw=raw),
                 model=cleanup_model,
                 system=CLEANUP_SYSTEM,
@@ -1045,7 +1045,7 @@ class ScanPipeline:
         outputs and small models scrambled the format.
         """
         logger.info("[scan] Vision (photo)")
-        raw = await ollama_service.vision_describe(
+        raw = await llm_runtime.vision_describe(
             image_b64=b64_image,
             prompt=MODE_PROMPTS["photo"],
             model=vision_model_name,
@@ -1059,7 +1059,7 @@ class ScanPipeline:
 
         # Call 1: structured markdown summary + reconstruction prompt
         try:
-            result = await ollama_service.generate(
+            result = await llm_runtime.generate(
                 prompt=PHOTO_ENRICH_PROMPT_TMPL.format(raw=raw),
                 model=enrich_model,
                 system=PHOTO_ENRICH_SYSTEM,
@@ -1076,7 +1076,7 @@ class ScanPipeline:
 
         # Call 2: keywords (separate call so the format is enforceable)
         try:
-            kw_result = await ollama_service.generate(
+            kw_result = await llm_runtime.generate(
                 prompt=PHOTO_KEYWORDS_PROMPT_TMPL.format(raw=raw),
                 model=enrich_model,
                 system=PHOTO_ENRICH_SYSTEM,
@@ -1105,8 +1105,8 @@ class ScanPipeline:
         """
         keep = {
             vision_model,
-            _cleanup_model(),       # follows settings.ollama_fast_model
-            _photo_enrich_model(),  # follows settings.ollama_model
+            _cleanup_model(),       # follows settings.fast_model
+            _photo_enrich_model(),  # follows settings.main_model
             settings.embedding_model,
         }
         # Drop empties (defensive — in case a setting is unset).
@@ -1145,7 +1145,7 @@ class ScanPipeline:
         # Step 1: Heuristic-first classification with LLM fallback
         async def _llm_classify(bytes_in: bytes) -> str:
             b64 = base64.b64encode(bytes_in).decode("utf-8")
-            classification = await ollama_service.vision_describe(
+            classification = await llm_runtime.vision_describe(
                 image_b64=b64,
                 prompt=CLASSIFY_PROMPT,
                 model=vision_model_name,

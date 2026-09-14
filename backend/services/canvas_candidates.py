@@ -78,6 +78,26 @@ def overlap_coefficient(a: set, b: set) -> float:
     return inter / float(min(len(a), len(b)))
 
 
+def jaccard(a: set, b: set) -> float:
+    """|A∩B| / |A∪B|. 0.0 if both empty. Stricter than overlap: a single source shared
+    between two multi-source questions scores LOW (not 1.0), so one common "base" source
+    can't collapse otherwise-unrelated questions into one giant cluster."""
+    if not a or not b:
+        return 0.0
+    union = len(a | b)
+    return (len(a & b) / float(union)) if union else 0.0
+
+
+def shared_source_signal(a: set, b: set, a_type: Optional[str], b_type: Optional[str]) -> float:
+    """Shared-source similarity, type-aware. A source↔chat pair uses OVERLAP (a source is
+    fully 'used by' the question that cited it → 1.0, so it attaches to that question's
+    cluster). A chat↔chat (or source↔source) pair uses JACCARD, so two questions co-cluster
+    only when their source sets SUBSTANTIALLY overlap — not merely share one common doc."""
+    if {a_type, b_type} == {"source", "exploration_query"}:
+        return overlap_coefficient(a, b)
+    return jaccard(a, b)
+
+
 def blended_score(concept: float, embed: float, shared: float) -> float:
     """Weighted blend of the three normalized (0–1) signals."""
     return W_CONCEPT * concept + W_EMBED * embed + W_SHARED * shared
@@ -100,27 +120,52 @@ def score_and_bound(
     top_k: int = TOP_K,
     min_score: float = MIN_SCORE,
     global_cap: int = GLOBAL_CAP,
+    topic_of: Optional[Dict[str, Optional[str]]] = None,
 ) -> List[Dict[str, Any]]:
-    """Blend → threshold → per-node top-K → global-cap.
+    """Blend → threshold → **drop intra-card pairs** → per-node top-K → global-cap.
 
     `raw_pairs`: each ``{"a": node_id, "b": node_id, "concept": f, "embed": f, "shared": f}``
     with signals already normalized to [0, 1]. Returns the bounded candidate list
     ``[{"a_node", "b_node", "score", "signal"}]`` sorted by score desc.
 
+    `topic_of` maps node id → topic/card id (None = orphan). When supplied, pairs whose endpoints
+    sit in the SAME card are discarded.
+
+    **Why discard them** (2026-08-14, from testing): the cards are themselves built by clustering
+    the same embeddings this engine scores, so a card *is* a similarity cluster — intra-card pairs
+    are the highest-scoring pairs by construction and consumed every one of the `top_k` slots
+    before a cross-card pair was ever considered. Auto-connect could therefore only ever
+    rediscover the clustering it was handed, drawing dense webs inside single boxes.
+
+    Membership in a card ALREADY expresses "these are similar"; re-drawing it as an edge is
+    redundant. What the map is mining for is the non-obvious tie between disparate threads, so the
+    candidate budget now belongs entirely to cross-card links. Orphan↔anything stays eligible (an
+    unclustered thread has no card to express the relation for it).
+
     Degree-bounding is greedy: pairs are considered highest-score-first, and a pair is kept
     only if *both* endpoints still have room (< top_k), so every node shows at most top_k
     dots and the strongest links win the budget. Deterministic: ties break on (a, b) id.
     """
+    topic_of = topic_of or {}
     scored: List[Tuple[float, str, str, str]] = []
     for p in raw_pairs:
         a = p["a"]
         b = p["b"]
         if a == b:
             continue
+        # Same card → the card already says it. Only both-in-the-same-real-topic counts;
+        # two orphans (both None) are a genuine unclustered link and stay eligible.
+        ta, tb = topic_of.get(a), topic_of.get(b)
+        if ta is not None and ta == tb:
+            continue
         concept = _clamp01(p.get("concept", 0.0))
         embed = _clamp01(p.get("embed", 0.0))
         shared = _clamp01(p.get("shared", 0.0))
-        score = blended_score(concept, embed, shared)
+        # A strong SINGLE signal is enough to suggest a link — the blend alone caps a
+        # chat↔chat pair (concept always 0) at 0.5·0 + 0.35·embed + 0.15·shared, so on a
+        # question-heavy canvas nothing ever cleared min_score and the dots/auto-connect
+        # were always empty. max() lets high embedding topic-similarity qualify on its own.
+        score = max(blended_score(concept, embed, shared), embed, concept)
         if score < min_score:
             continue
         scored.append((score, a, b, dominant_signal(concept, embed, shared)))
@@ -180,7 +225,10 @@ def build_raw_pairs(
                 concept = min(1.0, count / CONCEPT_SATURATION)
 
         embed = cosine(embeddings.get(a_id, []), embeddings.get(b_id, []))
-        shared = overlap_coefficient(source_sets.get(a_id, set()), source_sets.get(b_id, set()))
+        shared = shared_source_signal(
+            source_sets.get(a_id, set()), source_sets.get(b_id, set()),
+            na.get("ref_type"), nb.get("ref_type"),
+        )
 
         if concept or embed or shared:
             raw.append({"a": a_id, "b": b_id, "concept": concept, "embed": embed, "shared": shared})
@@ -192,8 +240,32 @@ def _node_text(node: Dict[str, Any]) -> str:
     return f"{node.get('title', '')}\n{node.get('text', '')}".strip()
 
 
+def _topic_map(notebook_id: str, nodes: List[Dict[str, Any]]) -> Dict[str, Optional[str]]:
+    """node id → card id, read from the PERSISTED layout (falling back to whatever the caller sent).
+
+    Read server-side on purpose: card membership is the backend's fact, and the client's
+    candidate refs carry only title/text. Sourcing it here means cross-card filtering can't be
+    defeated by a caller that simply omits the field. Never raises — an unreadable layout just
+    means no filtering, i.e. the old behaviour."""
+    topic_of: Dict[str, Optional[str]] = {n["id"]: n.get("topic_id") for n in nodes if n.get("id")}
+    try:
+        from storage import canvas_layout_store as cl
+
+        stored = {n.get("id"): n.get("topic_id") for n in cl.get_layout(notebook_id).get("nodes", [])}
+        for nid in topic_of:
+            if stored.get(nid) is not None:
+                topic_of[nid] = stored[nid]
+    except Exception as e:
+        logger.debug(f"[canvas_candidates] topic map unavailable ({notebook_id}): {e}")
+    return topic_of
+
+
 async def compute_candidates(notebook_id: str, nodes: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Gather the three signals for the visible `nodes` and return bounded candidate pairs.
+
+    Pairs inside the SAME topic card are dropped — see `score_and_bound` for why (the cards are
+    built from these same embeddings, so intra-card pairs used to consume the whole budget and
+    auto-connect could only redraw the clustering it was given).
 
     Never raises — any signal failure degrades to that signal being absent (0). A blank or
     single-node canvas returns []. `nodes` items: ``{id, ref_type, ref_id, title, text}``.
@@ -210,7 +282,9 @@ async def compute_candidates(notebook_id: str, nodes: List[Dict[str, Any]]) -> L
         source_sets = await _gather_source_sets(notebook_id, nodes)
 
         raw = build_raw_pairs(nodes, embeddings, concept_counts, source_sets)
-        return score_and_bound(raw)
+        pairs = score_and_bound(raw, topic_of=_topic_map(notebook_id, nodes))
+        logger.info(f"[canvas_candidates] {len(pairs)} cross-card candidate(s) for {notebook_id}")
+        return pairs
     except Exception as e:  # pragma: no cover — belt-and-suspenders; never break the canvas
         logger.warning(f"[canvas_candidates] compute failed ({notebook_id}): {e}")
         return []

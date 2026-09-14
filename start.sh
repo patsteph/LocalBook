@@ -40,11 +40,6 @@ trap cleanup SIGINT SIGTERM
 # Check prerequisites
 echo -e "\n${YELLOW}Checking prerequisites...${NC}"
 
-if ! command -v ollama &> /dev/null; then
-    echo -e "${RED}Error: Ollama not found. Install with: brew install ollama${NC}"
-    exit 1
-fi
-
 if ! command -v python3 &> /dev/null; then
     echo -e "${RED}Error: Python 3 not found. Install with: brew install python${NC}"
     exit 1
@@ -57,51 +52,9 @@ fi
 
 echo -e "${GREEN}✓ All prerequisites found${NC}"
 
-# Check if Ollama is already running
-if curl -s http://localhost:11434/api/tags > /dev/null 2>&1; then
-    echo -e "${GREEN}✓ Ollama already running${NC}"
-else
-    echo -e "${YELLOW}Starting Ollama...${NC}"
-    # Memory management: limit concurrent models, enable flash attention,
-    # and use q8_0 KV cache to halve context memory vs f16 default.
-    OLLAMA_MAX_LOADED_MODELS=2 OLLAMA_FLASH_ATTENTION=1 OLLAMA_KV_CACHE_TYPE=q8_0 \
-    ollama serve > /dev/null 2>&1 &
-    OLLAMA_PID=$!
-    
-    # Fast poll instead of fixed sleep — usually ready in <1s
-    for i in {1..30}; do
-        if curl -s http://localhost:11434/api/tags > /dev/null 2>&1; then
-            echo -e "${GREEN}✓ Ollama started${NC}"
-            break
-        fi
-        if [ $i -eq 30 ]; then
-            echo -e "${RED}Error: Failed to start Ollama${NC}"
-            exit 1
-        fi
-        sleep 0.3
-    done
-fi
-
-# Check for required models
-echo -e "${YELLOW}Checking AI models...${NC}"
-MODELS=$(ollama list 2>/dev/null || echo "")
-
-if ! echo "$MODELS" | grep -q "phi4-mini"; then
-    echo -e "${YELLOW}Downloading phi4-mini model...${NC}"
-    ollama pull phi4-mini
-fi
-
-if ! echo "$MODELS" | grep -q "gemma4:e4b"; then
-    echo -e "${YELLOW}Downloading gemma4:e4b model (main + native vision; a few minutes)...${NC}"
-    ollama pull gemma4:e4b
-fi
-
-if ! echo "$MODELS" | grep -q "snowflake-arctic-embed2"; then
-    echo -e "${YELLOW}Downloading snowflake-arctic-embed2 model...${NC}"
-    ollama pull snowflake-arctic-embed2
-fi
-
-echo -e "${GREEN}✓ AI models ready${NC}"
+# No engine daemon to start and no models to pull: MLX runs in-process and its models come
+# from the HuggingFace cache. This used to `ollama serve` and pull three models, and would
+# `exit 1` if Ollama was missing — a hard failure for a machine that no longer needs it.
 
 # Set up Python virtual environment if needed
 if [ ! -d "backend/.venv" ]; then

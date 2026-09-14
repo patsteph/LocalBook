@@ -335,7 +335,7 @@ async def summarize_article(title: str, body_text: str) -> Dict[str, Any]:
     """Phase 1B Tier 2 (2026-06-09) — per-article LLM summary via the fast
     model. Cheap (~1s/article on phi4-mini). Returns dict with summary +
     topic_tags. Best-effort: returns empty dict on failure."""
-    from services.ollama_service import ollama_service
+    from services.llm_runtime import llm_runtime
     from config import settings
 
     body = sanitize_for_llm(body_text or "")[:3000]
@@ -344,10 +344,10 @@ async def summarize_article(title: str, body_text: str) -> Dict[str, Any]:
 
     user_prompt = f"TITLE: {title}\n\nBODY:\n{body}"
     try:
-        result = await ollama_service.generate(
+        result = await llm_runtime.generate(
             prompt=user_prompt,
             system=_ARTICLE_SUMMARY_SYSTEM,
-            model=settings.ollama_fast_model,
+            model=settings.fast_model,
             temperature=0.2,
             num_predict=200,
             format="json",
@@ -413,7 +413,7 @@ async def _summarize_articles_background_unlocked(source_id: str) -> None:
     can use it explicitly when they've already acquired the lock at a
     higher level."""
     from storage.article_store import article_store
-    from services.ollama_service import ollama_service
+    from services.llm_runtime import llm_runtime
     from services.article_rag import index_pending_for_source
     from services.article_classifier import classify_article, is_content
     import struct as _struct
@@ -539,7 +539,7 @@ async def _summarize_articles_background_unlocked(source_id: str) -> None:
                 f"{(a.get('body_text') or '')[:2000]}"
             ).strip()
             if embed_input and not a.get("embedding"):
-                result = await ollama_service.embed(text=embed_input)
+                result = await llm_runtime.embed(text=embed_input)
                 vecs = (result or {}).get("embeddings") or []
                 vec = vecs[0] if vecs and isinstance(vecs[0], list) else []
                 if vec:
@@ -643,7 +643,7 @@ async def _summarize_articles_background_unlocked(source_id: str) -> None:
 async def classify_email(parsed: ParsedEmail) -> Classification:
     """Classify an email via a tool-less LLM call. Returns 'personal' on
     any failure — the safest default since 'personal' is never ingested."""
-    from services.ollama_service import ollama_service
+    from services.llm_runtime import llm_runtime
     from config import settings
 
     # Use the cleaned text body; fall back to stripped HTML if no plain text.
@@ -657,16 +657,16 @@ async def classify_email(parsed: ParsedEmail) -> Classification:
     )
 
     try:
-        # P14.MEM (2026-06-11) — was settings.ollama_model (gemma4 9.6 GB).
+        # P14.MEM (2026-06-11) — was settings.main_model (gemma4 9.6 GB).
         # IMAP fires this on every incoming email so it kept gemma4 pinned
         # in memory permanently via model_warmup. Newsletter/personal/
         # transactional/forward classification is a structured 4-way pick
         # that phi4-mini handles well. Frees ~9 GB of working set when no
         # active chat is happening.
-        result = await ollama_service.generate(
+        result = await llm_runtime.generate(
             prompt=user_prompt,
             system=_CLASSIFY_SYSTEM,
-            model=settings.ollama_fast_model,
+            model=settings.fast_model,
             temperature=0.2,
             num_predict=400,
             format="json",
@@ -1192,7 +1192,7 @@ async def classify_link_candidates(
     """
     if not candidates:
         return []
-    from services.ollama_service import ollama_service
+    from services.llm_runtime import llm_runtime
     from config import settings
 
     listing = "\n".join(
@@ -1213,14 +1213,14 @@ async def classify_link_candidates(
     user_prompt = f"LINKS:\n{listing}"
 
     try:
-        # P14.MEM (2026-06-11) — was settings.ollama_model. Link
+        # P14.MEM (2026-06-11) — was settings.main_model. Link
         # classification (sister-newsletter detection) is a low-stakes
         # category pick that phi4-mini handles fine. Removes another
         # gemma4 toucher from the IMAP path.
-        result = await ollama_service.generate(
+        result = await llm_runtime.generate(
             prompt=user_prompt,
             system=system_prompt,
-            model=settings.ollama_fast_model,
+            model=settings.fast_model,
             temperature=0.1,
             num_predict=600,
             format="json",

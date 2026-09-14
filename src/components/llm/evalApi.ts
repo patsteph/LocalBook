@@ -1,4 +1,4 @@
-// Typed client for the LLM Evaluator + sidecar endpoints (backend/api/evaluator.py).
+// Typed client for the LLM Evaluator endpoints (backend/api/evaluator.py).
 // Shapes mirror the Python `to_dict()` contracts. Used by the in-app "Labs (LLM)"
 // Evaluator + History tabs — the React home for what used to live in the
 // health-portal HTML page.
@@ -136,20 +136,6 @@ export interface EvalResult {
   preflight?: { checks: PreflightCheck[]; blocking_failure?: string | null };
 }
 
-// ── Sidecar (llama-server) ───────────────────────────────────────────────────
-export interface SidecarStatus {
-  running: boolean;
-  owned: boolean;
-  healthy: boolean;
-  pid?: number | null;
-  uptime_seconds?: number;
-  binary_path?: string;
-  model_path?: string;
-  model_exists?: boolean;
-  port?: number;
-  last_error?: string;
-}
-
 // ── Fetch helpers ────────────────────────────────────────────────────────────
 async function getJSON<T>(path: string): Promise<T> {
   const res = await localFetch(`${API_BASE_URL}${path}`);
@@ -166,16 +152,52 @@ async function postJSON<T>(path: string): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+// ── Run comparison (2026-08-19) ──────────────────────────────────────────────
+// The /results/compare endpoint has existed with NO frontend caller. It is the surface the
+// MLX-vs-Ollama A/B is judged on, so it needs one.
+export interface MetricDelta { a: number | null; b: number | null; delta: number | null; pct: number | null; }
+
+export interface CompareSide {
+  run_id: string;
+  combo?: Record<string, unknown>;
+  hardware?: Record<string, unknown>;
+  overall_score: number;
+  overall_grade: string;
+  category_scores: Record<string, number>;
+  timestamp: string;
+  engines?: Record<string, string>;
+  engine_fallbacks?: number;
+  perf?: Record<string, number | null>;
+  memory?: Record<string, number | null>;
+}
+
+export interface CompareValidity {
+  comparable: boolean;
+  problems: string[];
+  same_engines: boolean;
+  engine_diff: Record<string, { a?: string; b?: string }>;
+  same_hardware: boolean;
+}
+
+export interface CompareResponse {
+  run_a: CompareSide;
+  run_b: CompareSide;
+  differences: Record<string, { score_a: number; score_b: number; delta: number }>;
+  perf_deltas: Record<string, MetricDelta>;
+  memory_deltas: Record<string, MetricDelta>;
+  validity: CompareValidity;
+}
+
 export const evalApi = {
+  compare: (runA: string, runB: string) =>
+    postJSON<CompareResponse>(
+      `/evaluator/results/compare?run_a=${encodeURIComponent(runA)}&run_b=${encodeURIComponent(runB)}`),
   getHardware: () => getJSON<HardwareResponse>('/evaluator/hardware'),
   getResults: () => getJSON<{ runs: RunSummary[]; count: number }>('/evaluator/results'),
   getResult: (runId: string) => getJSON<{ result: EvalResult }>(`/evaluator/results/${runId}`),
   getLatest: () => getJSON<{ result: EvalResult | null }>('/evaluator/results/latest'),
   getStatus: () => getJSON<EvalStatus>('/evaluator/status'),
   run: () => postJSON<{ status: string; message: string }>('/evaluator/run'),
-  getSidecar: () => getJSON<SidecarStatus>('/evaluator/sidecar/status'),
-  startSidecar: () => postJSON<SidecarStatus & { status: string; message: string }>('/evaluator/sidecar/start'),
-  stopSidecar: () => postJSON<{ status: string; message: string }>('/evaluator/sidecar/stop'),
 };
 
 // Score → letter-grade band (mirrors the portal's getGradeClass thresholds).

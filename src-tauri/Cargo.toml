@@ -1,6 +1,6 @@
 [package]
 name = "localbooklm"
-version = "2.1.1"
+version = "2.3.0"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
@@ -29,3 +29,21 @@ reqwest = { version = "0.11", features = ["json", "multipart", "stream"] }
 tauri-plugin-shell = "2"
 tauri-plugin-process = "2"
 tokio-util = { version = "0.7", features = ["io"] }
+
+# Do not strip build scripts and proc-macro dylibs.
+#
+# rustc compiles a proc-macro to a native .dylib and `dlopen`s it while compiling the crates
+# that USE it. Strip that dylib and the load fails, which surfaces as
+# `error[E0463]: can't find crate for <ctor_proc_macro | tauri_macros | time_macros | …>` —
+# a message that points at a missing crate when the crate compiled fine and only the load
+# failed. It hits every proc-macro at once and only on the machine doing the stripping, so it
+# reads like a broken toolchain.
+#
+# This is the fix for the E0463 hunt in COLLABORATION_NOTES.md, found on one Mac in Sept 2026.
+# It is NOT a rustc version pin — those notes warn against pinning for exactly this symptom,
+# because a pin adds a failure surface without addressing the dylib load.
+#
+# Only build-time artifacts are affected; the shipped app binary is untouched, and this is a
+# no-op on machines that were never stripping.
+[profile.release.build-override]
+strip = false

@@ -61,57 +61,39 @@ class Settings(BaseSettings):
     data_dir: Path = get_data_directory()
     db_path: Path = get_data_directory() / "lancedb"
 
-    # LLM settings
-    llm_provider: str = "ollama"  # ollama, openai, or anthropic
-    ollama_base_url: str = "http://localhost:11434"
-    ollama_model: str = "gemma4:e4b"  # System 2: Main model - 8B Q4, native vision + JSON-mode + thinking control; per FINAL_CODE_REVIEW_Gemma4_Migration.md, replaces olmo-3:7b-instruct
-    ollama_fast_model: str = "phi4-mini:latest"  # System 1: Fast model - Microsoft Phi-4 mini, better than llama3.2:3b
-    # Vision model used by scan pipeline + multimodal PDF extraction.
-    # The pipeline is model-agnostic: it loads whatever name is
-    # configured here (or via LOCALBOOK_VISION_MODEL env / the Settings
-    # → Models combo picker) and uses the registry entry's
-    # `vision_api_style` to route through /api/generate or /api/chat.
-    # When the configured model fails the user gets a typed
-    # `VisionModelError` surfaced as a clear "Vision model X failed"
-    # banner with a hint to swap models — no need to ship a code change
-    # to react to a broken upstream model file. The default below is
-    # just a known-good starting point; users are expected to swap it
-    # to whatever they prefer (gemma4:e4b, llava, moondream, etc.).
-    vision_model: str = "granite3.2-vision:2b"
+    # ── Models, one attribute per role ───────────────────────────────────────
+    # v2.3.0: these hold the MLX checkpoint id DIRECTLY. Before the cutover each role was a
+    # PAIR — an Ollama name (`ollama_model`) plus an `mlx_main_model`, with an engine flag
+    # deciding which one `mlx_model_for_role` returned. With one engine that indirection only
+    # created ways to disagree with itself, so the pair is collapsed.
+    #
+    # ⚠️ The registry (`known_models.json`) is keyed by these ids and carries the curated
+    # per-model tuning — rag_profile (num_ctx cap, stop sequences, temperature), vision_profile,
+    # structured_profile. A role pointed at an id with no registry row silently loses ALL of
+    # that: no error, the tuning just stops applying. Add a row before changing a default.
+    main_model: str = "mlx-community/gemma-4-e4b-it-4bit"      # chat / RAG / structured + vision
+    fast_model: str = "mlx-community/Phi-4-mini-instruct-4bit"  # intent, follow-ups, classify
+    # Option A: the vision-capable main model absorbs the vision slot, so this is deliberately
+    # the SAME checkpoint — one gemma resident, not two.
+    vision_model: str = "mlx-community/gemma-4-e4b-it-4bit"
+    image_model: str = "Runpod/FLUX.2-klein-4B-mflux-4bit"      # FLUX.2 Klein via mflux
+
+    # arctic-embed-l-v2.0 — the SAME model and the SAME 1024 dim as the old Ollama
+    # `snowflake-arctic-embed2`, so the existing index needed no re-embedding.
+    #
+    # MEASURED 2026-08-19 (`backend/scripts/embedding_equivalence.py`, 500 real chunks + 50 real
+    # queries) — the previous "bit-identical, cosine 1.0000" claim was an unverified assertion:
+    #   bf16  : mean 0.999940, p1 0.999816 · top-5 overlap 0.992, 0/50 top-1 changes → PASSES
+    #   8-bit : mean 0.999437, p1 0.999187 · top-5 overlap 0.980, 1/50 top-1 changes → FAILS
+    # Hence bf16 is pinned despite costing ~0.5 GB more. Do NOT switch to 8-bit to save memory
+    # without re-running that script and accepting a retrieval change.
+    embedding_model: str = "mlx-community/snowflake-arctic-embed-l-v2.0-bf16"
+
     openai_api_key: str = ""
     anthropic_api_key: str = ""
 
-    # ── Engine selection (Wave 9 — dual-engine Ollama|MLX, per role) ──────────
-    # Default "ollama" everywhere = byte-identical to today. A role is flipped to
-    # "mlx" in LLM Labs after the user validates it (opt-in; MLX models are never
-    # auto-downloaded on startup). These are INERT until the MLX engine is wired
-    # into the llm_service seam (Wave 9.1+); adding them here is scaffolding only.
-    # See READFIRST/in-progress/wave9-mlx-production.md.
-    main_engine: str = "ollama"     # ollama | mlx — main chat / RAG / structured
-    fast_engine: str = "ollama"     # ollama | mlx — intent, follow-ups, classify
-    vision_engine: str = "ollama"   # ollama | mlx — semantic image description
-    image_engine: str = "ollama"    # ollama | mlx — Klein / FLUX image generation
-    embed_engine: str = "ollama"    # ollama | mlx — opt-in MLX (LOCALBOOK_EMBED_ENGINE=mlx).
-                                    # MLX runs the SAME arctic-embed-l-v2.0 at the SAME 1024
-                                    # dim → same vector space, NO re-index. fallback-safe.
-    # MLX model ids per role — used only when that role's engine == "mlx".
-    mlx_main_model: str = "mlx-community/gemma-4-e4b-it-4bit"
-    mlx_fast_model: str = "mlx-community/Phi-4-mini-instruct-4bit"
-    mlx_vision_model: str = "mlx-community/gemma-4-e4b-it-4bit"
-    mlx_image_model: str = "Runpod/FLUX.2-klein-4B-mflux-4bit"
-    # arctic-embed-l-v2.0 = exactly the Ollama `snowflake-arctic-embed2` (1024-dim). With CLS
-    # pooling (see _embed_on_thread) the 8-bit build matches the stored Ollama-fp16 vectors at
-    # cosine ~0.9997 (retrieval-equivalent, no top-k reorder) — same vector space, NO re-index —
-    # while keeping the .app bundle small. The bf16 build is bit-identical (cosine 1.0000, ~2.3 GB)
-    # if you want zero drift: override via LOCALBOOK_MLX_EMBEDDING_MODEL=…-bf16.
-    mlx_embedding_model: str = "mlx-community/snowflake-arctic-embed-l-v2.0-8bit"
-
     # Embedding settings
-    # snowflake-arctic-embed2: 1024 dims, frontier model, excellent retrieval quality
-    # Upgrade from nomic-embed-text (768 dims) for better semantic matching
-    embedding_model: str = "snowflake-arctic-embed2"  # Via Ollama - best balance of speed/quality
-    embedding_dim: int = 1024  # snowflake-arctic-embed2 uses 1024 dimensions
-    use_ollama_embeddings: bool = True  # Use Ollama for embeddings instead of sentence-transformers
+    embedding_dim: int = 1024  # arctic-embed-l-v2.0 is 1024-dim
     use_spacy_extractor: bool = True  # NER via spaCy (en_core_web_sm) instead of phi4 LLM — faster, deterministic, frees the fast lane
     chunk_size: int = 1000
     chunk_overlap: int = 200
@@ -134,6 +116,12 @@ class Settings(BaseSettings):
     # timeout/error under load the executor automatically falls back to the fast model, so a
     # contended box still answers. Pin a specific model here to override the primary.
     tabular_sql_model: str | None = None
+    # Python hard-compute tier (P2): build Studio document charts by generating Python and running it
+    # in the py_compute sandbox, so totals/shares/growth-rates are EXECUTED rather than typed by the
+    # model — today's path asks gemma for finished ChartConfig JSON, the one place in the app where
+    # plotted numbers are model-authored. OFF until proven in the built app; the caller falls back to
+    # the LLM-JSON path whenever the sandbox yields no chart, so flipping it is safe either way.
+    py_compute_doc_charts_enabled: bool = False
 
     # Debug mode — enables diagnostic endpoints (health portal, RAG health)
     debug_mode: bool = False  # Set LOCALBOOK_DEBUG_MODE=true to enable

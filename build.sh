@@ -65,12 +65,6 @@ if ! command -v node &> /dev/null; then
     brew install node
 fi
 
-# Install Ollama if not found
-if ! command -v ollama &> /dev/null; then
-    echo -e "${YELLOW}Ollama not found. Installing...${NC}"
-    brew install ollama
-fi
-
 # Install ffmpeg if not found (for audio/video transcription)
 if ! command -v ffmpeg &> /dev/null; then
     echo -e "${YELLOW}ffmpeg not found. Installing...${NC}"
@@ -136,11 +130,16 @@ done
 # tsc needs node_modules; ensure the frontend toolchain is present. This is
 # idempotent with Step 2's `npm install` below (a no-op when already satisfied),
 # so it neither reorders nor replaces that step — it just guarantees tsc can run.
+#
+# This used to be gated on `[ ! -d node_modules ]`, which tests PRESENCE, not freshness.
+# After a `git pull` that adds a dependency, the directory exists but is missing the new
+# package, so the install was skipped and tsc failed on it — reported 2026-08-21 by a
+# remote tester upgrading from v2.1.1: the pull brought the first frontend tests with it,
+# and the gate died on `TS2307: Cannot find module 'vitest'` before Step 2 could install
+# it. Always run the install; npm is a fast no-op when the tree already satisfies the lock.
 echo -e "\n${YELLOW}Pre-build typecheck (tsc --noEmit)...${NC}"
-if [ ! -d "node_modules" ]; then
-    echo -e "${YELLOW}  Installing frontend deps so the typecheck can run...${NC}"
-    npm install --silent
-fi
+echo -e "${YELLOW}  Syncing frontend deps so the typecheck sees anything the pull added...${NC}"
+npm install --silent
 if npx tsc --noEmit; then
     echo -e "${GREEN}✓ TypeScript typecheck passed${NC}"
 else
@@ -190,7 +189,8 @@ if [ ! -f "$BACKEND_EXE" ] || [ "$DO_REBUILD" = true ] || [ "$DO_CLEAN" = true ]
     echo -e "${YELLOW}Verifying critical packages...${NC}"
     MISSING=""
     python -c "import rank_bm25" 2>/dev/null || MISSING="$MISSING rank-bm25"
-    python -c "import ebooklib" 2>/dev/null || MISSING="$MISSING ebooklib"
+    # EPUB is read with the stdlib zipfile + lxml — ebooklib (AGPL-3.0) is deliberately gone.
+    python -c "import lxml" 2>/dev/null || MISSING="$MISSING lxml"
     python -c "import odf" 2>/dev/null || MISSING="$MISSING odfpy"
     python -c "import nbformat" 2>/dev/null || MISSING="$MISSING nbformat"
     python -c "import misaki" 2>/dev/null || MISSING="$MISSING misaki"
@@ -401,11 +401,37 @@ if [ -d "$APP_PATH" ] && [ -n "${APPLE_SIGNING_IDENTITY:-}" ]; then
     echo -e "${GREEN}✓ Post-Tauri Developer ID signing complete (notarization-ready)${NC}"
 fi
 
-# Copy app to easy location. ditto preserves all metadata (extended
-# attributes, code signatures, symlinks) which a plain `cp -r` may not.
+# Copy the app to an easy location — BUILD TO TEMP, THEN SWAP.
+#
+# This used to `rm -rf ./LocalBook.app` and then `ditto` into place. A build interrupted
+# between those two lines (Ctrl-C, a killed terminal, a failing step) left NO app at all:
+# the working copy was deleted and the replacement never arrived. That happened on
+# 2026-08-20 and the only clue was `./LocalBook.app: No such file or directory`.
+#
+# Now the new copy is staged alongside and moved into place only once it is complete, so the
+# previous app survives any failure. `ditto` preserves extended attributes, code signatures
+# and symlinks, which a plain `cp -r` does not.
 if [ -d "$APP_PATH" ]; then
-    rm -rf "./LocalBook.app"
-    ditto "$APP_PATH" "./LocalBook.app"
+    STAGE="./.LocalBook.app.new"
+    OLD="./.LocalBook.app.old"
+    rm -rf "$STAGE" "$OLD"
+    if ditto "$APP_PATH" "$STAGE"; then
+        # Swap: move the current app aside, put the new one in place, then drop the old.
+        # If the mv of the new copy fails, the previous app is restored rather than lost.
+        [ -d "./LocalBook.app" ] && mv "./LocalBook.app" "$OLD"
+        if mv "$STAGE" "./LocalBook.app"; then
+            rm -rf "$OLD"
+        else
+            echo -e "${RED}✗ Could not move the new app into place — restoring the previous one.${NC}"
+            [ -d "$OLD" ] && mv "$OLD" "./LocalBook.app"
+            rm -rf "$STAGE"
+            exit 1
+        fi
+    else
+        echo -e "${RED}✗ ditto failed while staging the app — the existing ./LocalBook.app is untouched.${NC}"
+        rm -rf "$STAGE"
+        exit 1
+    fi
 fi
 
 echo -e "\n${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
@@ -419,38 +445,11 @@ echo -e "To install, drag LocalBook.app to your Applications folder, or run:"
 echo -e "  ${BLUE}cp -r LocalBook.app /Applications/${NC}"
 echo -e ""
 
-# Download Ollama models if not present
-echo -e "${YELLOW}Checking AI models...${NC}"
-
-# Start Ollama if not running
-if ! curl -s http://localhost:11434/api/tags > /dev/null 2>&1; then
-    ollama serve > /dev/null 2>&1 &
-    sleep 2
-fi
-
-MODELS=$(ollama list 2>/dev/null || echo "")
-
-# Main model — chat/synthesis + native vision. gemma4 absorbs the vision slot
-# (Option A), so no separate olmo or granite download is needed.
-if ! echo "$MODELS" | grep -q "gemma4:e4b"; then
-    echo -e "${YELLOW}Downloading gemma4:e4b model (~9.6GB, main + native vision)...${NC}"
-    ollama pull gemma4:e4b
-fi
-
-# System 1: Fast model for quick responses (Microsoft Phi-4 mini)
-if ! echo "$MODELS" | grep -q "phi4-mini"; then
-    echo -e "${YELLOW}Downloading phi4-mini model (~2GB)...${NC}"
-    ollama pull phi4-mini
-fi
-
-# Embedding model (1024 dims, frontier quality)
-if ! echo "$MODELS" | grep -q "snowflake-arctic-embed2"; then
-    echo -e "${YELLOW}Downloading snowflake-arctic-embed2 model (~500MB)...${NC}"
-    ollama pull snowflake-arctic-embed2
-fi
-
-echo -e "${GREEN}✓ AI models ready${NC}"
-echo -e ""
+# Models are NOT downloaded here. This block used to `ollama serve` and then pull gemma4 /
+# phi4-mini / snowflake-arctic-embed2 after every build — which, once those models were
+# removed from Ollama, FAILED the build with a 412 ("requires a newer version of Ollama")
+# even though the app had bundled successfully. LocalBook runs on MLX now; its models live
+# in the HuggingFace cache and are fetched from LLM Studio, never by the build script.
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Optional post-build bundle smoke gate (additive — Ring 2 of testing-ci-foundation)

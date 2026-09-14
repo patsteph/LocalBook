@@ -62,6 +62,10 @@ class Storyboard:
     source_names: List[str]
     estimated_duration_seconds: int
     format_type: str = "explainer"  # explainer or brief
+    # Real ids of the sources this storyboard was built from, so the caller can record
+    # provenance without re-deriving identity from filenames. Defaulted for back-compat:
+    # a Storyboard rehydrated from an older persisted `storyboard_json` has no such field.
+    source_ids: List[str] = field(default_factory=list)
 
     def to_dict(self) -> Dict:
         return asdict(self)
@@ -385,6 +389,7 @@ class VideoStoryboardGenerator:
             source_names=built.source_names,
             estimated_duration_seconds=est_duration,
             format_type=format_type,
+            source_ids=list(built.source_ids),
         )
 
         logger.info(
@@ -494,7 +499,7 @@ Generate a JSON array of exactly {target_scenes} scenes. Output ONLY the JSON ar
 
         result = await rag_engine._call_ollama(
             system_prompt, prompt,
-            model=settings.ollama_model,  # Use main model for structure
+            model=settings.main_model,  # Use main model for structure
             num_predict=num_predict,
             temperature=0.55,
             repeat_penalty=1.05
@@ -545,7 +550,7 @@ Output a JSON array of exactly {target_scenes} scenes. First scene must be title
 
         result = await rag_engine._call_ollama(
             system_prompt, prompt,
-            model=settings.ollama_model,
+            model=settings.main_model,
             num_predict=num_predict,
             num_ctx=num_ctx,
             temperature=0.4,
@@ -758,7 +763,7 @@ Write 2-4 sentences of spoken narration for this scene. Output ONLY the narratio
             try:
                 narration = await rag_engine._call_ollama(
                     system_prompt, prompt,
-                    model=settings.ollama_model,
+                    model=settings.main_model,
                     num_predict=max(200, target_words * 3),
                     num_ctx=4096,
                     temperature=0.7,

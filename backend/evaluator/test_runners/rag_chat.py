@@ -24,7 +24,7 @@ async def run(notebook_id: str, config: dict, combo_name: str, hw_fingerprint: s
         hardware_fingerprint=hw_fingerprint,
         timestamp=datetime.utcnow().isoformat(),
     )
-    result.stamp_provider(settings.ollama_model)
+    result.stamp_provider(settings.main_model)
 
     try:
         start = time.time()
@@ -55,8 +55,8 @@ async def run(notebook_id: str, config: dict, combo_name: str, hw_fingerprint: s
             answer_correctness = scoring.score_must_contain(answer, q.get("expected_facts", []))
         
         # 3. Faithfulness: does answer use only retrieved context (no hallucination)?
-        judge_model = getattr(settings, 'ollama_fast_model', settings.ollama_model)
-        if judge_model != settings.ollama_model and citations:
+        judge_model = getattr(settings, 'fast_model', settings.main_model)
+        if judge_model != settings.main_model and citations:
             faithfulness = await scoring.score_faithfulness(answer, citations, judge_model)
         else:
             faithfulness = 60
@@ -110,7 +110,7 @@ async def run(notebook_id: str, config: dict, combo_name: str, hw_fingerprint: s
         hardware_fingerprint=hw_fingerprint,
         timestamp=datetime.utcnow().isoformat(),
     )
-    result.stamp_provider(settings.ollama_model)
+    result.stamp_provider(settings.main_model)
 
     try:
         start = time.time()
@@ -138,8 +138,8 @@ async def run(notebook_id: str, config: dict, combo_name: str, hw_fingerprint: s
         else:
             answer_correctness = scoring.score_must_contain(answer, q.get("expected_facts", []))
         
-        judge_model = getattr(settings, 'ollama_fast_model', settings.ollama_model)
-        if judge_model != settings.ollama_model and citations:
+        judge_model = getattr(settings, 'fast_model', settings.main_model)
+        if judge_model != settings.main_model and citations:
             faithfulness = await scoring.score_faithfulness(answer, citations, judge_model)
         else:
             faithfulness = 60

@@ -211,6 +211,14 @@ async def compare_results(run_a: str, run_b: str):
             "overall_grade": result_a.get("overall_grade", ""),
             "category_scores": result_a.get("category_scores", {}),
             "timestamp": result_a.get("timestamp", ""),
+            # ENGINE PROVENANCE — without this a reader cannot tell which runtime produced
+            # these numbers, and an engine A/B is exactly what this endpoint is for.
+            "engines": _engines_of(result_a),
+            "engine_fallbacks": result_a.get("engine_fallbacks", 0),
+            # Perf + memory, so a comparison covers speed and footprint, not just quality.
+            "perf": {k: result_a.get(k) for k in _PERF_KEYS},
+            "throughput": result_a.get("throughput", {}),
+            "memory": result_a.get("memory", {}),
         },
         "run_b": {
             "run_id": run_b,
@@ -220,6 +228,14 @@ async def compare_results(run_a: str, run_b: str):
             "overall_grade": result_b.get("overall_grade", ""),
             "category_scores": result_b.get("category_scores", {}),
             "timestamp": result_b.get("timestamp", ""),
+            # ENGINE PROVENANCE — without this a reader cannot tell which runtime produced
+            # these numbers, and an engine A/B is exactly what this endpoint is for.
+            "engines": _engines_of(result_b),
+            "engine_fallbacks": result_b.get("engine_fallbacks", 0),
+            # Perf + memory, so a comparison covers speed and footprint, not just quality.
+            "perf": {k: result_b.get(k) for k in _PERF_KEYS},
+            "throughput": result_b.get("throughput", {}),
+            "memory": result_b.get("memory", {}),
         },
         "differences": {},
     }
@@ -235,7 +251,99 @@ async def compare_results(run_a: str, run_b: str):
             "delta": round(score_b - score_a, 1),
         }
 
+    # Perf + memory deltas, and the validity verdict.
+    comparison["perf_deltas"] = {
+        k: _delta(result_a.get(k), result_b.get(k)) for k in _PERF_KEYS
+    }
+    comparison["throughput_deltas"] = {
+        k: _delta((result_a.get("throughput") or {}).get(k),
+                  (result_b.get("throughput") or {}).get(k))
+        for k in _THROUGHPUT_KEYS
+    }
+    comparison["memory_deltas"] = {
+        k: _delta((result_a.get("memory") or {}).get(k), (result_b.get("memory") or {}).get(k))
+        for k in _MEMORY_KEYS
+    }
+    comparison["validity"] = _validity(result_a, result_b)
     return comparison
+
+
+# Keys surfaced for a perf comparison. `perf_samples` is deliberately included: a delta
+# computed from one sample per side is not a measurement, and the reader has to be able to see
+# that (runs before 2026-08-19 sampled the Streaming phase only).
+_PERF_KEYS = ("avg_tokens_per_sec", "tps_p50", "tps_p05",
+              "avg_ttft_ms", "ttft_p50", "ttft_p95",
+              "total_run_time_seconds", "perf_samples")
+
+_THROUGHPUT_KEYS = ("tokens_per_sec", "tps_p50", "tps_p05", "tps_p95",
+                    "generations", "completion_tokens", "generation_seconds")
+
+_MEMORY_KEYS = ("peak_rss_gb", "peak_system_used_gb", "min_system_available_gb",
+                "mlx_peak_gb", "mlx_active_end_gb", "swap_out_delta")
+
+
+def _delta(a, b):
+    """b − a, tolerating missing/non-numeric values rather than inventing zeros."""
+    try:
+        if a is None or b is None:
+            return {"a": a, "b": b, "delta": None, "pct": None}
+        a_f, b_f = float(a), float(b)
+        pct = round((b_f - a_f) / a_f * 100, 1) if a_f else None
+        return {"a": a_f, "b": b_f, "delta": round(b_f - a_f, 3), "pct": pct}
+    except (TypeError, ValueError):
+        return {"a": a, "b": b, "delta": None, "pct": None}
+
+
+def _engines_of(result: dict) -> dict:
+    """Per-role engines, from the COMBO SNAPSHOT of a persisted run.
+
+    Reads run provenance, not live settings — a pre-cutover run legitimately holds "ollama"
+    or "llama_server" and the comparison view has to see that to refuse a mismatched A/B.
+    """
+    combo = result.get("combo") or {}
+    return {k.replace("_engine", ""): combo.get(k)
+            for k in ("main_engine", "fast_engine", "vision_engine", "embed_engine")
+            if combo.get(k)}
+
+
+def _validity(a: dict, b: dict) -> dict:
+    """Can these two runs legitimately be compared?
+
+    A comparison that silently averages an invalid run is worse than no comparison — this
+    names the reasons rather than leaving them for a reader to notice.
+    """
+    problems = []
+    for label, r in (("a", a), ("b", b)):
+        if r.get("engine_fallbacks"):
+            problems.append(
+                f"run_{label} recorded {r['engine_fallbacks']} engine fallback(s) — its "
+                f"results are not attributable to a single engine")
+        # Prefer the seam-level meter when the run has it; fall back to the old per-test
+        # counter for runs recorded before it existed.
+        gens = (r.get("throughput") or {}).get("generations")
+        n = gens if gens is not None else (r.get("perf_samples") or 0)
+        if n < 5:
+            src = "generations" if gens is not None else "perf samples"
+            problems.append(
+                f"run_{label} has only {n} {src} — too few for a throughput judgement")
+        if ((r.get("memory") or {}).get("sustained_swap")):
+            problems.append(f"run_{label} swapped during the run — its timings are not representative")
+        if r.get("timed_out_phases"):
+            problems.append(
+                f"run_{label} timed out on {len(r['timed_out_phases'])} phase(s) "
+                f"({', '.join(r['timed_out_phases'])}) — those were excluded, so the two runs "
+                f"do not cover the same tests")
+    ea, eb = _engines_of(a), _engines_of(b)
+    return {
+        "comparable": not problems,
+        "problems": problems,
+        "same_engines": ea == eb,
+        # The A/B case: same hardware, different engines, is what we WANT here.
+        "engine_diff": {r: {"a": ea.get(r), "b": eb.get(r)}
+                        for r in set(ea) | set(eb) if ea.get(r) != eb.get(r)},
+        "same_hardware": (a.get("hardware") or {}).get("fingerprint")
+                          == (b.get("hardware") or {}).get("fingerprint"),
+    }
 
 
 @router.post("/cleanup")
@@ -244,49 +352,6 @@ async def cleanup():
     from evaluator.evaluator_service import cleanup_stale_notebook
     await cleanup_stale_notebook()
     return {"message": "Cleanup complete"}
-
-
-@router.get("/providers")
-async def get_providers():
-    """Report health status for every known LLM provider (Ollama, llama-server).
-
-    Used by the UI to show sidecar availability badges and by pre-flight checks
-    before allowing swaps to llama-server-backed models.
-    """
-    from services.llm_provider import providers_status
-    providers = await providers_status()
-    return {"providers": providers}
-
-
-# ── v1.8.0 (Phase 2): llama-server sidecar lifecycle control ──────────────────
-
-@router.get("/sidecar/status")
-async def get_sidecar_status():
-    """Return runtime state of the llama-server sidecar (running, healthy, pid)."""
-    from services.sidecar_manager import sidecar_manager
-    return await sidecar_manager.status()
-
-
-@router.post("/sidecar/start")
-async def start_sidecar():
-    """Start the sidecar if it isn't already healthy. Blocks up to ~45s."""
-    from services.sidecar_manager import sidecar_manager
-    from services.llm_provider import invalidate_health_cache
-    ok = await sidecar_manager.ensure_started(timeout=45.0)
-    invalidate_health_cache()
-    if not ok:
-        raise HTTPException(status_code=503, detail=sidecar_manager.last_error or "Failed to start sidecar")
-    return {"status": "success", "message": "Sidecar started and healthy", **(await sidecar_manager.status())}
-
-
-@router.post("/sidecar/stop")
-async def stop_sidecar():
-    """Stop the sidecar child process. Idempotent."""
-    from services.sidecar_manager import sidecar_manager
-    from services.llm_provider import invalidate_health_cache
-    await sidecar_manager.stop(grace_seconds=5.0)
-    invalidate_health_cache()
-    return {"status": "success", "message": "Sidecar stopped"}
 
 
 @router.post("/swap")
@@ -308,27 +373,6 @@ async def swap_model(payload: dict):
         if role == "embeddings": normalized_role = "embedding_model"
         if role == "vision": normalized_role = "vision_model"
 
-        # v1.8.0 (Phase 2): auto-spawn the sidecar when the target is a
-        # llama_server-provider model. This is what makes "click Use → run
-        # evaluator" actually work without the user launching anything.
-        try:
-            from evaluator.model_registry import model_registry
-            _info = model_registry.get_model(target_model)
-            if _info and getattr(_info, "provider", "ollama") == "llama_server":
-                from services.sidecar_manager import sidecar_manager
-                from services.llm_provider import invalidate_health_cache
-                ok = await sidecar_manager.ensure_started(timeout=45.0)
-                invalidate_health_cache()
-                if not ok:
-                    raise HTTPException(
-                        status_code=503,
-                        detail=f"Sidecar failed to start: {sidecar_manager.last_error}",
-                    )
-        except HTTPException:
-            raise
-        except Exception as _e:
-            logger.warning(f"[evaluator] sidecar pre-spawn skipped: {_e}")
-
         message = locker.execute_swap(target_model, normalized_role)
         return {"status": "success", "message": message}
     except ModelSwapError as e:
@@ -349,34 +393,28 @@ async def save_default_combo(payload: dict):
     from config import settings
     from evaluator.model_registry import model_registry
     
-    main_model = payload.get("main_model") or settings.ollama_model
-    fast_model = payload.get("fast_model") or settings.ollama_fast_model
+    main_model = payload.get("main_model") or settings.main_model
+    fast_model = payload.get("fast_model") or settings.fast_model
     vision_model = payload.get("vision_model") or settings.vision_model
-    # Resolved active embedding (engine-aware) — persisted so the frontend can tell when a
-    # standalone embedding adoption differs from the saved default (enables the Save button).
-    embeddings_model = (settings.mlx_embedding_model
-                        if getattr(settings, "embed_engine", "ollama") == "mlx"
-                        else settings.embedding_model)
+    embeddings_model = settings.embedding_model
     
     # Validate models are installed (registry match preferred, live fallback for community models).
     # Wave 9.6 — MLX models are HuggingFace ids (org/repo), NOT Ollama models: the Ollama /api/show
     # check would always 404 ("not installed in Ollama"), blocking Save-as-default for an MLX combo.
     # Skip the Ollama check for a role whose engine is mlx (or whose name is an HF path) — those are
     # validated at adopt/download time, and the combo being saved is the one currently running.
-    import httpx as _httpx
-    from config import settings as _s
-    for name, role, engine in [(main_model, "main", settings.main_engine),
-                               (fast_model, "fast", settings.fast_engine)]:
-        if engine == "mlx" or "/" in (name or ""):
+    # Model validation is a filesystem question now: an MLX id either has weights in the
+    # HF cache or it does not. The old branch POSTed to Ollama's /api/show and 503'd the
+    # save when Ollama was unreachable — which, with Ollama gone, would block every save.
+    from services.model_presence import is_present
+    for name, role in ((main_model, "main"), (fast_model, "fast")):
+        if not name:
             continue
-        info = model_registry.get_model(name)
-        if not info:
-            try:
-                r = _httpx.post(f"{_s.ollama_base_url}/api/show", json={"name": name}, timeout=5.0)
-                if r.status_code != 200:
-                    raise HTTPException(status_code=400, detail=f"{role} model '{name}' is not installed in Ollama.")
-            except _httpx.RequestError:
-                raise HTTPException(status_code=503, detail="Ollama is not reachable — cannot validate models.")
+        if "/" in name and not is_present(name):
+            raise HTTPException(
+                status_code=400,
+                detail=f"{role} model '{name}' is not downloaded. Download it in LLM Studio first.",
+            )
     
     prefs_path = settings.data_dir / "user_preferences.json"
     
@@ -386,30 +424,24 @@ async def save_default_combo(payload: dict):
     except Exception:
         existing = {}
     
+    # One key per role, each a checkpoint id. This used to write BOTH an Ollama name and an
+    # `mlx_*` id per role plus an engine flag; the collapse means the explicit arguments and
+    # the live settings are the same thing, so writing both produced duplicate keys where the
+    # second silently won.
     existing["default_combo"] = {
-        "main_model": main_model,
-        "fast_model": fast_model,
-        "vision_model": vision_model,
-        "embeddings": embeddings_model,
-        # Wave 9 — persist the per-role engine flags + MLX model ids from the LIVE settings
-        # (which reflect the user's Locker swaps) so an adopted MLX config survives the restart
-        # .env purge. main.py SafeStart restores these. Old prefs files without them default to
-        # "ollama" via config, so this is backward-compatible.
-        "main_engine": settings.main_engine,
-        "fast_engine": settings.fast_engine,
-        "vision_engine": settings.vision_engine,
-        "image_engine": settings.image_engine,
-        "embed_engine": settings.embed_engine,
-        "mlx_main_model": settings.mlx_main_model,
-        "mlx_fast_model": settings.mlx_fast_model,
-        "mlx_vision_model": settings.mlx_vision_model,
-        "mlx_image_model": settings.mlx_image_model,
-        "mlx_embedding_model": settings.mlx_embedding_model,
+        "main_model": main_model or settings.main_model,
+        "fast_model": fast_model or settings.fast_model,
+        "vision_model": vision_model or settings.vision_model,
+        "image_model": settings.image_model,
+        "embedding_model": embeddings_model or settings.embedding_model,
+        # `embeddings` is the combo's historical key for the same value — kept so an older
+        # reader (and the migration's own ROLES table) still finds it.
+        "embeddings": embeddings_model or settings.embedding_model,
     }
 
     prefs_path.write_text(json.dumps(existing, indent=2))
-    logger.info(f"Saved default combo: {main_model} + {fast_model} "
-                f"(engines: main={settings.main_engine} fast={settings.fast_engine} vision={settings.vision_engine})")
+    logger.info(f"Saved default combo: main={existing['default_combo']['main_model']} "
+                f"fast={existing['default_combo']['fast_model']}")
     
     return {
         "status": "success",

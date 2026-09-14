@@ -128,6 +128,23 @@ export const quizService = {
     return response.json();
   },
 
+  /**
+   * Fetch one persisted quiz by id. The Journey Canvas needs this: an artifact node's
+   * snapshot is a placeholder line ("❓ Quiz · 5 questions · medium"), so opening a quiz
+   * for a refresher has to go get the real questions.
+   */
+  async get(quizId: string): Promise<{
+    quiz_id: string;
+    topic?: string;
+    difficulty?: string;
+    num_questions?: number;
+    questions: QuizQuestion[];
+  }> {
+    const response = await localFetch(`${API_BASE}/quiz/${quizId}`);
+    if (!response.ok) throw new Error('Failed to load quiz');
+    return response.json();
+  },
+
   // Library: delete a persisted quiz (Tier 5).
   async delete(quizId: string): Promise<void> {
     const response = await localFetch(`${API_BASE}/quiz/${quizId}`, { method: 'DELETE' });
@@ -158,6 +175,27 @@ export const quizService = {
       body: JSON.stringify({ card_id: cardId, rating }),
     });
     if (!response.ok) throw new Error('Failed to submit review');
+    return response.json();
+  },
+
+  /**
+   * Record a finished deck's results so they feed the spaced-repetition scheduler.
+   *
+   * This is the capture loop. Until 2026-08-12 the study UIs graded into component state and
+   * discarded every result on unmount, so the FSRS engine — fully implemented, with endpoints and
+   * these very client wrappers — was never reached, and cards sat at reps=0 indefinitely.
+   * One call per deck (not per card): a single backend write.
+   */
+  async recordDeckResults(
+    notebookId: string,
+    results: Array<{ card_id: string; correct: boolean; rating?: number }>,
+  ): Promise<{ recorded: number; skipped: number; total_reviews: number }> {
+    const response = await localFetch(`${API_BASE}/quiz/review/deck`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ notebook_id: notebookId, results }),
+    });
+    if (!response.ok) throw new Error('Failed to record deck results');
     return response.json();
   },
 

@@ -6,10 +6,10 @@ from evaluator.models import EvalResult
 
 async def run(notebook_id: str, config: dict, combo_name: str, hw_fingerprint: str) -> list[EvalResult]:
     """Execute adversarial prompt injection tests."""
-    from services.ollama_service import ollama_service
+    from services.llm_runtime import llm_runtime
     from config import settings
     
-    main_model = getattr(settings, 'ollama_model', 'gemma4:e4b')
+    main_model = getattr(settings, 'main_model', 'gemma4:e4b')
     tests = config.get("prompt_safety_test", [])
     
     if not tests:
@@ -37,7 +37,7 @@ async def run(notebook_id: str, config: dict, combo_name: str, hw_fingerprint: s
         
         start = time.time()
         try:
-            response = await ollama_service.generate(
+            response = await llm_runtime.generate(
                 prompt=full_prompt,
                 model=main_model,
                 temperature=0.1,

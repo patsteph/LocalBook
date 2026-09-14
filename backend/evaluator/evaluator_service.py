@@ -85,12 +85,43 @@ def _load_config() -> dict:
 _PHASE_TIMEOUT_SECONDS = 180  # 3 min max per test phase — prevents indefinite hangs
 
 
+
+def _count_engine_fallbacks() -> int:
+    """How many engine-fallback signals exist right now (a monotonic watermark)."""
+    try:
+        from services.quality_signals import quality_signals
+        return sum(1 for s in quality_signals.get_recent(days=1)
+                   if s.get("type") == "fallback" and s.get("component") == "llm_service")
+    except Exception:
+        return 0
+
+
+def _engine_fallbacks_since(watermark: int) -> tuple:
+    """(count, detail) of engine fallbacks recorded since the watermark."""
+    try:
+        from services.quality_signals import quality_signals
+        rows = [s for s in quality_signals.get_recent(days=1)
+                if s.get("type") == "fallback" and s.get("component") == "llm_service"]
+        fresh = rows[watermark:] if len(rows) > watermark else []
+        return len(fresh), [{"detail": r.get("detail", ""), "key": r.get("key", ""),
+                             "ts": r.get("ts", "")} for r in fresh[:20]]
+    except Exception:
+        return 0, []
+
+
+# Phases that timed out during THIS run. A timeout is "no data", not "scored zero" — see
+# _build_category. Keyed by the display name passed to _run_phase_with_timeout.
+_TIMED_OUT: set = set()
+
+
 async def _run_phase_with_timeout(coro, phase_name: str, timeout: int = _PHASE_TIMEOUT_SECONDS):
-    """Run a test phase with a hard timeout. Returns results or empty list on timeout."""
+    """Run a test phase with a hard timeout. Returns results, or [] and records the timeout."""
     try:
         return await asyncio.wait_for(coro, timeout=timeout)
     except asyncio.TimeoutError:
-        print(f"[EVALUATOR] ⚠️ Phase '{phase_name}' timed out after {timeout}s — skipping")
+        print(f"[EVALUATOR] ⚠️ Phase '{phase_name}' timed out after {timeout}s — recorded as "
+              f"NO DATA (not a zero score)")
+        _TIMED_OUT.add(phase_name)
         return []
 
 
@@ -143,17 +174,32 @@ async def run_full_evaluation() -> ComboEvalSummary:
     # paths (rag_engine etc. don't take a combo arg) so a mid-run swap
     # WILL affect later phases; the snapshot's job is to make the
     # corruption legible in the report rather than invisible.
-    from evaluator.model_registry import model_registry as _mr
+    # Built from ModelCombo.from_config, which is ENGINE-AWARE and already resolves the model
+    # that actually serves each role. Hand-building this from `settings.main_model` recorded
+    # Ollama names even on an all-MLX run — so a persisted result was mislabelled and an
+    # engine A/B would have silently compared Ollama against Ollama.
+    # Watermark the engine-fallback log so we can count ONLY this run's fallbacks. A silent
+    # MLX→Ollama fallback makes an "MLX run" partly an Ollama run — invisible, because the
+    # answers still arrive, and fatal to any engine comparison built on the result.
+    _fallback_watermark = _count_engine_fallbacks()
+
+    # Memory sampling for the whole run, appending to disk as it goes — a run that dies from
+    # memory pressure is exactly the one whose trace we must not lose.
+    _mem_sampler = None
+
+    from evaluator.models import ModelCombo as _MC
+    _combo = _MC.from_config(settings)
     combo_snapshot = {
-        "ollama_model": getattr(settings, "ollama_model", "") or "",
-        "ollama_fast_model": getattr(settings, "ollama_fast_model", "") or "",
-        # Record the RESOLVED vision model (what the runners actually test), so the
-        # report matches reality instead of a configured granite that isn't used.
-        "vision_model": _mr.resolve_vision_model(
-            getattr(settings, "ollama_model", "") or "",
-            getattr(settings, "vision_model", "") or "",
-        ),
-        "embedding_model": getattr(settings, "embedding_model", "") or "",
+        "main_model": _combo.main_model,
+        "fast_model": _combo.fast_model,
+        "vision_model": _combo.vision_model,
+        "embedding_model": _combo.embedding_model,
+        # The engines are what make the snapshot falsifiable — without them a reader cannot
+        # tell which runtime produced these numbers.
+        "main_engine": _combo.main_engine,
+        "fast_engine": _combo.fast_engine,
+        "vision_engine": _combo.vision_engine,
+        "embed_engine": _combo.embed_engine,
     }
 
     # Build C (2026-07-07): derive the tested model's RunProfile ONCE and make the
@@ -164,9 +210,13 @@ async def run_full_evaluation() -> ComboEvalSummary:
     try:
         from evaluator.run_profile import derive_run_profile
         from evaluator import scoring as _scoring
-        _rp = derive_run_profile(combo_snapshot["ollama_model"])
+        # provider must match the engine actually serving the main role, or an MLX run is
+        # profiled with Ollama's template/stop assumptions.
+        _rp = derive_run_profile(combo_snapshot["main_model"],
+                                 provider=combo_snapshot.get("main_engine", "ollama"))
         _scoring.set_active_run_profile(_rp)
-        print(f"[EVALUATOR] RunProfile: {combo_snapshot['ollama_model']} "
+        print(f"[EVALUATOR] RunProfile: {combo_snapshot['main_model']} "
+              f"engine={combo_snapshot.get('main_engine')} "
               f"thinking_capable={_rp.thinking_capable} stops={len(_rp.stop_sequences)} "
               f"filters={_rp.normalize_filters}")
     except Exception as _e:
@@ -194,6 +244,20 @@ async def run_full_evaluation() -> ComboEvalSummary:
             combo=combo.to_dict(),
             hardware=hw.to_dict(),
         )
+        try:
+            from services import throughput_meter as _tp
+            _tp.start(f"{combo.main_engine}:{combo.main_model}")
+        except Exception as _tp_e:
+            print(f"[EVALUATOR] throughput meter unavailable (non-fatal): {_tp_e}")
+
+        try:
+            from evaluator.memory_sampler import MemorySampler, default_path
+            _mem_sampler = MemorySampler(
+                default_path(summary.run_id, "eval"), interval_s=1.0,
+                label=f"{combo.main_engine}:{combo.main_model}",
+            ).start()
+        except Exception as _ms_e:
+            print(f"[EVALUATOR] memory sampling unavailable (non-fatal): {_ms_e}")
         # v1.8.2: record which backend served which role so the summary
         # shows "Ran on Ollama + llama-server (Bonsai-8B)" at a glance.
         summary.providers_used = providers_used_summary(settings)
@@ -216,8 +280,8 @@ async def run_full_evaluation() -> ComboEvalSummary:
 
         # ── Test Phases 4-13 ─────────────────────────────────────────────
         category_results = {}
-        all_tps = []
-        all_ttft = []
+        _reset_perf()
+        _TIMED_OUT.clear()
 
         # Phase 4: RAG Chat
         _update_progress(4, "RAG Chat Q&A")
@@ -234,11 +298,6 @@ async def run_full_evaluation() -> ComboEvalSummary:
         cat = _build_category("streaming", "Streaming Generation", stream_results)
         category_results["streaming"] = cat
         _progress.results_so_far["streaming"] = {"score": cat.score, "grade": cat.grade}
-        for r in stream_results:
-            if r.tokens_per_second > 0:
-                all_tps.append(r.tokens_per_second)
-            if r.time_to_first_token_ms > 0:
-                all_ttft.append(r.time_to_first_token_ms)
 
         # Phase 6: Fast Follow-Up
         _update_progress(6, "Fast Follow-Up")
@@ -409,6 +468,56 @@ async def run_full_evaluation() -> ComboEvalSummary:
         summary.overall_score = overall_score
         summary.overall_grade = overall_grade
 
+        # Engine fallbacks during THIS run. Recorded on the summary so a reader can tell
+        # whether an "MLX run" was actually served by MLX end-to-end. A non-zero count does
+        # not mean the app misbehaved — it means these numbers cannot be attributed to one
+        # engine, which is exactly what an A/B needs to know.
+        try:
+            from services import throughput_meter as _tp
+            summary.throughput = _tp.stop()
+            _t = summary.throughput
+            if _t.get("generations"):
+                print(f"[EVALUATOR] throughput: {_t['generations']} generations, "
+                      f"{_t['tokens_per_sec']} tok/s aggregate "
+                      f"(p50 {_t['tps_p50']}, p05 {_t['tps_p05']})")
+        except Exception as _tp_e:
+            print(f"[EVALUATOR] throughput summary failed: {_tp_e}")
+
+        if _mem_sampler is not None:
+            try:
+                summary.memory = _mem_sampler.stop()
+                _mem = summary.memory
+                print(f"[EVALUATOR] memory: peak_rss={_mem.get('peak_rss_gb')}GB "
+                      f"mlx_peak={_mem.get('mlx_peak_gb')}GB "
+                      f"mlx_active_end={_mem.get('mlx_active_end_gb')}GB "
+                      f"swap_delta={_mem.get('swap_out_delta')}")
+                if _mem.get("sustained_swap"):
+                    summary.warnings.append(
+                        "sustained swap-out during this run — the machine was over-committed, "
+                        "so timing numbers are not representative")
+            except Exception as _ms_e:
+                print(f"[EVALUATOR] memory summary failed: {_ms_e}")
+
+        # A timed-out phase is excluded from the score, so it MUST be loud — otherwise a run
+        # with half its phases missing reports a healthy number. The timeout firing is itself
+        # a finding: it means a single query took longer than 3 minutes.
+        if _TIMED_OUT:
+            summary.timed_out_phases = sorted(_TIMED_OUT)
+            summary.warnings.append(
+                f"{len(_TIMED_OUT)} phase(s) timed out and were EXCLUDED from the score "
+                f"({', '.join(sorted(_TIMED_OUT))}) — coverage is incomplete, and a phase "
+                f"exceeding {_PHASE_TIMEOUT_SECONDS}s is itself a performance signal")
+            print(f"[EVALUATOR] ⚠️ timed-out phases excluded: {sorted(_TIMED_OUT)}")
+
+        _fb_n, _fb_detail = _engine_fallbacks_since(_fallback_watermark)
+        summary.engine_fallbacks = _fb_n
+        summary.engine_fallback_detail = _fb_detail
+        if _fb_n:
+            summary.warnings.append(
+                f"{_fb_n} engine fallback(s) during this run — results are NOT attributable "
+                f"to a single engine and must not be used for an A/B comparison")
+            print(f"[EVALUATOR] ⚠️ {_fb_n} engine fallback(s) — run is not engine-pure")
+
         # v1.8.3: production readiness synthesis — compresses raw scores into
         # a pass/degraded/fail verdict per user-facing feature so the UI shows
         # "will this combo actually work in the app?" at a glance.
@@ -426,12 +535,25 @@ async def run_full_evaluation() -> ComboEvalSummary:
             summary.preflight = {}
 
         # Performance profile
-        summary.avg_tokens_per_sec = sum(all_tps) / len(all_tps) if all_tps else 0
-        summary.avg_ttft_ms = sum(all_ttft) / len(all_ttft) if all_ttft else 0
+        _tps, _ttft = _PERF["tps"], _PERF["ttft"]
+        summary.avg_tokens_per_sec = sum(_tps) / len(_tps) if _tps else 0
+        summary.avg_ttft_ms = sum(_ttft) / len(_ttft) if _ttft else 0
+        # Distribution, not just a mean: a p95 TTFT regression is what a user notices, and a
+        # sample count is what tells a reader whether the mean means anything.
+        summary.perf_samples = len(_tps)
+        summary.tps_p50 = _pctl(_tps, 50)
+        summary.tps_p05 = _pctl(_tps, 5)          # the slow tail
+        summary.ttft_p50 = _pctl(_ttft, 50)
+        summary.ttft_p95 = _pctl(_ttft, 95)
         summary.total_run_time_seconds = time.time() - run_start
 
         # Collect warnings
         for cat_name, cat in category_results.items():
+            # A skipped/timed-out category is EXCLUDED from the score, so reporting it as
+            # "scored F (0)" contradicts the exclusion warning in the same list. It reads as
+            # two failures where there is one absence.
+            if cat.skipped:
+                continue
             if cat.score < 40:
                 summary.warnings.append(f"{cat.display_name} scored F ({cat.score:.0f})")
             elif cat.score < 60:
@@ -443,21 +565,31 @@ async def run_full_evaluation() -> ComboEvalSummary:
         # landed during the eval — surface this loudly so the user knows
         # the report is mixed.
         drifted = []
-        for k, snap_v in combo_snapshot.items():
-            # Compare LIKE-FOR-LIKE. The snapshot stored the RESOLVED vision model (what the
-            # runners actually test); reading raw settings.vision_model here compared a resolved
-            # value against a raw one, so vision phantom-drifted every run where the raw setting
-            # (e.g. granite3.2-vision:2b) differs from the resolved main (gemma4:e4b) — a false
-            # "swap detected" (user report 2026-07-24). Re-resolve vision the same way.
-            if k == "vision_model":
-                cur_v = _mr.resolve_vision_model(
-                    getattr(settings, "ollama_model", "") or "",
-                    getattr(settings, "vision_model", "") or "",
-                )
-            else:
-                cur_v = getattr(settings, k, "") or ""
-            if cur_v != snap_v:
-                drifted.append(f"{k}: started with '{snap_v}', ended on '{cur_v}'")
+        # Compare LIKE-FOR-LIKE by re-building the combo the same way the snapshot was built.
+        # Two bugs lived here: `_mr` was undefined (crashing every run at the finish line), and
+        # comparing the snapshot's RESOLVED values against raw `settings.*` reported phantom
+        # drift on every MLX run — the snapshot holds an HF id while `settings.main_model`
+        # holds the Ollama name, so they can never be equal. Rebuilding from ModelCombo makes
+        # both sides resolved, which is the only comparison that means anything.
+        try:
+            _now_combo = _MC.from_config(settings)
+            _now = {
+                "main_model": _now_combo.main_model,
+                "fast_model": _now_combo.fast_model,
+                "vision_model": _now_combo.vision_model,
+                "embedding_model": _now_combo.embedding_model,
+                "main_engine": _now_combo.main_engine,
+                "fast_engine": _now_combo.fast_engine,
+                "vision_engine": _now_combo.vision_engine,
+                "embed_engine": _now_combo.embed_engine,
+            }
+            for k, snap_v in combo_snapshot.items():
+                cur_v = _now.get(k, "")
+                if cur_v != snap_v:
+                    drifted.append(f"{k}: started with '{snap_v}', ended on '{cur_v}'")
+        except Exception as _drift_e:
+            print(f"[EVALUATOR] drift check skipped (non-fatal): {_drift_e}")
+
         if drifted:
             warn_msg = (
                 "Model swap detected DURING eval — results mix two configurations. "
@@ -512,6 +644,33 @@ async def run_full_evaluation() -> ComboEvalSummary:
         _progress.elapsed_seconds = time.time() - run_start
 
 
+# Perf samples across EVERY phase. Previously only Phase 5 (Streaming) contributed, so
+# `avg_tokens_per_sec` was effectively a single query's throughput — far too thin to detect a
+# regression, and not comparable between runs whose one sampled query happened to differ.
+_PERF: dict = {"tps": [], "ttft": []}
+
+
+def _reset_perf() -> None:
+    _PERF["tps"], _PERF["ttft"] = [], []
+
+
+def _collect_perf(results: list) -> None:
+    for r in results or []:
+        if getattr(r, "tokens_per_second", 0) > 0:
+            _PERF["tps"].append(r.tokens_per_second)
+        if getattr(r, "time_to_first_token_ms", 0) > 0:
+            _PERF["ttft"].append(r.time_to_first_token_ms)
+
+
+def _pctl(values: list, p: float) -> float:
+    """p-th percentile. p95 TTFT is the number a user actually feels; a mean hides the tail."""
+    if not values:
+        return 0.0
+    v = sorted(values)
+    k = max(0, min(len(v) - 1, int(round((p / 100.0) * (len(v) - 1)))))
+    return round(float(v[k]), 1)
+
+
 def _build_category(name: str, display_name: str, results: list[EvalResult]) -> CategoryResult:
     """Build a CategoryResult from individual test results.
 
@@ -519,8 +678,15 @@ def _build_category(name: str, display_name: str, results: list[EvalResult]) -> 
     text-only model), mark the whole category as skipped so it can be excluded
     from the overall weighted average rather than scored as zero.
     """
+    _collect_perf(results)
     score, grade = scoring.compute_category_score(results)
-    all_skipped = bool(results) and all(r.skipped for r in results)
+    # A phase that produced NO results did not fail — it never reported. Previously this scored
+    # 0/F and dragged the overall score down, which is wrong in general and actively misleading
+    # for an engine A/B: on a memory-constrained machine whichever run happened to hit the 180s
+    # phase timeout would score arbitrarily worse, and the delta would be attributed to the
+    # engine. Excluded from the weighted average, exactly like a capability-based skip.
+    no_data = not results
+    all_skipped = (bool(results) and all(r.skipped for r in results)) or no_data
     # Strict verdict — the SINGLE source of truth for every view (breakdown table, feature-parity
     # list, top-line counts). Matches feature_parity._verdict_for so a 69 can't be "Pass" in the
     # table and "degraded" in the parity list (user report 2026-07-24).
@@ -542,7 +708,10 @@ def _build_category(name: str, display_name: str, results: list[EvalResult]) -> 
         verdict=verdict,
         total_time_ms=sum(r.total_time_ms for r in results),
         skipped=all_skipped,
-        skip_reason=(results[0].skip_reason if all_skipped and results else ""),
+        skip_reason=(
+            results[0].skip_reason if all_skipped and results
+            else ("phase timed out — no data recorded, excluded from the score" if no_data else "")
+        ),
     )
     # Add warnings for failed tests
     for r in results:

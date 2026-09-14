@@ -268,7 +268,7 @@ Questions should:
 Output ONLY the questions, one per line. No numbering, no preamble."""
         prompt = f"Topic: {question}\n\nContext: {context[:1000]}\n\n3 questions:"
 
-        response = await llm_service.generate_text(system_prompt, prompt, model=settings.ollama_fast_model)
+        response = await llm_service.generate_text(system_prompt, prompt, model=settings.fast_model)
 
         questions = []
         for line in response.strip().split('\n'):
@@ -324,7 +324,7 @@ Be specific and actionable. Focus on patterns, comparisons, or notable findings.
         response = await llm_service.generate_text(
             "You are a helpful analyst. Generate brief, specific insights.",
             prompt,
-            model=settings.ollama_fast_model
+            model=settings.fast_model
         )
 
         insights = []
@@ -380,7 +380,7 @@ No numbering, no preamble, just the questions."""
         response = await llm_service.generate_text(
             "Generate 3 specific questions based on document content. Output only questions, one per line.",
             prompt,
-            model=settings.ollama_fast_model
+            model=settings.fast_model
         )
 
         # Parse questions from response

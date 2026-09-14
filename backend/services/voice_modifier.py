@@ -18,7 +18,7 @@ Design rules:
     sensitive output with prose-tone instructions.
 
 Wired in:
-  - services/ollama_service.generate / chat (every agent call)
+  - services/llm_runtime.generate / chat (every agent call)
   - services/llm_service.generate_text / stream_text (RAG + content gen)
 
 Family modifiers are keyed by registry `family` field, so adding a new
@@ -93,7 +93,7 @@ def get_voice_modifier(model_name: Optional[str] = None) -> str:
         # Use the active main model's family by default.
         try:
             from config import settings
-            model_name = settings.ollama_model
+            model_name = settings.main_model
         except Exception:
             return _FAMILY_VOICE["default"]
     family = _family_for_model(model_name)

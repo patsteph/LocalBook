@@ -22,7 +22,7 @@ from pydantic import BaseModel, Field
 from storage.memory_store import memory_store, AgentNamespace
 from storage.notebook_store import notebook_store
 from models.memory import ArchivalMemoryEntry, MemorySourceType, MemoryImportance
-from services.ollama_service import ollama_service
+from services.llm_runtime import llm_runtime
 from config import settings
 from utils.tasks import safe_create_task
 
@@ -202,6 +202,10 @@ class MorningBrief(BaseModel):
     narrative_html: Optional[str] = None
     consensus_clusters: List[Dict[str, Any]] = Field(default_factory=list)
     deep_reads_triggered: List[Dict[str, Any]] = Field(default_factory=list)
+    # QS Phase 2 — the curator's own "things I wasn't sure about": recurring near-misses from the
+    # Quality Signals ledger, so the brief admits where the tool worked but not well. Empty on a
+    # clean week (or when the sink is unavailable) — the section is simply omitted.
+    self_report: List[Dict[str, Any]] = Field(default_factory=list)
 
 
 class WeeklyWrapUp(BaseModel):

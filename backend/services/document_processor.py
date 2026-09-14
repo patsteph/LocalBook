@@ -1102,39 +1102,139 @@ class DocumentProcessor:
             raise ValueError(f"Failed to transcribe video: {str(e)}")
 
     async def _extract_from_epub(self, content: bytes) -> str:
-        """Extract text from EPUB e-books."""
+        """Extract text from EPUB e-books, in SPINE (reading) order with headings preserved.
+
+        Reads the OCF container directly with zipfile + lxml instead of ebooklib, for two
+        independent reasons:
+
+        1. LICENCE. ebooklib is AGPL-3.0-or-later and was shipping inside the signed,
+           distributed .app — verified by extracting the PyInstaller PYZ. requirements.in
+           already refuses aioimaplib on exactly this ground ("bundled .app license
+           constraint"), so this was inconsistent with a decision the project had made.
+        2. CORRECTNESS. `book.get_items()` yields MANIFEST order — the order files happen to
+           be declared — not reading order. Chapters were ingested scrambled. The old code
+           also flattened every heading away with a bare get_text(), leaving the hierarchical
+           chunker nothing to build a structure from.
+
+        An EPUB is a zip: META-INF/container.xml names the OPF package document, whose
+        <spine> lists content documents in reading order by idref into the <manifest>.
+        Namespaces differ between EPUB 2 and 3, so every XPath here matches on local-name().
+        """
+        import posixpath
+        import zipfile
+        from urllib.parse import unquote
+
         try:
-            import ebooklib
-            from ebooklib import epub
+            from lxml import etree
             from bs4 import BeautifulSoup
-            
-            book = epub.read_epub(io.BytesIO(content))
-            text_parts = []
-            
-            # Extract metadata
-            title = book.get_metadata('DC', 'title')
-            if title:
-                text_parts.append(f"Title: {title[0][0]}")
-            
-            author = book.get_metadata('DC', 'creator')
-            if author:
-                text_parts.append(f"Author: {author[0][0]}")
-            
-            text_parts.append("")
-            
-            # Extract content from each chapter
-            for item in book.get_items():
-                if item.get_type() == ebooklib.ITEM_DOCUMENT:
-                    soup = BeautifulSoup(item.get_content(), 'html.parser')
-                    chapter_text = soup.get_text(separator='\n', strip=True)
-                    if chapter_text:
-                        text_parts.append(chapter_text)
-            
-            return "\n\n".join(text_parts)
         except ImportError:
-            raise ValueError("EPUB processing requires ebooklib. Install with: pip install ebooklib")
+            raise ValueError("EPUB processing requires lxml and beautifulsoup4.")
+
+        try:
+            zf = zipfile.ZipFile(io.BytesIO(content))
+        except zipfile.BadZipFile:
+            raise ValueError("Not a valid EPUB — the file is not a zip archive.")
+
+        try:
+            names = set(zf.namelist())
+
+            # DRM: detect and refuse plainly. Circumventing it is a DMCA §1201 issue in the
+            # US regardless of whether the user owns the book, so we never attempt it.
+            if "META-INF/encryption.xml" in names:
+                raise ValueError(
+                    "This EPUB is DRM-protected and cannot be read. Please use a DRM-free copy."
+                )
+
+            if "META-INF/container.xml" not in names:
+                raise ValueError("Not a valid EPUB — missing META-INF/container.xml.")
+
+            container = etree.fromstring(zf.read("META-INF/container.xml"))
+            roots = container.xpath("//*[local-name()='rootfile']/@full-path")
+            if not roots:
+                raise ValueError("Not a valid EPUB — container.xml names no package document.")
+            opf_path = unquote(str(roots[0]))
+            if opf_path not in names:
+                raise ValueError(f"Not a valid EPUB — package document '{opf_path}' is missing.")
+
+            opf = etree.fromstring(zf.read(opf_path))
+            opf_dir = posixpath.dirname(opf_path)
+
+            def _meta(tag: str) -> str:
+                vals = opf.xpath(
+                    f"//*[local-name()='metadata']/*[local-name()='{tag}']/text()"
+                )
+                return str(vals[0]).strip() if vals and str(vals[0]).strip() else ""
+
+            # id -> (href, media-type)
+            manifest = {}
+            for item in opf.xpath("//*[local-name()='manifest']/*[local-name()='item']"):
+                iid, href = item.get("id"), item.get("href")
+                if iid and href:
+                    manifest[iid] = (href, (item.get("media-type") or "").lower())
+
+            def _resolve(href: str) -> str:
+                """Manifest hrefs are relative to the OPF's own directory, and percent-encoded."""
+                clean = unquote(href.split("#", 1)[0])
+                return posixpath.normpath(posixpath.join(opf_dir, clean)) if opf_dir else clean
+
+            text_parts = []
+            title, author = _meta("title"), _meta("creator")
+            if title:
+                text_parts.append(f"Title: {title}")
+            if author:
+                text_parts.append(f"Author: {author}")
+            if text_parts:
+                text_parts.append("")
+
+            # Counted separately from `text_parts`, which already holds the metadata header:
+            # a book whose spine yields nothing would otherwise "succeed" with a title and no
+            # body, creating a source with no retrievable content that fails only at query time.
+            chapters_read = 0
+
+            spine_ids = opf.xpath("//*[local-name()='spine']/*[local-name()='itemref']/@idref")
+            for idref in spine_ids:
+                entry = manifest.get(str(idref))
+                if not entry:
+                    continue
+                href, media = entry
+                # Only content documents. The spine can also reference SVG or fallback items.
+                if media and media not in ("application/xhtml+xml", "text/html"):
+                    continue
+                path = _resolve(href)
+                if path not in names:
+                    continue
+                try:
+                    raw = zf.read(path)
+                except KeyError:
+                    continue
+
+                soup = BeautifulSoup(raw, "html.parser")
+                for junk in soup(["script", "style"]):
+                    junk.decompose()
+
+                # Keep the heading structure. Everything else in this file hands markdown to
+                # the chunker, and `hierarchical_chunker` reads these levels to build the
+                # parent/child tree — a bare get_text() threw all of that away.
+                for level in range(1, 7):
+                    for h in soup.find_all(f"h{level}"):
+                        heading = h.get_text(" ", strip=True)
+                        h.replace_with(f"\n\n{'#' * level} {heading}\n\n" if heading else "\n")
+
+                chapter_text = soup.get_text("\n", strip=True)
+                if chapter_text:
+                    text_parts.append(chapter_text)
+                    chapters_read += 1
+
+            if chapters_read == 0:
+                raise ValueError("EPUB contained no readable text.")
+
+            return "\n\n".join(text_parts)
+        except ValueError:
+            raise
         except Exception as e:
             raise ValueError(f"Failed to process EPUB: {str(e)}")
+        finally:
+            zf.close()
     
     async def _extract_from_jupyter(self, content: bytes) -> str:
         """Extract text from Jupyter notebooks (.ipynb)."""

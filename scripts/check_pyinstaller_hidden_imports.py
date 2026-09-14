@@ -12,6 +12,21 @@ def main() -> int:
 
     text = build_script.read_text()
     hidden_imports = re.findall(r"--hidden-import=([A-Za-z0-9_\.]+)", text)
+    collect_all = set(re.findall(r"--collect-all=([A-Za-z0-9_\.]+)", text))
+
+    # Third-party packages that MUST be pulled whole with --collect-all, else the app breaks at
+    # runtime in the built .app (not in dev):
+    #   - docx (python-docx): ships templates/*.xml DATA files (default-header.xml, …) that a
+    #     .docx read/write loads; relying on the hooks-contrib hook silently dropped them → core
+    #     .docx ingestion 500'd ("No such file: docx/templates/default-header.xml"). Explicit like pptx.
+    #   - pptx (python-pptx): same class of templated data files.
+    required_collect_all = {"docx", "pptx"}
+    missing_collect = sorted(required_collect_all - collect_all)
+    if missing_collect:
+        print("Missing --collect-all for dynamic-import packages in backend/build_backend.sh:")
+        for m in missing_collect:
+            print(f"- {m}  (add: --collect-all={m})")
+        return 1
 
     local_prefixes = (
         "api",

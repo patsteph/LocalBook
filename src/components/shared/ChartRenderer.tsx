@@ -9,6 +9,7 @@
  */
 
 import React, { useMemo } from 'react';
+import { reportSignal } from '../../lib/reportSignal';
 import {
   ResponsiveContainer,
   LineChart, Line,
@@ -401,6 +402,17 @@ export const ChartRenderer: React.FC<ChartRendererProps> = ({
   }
 
   // ─── Fallback ──────────────────────────────────────────────────────────────
+  //
+  // Reaching here means a chart was BUILT but cannot be drawn — almost always a payload that
+  // isn't ChartConfig-shaped (a missing `chart_type` reads as `undefined` here). Three chat
+  // charts sat in this branch for months without a trace anywhere; report it so a dead chart
+  // shows up in Health → Rough Edges instead of only in front of the user.
+  reportSignal({
+    type: 'render_failed',
+    component: 'chart_renderer',
+    detail: `unsupported chart type: ${String(chart_type)}`,
+    key: String(chart_type),
+  });
 
   return (
     <div className={`flex items-center justify-center p-4 bg-gray-800 rounded-lg ${className}`}>

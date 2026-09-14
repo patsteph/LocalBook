@@ -15,6 +15,7 @@
 
 import React from 'react';
 import type { Artifact, ArtifactType, Renderer, RendererProps, RenderContext } from '../../types/artifact';
+import { reportSignal } from '../../lib/reportSignal';
 
 class RendererRegistryImpl {
   private map = new Map<string, Renderer<any>>();
@@ -58,6 +59,14 @@ export const ArtifactRender: React.FC<{
 }> = ({ artifact, context, className }) => {
   const Component = rendererRegistry.resolve(artifact.type);
   if (!Component) {
+    // A type with no renderer is a silent product failure — the user sees a placeholder and
+    // nothing is recorded anywhere. Report it so it surfaces in Health → Rough Edges.
+    reportSignal({
+      type: 'render_failed',
+      component: 'artifact_registry',
+      detail: `no renderer registered for artifact type "${artifact.type}"`,
+      key: artifact.type,
+    });
     return (
       <div className={`p-3 rounded-lg border border-dashed border-gray-300 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/40 ${className || ''}`}>
         <p className="text-[11px] text-gray-500 dark:text-gray-400">

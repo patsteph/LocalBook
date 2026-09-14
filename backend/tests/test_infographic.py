@@ -186,7 +186,6 @@ def test_l4_degrades_when_klein_unavailable(monkeypatch):
         return _fake_cap(None)
 
     monkeypatch.setattr(vc, "get_capability", _cap)
-    monkeypatch.setattr(settings, "image_engine", "ollama", raising=False)
 
     out = asyncio.run(build_l4("draw a serene mountain lake", title="Mountain Lake"))
     assert out is None
@@ -224,7 +223,6 @@ def test_l4_success_produces_textless_data_uri(monkeypatch):
         return "Golden Hour"
 
     monkeypatch.setattr(vc, "get_capability", _cap)
-    monkeypatch.setattr(settings, "image_engine", "ollama", raising=False)
     monkeypatch.setattr(vd, "write_klein_brief", _brief)
     monkeypatch.setattr(vd.klein_diffusion, "generate", _generate)
     monkeypatch.setattr(_bld, "_poster_title", _short)
@@ -260,7 +258,6 @@ def test_l4_returns_none_on_klein_failure(monkeypatch):
         return vd.DiffusionResult(success=False, error="klein boom")
 
     monkeypatch.setattr(vc, "get_capability", _cap)
-    monkeypatch.setattr(settings, "image_engine", "ollama", raising=False)
     monkeypatch.setattr(vd, "write_klein_brief", _brief)
     monkeypatch.setattr(vd.klein_diffusion, "generate", _generate)
 
@@ -329,8 +326,9 @@ def test_l3_compose_scene_contains_stickers_and_labels():
 
 def test_l3_phase_pills_do_not_overlap():
     """Field bug: 5 long phase labels made the highlighter pills overlap + bleed
-    off-canvas. Each column must now be >= its pill width, so pills never collide."""
-    from services.infographic.scene import _PILL_FONT, _PILL_MAX
+    off-canvas. Each column must now be >= its pill width, so pills never collide.
+    Pills carry a WRAPPED `lines` list now (headers wrap to 2 lines vs. clipping)."""
+    from services.infographic.scene import _PILL_MAX, _pill_width
     labels = ["Scattered documents", "Chunk & embed", "Vector store",
               "Retrieve & rerank", "Grounded answer"]
     g = l3scene.parse_graph({
@@ -339,18 +337,37 @@ def test_l3_phase_pills_do_not_overlap():
     })
     lay = l3scene.layout_scene(g)
 
-    def pill_w(label):  # mirror scene._pill's width formula (label already truncated)
-        return max(70.0, len(label) * _PILL_FONT * 0.62 + 34)
-
     pills = sorted(lay["pills"], key=lambda p: p["cx"])
     for a, b in zip(pills, pills[1:]):
-        assert a["cx"] + pill_w(a["label"]) / 2 <= b["cx"] - pill_w(b["label"]) / 2, \
-            f"pills overlap: {a['label']!r} / {b['label']!r}"
+        assert a["cx"] + _pill_width(a["lines"]) / 2 <= b["cx"] - _pill_width(b["lines"]) / 2, \
+            f"pills overlap: {a['lines']!r} / {b['lines']!r}"
     # first pill doesn't bleed off the left; last doesn't run past the right
-    assert pills[0]["cx"] - pill_w(pills[0]["label"]) / 2 >= 0
-    assert pills[-1]["cx"] + pill_w(pills[-1]["label"]) / 2 <= lay["width"]
-    # over-long labels truncate
-    assert all(len(p["label"]) <= _PILL_MAX for p in lay["pills"])
+    assert pills[0]["cx"] - _pill_width(pills[0]["lines"]) / 2 >= 0
+    assert pills[-1]["cx"] + _pill_width(pills[-1]["lines"]) / 2 <= lay["width"]
+    # every pill wraps to at most 2 lines, each line within the per-line budget
+    for p in lay["pills"]:
+        assert 1 <= len(p["lines"]) <= 2
+        assert all(len(ln) <= _PILL_MAX for ln in p["lines"])
+
+
+def test_l3_wrap_pill_wraps_long_headers_without_clipping():
+    """A long header wraps to 2 full lines instead of ellipsis-clipping; only a
+    header too long for 2 lines gets an ellipsis on the (crammed) 2nd line."""
+    from services.infographic.scene import _wrap_pill, _PILL_MAX
+    # short -> single line, verbatim
+    assert _wrap_pill("Vector store") == ["Vector store"]
+    # medium -> 2 lines, no ellipsis, every word preserved
+    lines = _wrap_pill("Core Components Identified")
+    assert len(lines) == 2
+    assert "…" not in " ".join(lines)
+    assert " ".join(lines).split() == "Core Components Identified".split()
+    assert all(len(ln) <= _PILL_MAX for ln in lines)
+    # far-too-long -> 2 lines, 2nd line ellipsised
+    long = _wrap_pill("Ingestion preprocessing normalization embedding indexing stage")
+    assert len(long) == 2
+    assert long[-1].endswith("…")
+    # empty stays empty (fail-open)
+    assert _wrap_pill("") == []
 
 
 def test_l3_compose_escapes_untrusted_labels():
@@ -391,7 +408,94 @@ def test_l3_scene_and_every_sticker_are_valid_xml():
 def test_sticker_render_fail_open():
     assert "<" in l3stickers.render_sticker("does-not-exist")  # neutral box, never empty
     assert "<path" in l3stickers.render_sticker("robot")
-    assert len(l3stickers.sticker_names()) >= 50   # grown library (2.2.0)
+    assert len(l3stickers.sticker_names()) >= 100   # substantially grown library (2.2.0)
+
+
+def test_sticker_no_duplicate_fill_attribute():
+    """The historic WKWebView bug: two `fill=` on one element is invalid XML.
+    Guard every element of every sticker (superset of the XML-parse check)."""
+    for name in l3stickers.sticker_names():
+        for el in re.findall(r"<[^>]+>", l3stickers.render_sticker(name)):
+            assert el.count(" fill=") <= 1, f"{name}: duplicate fill in {el}"
+
+
+# ── L4-accent (decorative glow-crystal spot) ───────────────────────────
+from services.infographic import accents as l4accents  # noqa: E402
+
+
+def test_accent_markup_every_variant_valid_xml():
+    from xml.dom.minidom import parseString
+    for v in l4accents.ACCENT_VARIANTS:
+        inner = l4accents.accent_markup(v)
+        assert inner and "currentColor" in inner
+        parseString(f'<svg xmlns="http://www.w3.org/2000/svg">{inner}</svg>')
+        for el in re.findall(r"<[^>]+>", inner):
+            assert el.count(" fill=") <= 1
+
+
+def test_accent_markup_and_spot_fail_open():
+    assert l4accents.accent_markup("nope") == ""
+    assert l4accents.accent_spot_html("nope") == ""
+    assert l4accents.pick_accent("seed") in l4accents.ACCENT_VARIANTS
+
+
+def test_accent_spot_html_has_corner_class():
+    html = l4accents.accent_spot_html("crystal", "tr")
+    assert "ib-accent-spot" in html and "ib-accent-spot--tr" in html and "<svg" in html
+
+
+def test_l2_accent_injection_slots_into_ib_root():
+    from services.infographic.builder import _inject_accent_l2
+    body = '<div class="ib"><div class="ib-card">x</div></div>'
+    out = _inject_accent_l2(body, "orb")
+    assert out.startswith('<div class="ib"><div class="ib-accent-spot')
+    assert _inject_accent_l2(body, "nope") == body  # unknown variant -> no-op
+
+
+def test_scene_accent_grows_canvas_and_embeds_spot():
+    graph = l3scene.parse_graph({
+        "groups": [{"id": "g1", "label": "A", "color": "blue"}],
+        "nodes": [{"id": "n1", "label": "doc", "sticker": "document", "group": "g1"}],
+    })
+    plain = l3scene.compose_scene(graph)
+    accented = l3scene.compose_scene(graph, accent="crystal")
+
+    def _h(svg: str) -> int:
+        return int(re.search(r'viewBox="0 0 \d+ (\d+)"', svg).group(1))
+
+    assert _h(accented) > _h(plain)        # fresh bottom strip added
+    assert len(accented) > len(plain)      # accent markup present
+    from xml.dom.minidom import parseString
+    parseString(accented)                  # still valid XML
+    # the accent never overlaps content: it lives in the added strip
+    assert 'max-width:100%' in accented    # wide-scene export no longer clips
+
+
+# ── L1 data-anchors (numeric/data anchoring; §2.1 + §2.6) ──────────────
+from services.infographic.builder import _l1_anchors  # noqa: E402
+
+
+def test_l1_anchors_from_data():
+    chart = {
+        "data": [{"x": "i1", "g": 10, "f": 50}, {"x": "i2", "g": 40, "f": 52},
+                 {"x": "i3", "g": 120, "f": 51}, {"x": "i4", "g": 300, "f": 50}],
+        "series": [{"key": "g", "label": "Agent loop"}, {"key": "f", "label": "Chatbot"}],
+    }
+    info = _l1_anchors(chart)
+    a = info["anchors"]
+    # growing series peaks at the endpoint -> callout anchors top-right
+    assert a["callout"]["x"] == 1.0 and a["callout"]["y"] == 0.0
+    # flat series sits low -> baseline anchor near the bottom
+    assert a["baseline"]["y"] > 0.8
+    # every fraction is within the plot rect
+    for anc in a.values():
+        assert 0.0 <= anc["x"] <= 1.0 and 0.0 <= anc["y"] <= 1.0
+    assert info["ratio"] == 6.0            # 300 / 50, data-derived
+
+
+def test_l1_anchors_fail_open_on_empty():
+    assert _l1_anchors({}) == {}
+    assert _l1_anchors({"data": [], "series": []}) == {}
 
 
 # ── Build A: router honors explicit medium words (the "poster → L2" field bug) ──
@@ -426,7 +530,7 @@ def test_router_phrasing_boost_overrides_weak_content(monkeypatch):
     out = asyncio.run(ic.classify_infographic_lane(
         content_summary="A comparison of runtime retrieval vs compile-time RAG.",
         request_text="make a poster on RAG architecture",
-        ollama_service=_FakeOllama("L2", 0.7),   # content-shape wants L2 but not certain
+        llm_runtime=_FakeOllama("L2", 0.7),   # content-shape wants L2 but not certain
     ))
     assert out["lane"] == "L4"          # 'poster' wins
     assert out["stage"].endswith("+kw")
@@ -438,7 +542,7 @@ def test_router_confident_content_beats_phrasing(monkeypatch):
     out = asyncio.run(ic.classify_infographic_lane(
         content_summary="Runtime vs compile-time RAG comparison.",
         request_text="make a poster on RAG architecture",
-        ollama_service=_FakeOllama("L2", 0.95),  # >0.9 → Boost loses
+        llm_runtime=_FakeOllama("L2", 0.95),  # >0.9 → Boost loses
     ))
     assert out["lane"] == "L2"
     assert "+kw" not in out["stage"]
@@ -448,7 +552,7 @@ def test_router_phrasing_reinforces_agreement(monkeypatch):
     monkeypatch.setattr(ic, "_record_misroute", lambda *a, **k: None)
     out = asyncio.run(ic.classify_infographic_lane(
         content_summary="whatever", request_text="a decorative poster",
-        ollama_service=_FakeOllama("L4", 0.6),
+        llm_runtime=_FakeOllama("L4", 0.6),
     ))
     assert out["lane"] == "L4" and out["confidence"] >= 0.9
 
@@ -458,7 +562,7 @@ def test_router_vague_request_uses_content_shape(monkeypatch):
     out = asyncio.run(ic.classify_infographic_lane(
         content_summary="token usage growing across 10 iterations",
         request_text="make an infographic",
-        ollama_service=_FakeOllama("L1", 0.8),
+        llm_runtime=_FakeOllama("L1", 0.8),
     ))
     assert out["lane"] == "L1" and "+kw" not in out["stage"]
 
@@ -470,7 +574,7 @@ def test_router_growth_over_sequence_routes_L1(monkeypatch):
     out = asyncio.run(ic.classify_infographic_lane(
         content_summary="agent loop token usage vs a single-shot chatbot answer",
         request_text="show how cumulative token usage grows over a 10-step loop vs single-shot",
-        ollama_service=_FakeOllama("L2", 0.7),
+        llm_runtime=_FakeOllama("L2", 0.7),
     ))
     assert out["lane"] == "L1" and out["stage"].endswith("+kw")
 
@@ -482,7 +586,7 @@ def test_router_before_after_facts_stays_L2(monkeypatch):
     out = asyncio.run(ic.classify_infographic_lane(
         content_summary="messy raw chunks vs a clean facts table: Revenue $10.2B, Net Income $4.5B",
         request_text="before and after: raw chunks vs a clean structured facts table",
-        ollama_service=_FakeOllama("L2", 0.7),
+        llm_runtime=_FakeOllama("L2", 0.7),
     ))
     assert out["lane"] == "L2"
 
@@ -526,7 +630,7 @@ def test_router_card_badge_layout_routes_L2(monkeypatch):
     out = asyncio.run(ic.classify_infographic_lane(
         content_summary="an agent loop that plans, retrieves, then synthesizes",
         request_text="show it as three cards with state badges and a feedback loop",
-        ollama_service=_FakeOllama("L3", 0.9),
+        llm_runtime=_FakeOllama("L3", 0.9),
     ))
     assert out["lane"] == "L2" and out["stage"].endswith("+kw")
 
@@ -537,7 +641,7 @@ def test_build_l3_composes_from_graph(monkeypatch):
     whose payload carries the composed scene SVG (the source, HARD RULE §2.4)."""
     import services.infographic.builder as b
 
-    async def _fake_slotfill(system, content, model):
+    async def _fake_slotfill(system, content, model, topic=""):
         return _PLUGIN_GRAPH
 
     monkeypatch.setattr(b, "_run_slotfill", _fake_slotfill)
@@ -556,7 +660,7 @@ def test_build_l3_degrades_to_prose_when_graph_unusable(monkeypatch):
     so the final rung is the prose fallback, tagged with the L3 lane."""
     import services.infographic.builder as b
 
-    async def _none_slotfill(system, content, model):
+    async def _none_slotfill(system, content, model, topic=""):
         return None
 
     monkeypatch.setattr(b, "_run_slotfill", _none_slotfill)
@@ -569,7 +673,7 @@ def test_build_l3_degrades_to_prose_when_graph_unusable(monkeypatch):
 def test_build_l3_returns_none_on_bad_graph_directly(monkeypatch):
     import services.infographic.builder as b
 
-    async def _bad_slotfill(system, content, model):
+    async def _bad_slotfill(system, content, model, topic=""):
         return {"nodes": []}   # parses to None
 
     monkeypatch.setattr(b, "_run_slotfill", _bad_slotfill)
@@ -577,22 +681,49 @@ def test_build_l3_returns_none_on_bad_graph_directly(monkeypatch):
 
 
 # ── Archetype heuristic ────────────────────────────────────────────────
-def test_pick_archetype():
-    assert pick_archetype("the compile stage then index then serve") == "three_stage"
-    assert pick_archetype("quarterly revenue figures from the filing") == "facts_table"
-    assert pick_archetype("some generic prose about a process") == "pipeline_compare"
+# Request-first routing, as one table. This was three functions (`test_pick_archetype`,
+# `_new_lanes`, `_deck_lanes`) whose cases had drifted into overlapping — two rows were
+# asserted verbatim in two of them. A table makes a duplicate row obvious and reports the
+# failing ROW rather than stopping at the first bad assert in a long function.
+@pytest.mark.parametrize("content,topic,expected", [
+    # Single-word cues match the REQUEST but are ignored in noisy retrieved content
+    # (see test_pick_archetype_topic_beats_noisy_content).
+    ("", "quarterly revenue figures from the filing", "facts_table"),
+    # A generic sequence + generic prose fall to the neutral default (stepped_cards), NOT
+    # the retrieval-specific pipeline_compare, which now needs an explicit signal.
+    ("", "the compile stage then index then serve", "stepped_cards"),
+    ("", "some generic prose about a process", "stepped_cards"),
+    ("", "a timeline of the company milestones", "timeline"),
+    ("", "the taxonomy breaks down into these categories", "tree_hierarchy"),
+    ("", "the key metrics dashboard at a glance", "stat_grid"),
+])
+def test_pick_archetype_routes_the_request(content, topic, expected):
+    assert pick_archetype(content, topic) == expected
 
 
-def test_pick_archetype_new_lanes():
-    assert pick_archetype("a timeline of the company milestones") == "timeline"
-    assert pick_archetype("the taxonomy breaks down into these categories") == "tree_hierarchy"
-    assert pick_archetype("the key metrics dashboard at a glance") == "stat_grid"
+# The deck lanes route on a single positional argument (content-only calls).
+@pytest.mark.parametrize("text,expected", [
+    ("two implementations of the same api call", "compare_code"),
+    ("a capability tier ladder: what runs at home", "tier_ladder"),
+    ("an exploded view of the stacked layers of a file", "layer_stack"),
+    ("three step cards joined by a feedback loop", "stepped_cards"),
+])
+def test_pick_archetype_routes_the_deck_lanes(text, expected):
+    assert pick_archetype(text) == expected
+
+
+def test_pick_archetype_comparison_routes_to_compare_columns():
+    # The generic vs/pros-cons comparison archetype (added 2026-08-03; the library had none).
+    assert pick_archetype("", "compare fine-tuning versus RAG, pros and cons of each") == "compare_columns"
+    assert pick_archetype("", "X vs Y: which is better?") == "compare_columns"
+    # An explicit CODE comparison still wins its dedicated archetype.
+    assert pick_archetype("", "compare the code: two implementations of the same api call") == "compare_code"
 
 
 # ── New L2 archetypes (stat_grid / timeline / tree_hierarchy) ──────────
 # Full slot payloads exercised model-free: each expands, slot-checks (pass +
 # fail), and fails open (leftover slots stripped).
-_NEW_ARCHETYPE_SLOTS = {
+_ARCHETYPE_SLOTS = {
     "stat_grid": {
         "GRID_TITLE": "Key figures", "FOOTER": "as of 2026",
         "STAT_1_VALUE": "$1.2B", "STAT_1_LABEL": "Revenue",
@@ -616,38 +747,49 @@ _NEW_ARCHETYPE_SLOTS = {
 }
 
 
-def test_new_archetypes_registered():
-    for arch in ("stat_grid", "timeline", "tree_hierarchy"):
-        assert arch in ARCHETYPES
-        assert get_skeleton(arch), f"{arch} produced no skeleton"
+# The structural assertions these used to repeat (skeleton expands, no leftover `__`
+# marker, `{{` slots present) are made for EVERY archetype by
+# test_all_skeletons_expand_without_structural_markers. All that is unique here is
+# MEMBERSHIP — that these specific lanes still exist — so that is all this asserts.
+@pytest.mark.parametrize("arch", [
+    "stat_grid", "timeline", "tree_hierarchy",              # Phase-2 lanes
+    "compare_code", "stepped_cards", "tier_ladder", "layer_stack",   # deck lanes
+])
+def test_archetype_is_registered(arch):
+    assert arch in ARCHETYPES, f"{arch} was dropped from the archetype registry"
 
 
-def test_new_archetypes_slot_check_pass_and_fail():
-    for arch, good in _NEW_ARCHETYPE_SLOTS.items():
-        ok, reason = _check_slots(arch, dict(good))
-        assert ok, f"{arch} full-slot check should pass ({reason})"
-        # blank almost everything -> the empty-ratio + key-slot gate rejects it
-        blank = {k: "" for k in good}
-        blank[next(iter(good))] = good[next(iter(good))]  # keep one filled
-        ok2, _ = _check_slots(arch, blank)
-        assert not ok2, f"{arch} should reject a mostly-blank slot set"
+@pytest.mark.parametrize("arch", sorted(_ARCHETYPE_SLOTS))
+def test_slot_check_accepts_full_and_rejects_mostly_blank(arch):
+    good = _ARCHETYPE_SLOTS[arch]
+    ok, reason = _check_slots(arch, dict(good))
+    assert ok, f"{arch} full-slot check should pass ({reason})"
+    # Blank almost everything → the empty-ratio + key-slot gate must reject it, or a
+    # near-empty infographic ships looking like a real one.
+    blank = {k: "" for k in good}
+    first = next(iter(good))
+    blank[first] = good[first]
+    ok2, _ = _check_slots(arch, blank)
+    assert not ok2, f"{arch} should reject a mostly-blank slot set"
 
 
-def test_new_archetypes_finalize_fails_open():
-    """A partial slot-fill still yields legible HTML with NO leftover {{SLOT}}
-    markers (the degradation-ladder invariant)."""
-    for arch, good in _NEW_ARCHETYPE_SLOTS.items():
-        sk = get_skeleton(arch)
-        partial = dict(list(good.items())[:2])   # only the first couple slots
-        body = _finalize_body(sk, partial)
-        assert "{{" not in body and "}}" not in body, f"{arch} left an unfilled slot"
-        assert "<div" in body
+@pytest.mark.parametrize("arch", sorted(_ARCHETYPE_SLOTS))
+def test_finalize_fails_open_on_a_partial_fill(arch):
+    """The degradation-ladder invariant: a partial slot-fill still yields legible HTML with
+    NO leftover {{SLOT}} markers. A visible `{{HEADLINE}}` in an exported PNG is the most
+    embarrassing possible failure, and it happens whenever the model returns fewer slots
+    than the skeleton declares."""
+    good = _ARCHETYPE_SLOTS[arch]
+    partial = dict(list(good.items())[:2])       # only the first couple of slots
+    body = _finalize_body(get_skeleton(arch), partial)
+    assert "{{" not in body and "}}" not in body, f"{arch} left an unfilled slot"
+    assert "<div" in body
 
 
 # ── Family-B "deck" archetypes (compare_code / stepped_cards / tier_ladder /
 #    layer_stack) — the 07-31 corpus. Model-free: expand, slot-check pass+fail,
 #    fail-open, cite-binding, and route. ─────────────────────────────────────
-_DECK_ARCHETYPE_SLOTS = {
+_ARCHETYPE_SLOTS.update({
     "compare_code": {
         "HEADLINE": "Same pattern. Different decade.",
         "SUBHEAD": "They shipped it as a managed feature two years later.",
@@ -689,35 +831,13 @@ _DECK_ARCHETYPE_SLOTS = {
         "LAYER_4_LABEL": "Brand and style", "LAYER_4_NOTE": "The visual system.",
         "LAYER_5_LABEL": "Components", "LAYER_5_NOTE": "Reusable UI pieces.",
     },
-}
+})
 
 
-def test_deck_archetypes_registered():
-    for arch in ("compare_code", "stepped_cards", "tier_ladder", "layer_stack"):
-        assert arch in ARCHETYPES
-        sk = get_skeleton(arch)
-        assert sk, f"{arch} produced no skeleton"
-        assert "__" not in sk, f"{arch} left an unexpanded structural marker"
-        assert "{{" in sk
 
 
-def test_deck_archetypes_slot_check_pass_and_fail():
-    for arch, good in _DECK_ARCHETYPE_SLOTS.items():
-        ok, reason = _check_slots(arch, dict(good))
-        assert ok, f"{arch} full-slot check should pass ({reason})"
-        blank = {k: "" for k in good}
-        blank[next(iter(good))] = good[next(iter(good))]  # keep one filled
-        ok2, _ = _check_slots(arch, blank)
-        assert not ok2, f"{arch} should reject a mostly-blank slot set"
 
 
-def test_deck_archetypes_finalize_fails_open():
-    for arch, good in _DECK_ARCHETYPE_SLOTS.items():
-        sk = get_skeleton(arch)
-        partial = dict(list(good.items())[:2])
-        body = _finalize_body(sk, partial)
-        assert "{{" not in body and "}}" not in body, f"{arch} left an unfilled slot"
-        assert "<div" in body
 
 
 def test_tier_ladder_chips_bind_to_real_sources():
@@ -725,27 +845,19 @@ def test_tier_ladder_chips_bind_to_real_sources():
     numbers (HARD RULE §2.6) — or empty, never dangling, when no provenance."""
     sk = get_skeleton("tier_ladder")
     prov = _normalize_sources([{"title": "bench"}, {"title": "receipts"}])
-    slots = dict(_DECK_ARCHETYPE_SLOTS["tier_ladder"])
+    slots = dict(_ARCHETYPE_SLOTS["tier_ladder"])
     slots.update(_cite_slots_for_rows(prov, n_rows=4))
     body = _finalize_body(sk, slots)
     assert '<sup class="ib-cite">1</sup>' in body
     assert '<sup class="ib-cite">2</sup>' in body
 
-    slots2 = dict(_DECK_ARCHETYPE_SLOTS["tier_ladder"])
+    slots2 = dict(_ARCHETYPE_SLOTS["tier_ladder"])
     slots2.update(_cite_slots_for_rows([], n_rows=4))
     body2 = _finalize_body(sk, slots2)
     assert '<sup class="ib-cite">1</sup>' not in body2
     assert '<sup class="ib-cite"></sup>' in body2   # empty, not dangling
 
 
-def test_pick_archetype_deck_lanes():
-    assert pick_archetype("two implementations of the same api call") == "compare_code"
-    assert pick_archetype("a capability tier ladder: what runs at home") == "tier_ladder"
-    assert pick_archetype("an exploded view of the stacked layers of a file") == "layer_stack"
-    assert pick_archetype("three step cards joined by a feedback loop") == "stepped_cards"
-    # the original heuristics still route as before (no deck-keyword bleed)
-    assert pick_archetype("the compile stage then index then serve") == "three_stage"
-    assert pick_archetype("quarterly revenue figures from the filing") == "facts_table"
 
 
 def test_cream_tone_is_valid_and_drops_dots():

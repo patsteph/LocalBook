@@ -1,0 +1,270 @@
+/**
+ * ThreadWindow — one floating window showing one thread's REAL content.
+ *
+ * The canvas chips render a compact summary by design; this is the way down to the artifact
+ * itself. Every type opens the same way — a floating, draggable, resizable window sized to its
+ * content — after field feedback that the old full-height drawer "takes up one whole side of the
+ * screen" and still squashed infographics (2026-08-18).
+ *
+ * ⚠️ Why this FETCHES rather than rendering `node.snapshot`: the snapshot is a STABLE OFFLINE
+ * SUMMARY, not the artifact. `canvas_artifacts` truncates a document to 600 chars and reduces
+ * audio/video/quiz to a one-line markdown placeholder. Only `visual` (svg/mermaid) and
+ * `infographic` (full payload) carry real content, so those render straight from the snapshot
+ * and everything else goes and gets the real thing.
+ *
+ * Media needs no fetch at all — the players take ids — which is what lets a podcast start
+ * instantly and keep playing while you carry on exploring.
+ */
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { RefreshCw, ExternalLink, AlertCircle } from 'lucide-react';
+
+import { ArtifactRender } from '../artifact/RendererRegistry';
+import { AudioCanvasPlayer } from '../chat/AudioCanvasPlayer';
+import { FloatingWindow } from './FloatingWindow';
+import { initialSize, initialPosition, avoidOverlap, type Point } from './journeyWindowSizing';
+import { contentService } from '../../services/content';
+import { quizService, type QuizQuestion } from '../../services/quiz';
+import { videoService } from '../../services/video';
+import type { CanvasNode } from '../../services/canvas';
+import type { Artifact } from '../../types/artifact';
+
+/** ref_types whose snapshot already holds the real, renderable artifact. */
+const SNAPSHOT_IS_REAL = new Set(['visual', 'infographic']);
+
+export interface ThreadWindowProps {
+  node: CanvasNode;
+  notebookId: string;
+  /** Where the user clicked, in screen coords — the window opens next to it. */
+  anchor?: Point | null;
+  /** Anchors of the windows already open, so a new one cascades instead of hiding under them. */
+  takenAnchors?: Point[];
+  z: number;
+  /** Front-most window — only it answers Esc. */
+  isTop?: boolean;
+  onFocus: () => void;
+  onClose: () => void;
+}
+
+type Loaded =
+  | { kind: 'artifact'; artifact: Artifact }
+  | { kind: 'quiz'; questions: QuizQuestion[]; topic: string; difficulty?: string }
+  | { kind: 'audio' }
+  | { kind: 'video' };
+
+export const ThreadWindow: React.FC<ThreadWindowProps> = ({
+  node, notebookId, anchor, takenAnchors, z, isTop, onFocus, onClose,
+}) => {
+  const [loaded, setLoaded] = useState<Loaded | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // Geometry is computed ONCE per window: the size comes from the content's own shape, and
+  // recomputing it on every render would fight the user's resize.
+  const geom = useMemo(() => {
+    const vp = { w: window.innerWidth, h: window.innerHeight };
+    const size = initialSize(node, vp);
+    // Cascade in ANCHOR space, then derive the position — position is a pure function of the
+    // anchor, so separating anchors separates windows. (Comparing an anchor against an already
+    // derived position would be comparing two different coordinate spaces.)
+    const spaced = anchor ? avoidOverlap(anchor, takenAnchors ?? [], size, vp) : null;
+    return { size, pos: initialPosition(spaced, size, vp) };
+    // Geometry is fixed at open time: recomputing it would fight the user's drag/resize.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [node.id]);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    setLoaded(null);
+    try {
+      const refId = node.ref_id;
+      switch (node.ref_type) {
+        // Media: no fetch — the players poll/stream by id themselves.
+        case 'audio':
+          setLoaded({ kind: 'audio' });
+          break;
+        case 'video':
+          setLoaded({ kind: 'video' });
+          break;
+        case 'quiz': {
+          const quiz = await quizService.get(refId);
+          setLoaded({
+            kind: 'quiz',
+            questions: quiz.questions || [],
+            topic: quiz.topic || node.title,
+            difficulty: quiz.difficulty,
+          });
+          break;
+        }
+        case 'document': {
+          const doc = await contentService.get(refId);
+          setLoaded({
+            kind: 'artifact',
+            artifact: {
+              id: `doc-${refId}`,
+              type: 'markdown',
+              payload: doc.content || '_This document has no saved body._',
+              title: doc.topic || node.title,
+            },
+          });
+          break;
+        }
+        default: {
+          // visual / infographic / question / source — the snapshot IS the content.
+          const snap = node.snapshot as Artifact | undefined;
+          if (snap?.type && snap.payload !== undefined) {
+            setLoaded({ kind: 'artifact', artifact: { ...snap, title: snap.title || node.title } });
+          } else {
+            setError('Nothing more to show for this item.');
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('[ThreadWindow] load failed', e);
+      // Falling back to the stored preview beats an error screen — this is exactly the case
+      // where the artifact was deleted but the canvas node survives until the next Populate.
+      const snap = node.snapshot as Artifact | undefined;
+      if (snap?.type && snap.payload !== undefined && !SNAPSHOT_IS_REAL.has(node.ref_type)) {
+        setLoaded({ kind: 'artifact', artifact: { ...snap, title: snap.title || node.title } });
+        setError('Showing the saved preview — the original could not be loaded.');
+      } else {
+        setError('Could not load this item.');
+      }
+    } finally {
+      setLoading(false);
+    }
+  }, [node]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const isMedia = loaded?.kind === 'audio' || loaded?.kind === 'video';
+
+  return (
+    <FloatingWindow
+      title={node.title || 'Untitled'}
+      eyebrow={node.ref_type.replace(/_/g, ' ')}
+      initialPosition={geom.pos}
+      initialSize={geom.size}
+      z={z}
+      isTop={isTop}
+      onFocus={onFocus}
+      onClose={onClose}
+      bare={isMedia}
+    >
+      {loading && (
+        <div className="flex h-full flex-col items-center justify-center gap-2 text-gray-400">
+          <RefreshCw className="h-5 w-5 animate-spin" />
+          <p className="text-[11px]">Opening…</p>
+        </div>
+      )}
+
+      {error && (
+        <div className="mb-2 flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 px-2.5 py-1.5 text-[11px] text-amber-700 dark:border-amber-900 dark:bg-amber-950/50 dark:text-amber-300">
+          <AlertCircle className="mt-0.5 h-3.5 w-3.5 flex-shrink-0" />
+          <span>{error}</span>
+        </div>
+      )}
+
+      {loaded?.kind === 'audio' && (
+        <div className="p-2">
+          {/* Reused unchanged — it owns its own status polling and playback. */}
+          <AudioCanvasPlayer audioId={node.ref_id} notebookId={notebookId} title={node.title || 'Podcast'} />
+        </div>
+      )}
+
+      {loaded?.kind === 'video' && (
+        <video
+          className="h-full w-full bg-black"
+          controls
+          autoPlay
+          preload="metadata"
+          src={videoService.getStreamUrl(node.ref_id)}
+        >
+          <track kind="captions" />
+        </video>
+      )}
+
+      {loaded?.kind === 'artifact' && (
+        <ArtifactRender artifact={loaded.artifact} context="canvas-full" />
+      )}
+
+      {loaded?.kind === 'quiz' && (
+        <QuizRefresher questions={loaded.questions} topic={loaded.topic} difficulty={loaded.difficulty} />
+      )}
+    </FloatingWindow>
+  );
+};
+
+/**
+ * Read-only quiz recall — answers hidden until asked for, one at a time.
+ *
+ * Deliberately NOT the graded `StudioQuizBlock`: this is the canvas's "refresher" affordance,
+ * and silently feeding a casual glance-back into the FSRS scheduler would corrupt the review
+ * history that the spaced-repetition surfaces depend on. Studying still happens in Studio.
+ */
+const QuizRefresher: React.FC<{ questions: QuizQuestion[]; topic: string; difficulty?: string }> = ({
+  questions, topic, difficulty,
+}) => {
+  const [revealed, setRevealed] = useState<Set<string>>(new Set());
+  const toggle = (id: string) =>
+    setRevealed((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+
+  if (!questions.length) {
+    return <p className="text-[12px] text-gray-500 dark:text-gray-400">This quiz has no saved questions.</p>;
+  }
+
+  return (
+    <div className="space-y-2">
+      <p className="text-[11px] text-gray-400">
+        {questions.length} question{questions.length === 1 ? '' : 's'}
+        {difficulty ? ` · ${difficulty}` : ''} · {topic}
+      </p>
+      {questions.map((q, i) => {
+        const key = q.id || `q${i}`;
+        const open = revealed.has(key);
+        return (
+          <div key={key} className="rounded-lg border border-gray-200 p-2.5 dark:border-gray-700">
+            <p className="text-[12px] font-medium text-gray-800 dark:text-gray-100">
+              {i + 1}. {q.question}
+            </p>
+            {!!q.options?.length && (
+              <ul className="mt-1.5 space-y-0.5">
+                {q.options.map((opt, oi) => (
+                  <li key={oi} className="text-[11.5px] text-gray-600 dark:text-gray-300">
+                    · {opt}
+                  </li>
+                ))}
+              </ul>
+            )}
+            <button
+              type="button"
+              onClick={() => toggle(key)}
+              className="mt-1.5 text-[10.5px] font-semibold text-violet-600 hover:underline dark:text-violet-400"
+            >
+              {open ? 'Hide answer' : 'Show answer'}
+            </button>
+            {open && (
+              <div className="mt-1.5 rounded bg-gray-50 px-2 py-1.5 dark:bg-gray-900/50">
+                <p className="text-[11.5px] font-medium text-gray-800 dark:text-gray-100">{q.answer}</p>
+                {q.explanation && (
+                  <p className="mt-1 text-[11px] leading-snug text-gray-500 dark:text-gray-400">{q.explanation}</p>
+                )}
+                {q.source_reference && (
+                  <p className="mt-1 flex items-center gap-1 text-[10px] text-gray-400">
+                    <ExternalLink className="h-2.5 w-2.5" />
+                    {q.source_reference}
+                  </p>
+                )}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+};

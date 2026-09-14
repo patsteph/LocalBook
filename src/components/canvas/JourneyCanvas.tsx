@@ -22,255 +22,67 @@ import {
   Background,
   Controls,
   MiniMap,
-  NodeResizer,
-  Handle,
-  Position,
-  MarkerType,
   useNodesState,
   useEdgesState,
   useReactFlow,
   type Node,
   type Edge,
-  type NodeProps,
-  type NodeTypes,
   type Connection,
   type Viewport,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
-import { Trash2, Sparkles, RefreshCw, Scale, X } from 'lucide-react';
+import {
+  Sparkles, RefreshCw, X, MessagesSquare, Plus, Brain, Compass, Scale,
+} from 'lucide-react';
 import { ArtifactRender } from '../artifact/RendererRegistry';
+import { ThreadWindow } from './ThreadWindow';
+import type { Point } from './journeyWindowSizing';
+// Node renderers + the pure layout⇆flow math live alongside (split out 2026-08-18).
+import {
+  nodeTypes,
+  type ArtifactNodeData,
+  type CanvasFlowNode,
+  type NodeCandidate,
+} from './journeyNodeTypes';
+import {
+  pairKey,
+  computeRanks,
+  computeComposition,
+  toFlowNode,
+  toFlowEdge,
+  fromFlowNode,
+  toCandidateRef,
+  EDGE_LEGEND,
+  EDGE_VISUAL,
+  TIME_WINDOWS,
+  TOPIC_HEADER_H,
+} from './journeyTransforms';
 import {
   canvasService,
   type CanvasLayout,
   type CanvasNode,
   type CanvasEdge,
   type CanvasCandidate,
-  type CandidateNodeRef,
-  type EdgeState,
+  type CanvasGap,
+  type RecallItem,
+  type RecallGrade,
+  type ElicitSuggestion,
 } from '../../services/canvas';
 import { synthesisService } from '../../services/synthesis';
 
-// Unordered pair key so a candidate/edge is de-duped regardless of direction.
-function pairKey(a: string, b: string): string {
-  return a < b ? `${a}|${b}` : `${b}|${a}`;
-}
 
-// A latent-connection suggestion as seen from one node (its peer on the other end).
-interface NodeCandidate {
-  peerId: string;
-  score: number;
-  signal: string;
-}
+// Thread windows float above the canvas and its drawers, below nothing else.
+const BASE_WINDOW_Z = 40;
+// Past a handful of open windows the map underneath is buried and the feature works against
+// itself. Opening more closes the least-recently-touched one.
+const MAX_WINDOWS = 4;
 
-// ─── Edge visual language (from the journey-canvas spec) ─────────────────────
-interface EdgeVisual {
-  stroke: string;
-  width: number;
-  dash?: string;
-  animated?: boolean;
-}
-const EDGE_VISUAL: Record<EdgeState, EdgeVisual> = {
-  candidate: { stroke: '#f59e0b', width: 1.5, dash: '4 4', animated: true }, // amber
-  provenance: { stroke: '#06b6d4', width: 1.5 },                              // aqua
-  user: { stroke: '#8b5cf6', width: 2.75 },                                   // violet, bold
-  curator: { stroke: '#c4b5fd', width: 1.5, dash: '6 4' },                    // lavender, dashed
-  researched: { stroke: '#f43f5e', width: 2 },                                // rose
-};
-
-const EDGE_LEGEND: { state: EdgeState; label: string }[] = [
-  { state: 'candidate', label: 'Candidate' },
-  { state: 'provenance', label: 'Made-from' },
-  { state: 'user', label: 'Yours' },
-  { state: 'curator', label: 'Curator' },
-  { state: 'researched', label: 'Researched' },
-];
-
-// Recency tint: newer edges/nodes read stronger; older ones fade toward 0.4.
-function recencyOpacity(createdAt: string | undefined): number {
-  if (!createdAt) return 1;
-  const t = Date.parse(createdAt);
-  if (Number.isNaN(t)) return 1;
-  const ageDays = (Date.now() - t) / 86_400_000;
-  const o = 1 - (ageDays / 45) * 0.6;
-  return Math.max(0.4, Math.min(1, o));
-}
-
-// ─── Time-as-a-lens window filter (P6) ───────────────────────────────────────
-// Position still encodes meaning; this only hides (never removes) nodes outside
-// the chosen recency window, so it's fully reversible ("All" restores everything).
-const DAY_MS = 86_400_000;
-const TIME_WINDOWS: { label: string; ms: number | null }[] = [
-  { label: 'All', ms: null },
-  { label: '24h', ms: DAY_MS },
-  { label: '7d', ms: 7 * DAY_MS },
-  { label: '30d', ms: 30 * DAY_MS },
-];
-
-// ─── Custom node ─────────────────────────────────────────────────────────────
-type ArtifactNodeData = {
+interface OpenWindow {
+  key: string;
   node: CanvasNode;
-  tint: number;
-  candidates?: NodeCandidate[];
-  onPromote?: (peerId: string) => void;
-  onPerspectives?: (node: CanvasNode) => void;
-};
-type ArtifactFlowNode = Node<ArtifactNodeData, 'artifact'>;
-
-const SIGNAL_LABEL: Record<string, string> = {
-  concept: 'shared concepts',
-  embed: 'similar meaning',
-  shared_source: 'shared source',
-};
-
-function ArtifactNode({ id, data, selected }: NodeProps<ArtifactFlowNode>) {
-  const rf = useReactFlow();
-  const { node, tint, candidates, onPromote, onPerspectives } = data;
-
-  return (
-    <div
-      className="flex h-full w-full cursor-grab flex-col overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm active:cursor-grabbing dark:border-gray-700 dark:bg-gray-800"
-      style={{ opacity: tint }}
-    >
-      <NodeResizer
-        minWidth={200}
-        minHeight={120}
-        isVisible={!!selected}
-        lineClassName="!border-violet-400"
-        handleClassName="!h-2.5 !w-2.5 !rounded-sm !border-violet-500 !bg-white"
-      />
-      {/* Connection handles — target on the left, source on the right. */}
-      <Handle type="target" position={Position.Left} className="!h-2 !w-2 !border-gray-400 !bg-white" />
-      <Handle type="source" position={Position.Right} className="!h-2 !w-2 !border-violet-500 !bg-violet-400" />
-
-      {/* Candidate dots (P5) — amber pulsing invitations to draw a latent connection.
-          Click one to promote that pair to a real `user` edge. */}
-      {candidates && candidates.length > 0 && (
-        <div className="nodrag nopan absolute -top-3 left-1/2 z-20 flex -translate-x-1/2 items-center gap-1">
-          {candidates.map((c) => (
-            <button
-              key={c.peerId}
-              type="button"
-              onClick={(e) => {
-                e.stopPropagation();
-                onPromote?.(c.peerId);
-              }}
-              title={`Connect — ${SIGNAL_LABEL[c.signal] ?? c.signal} (${Math.round(c.score * 100)}%)`}
-              aria-label={`Draw a connection (${SIGNAL_LABEL[c.signal] ?? c.signal})`}
-              className="h-2.5 w-2.5 animate-pulse rounded-full border border-amber-500 bg-amber-400 shadow-sm transition-transform hover:scale-150 hover:animate-none"
-            />
-          ))}
-        </div>
-      )}
-
-      {/* Title bar */}
-      <div className="flex items-center justify-between gap-2 border-b border-gray-100 bg-gray-50/80 px-2.5 py-1.5 dark:border-gray-700 dark:bg-gray-900/50">
-        <span className="truncate text-[11px] font-semibold text-gray-700 dark:text-gray-200" title={node.title}>
-          {node.title || 'Untitled'}
-        </span>
-        <div className="nodrag flex flex-shrink-0 items-center gap-0.5">
-          {/* Supporting / differing views on demand (P6) — reuses the existing
-              /synthesis/perspectives engine (consensus + contested claims). */}
-          <button
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              onPerspectives?.(node);
-            }}
-            className="rounded p-0.5 text-gray-400 hover:bg-violet-50 hover:text-violet-600 dark:hover:bg-violet-900/30 dark:hover:text-violet-300"
-            title="Supporting / differing views on this topic"
-            aria-label="Show supporting and differing views"
-          >
-            <Scale className="h-3 w-3" />
-          </button>
-          <button
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              rf.deleteElements({ nodes: [{ id }] });
-            }}
-            className="rounded p-0.5 text-gray-400 hover:bg-red-50 hover:text-red-500 dark:hover:bg-red-900/30"
-            title="Remove node"
-          >
-            <Trash2 className="h-3 w-3" />
-          </button>
-        </div>
-      </div>
-
-      {/* Body — the Artifact snapshot rendered through the canonical registry.
-          NOT `nodrag`: the node must drag from its body (the bulk of the card);
-          the delete button + candidate dots keep `nodrag`/`nopan` for interaction. */}
-      <div className="flex-1 overflow-hidden p-2 text-[12px]">
-        <ArtifactRender artifact={node.snapshot} context="canvas-node" />
-      </div>
-    </div>
-  );
-}
-
-const nodeTypes: NodeTypes = { artifact: ArtifactNode };
-
-// ─── Layout ⇆ react-flow conversion ──────────────────────────────────────────
-function toFlowNode(n: CanvasNode): ArtifactFlowNode {
-  return {
-    id: n.id,
-    type: 'artifact',
-    position: { x: n.x, y: n.y },
-    data: { node: n, tint: recencyOpacity(n.created_at) },
-    zIndex: n.z ?? 0,
-    // Fixed compact tile so the map reads as uniform "readable tiles" — without this,
-    // react-flow sizes each node to its content and the wide chat tiles overlap. A
-    // user resize (NodeResizer) still wins via n.width/height.
-    width: n.width ?? 300,
-    height: n.height ?? 180,
-    style: { width: n.width ?? 300, height: n.height ?? 180 },
-  };
-}
-
-function toFlowEdge(e: CanvasEdge): Edge {
-  const v = EDGE_VISUAL[e.state] ?? EDGE_VISUAL.user;
-  const tint = recencyOpacity(e.created_at);
-  const insight = e.state === 'researched' ? (e.meta?.insight as string | undefined) : undefined;
-  const label = insight || e.label || undefined;
-  const directed = e.state === 'provenance' || e.state === 'researched';
-  return {
-    id: e.id,
-    source: e.source,
-    target: e.target,
-    label,
-    data: { edge: e },
-    animated: !!v.animated,
-    style: {
-      stroke: v.stroke,
-      strokeWidth: v.width,
-      strokeDasharray: v.dash,
-      opacity: tint,
-    },
-    labelBgPadding: [5, 2],
-    labelBgBorderRadius: 6,
-    labelStyle: { fill: v.stroke, fontSize: 10, fontWeight: 600 },
-    labelBgStyle: { fill: '#fff', fillOpacity: 0.92, stroke: v.stroke, strokeWidth: 0.5 },
-    ...(directed ? { markerEnd: { type: MarkerType.ArrowClosed, color: v.stroke } } : {}),
-  };
-}
-
-// Rebuild a CanvasNode from its current react-flow representation (position +
-// possibly-resized dimensions), preserving all the backend metadata.
-function fromFlowNode(fn: ArtifactFlowNode): CanvasNode {
-  const base = fn.data.node;
-  return {
-    ...base,
-    x: fn.position.x,
-    y: fn.position.y,
-    z: fn.zIndex ?? base.z,
-    width: fn.width ?? base.width,
-    height: fn.height ?? base.height,
-  };
-}
-
-// Visible-node → candidate-engine ref (title + snapshot text feed embedding similarity).
-function toCandidateRef(n: CanvasNode): CandidateNodeRef {
-  const payload = (n.snapshot as { payload?: unknown } | undefined)?.payload;
-  const text = typeof payload === 'string' ? payload : '';
-  return { id: n.id, ref_type: n.ref_type, ref_id: n.ref_id, title: n.title, text };
+  anchor: Point | null;
+  /** Monotonic stacking order — the window you last touched is in front. */
+  z: number;
 }
 
 // ─── Inner canvas (inside ReactFlowProvider so useReactFlow works) ────────────
@@ -279,16 +91,42 @@ interface InnerProps {
 }
 
 function JourneyCanvasInner({ notebookId }: InnerProps) {
-  const [nodes, setNodes, onNodesChange] = useNodesState<ArtifactFlowNode>([]);
+  const [nodes, setNodes, onNodesChange] = useNodesState<CanvasFlowNode>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
+  // Topic cards that are currently collapsed (view-state; default = ALL on load).
+  const [collapsedTopics, setCollapsedTopics] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(true);
   const [populating, setPopulating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [savedViewport, setSavedViewport] = useState<Viewport | null>(null);
   const [candidates, setCandidates] = useState<CanvasCandidate[]>([]);
 
+  const rf = useReactFlow();
+
   // ── Time-as-a-lens (P6): recency window filter. `null` = show all. ──
   const [timeWindowMs, setTimeWindowMs] = useState<number | null>(null);
+
+  // ── Run R3 gap panel: weakly-answered questions as "what to explore next". ──
+  const [gaps, setGaps] = useState<CanvasGap[]>([]);
+  const [showGaps, setShowGaps] = useState(false);
+  const [gapsLoading, setGapsLoading] = useState(false);
+
+  // ── Run R2 chat-with-selection: ask a question scoped to the selected nodes' sources. ──
+  const [selectedNodes, setSelectedNodes] = useState<CanvasNode[]>([]);
+  const [chatOpen, setChatOpen] = useState(false);
+  const [chatQuery, setChatQuery] = useState('');
+  const [chatBusy, setChatBusy] = useState(false);
+  const [chatAnswer, setChatAnswer] = useState<string | null>(null);
+  const [chatScoped, setChatScoped] = useState(true);
+  const chatAnchorRef = useRef<{ x: number; y: number } | null>(null);
+
+  // ── Run R1 recall: spaced-repetition review of learning nodes ("what to revisit"). ──
+  const [recallOpen, setRecallOpen] = useState(false);
+  const [recallQueue, setRecallQueue] = useState<RecallItem[]>([]);
+  const [recallIdx, setRecallIdx] = useState(0);
+  const [recallRevealed, setRecallRevealed] = useState(false);
+  const [recallTotal, setRecallTotal] = useState(0);
+  const [recallLoading, setRecallLoading] = useState(false);
 
   // ── Per-node supporting/differing view (P6): a right-side drawer that reuses
   //    the existing /synthesis/perspectives engine. Read-only; never persisted. ──
@@ -300,8 +138,58 @@ function JourneyCanvasInner({ notebookId }: InnerProps) {
     error: string | null;
   }>({ open: false, topic: '', loading: false, html: null, error: null });
 
+  // ── P4 orphan intent-elicitation: "what were you exploring here?" → the intent re-assigns the
+  //    orphan to the nearest sub-topic (or leaves it orphan) + enqueues away-gated research. ──
+  const [elicit, setElicit] = useState<{
+    open: boolean;
+    node: CanvasNode | null;
+    intent: string;
+    busy: boolean;
+    done: boolean;
+    suggestions: ElicitSuggestion[];
+    assignedTopicId: string | null;
+    error: string | null;
+  }>({ open: false, node: null, intent: '', busy: false, done: false,
+       suggestions: [], assignedTopicId: null, error: null });
+
+  // ── Thread windows: a thread's REAL content in a small FLOATING window (play the podcast,
+  //    read the doc, refresh on the quiz) without leaving the map. Several can be open at once
+  //    on purpose — the point of playing a podcast from the map is to keep exploring while it
+  //    runs, which a single-slot drawer made impossible. Read-only; never mutates the layout. ──
+  const [openWindows, setOpenWindows] = useState<OpenWindow[]>([]);
+  const zSeq = useRef(1);
+
+  const openThread = useCallback((n: CanvasNode, anchor?: Point | null) => {
+    setOpenWindows((prev) => {
+      // Already open → raise it rather than stacking a duplicate on top of itself.
+      const existing = prev.find((w) => w.node.id === n.id);
+      if (existing) {
+        return prev.map((w) => (w.node.id === n.id ? { ...w, z: ++zSeq.current } : w));
+      }
+      const next = [...prev, { node: n, anchor: anchor ?? null, z: ++zSeq.current, key: n.id }];
+      // Bounded: past a handful the map is buried. Drop the OLDEST — the one you touched least
+      // recently — rather than refusing to open the thing that was just clicked.
+      return next.length > MAX_WINDOWS
+        ? [...next].sort((a, b) => a.z - b.z).slice(next.length - MAX_WINDOWS)
+        : next;
+    });
+  }, []);
+
+  const closeWindow = useCallback((key: string) => {
+    setOpenWindows((prev) => prev.filter((w) => w.key !== key));
+  }, []);
+
+  const raiseWindow = useCallback((key: string) => {
+    setOpenWindows((prev) => {
+      const top = Math.max(...prev.map((w) => w.z), 0);
+      const target = prev.find((w) => w.key === key);
+      if (!target || target.z === top) return prev;   // already in front — don't re-render
+      return prev.map((w) => (w.key === key ? { ...w, z: ++zSeq.current } : w));
+    });
+  }, []);
+
   // Refs mirror the latest state for the full-layout persistence path.
-  const nodesRef = useRef<ArtifactFlowNode[]>([]);
+  const nodesRef = useRef<CanvasFlowNode[]>([]);
   const edgesRef = useRef<Edge[]>([]);
   const viewportRef = useRef<Viewport | null>(null);
   useEffect(() => { nodesRef.current = nodes; }, [nodes]);
@@ -322,9 +210,26 @@ function JourneyCanvasInner({ notebookId }: InnerProps) {
     }
   }, [notebookId]);
 
+  // Collapse/expand a topic card (view-only — never persisted to the backend).
+  const toggleTopic = useCallback((id: string) => {
+    setCollapsedTopics((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+
   const applyLayout = useCallback((layout: CanvasLayout) => {
-    setNodes((layout.nodes || []).map(toFlowNode));
+    const ranks = computeRanks(layout.nodes || []);
+    const composition = computeComposition(layout.nodes || []);
+    setNodes((layout.nodes || []).map((n) =>
+      toFlowNode(n, { rank: ranks.get(n.id), composition: composition.get(n.id) })));
     setEdges((layout.edges || []).map(toFlowEdge));
+    // Collapse ALL topic cards by default whenever a fresh layout loads.
+    setCollapsedTopics(
+      new Set((layout.nodes || []).filter((n) => n.kind === 'topic').map((n) => n.id)),
+    );
     if (layout.viewport) {
       setSavedViewport({ x: layout.viewport.x, y: layout.viewport.y, zoom: layout.viewport.zoom });
       viewportRef.current = { x: layout.viewport.x, y: layout.viewport.y, zoom: layout.viewport.zoom };
@@ -348,6 +253,42 @@ function JourneyCanvasInner({ notebookId }: InnerProps) {
   }, [notebookId, applyLayout]);
 
   useEffect(() => { load(); }, [load]);
+
+  // Open loops are fetched alongside the layout so the badges are on the map from the start —
+  // NOT only after someone opens the gaps panel. Fire-and-forget: a gap-detection failure must
+  // never block or fail the canvas, it just means no badges. The badge itself is applied in the
+  // effect below, which also covers the panel's own refresh.
+  useEffect(() => {
+    if (!notebookId) return;
+    let cancelled = false;
+    canvasService
+      .getGaps(notebookId)
+      .then((found) => { if (!cancelled) setGaps(found); })
+      .catch((e) => console.warn('[JourneyCanvas] gaps preload failed', e));
+    return () => { cancelled = true; };
+  }, [notebookId]);
+
+  // Decorate question nodes with their open-loop state. Kept separate from `applyLayout` so it
+  // doesn't matter whether the gaps or the layout land first, and so a panel refresh re-badges
+  // without rebuilding the map. Identity-stable: nodes whose state didn't change are returned
+  // as-is, so react-flow doesn't re-render the whole canvas.
+  useEffect(() => {
+    const reasonByRef = new Map(gaps.map((g) => [g.ref_id, g.reason]));
+    setNodes((ns) => {
+      let changed = false;
+      const next = ns.map((n) => {
+        if (n.type !== 'artifact') return n;
+        const { node } = n.data;
+        const openLoop = node.ref_type === 'exploration_query'
+          ? reasonByRef.get(node.ref_id)
+          : undefined;
+        if (n.data.openLoop === openLoop) return n;
+        changed = true;
+        return { ...n, data: { ...n.data, openLoop } };
+      });
+      return changed ? next : ns;
+    });
+  }, [gaps, setNodes]);
 
   // Persist the whole layout (used after delete + resize). Rebuilds from refs.
   const saveLayout = useCallback(() => {
@@ -434,9 +375,32 @@ function JourneyCanvasInner({ notebookId }: InnerProps) {
     }
   }, [notebookId]);
 
+  // ── P4 — open the elicitation prompt for an orphan thread. ──
+  const openElicit = useCallback((node: CanvasNode) => {
+    setElicit({ open: true, node, intent: '', busy: false, done: false,
+                suggestions: [], assignedTopicId: null, error: null });
+  }, []);
+
+  const onSubmitElicit = useCallback(async () => {
+    const node = elicit.node;
+    const intent = elicit.intent.trim();
+    if (!node || !intent || elicit.busy) return;
+    setElicit((p) => ({ ...p, busy: true, error: null }));
+    try {
+      const res = await canvasService.elicit(notebookId, node.id, intent);
+      applyLayout(res.layout); // the (now-assigned) node sheds its orphan styling immediately
+      setElicit((p) => ({ ...p, busy: false, done: true,
+                          suggestions: res.suggestions || [], assignedTopicId: res.assigned_topic_id }));
+    } catch (e) {
+      console.warn('[JourneyCanvas] elicit', e);
+      setElicit((p) => ({ ...p, busy: false,
+                          error: e instanceof Error ? e.message : 'Could not save that.' }));
+    }
+  }, [notebookId, applyLayout, elicit.node, elicit.intent, elicit.busy]);
+
   // Project candidates onto their two endpoint nodes (skipping pairs already edged) and
-  // hand each node stable promote + perspectives callbacks — the custom node renders the
-  // amber dots and the per-node "supporting/differing view" action.
+  // hand each node stable promote + perspectives + elicit callbacks — the custom node renders
+  // the amber dots, the "supporting/differing view" action, and the orphan "explore" prompt.
   useEffect(() => {
     const connected = new Set(edges.map((e) => pairKey(e.source, e.target)));
     const byNode = new Map<string, NodeCandidate[]>();
@@ -450,16 +414,21 @@ function JourneyCanvasInner({ notebookId }: InnerProps) {
       add(c.a_node, c.b_node, c.score, c.signal);
       add(c.b_node, c.a_node, c.score, c.signal);
     }
-    setNodes((nds) => nds.map((n) => ({
-      ...n,
-      data: {
-        ...n.data,
-        candidates: byNode.get(n.id) ?? [],
-        onPromote: (peerId: string) => promoteCandidate(n.id, peerId),
-        onPerspectives: openPerspectives,
-      },
-    })));
-  }, [candidates, edges, promoteCandidate, openPerspectives, setNodes]);
+    setNodes((nds) => nds.map((n) => {
+      if (n.type !== 'artifact') return n; // topic cards carry no candidate dots
+      return {
+        ...n,
+        data: {
+          ...n.data,
+          candidates: byNode.get(n.id) ?? [],
+          onPromote: (peerId: string) => promoteCandidate(n.id, peerId),
+          onPerspectives: openPerspectives,
+          onElicit: openElicit,
+          onOpen: openThread,
+        },
+      };
+    }));
+  }, [candidates, edges, promoteCandidate, openPerspectives, openElicit, setNodes]);
 
   // ── Delete: edges hit the DELETE endpoint; nodes persist via full-layout PUT. ──
   const onEdgesDelete = useCallback((deleted: Edge[]) => {
@@ -468,6 +437,14 @@ function JourneyCanvasInner({ notebookId }: InnerProps) {
       canvasService.deleteEdge(notebookId, e.id).catch((err) => console.warn('[JourneyCanvas] deleteEdge', err));
     });
   }, [notebookId]);
+
+  // Double-click a thread to open it — the discoverable gesture alongside the toolbar
+  // button. Topic cards are excluded: double-clicking a card is not "open the card".
+  const onNodeDoubleClick = useCallback((e: React.MouseEvent, n: Node) => {
+    if (n.type !== 'artifact') return;
+    const canvasNode = (n.data as ArtifactNodeData | undefined)?.node;
+    if (canvasNode) openThread(canvasNode, { x: e.clientX, y: e.clientY });
+  }, []);
 
   const onNodesDelete = useCallback((_: Node[]) => {
     // react-flow has already removed them from state by the time this fires;
@@ -536,32 +513,179 @@ function JourneyCanvasInner({ notebookId }: InnerProps) {
     }
   }, [notebookId, applyLayout]);
 
+  // ── Run R3 gaps: load "what to explore next" + toggle the panel. ──
+  const onToggleGaps = useCallback(async () => {
+    if (showGaps) { setShowGaps(false); return; }
+    setShowGaps(true);
+    setGapsLoading(true);
+    try {
+      setGaps(await canvasService.getGaps(notebookId));
+    } catch (e) {
+      console.warn('[JourneyCanvas] getGaps failed', e);
+      setGaps([]);
+    } finally {
+      setGapsLoading(false);
+    }
+  }, [notebookId, showGaps]);
+
+  // Center the canvas on the weakly-answered question node behind a gap.
+  const onFocusGap = useCallback((gap: CanvasGap) => {
+    const match = nodesRef.current.find(
+      (fn) => fn.data.node.ref_type === 'exploration_query' && fn.data.node.ref_id === gap.ref_id,
+    );
+    if (match) {
+      rf.setCenter(match.position.x + 150, match.position.y + 90, { zoom: 1.1, duration: 500 });
+    }
+  }, [rf]);
+
+  // ── Run R2 chat-with-selection ──
+  const onSelectionChange = useCallback(({ nodes: sel }: { nodes: Node[] }) => {
+    setSelectedNodes(sel.map((n) => (n.data as { node: CanvasNode }).node).filter(Boolean));
+  }, []);
+
+  const onAskSelection = useCallback(() => {
+    // Anchor the answer-node near the centroid of the current selection.
+    if (selectedNodes.length) {
+      const cx = selectedNodes.reduce((s, n) => s + n.x, 0) / selectedNodes.length;
+      const cy = selectedNodes.reduce((s, n) => s + n.y, 0) / selectedNodes.length;
+      chatAnchorRef.current = { x: cx, y: cy };
+    } else {
+      chatAnchorRef.current = null;
+    }
+    setChatAnswer(null);
+    setChatOpen(true);
+  }, [selectedNodes]);
+
+  const onSubmitChat = useCallback(async () => {
+    const q = chatQuery.trim();
+    if (!q || !notebookId) return;
+    setChatBusy(true);
+    setChatAnswer(null);
+    try {
+      const refs = selectedNodes.map((n) => ({ ref_type: n.ref_type, ref_id: n.ref_id }));
+      const res = await canvasService.chat(notebookId, q, refs);
+      setChatAnswer(res.answer || '_No answer._');
+      setChatScoped(res.scoped);
+    } catch (e) {
+      console.error('[JourneyCanvas] canvas chat failed', e);
+      setChatAnswer('_Something went wrong answering that._');
+    } finally {
+      setChatBusy(false);
+    }
+  }, [chatQuery, notebookId, selectedNodes]);
+
+  // Drop the answer back onto the canvas as a new node ("the map generates the map"),
+  // linked to each selected node with a provenance edge, then persist.
+  const onAddAnswerNode = useCallback(async () => {
+    if (!chatAnswer || !notebookId) return;
+    const anchor = chatAnchorRef.current ?? { x: 0, y: 0 };
+    const id = (crypto?.randomUUID?.() ?? `ans-${Date.now()}`);
+    const q = chatQuery.trim();
+    const newNode: CanvasNode = {
+      id,
+      x: anchor.x + 360,
+      y: anchor.y,
+      kind: 'chat_turn',
+      ref_type: 'canvas_answer',
+      ref_id: id,
+      title: q.length > 60 ? `${q.slice(0, 59)}…` : q,
+      snapshot: { id, type: 'markdown', payload: `**Q:** ${q}\n\n${chatAnswer}` },
+      z: 0,
+      created_at: new Date().toISOString(),
+    };
+    setNodes((ns) => [...ns, toFlowNode(newNode)]);
+    // Provenance edges from each selected node into the answer.
+    for (const sn of selectedNodes) {
+      canvasService
+        .createEdge(notebookId, { source: sn.id, target: id, state: 'provenance', label: 'answered' })
+        .then((e) => setEdges((es) => [...es, toFlowEdge(e)]))
+        .catch(() => {});
+    }
+    saveLayoutDebounced();
+    setChatOpen(false);
+    setChatQuery('');
+    setChatAnswer(null);
+  }, [chatAnswer, chatQuery, notebookId, selectedNodes, setNodes, setEdges, saveLayoutDebounced]);
+
+  // ── Run R1 recall ──
+  const onToggleRecall = useCallback(async () => {
+    if (recallOpen) { setRecallOpen(false); return; }
+    setRecallOpen(true);
+    setRecallLoading(true);
+    setRecallIdx(0);
+    setRecallRevealed(false);
+    try {
+      const res = await canvasService.getRecall(notebookId);
+      setRecallQueue(res.due);
+      setRecallTotal(res.due_count);
+    } catch (e) {
+      console.warn('[JourneyCanvas] getRecall failed', e);
+      setRecallQueue([]);
+      setRecallTotal(0);
+    } finally {
+      setRecallLoading(false);
+    }
+  }, [notebookId, recallOpen]);
+
+  const onGradeRecall = useCallback(async (grade: RecallGrade) => {
+    const item = recallQueue[recallIdx];
+    if (!item) return;
+    canvasService.reviewRecall(notebookId, item.id, grade).catch(() => {});
+    setRecallRevealed(false);
+    setRecallIdx((i) => i + 1);  // advance; the panel shows "all caught up" past the end
+  }, [recallQueue, recallIdx, notebookId]);
+
   const isEmpty = !loading && nodes.length === 0;
 
-  // ── Time-window filter: hide (never remove) nodes/edges outside the window. ──
-  // Purely a view concern — the stored layout is untouched, so switching back to
-  // "All" fully restores the map. Position still encodes meaning throughout.
+  // ── Derived view (P3 + P6): fold TWO reversible view-concerns onto `nodes`
+  //    without ever mutating the stored layout —
+  //      (1) collapse: a topic card shrinks to header-only + its children hide;
+  //      (2) time-window: nodes/edges outside the recency window hide.
+  //    Switching a topic open / picking "All" fully restores the map. ──
   const displayNodes = useMemo(() => {
-    if (timeWindowMs == null) return nodes;
-    const cutoff = Date.now() - timeWindowMs;
-    return nodes.map((n) => {
-      const t = Date.parse(n.data.node.created_at);
-      const hidden = !Number.isNaN(t) && t < cutoff;
+    const cutoff = timeWindowMs == null ? null : Date.now() - timeWindowMs;
+    return nodes.map((n): CanvasFlowNode => {
+      let hidden = false;
+      if (cutoff != null) {
+        const t = Date.parse(n.data.node.created_at);
+        hidden = !Number.isNaN(t) && t < cutoff;
+      }
+      if (n.type === 'topicCard') {
+        const collapsed = collapsedTopics.has(n.id);
+        const h = collapsed ? TOPIC_HEADER_H : (n.data.node.height ?? 220);
+        return {
+          ...n,
+          hidden,
+          height: h,
+          style: { ...(n.style || {}), width: n.data.node.width, height: h },
+          data: { ...n.data, collapsed, onToggle: toggleTopic },
+        };
+      }
+      // A thread also hides when its containing topic card is collapsed.
+      if (n.parentId && collapsedTopics.has(n.parentId)) hidden = true;
       return !!n.hidden === hidden ? n : { ...n, hidden };
     });
-  }, [nodes, timeWindowMs]);
+  }, [nodes, timeWindowMs, collapsedTopics, toggleTopic]);
 
   const displayEdges = useMemo(() => {
-    if (timeWindowMs == null) return edges;
     const hiddenNodeIds = new Set(displayNodes.filter((n) => n.hidden).map((n) => n.id));
     if (hiddenNodeIds.size === 0) return edges;
     return edges.map((e) => {
       const hidden = hiddenNodeIds.has(e.source) || hiddenNodeIds.has(e.target);
       return !!e.hidden === hidden ? e : { ...e, hidden };
     });
-  }, [edges, displayNodes, timeWindowMs]);
+  }, [edges, displayNodes]);
 
-  const hiddenCount = timeWindowMs == null ? 0 : displayNodes.filter((n) => n.hidden).length;
+  // Only the time-window lens contributes to the "−N outside this window" chip
+  // (collapsed children are a separate, self-evident affordance).
+  const hiddenCount = useMemo(() => {
+    if (timeWindowMs == null) return 0;
+    const cutoff = Date.now() - timeWindowMs;
+    return nodes.filter((n) => {
+      const t = Date.parse(n.data.node.created_at);
+      return !Number.isNaN(t) && t < cutoff;
+    }).length;
+  }, [nodes, timeWindowMs]);
 
   return (
     <div className="relative h-full w-full">
@@ -575,6 +699,8 @@ function JourneyCanvasInner({ notebookId }: InnerProps) {
         onConnect={onConnect}
         onEdgesDelete={onEdgesDelete}
         onNodesDelete={onNodesDelete}
+        onSelectionChange={onSelectionChange}
+        onNodeDoubleClick={onNodeDoubleClick}
         onMoveEnd={onMoveEnd}
         defaultViewport={savedViewport ?? undefined}
         fitView={!savedViewport}
@@ -619,6 +745,43 @@ function JourneyCanvasInner({ notebookId }: InnerProps) {
             title="Auto-connect: draw suggested (dashed) edges between strongly-related nodes"
           >
             Auto-connect
+          </button>
+          <button
+            type="button"
+            onClick={onToggleGaps}
+            className={`flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-[11px] font-semibold disabled:opacity-60 ${
+              showGaps
+                ? 'border-amber-400 bg-amber-100 text-amber-800 dark:border-amber-500 dark:bg-amber-900/40 dark:text-amber-200'
+                : 'border-amber-200 text-amber-700 hover:bg-amber-50 dark:border-amber-700 dark:text-amber-300 dark:hover:bg-amber-900/30'
+            }`}
+            title="Gaps: questions your sources answered weakly — what to explore next"
+          >
+            <Compass className="h-3 w-3" />
+            Gaps
+          </button>
+          <button
+            type="button"
+            onClick={onAskSelection}
+            disabled={selectedNodes.length === 0}
+            className="flex items-center gap-1.5 rounded-md border border-emerald-200 px-2.5 py-1 text-[11px] font-semibold text-emerald-700 hover:bg-emerald-50 disabled:opacity-40 dark:border-emerald-700 dark:text-emerald-300 dark:hover:bg-emerald-900/30"
+            title={selectedNodes.length ? `Ask a question across the ${selectedNodes.length} selected node(s)` : 'Select nodes first, then ask across them'}
+          >
+            <MessagesSquare className="h-3 w-3" />
+            Ask{selectedNodes.length ? ` (${selectedNodes.length})` : ''}
+          </button>
+          <button
+            type="button"
+            onClick={onToggleRecall}
+            disabled={isEmpty}
+            className={`flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-[11px] font-semibold disabled:opacity-40 ${
+              recallOpen
+                ? 'border-indigo-400 bg-indigo-100 text-indigo-800 dark:border-indigo-500 dark:bg-indigo-900/40 dark:text-indigo-200'
+                : 'border-indigo-200 text-indigo-700 hover:bg-indigo-50 dark:border-indigo-700 dark:text-indigo-300 dark:hover:bg-indigo-900/30'
+            }`}
+            title="Recall: review what you've learned (spaced repetition)"
+          >
+            <Brain className="h-3 w-3" />
+            Recall
           </button>
           <button
             type="button"
@@ -697,6 +860,22 @@ function JourneyCanvasInner({ notebookId }: InnerProps) {
 
       {/* Supporting / differing views drawer (P6) — server-composed perspectives
           HTML rendered through the canonical Artifact registry. Read-only. */}
+      {/* Thread focus — the real artifact behind a chip. Highest z of the panels so opening
+          one from behind the perspectives/gaps drawers still lands on top. */}
+      {openWindows.map((w, i) => (
+        <ThreadWindow
+          key={w.key}
+          node={w.node}
+          notebookId={notebookId}
+          anchor={w.anchor}
+          takenAnchors={openWindows.slice(0, i).map((o) => o.anchor).filter(Boolean) as Point[]}
+          z={BASE_WINDOW_Z + w.z}
+          isTop={w.z === Math.max(...openWindows.map((o) => o.z))}
+          onFocus={() => raiseWindow(w.key)}
+          onClose={() => closeWindow(w.key)}
+        />
+      ))}
+
       {perspective.open && (
         <div className="absolute inset-y-0 right-0 z-20 flex w-[min(440px,90%)] flex-col border-l border-gray-200 bg-white shadow-2xl dark:border-gray-700 dark:bg-gray-800">
           <div className="flex items-center justify-between gap-2 border-b border-gray-100 px-3 py-2 dark:border-gray-700">
@@ -741,6 +920,300 @@ function JourneyCanvasInner({ notebookId }: InnerProps) {
                 }}
                 context="canvas-full"
               />
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Run R3 — "what to explore next" panel: questions your sources answered
+          weakly. Click one to fly the canvas to that question node. Read-only. */}
+      {showGaps && (
+        <div className="pointer-events-auto absolute bottom-3 right-3 z-20 flex max-h-[60%] w-[min(340px,85%)] flex-col rounded-lg border border-amber-200 bg-white/95 shadow-xl backdrop-blur dark:border-amber-800 dark:bg-gray-800/95">
+          <div className="flex items-center justify-between gap-2 border-b border-amber-100 px-3 py-2 dark:border-amber-900/50">
+            <div className="flex items-center gap-2">
+              <Compass className="h-4 w-4 text-amber-500" />
+              <p className="text-[12px] font-semibold text-gray-700 dark:text-gray-200">What to explore next</p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setShowGaps(false)}
+              className="rounded p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-700"
+              title="Close"
+              aria-label="Close gaps"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+          <div className="flex-1 overflow-auto p-2">
+            {gapsLoading && (
+              <div className="flex items-center justify-center gap-2 py-6 text-gray-400">
+                <RefreshCw className="h-4 w-4 animate-spin" />
+                <span className="text-[11px]">Finding gaps…</span>
+              </div>
+            )}
+            {!gapsLoading && gaps.length === 0 && (
+              <p className="px-2 py-6 text-center text-[11px] text-gray-400">
+                No weak spots found — your sources answered your questions well.
+              </p>
+            )}
+            {!gapsLoading && gaps.map((gap) => (
+              <button
+                key={gap.ref_id || gap.query}
+                type="button"
+                onClick={() => onFocusGap(gap)}
+                className="mb-1 w-full rounded-md border border-transparent px-2 py-1.5 text-left hover:border-amber-200 hover:bg-amber-50 dark:hover:border-amber-800 dark:hover:bg-amber-900/20"
+                title="Center the canvas on this question"
+              >
+                <p className="truncate text-[12px] font-medium text-gray-700 dark:text-gray-200">{gap.query}</p>
+                <p className="text-[10px] text-amber-600 dark:text-amber-400">{gap.reason}</p>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Run R2 — chat with the selection: ask a question scoped to the SOURCES behind the
+          selected nodes; drop the answer back onto the canvas as a new node. */}
+      {chatOpen && (
+        <div className="pointer-events-auto absolute bottom-3 left-1/2 z-30 flex max-h-[70%] w-[min(560px,92%)] -translate-x-1/2 flex-col rounded-xl border border-emerald-200 bg-white/97 shadow-2xl backdrop-blur dark:border-emerald-800 dark:bg-gray-800/97">
+          <div className="flex items-center justify-between gap-2 border-b border-emerald-100 px-3 py-2 dark:border-emerald-900/50">
+            <div className="flex items-center gap-2">
+              <MessagesSquare className="h-4 w-4 text-emerald-500" />
+              <p className="text-[12px] font-semibold text-gray-700 dark:text-gray-200">
+                Ask across {selectedNodes.length} selected node{selectedNodes.length === 1 ? '' : 's'}
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setChatOpen(false)}
+              className="rounded p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-700"
+              title="Close"
+              aria-label="Close chat"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+          <div className="flex items-center gap-2 px-3 py-2">
+            <input
+              type="text"
+              autoFocus
+              value={chatQuery}
+              onChange={(e) => setChatQuery(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter' && !chatBusy) onSubmitChat(); }}
+              placeholder="Ask a question about the selected nodes…"
+              className="flex-1 rounded-md border border-gray-200 bg-white px-2.5 py-1.5 text-[12px] text-gray-700 outline-none focus:border-emerald-400 dark:border-gray-600 dark:bg-gray-900 dark:text-gray-200"
+            />
+            <button
+              type="button"
+              onClick={onSubmitChat}
+              disabled={chatBusy || !chatQuery.trim()}
+              className="rounded-md bg-emerald-600 px-3 py-1.5 text-[11px] font-semibold text-white hover:bg-emerald-700 disabled:opacity-50"
+            >
+              {chatBusy ? 'Asking…' : 'Ask'}
+            </button>
+          </div>
+          {chatAnswer !== null && (
+            <div className="flex-1 overflow-auto border-t border-gray-100 px-3 py-2 dark:border-gray-700">
+              {!chatScoped && (
+                <p className="mb-1 text-[10px] italic text-gray-400">
+                  The selection had no linked sources — answered across the whole notebook.
+                </p>
+              )}
+              <ArtifactRender
+                artifact={{ id: 'canvas-chat-answer', type: 'markdown', payload: chatAnswer }}
+                context="canvas-full"
+              />
+              <div className="mt-2 flex justify-end">
+                <button
+                  type="button"
+                  onClick={onAddAnswerNode}
+                  className="flex items-center gap-1.5 rounded-md border border-emerald-300 px-2.5 py-1 text-[11px] font-semibold text-emerald-700 hover:bg-emerald-50 dark:border-emerald-700 dark:text-emerald-300 dark:hover:bg-emerald-900/30"
+                  title="Add this answer to the canvas as a new node"
+                >
+                  <Plus className="h-3 w-3" />
+                  Add to canvas
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* P4 — orphan intent-elicitation: "what were you exploring here?" → re-assign + research. */}
+      {elicit.open && (
+        <div className="pointer-events-auto absolute bottom-3 left-1/2 z-30 flex max-h-[70%] w-[min(520px,92%)] -translate-x-1/2 flex-col rounded-xl border border-violet-200 bg-white/97 shadow-2xl backdrop-blur dark:border-violet-800 dark:bg-gray-800/97">
+          <div className="flex items-center justify-between gap-2 border-b border-violet-100 px-3 py-2 dark:border-violet-900/50">
+            <div className="flex items-center gap-2">
+              <Compass className="h-4 w-4 text-violet-500" />
+              <p className="text-[12px] font-semibold text-gray-700 dark:text-gray-200">
+                What were you exploring here?
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setElicit((p) => ({ ...p, open: false }))}
+              className="rounded p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-700"
+              title="Close"
+              aria-label="Close"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+          {elicit.node && (
+            <p className="px-3 pt-2 text-[11px] text-gray-400">
+              on{' '}
+              <span className="font-medium text-gray-600 dark:text-gray-300">
+                {elicit.node.title || 'this thread'}
+              </span>
+            </p>
+          )}
+          <div className="flex items-center gap-2 px-3 py-2">
+            <input
+              type="text"
+              autoFocus
+              value={elicit.intent}
+              onChange={(e) => setElicit((p) => ({ ...p, intent: e.target.value }))}
+              onKeyDown={(e) => { if (e.key === 'Enter' && !elicit.busy) onSubmitElicit(); }}
+              placeholder="e.g. comparing mRNA vs viral-vector vaccines…"
+              className="flex-1 rounded-md border border-gray-200 bg-white px-2.5 py-1.5 text-[12px] text-gray-700 outline-none focus:border-violet-400 dark:border-gray-600 dark:bg-gray-900 dark:text-gray-200"
+            />
+            <button
+              type="button"
+              onClick={onSubmitElicit}
+              disabled={elicit.busy || !elicit.intent.trim()}
+              className="rounded-md bg-violet-600 px-3 py-1.5 text-[11px] font-semibold text-white hover:bg-violet-700 disabled:opacity-50"
+            >
+              {elicit.busy ? 'Saving…' : 'Explore'}
+            </button>
+          </div>
+          {elicit.error && <p className="px-3 pb-2 text-[11px] text-red-500">{elicit.error}</p>}
+          {elicit.done && (
+            <div className="border-t border-gray-100 px-3 py-2 dark:border-gray-700">
+              {elicit.assignedTopicId ? (
+                <p className="text-[11px] font-medium text-emerald-600 dark:text-emerald-400">
+                  Connected to “{elicit.suggestions.find((s) => s.id === elicit.assignedTopicId)?.title || 'a topic'}”.
+                  I'll research this while you're away.
+                </p>
+              ) : (
+                <p className="text-[11px] text-gray-500 dark:text-gray-400">
+                  Kept as its own thread for now — I'll research it while you're away.
+                </p>
+              )}
+              {elicit.suggestions.length > 0 && (
+                <div className="mt-1.5">
+                  <p className="text-[10px] font-semibold uppercase tracking-wide text-gray-400">Nearest topics</p>
+                  <ul className="mt-1 space-y-0.5">
+                    {elicit.suggestions.map((s) => (
+                      <li
+                        key={s.id}
+                        className="flex items-center justify-between gap-2 text-[11px] text-gray-600 dark:text-gray-300"
+                      >
+                        <span className="truncate">{s.title || 'Untitled topic'}</span>
+                        <span className="flex-shrink-0 tabular-nums text-gray-400">{Math.round(s.score * 100)}%</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Run R1 — recall: spaced-repetition review of learning nodes. Flashcard flow:
+          show the question → reveal the answer → grade (advances the SM-2 schedule). */}
+      {recallOpen && (
+        <div className="pointer-events-auto absolute bottom-3 left-1/2 z-30 flex max-h-[72%] w-[min(560px,92%)] -translate-x-1/2 flex-col rounded-xl border border-indigo-200 bg-white/97 shadow-2xl backdrop-blur dark:border-indigo-800 dark:bg-gray-800/97">
+          <div className="flex items-center justify-between gap-2 border-b border-indigo-100 px-3 py-2 dark:border-indigo-900/50">
+            <div className="flex items-center gap-2">
+              <Brain className="h-4 w-4 text-indigo-500" />
+              <p className="text-[12px] font-semibold text-gray-700 dark:text-gray-200">
+                Recall
+                {!recallLoading && recallQueue.length > 0 && recallIdx < recallQueue.length && (
+                  <span className="ml-1 font-normal text-gray-400">
+                    · {recallIdx + 1} of {recallQueue.length}
+                  </span>
+                )}
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setRecallOpen(false)}
+              className="rounded p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-700"
+              title="Close"
+              aria-label="Close recall"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+          <div className="flex-1 overflow-auto p-3">
+            {recallLoading && (
+              <div className="flex items-center justify-center gap-2 py-8 text-gray-400">
+                <RefreshCw className="h-4 w-4 animate-spin" />
+                <span className="text-[11px]">Finding what to review…</span>
+              </div>
+            )}
+            {!recallLoading && (recallQueue.length === 0 || recallIdx >= recallQueue.length) && (
+              <div className="flex flex-col items-center gap-1 py-8 text-center">
+                <Brain className="h-6 w-6 text-indigo-300" />
+                <p className="text-[13px] font-medium text-gray-600 dark:text-gray-300">All caught up</p>
+                <p className="text-[11px] text-gray-400">
+                  {recallTotal === 0
+                    ? 'Nothing to review yet — explore some questions first.'
+                    : "You've reviewed everything due. Come back later."}
+                </p>
+              </div>
+            )}
+            {!recallLoading && recallIdx < recallQueue.length && (
+              <div>
+                <p className="mb-2 text-[10px] font-medium uppercase tracking-wide text-indigo-400">
+                  Do you remember?
+                </p>
+                <p className="text-[15px] font-semibold text-gray-800 dark:text-gray-100">
+                  {recallQueue[recallIdx].title}
+                </p>
+                {!recallRevealed ? (
+                  <button
+                    type="button"
+                    onClick={() => setRecallRevealed(true)}
+                    className="mt-4 w-full rounded-md bg-indigo-600 px-3 py-1.5 text-[12px] font-semibold text-white hover:bg-indigo-700"
+                  >
+                    Show answer
+                  </button>
+                ) : (
+                  <>
+                    <div className="mt-3 border-t border-gray-100 pt-3 dark:border-gray-700">
+                      <ArtifactRender
+                        artifact={recallQueue[recallIdx].snapshot}
+                        context="canvas-full"
+                      />
+                    </div>
+                    <div className="mt-3 flex gap-2">
+                      <button
+                        type="button"
+                        onClick={() => onGradeRecall('again')}
+                        className="flex-1 rounded-md border border-rose-300 px-2 py-1.5 text-[11px] font-semibold text-rose-700 hover:bg-rose-50 dark:border-rose-700 dark:text-rose-300 dark:hover:bg-rose-900/30"
+                      >
+                        Again
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => onGradeRecall('good')}
+                        className="flex-1 rounded-md border border-indigo-300 px-2 py-1.5 text-[11px] font-semibold text-indigo-700 hover:bg-indigo-50 dark:border-indigo-700 dark:text-indigo-300 dark:hover:bg-indigo-900/30"
+                      >
+                        Good
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => onGradeRecall('easy')}
+                        className="flex-1 rounded-md border border-emerald-300 px-2 py-1.5 text-[11px] font-semibold text-emerald-700 hover:bg-emerald-50 dark:border-emerald-700 dark:text-emerald-300 dark:hover:bg-emerald-900/30"
+                      >
+                        Easy
+                      </button>
+                    </div>
+                  </>
+                )}
+              </div>
             )}
           </div>
         </div>

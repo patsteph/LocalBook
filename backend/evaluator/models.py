@@ -122,8 +122,9 @@ class ModelInfo:
     # Empty dict means: prefer JSON mode if supports_json_mode is True.
     structured_profile: dict = field(default_factory=dict)
 
-    # v1.7.0: Backend provider — "ollama" (default) or "llama_server" (sidecar).
-    # See services/llm_provider.py. Registry entries without this field are
+    # Historical field. Runs recorded before the v2.3.0 cutover hold "ollama" or
+    # "llama_server"; everything now is "mlx". Kept so old runs still deserialize and the
+    # Eval History view can label them honestly. Registry entries without this field are
     # treated as Ollama-hosted for backward compatibility.
     provider: str = "ollama"
 
@@ -161,12 +162,13 @@ class ModelCombo:
     embedding_dim: int = 0
     vision_model: str = ""
     tts_engine: str = "kokoro-mlx"
-    # Wave 9.6 — which engine serves each text/vision role ("ollama" | "mlx"), so the
-    # evaluator can label the combo (⚡ MLX) instead of silently showing an Ollama name (#4).
-    main_engine: str = "ollama"
-    fast_engine: str = "ollama"
-    vision_engine: str = "ollama"
-    embed_engine: str = "ollama"
+    # Which engine served each role. Always "mlx" for new runs; historical results hold
+    # "ollama" or "llama_server" and must keep deserializing — the Eval History view labels
+    # an old run by what really produced it, not by today's engine.
+    main_engine: str = "mlx"
+    fast_engine: str = "mlx"
+    vision_engine: str = "mlx"
+    embed_engine: str = "mlx"
     # Friendly display names (raw ids stay in *_model for matching/history) — the UI shows
     # these so the Test Environment never renders the long HF path (user #3).
     main_model_display: str = ""
@@ -193,33 +195,19 @@ class ModelCombo:
 
     @classmethod
     def from_config(cls, settings) -> "ModelCombo":
-        """Build from current app config.py settings (engine-aware)."""
-        def _eng(attr):
-            return getattr(settings, attr, "ollama") or "ollama"
-        main_engine, fast_engine, vision_engine = _eng("main_engine"), _eng("fast_engine"), _eng("vision_engine")
-        embed_engine = _eng("embed_engine")
-        # Report the embedding model that ACTUALLY serves retrieval — the MLX arctic id when
-        # embed_engine==mlx, else the Ollama arctic name. (Previously hardcoded to the Ollama
-        # name, so an MLX-adopted combo was silently labeled Ollama — user report 2026-07-23.)
-        embed_model = (getattr(settings, "mlx_embedding_model", "") if embed_engine == "mlx"
-                       else getattr(settings, "embedding_model", ""))
-        # Report the model that ACTUALLY serves each role — the MLX id when that role's
-        # engine is mlx, else the Ollama model.
-        main = (getattr(settings, "mlx_main_model", "") if main_engine == "mlx"
-                else getattr(settings, "ollama_model", "unknown"))
-        fast = (getattr(settings, "mlx_fast_model", "") if fast_engine == "mlx"
-                else getattr(settings, "ollama_fast_model", main))
-        if vision_engine == "mlx":
-            vision = getattr(settings, "mlx_vision_model", "")
-        else:
-            # Resolve the vision model the app actually uses (env > vision-capable main >
-            # configured) so the combo reflects reality, not an uninstalled granite.
-            try:
-                from evaluator.model_registry import model_registry as _mr
-                vision = _mr.resolve_vision_model(getattr(settings, "ollama_model", "") or "",
-                                                  getattr(settings, "vision_model", "") or "")
-            except Exception:
-                vision = getattr(settings, "vision_model", "") or ""
+        """Build from the current app config.
+
+        Was engine-aware: each role was a pair (Ollama name + MLX id) and this picked between
+        them per `*_engine`. After the v2.3.0 collapse both arms of every branch resolved to
+        the same attribute, so the branching is gone. The `*_engine` fields survive on the
+        dataclass as RUN PROVENANCE — historical results recorded "ollama"/"llama_server" and
+        must keep deserializing and displaying honestly.
+        """
+        main = getattr(settings, "main_model", "") or ""
+        fast = getattr(settings, "fast_model", "") or main
+        vision = getattr(settings, "vision_model", "") or ""
+        embed_model = getattr(settings, "embedding_model", "") or ""
+        main_engine = fast_engine = vision_engine = embed_engine = "mlx"
         # Friendly display names (shared helper — same names as Labs + the menu bar).
         from utils.model_display import friendly_model_name
         main_disp = friendly_model_name(main)
@@ -289,7 +277,7 @@ class EvalResult:
     # v1.8.2: Provider / backend visibility — stamped by every test runner so
     # results show exactly which backend served each test and whether Bonsai
     # or an Ollama model was running.
-    provider: str = ""                   # "ollama" | "llama_server" | ""
+    provider: str = ""                   # historical: "ollama" | "llama_server"; now "mlx"
     backend_url: str = ""                # e.g. "http://127.0.0.1:8090"
     model_context_window: int = 0        # capability-aware, helps explain truncation
 
@@ -301,18 +289,24 @@ class EvalResult:
         duplicating the routing logic.
         """
         try:
+            # Resolve through the same decision point the seam uses, so a persisted result
+            # names the model that actually ran. (Runners used to pass an Ollama role key here,
+            # which stamped every all-MLX result "ollama" — a run mislabelled as the engine it
+            # was being compared against.) Identity since the role collapse, but kept so the
+            # stamp follows the seam if resolution ever gains meaning again.
+            try:
+                from services.mlx_engine import mlx_model_for_role
+                _mlx_id = mlx_model_for_role(model_name)
+                if _mlx_id:
+                    model_name = _mlx_id
+            except Exception:
+                pass
             from evaluator.capabilities import capabilities_for
             caps = capabilities_for(model_name)
             self.model_used = model_name
             self.provider = caps.provider
             self.backend_url = caps.backend_url
             self.model_context_window = caps.context_window
-            # MLX models are HuggingFace ids (org/repo) served in-process — the Ollama-oriented
-            # resolver defaults them to "ollama". Recognize the HF-path shape so per-test provenance
-            # reflects the real engine (user report 2026-07-23: MLX arctic stamped "ollama").
-            if self.provider == "ollama" and "/" in (model_name or ""):
-                self.provider = "mlx"
-                self.backend_url = "in-process"
         except Exception:
             # Never let telemetry break a run
             self.model_used = model_name or self.model_used
@@ -495,6 +489,13 @@ class ComboEvalSummary:
     avg_tokens_per_sec: float = 0.0
     avg_ttft_ms: float = 0.0
     total_run_time_seconds: float = 0.0
+    # Distribution + sample count (2026-08-19). The means above were computed from the Streaming
+    # phase alone — one query — so they could not support a regression judgement.
+    perf_samples: int = 0
+    tps_p50: float = 0.0
+    tps_p05: float = 0.0
+    ttft_p50: float = 0.0
+    ttft_p95: float = 0.0
 
     # Verdict
     warnings: list = field(default_factory=list)
@@ -504,6 +505,18 @@ class ComboEvalSummary:
     # show "Ran on Ollama + llama-server (Bonsai-8B)" at a glance.
     providers_used: dict = field(default_factory=dict)   # {role: {provider, backend_url, model}}
     skipped_categories: list = field(default_factory=list)  # [{category, reason}]
+
+    # ENGINE FALLBACKS during this run (2026-08-19). A silent MLX→Ollama fallback makes an MLX
+    # run partly an Ollama run, so its numbers are not what they claim to be — and the failure
+    # is invisible because the answers still arrive. A non-zero count INVALIDATES the run for
+    # engine comparison; it does not mean the app misbehaved.
+    memory: dict = field(default_factory=dict)   # evaluator.memory_sampler summary
+    # Throughput across EVERY generation in the run (services.throughput_meter), not the 2
+    # test runners that time themselves — 2 samples cannot support a 30% regression threshold.
+    throughput: dict = field(default_factory=dict)
+    timed_out_phases: list = field(default_factory=list)
+    engine_fallbacks: int = 0
+    engine_fallback_detail: list = field(default_factory=list)  # [{detail, key, ts}]
     # v1.8.3: Production readiness — the "will this combo actually work in
     # the app?" verdict, compressed from raw scores into pass/degraded/fail
     # per user-facing feature plus a single-headline rollup.
@@ -523,6 +536,17 @@ class ComboEvalSummary:
             "overall_score": round(self.overall_score, 1),
             "overall_grade": self.overall_grade,
             "avg_tokens_per_sec": round(self.avg_tokens_per_sec, 1),
+            "perf_samples": self.perf_samples,
+            # These were added to the dataclass but not to to_dict, so the first real A/B run
+            # persisted neither — the memory trace and the fallback count were computed,
+            # logged, and then dropped on the floor at serialisation.
+            "memory": self.memory,
+            "throughput": self.throughput,
+            "timed_out_phases": self.timed_out_phases,
+            "engine_fallbacks": self.engine_fallbacks,
+            "engine_fallback_detail": self.engine_fallback_detail,
+            "tps_p50": self.tps_p50, "tps_p05": self.tps_p05,
+            "ttft_p50": self.ttft_p50, "ttft_p95": self.ttft_p95,
             "avg_ttft_ms": round(self.avg_ttft_ms, 1),
             "total_run_time_seconds": round(self.total_run_time_seconds, 1),
             "warnings": self.warnings,

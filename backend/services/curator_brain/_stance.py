@@ -35,6 +35,24 @@ class StanceMixin:
             logger.warning(f"[CuratorBrain] get_stance failed: {e}")
             return None
 
+    def list_stances(self, notebook_id: str) -> List[Dict[str, Any]]:
+        """Every scored stance in a notebook — the canvas derives TENSION edges from these
+        (a source that contradicts the thesis vs the ones that support it)."""
+        try:
+            rows = self._conn.execute(
+                """SELECT source_id, stance, confidence, rationale
+                   FROM source_stances WHERE notebook_id = ?""",
+                (notebook_id,),
+            ).fetchall()
+            return [
+                {"source_id": r["source_id"], "stance": r["stance"],
+                 "confidence": r["confidence"], "rationale": r["rationale"]}
+                for r in rows
+            ]
+        except Exception as e:
+            logger.warning(f"[CuratorBrain] list_stances failed: {e}")
+            return []
+
     def upsert_stance(
         self,
         source_id: str,
@@ -265,10 +283,10 @@ class StanceMixin:
         from config import settings as _settings
         try:
             from utils.json_repair import robust_json_parse
-            result = await ollama_service.generate(
+            result = await llm_runtime.generate(
                 prompt=prompt,
                 system="You output only valid JSON for stance classification.",
-                model=_settings.ollama_fast_model,
+                model=_settings.fast_model,
                 temperature=0.2,
                 timeout=30.0,
             )

@@ -81,6 +81,36 @@ class ProvenanceMixin:
             logger.warning(f"[CuratorBrain] get_provenance failed: {e}")
             return []
 
+    def get_provenance_many(self, artifact_ids: List[str]) -> List[Dict[str, Any]]:
+        """The made-from edges for MANY artifacts in one pass — the Canvas populate path
+        holds every artifact on the map and would otherwise issue one query per node.
+
+        Keyed on artifact ids rather than `notebook_id` deliberately: `notebook_id` is
+        nullable on this table (`record_provenance` accepts None), so a notebook filter
+        would silently drop rows written without one."""
+        try:
+            ids = [str(a) for a in (artifact_ids or []) if a]
+            if not ids:
+                return []
+            out: List[Dict[str, Any]] = []
+            # SQLite caps host parameters (999 by default) — chunk rather than risk the limit.
+            for i in range(0, len(ids), 400):
+                chunk = ids[i:i + 400]
+                rows = self._conn.execute(
+                    "SELECT brain_artifact_type, brain_artifact_id, source_type, source_id, notebook_id "
+                    "FROM provenance WHERE brain_artifact_id IN (%s)" % ",".join("?" * len(chunk)),
+                    chunk,
+                ).fetchall()
+                out.extend(
+                    {"artifact_type": r[0], "artifact_id": r[1], "source_type": r[2],
+                     "source_id": r[3], "notebook_id": r[4]}
+                    for r in rows
+                )
+            return out
+        except Exception as e:
+            logger.warning(f"[CuratorBrain] get_provenance_many failed: {e}")
+            return []
+
     def get_derived_from_source(
         self, source_id: str, notebook_id: Optional[str] = None
     ) -> List[Dict[str, Any]]:

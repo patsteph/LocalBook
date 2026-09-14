@@ -7,10 +7,11 @@ import logging
 from typing import Tuple, Dict, Any, Optional
 from config import settings
 from evaluator.hardware_profiler import get_hardware_profile
-from evaluator.model_registry import ModelRegistry
+# The shared singleton, NOT a second instance. Two registries meant two caches, two
+# refresh cycles, and a swap that updated one while the Locker UI read the other.
+from evaluator.model_registry import model_registry as registry
 
 logger = logging.getLogger(__name__)
-registry = ModelRegistry()
 
 
 def _get_default_vision_model() -> str:
@@ -39,40 +40,41 @@ class LLMLocker:
     """Safely manages universal model switching."""
     
     @classmethod
-    def _live_model_info(cls, ollama_name: str) -> Optional[Dict[str, Any]]:
+    def _live_model_info(cls, model_id: str) -> Optional[Dict[str, Any]]:
+        """Describe a model that is NOT in the static registry, from the local cache.
+
+        Was a POST to Ollama's /api/show. With Ollama gone that always returned None, and
+        `analyze_swap` turns None into a hard block — so ANY model absent from
+        known_models.json became un-selectable. That matters directly for the model
+        browser: a freshly downloaded MLX checkpoint has no registry row by definition.
+
+        Everything here is read off disk: exact weight bytes from the checkpoint, capability
+        flags from the cached config.json. Returns None only when the model genuinely is not
+        downloaded.
         """
-        Query Ollama /api/show for a model that is not in the static registry.
-        Returns a minimal dict with size_gb, ram_required_gb, supports_vision.
-        Returns None if Ollama is unreachable or model is unknown.
-        """
-        import urllib.request
-        from config import settings as _s
         try:
-            import json as _json
-            req = urllib.request.Request(
-                f"{_s.ollama_base_url}/api/show",
-                data=_json.dumps({"name": ollama_name}).encode(),
-                headers={"Content-Type": "application/json"},
-                method="POST",
-            )
-            with urllib.request.urlopen(req, timeout=5) as resp:
-                data = _json.loads(resp.read().decode())
-            size_bytes = data.get("size", 0)
-            size_gb = size_bytes / (1024 ** 3)
-            ram_gb = round(size_gb * 1.3, 1)
-            # Build A (2026-07-07): stop hardcoding vision=False. The /api/show
-            # payload carries a `capabilities` array — parse it so an uncurated
-            # vision model (e.g. Qwen-VL) is correctly recognized instead of being
-            # told to install granite.
+            from services.model_presence import is_present
+            from services.model_sizing import exact_weight_gb
+
+            if not is_present(model_id):
+                return None
+            size_gb = exact_weight_gb(model_id) or 0.0
+
             supports_vision = False
             try:
-                from evaluator.capability_probe import OllamaCapabilityProbe
-                supports_vision = OllamaCapabilityProbe.from_show(ollama_name, data).vision
+                from evaluator.capability_probe import probe_capabilities
+                pc = probe_capabilities(model_id, provider="mlx")
+                if pc:
+                    supports_vision = bool(pc.vision)
             except Exception:
                 pass
+
             return {
                 "size_gb": size_gb,
-                "ram_required_gb": ram_gb,
+                # Weights plus room for KV and activations. `model_sizing.fit()` is the
+                # precise answer; this stays a cheap estimate because the caller only uses
+                # it for a headroom sanity check.
+                "ram_required_gb": round(size_gb * 1.3, 1),
                 "supports_vision": supports_vision,
             }
         except Exception:
@@ -94,34 +96,16 @@ class LLMLocker:
         model_info = registry.get_model(target_ollama_name)
         _live: Optional[Dict[str, Any]] = None
 
-        # v1.8.0 (Phase 2): llama-server sidecar swaps are permitted. The API
-        # layer is expected to call `sidecar_manager.ensure_started()` before
-        # invoking analyze_swap; we still defend here with a cheap health
-        # check so a ghost request can't silently swap to a dead backend.
-        if model_info and getattr(model_info, "provider", "ollama") == "llama_server":
-            try:
-                from services.llm_provider import health_check_sync, Provider
-                if not health_check_sync(Provider.LLAMA_SERVER):
-                    return (
-                        False,
-                        f"llama-server sidecar is not responding on the configured port. "
-                        f"Click 'Start' in the Locker's Sidecar panel or check the binary/model paths.",
-                        {},
-                    )
-            except Exception as _e:
-                logger.debug(f"[LLMLocker] sidecar health probe failed: {_e}")
-                return (False, "Could not probe llama-server health.", {})
-
         if not model_info:
             # Not in registry — query Ollama live instead of hard-blocking
             _live = cls._live_model_info(target_ollama_name)
             if _live is None:
                 return (
                     False,
-                    f"Model '{target_ollama_name}' is not installed in Ollama or Ollama is unreachable.",
+                    f"Model '{target_ollama_name}' is not downloaded. Get it from LLM Studio first.",
                     {},
                 )
-            logger.info(f"[LLMLocker] '{target_ollama_name}' not in registry — using live Ollama data.")
+            logger.info(f"[LLMLocker] '{target_ollama_name}' not in registry — using on-disk data.")
         else:
             if role not in model_info.supported_roles:
                 # Still allow the swap — roles in registry are advisory, not a hard gate
@@ -133,8 +117,8 @@ class LLMLocker:
         sys_ram = hw.memory_gb
         
         # Calculate memory delta
-        current_main = settings.ollama_model
-        current_fast = getattr(settings, 'ollama_fast_model', "")
+        current_main = settings.main_model
+        current_fast = getattr(settings, 'fast_model', "")
         current_vision = getattr(settings, 'vision_model', "")
         
         # We need a rough estimate of currently loaded required RAM
@@ -142,9 +126,9 @@ class LLMLocker:
         target_ram = model_info.min_ram_gb if model_info else int(_live["ram_required_gb"])
         
         if role == "main_model":
-            changes_key = "ollama_model"
+            changes_key = "main_model"
         elif role == "fast_model":
-            changes_key = "ollama_fast_model"
+            changes_key = "fast_model"
         elif role == "embedding_model":
             changes_key = "embedding_model"
         elif role == "vision_model":
@@ -172,7 +156,7 @@ class LLMLocker:
                        f"Vision tasks will now be handled by the main model (no standalone vision model needed).")
             else:
                 current_vision = settings.vision_model
-                current_main = settings.ollama_model
+                current_main = settings.main_model
                 if current_vision == current_main:
                     default_vision = _get_default_vision_model()
                     changes["vision_model"] = default_vision
@@ -187,7 +171,7 @@ class LLMLocker:
                        f"Vision tasks will now be handled by the fast model.")
             else:
                 current_vision = settings.vision_model
-                current_fast = settings.ollama_fast_model
+                current_fast = settings.fast_model
                 if current_vision == current_fast:
                     default_vision = _get_default_vision_model()
                     changes["vision_model"] = default_vision
@@ -202,22 +186,36 @@ class LLMLocker:
         if target_ram > sys_ram:
             return False, f"INSUFFICIENT UNIFIED MEMORY. {target_ollama_name} requires minimum {target_ram}GB RAM. Your Mac has {sys_ram}GB.", {}
 
-        # Combined RAM headroom check — estimate VRAM footprint for concurrent models
-        # On Apple Silicon, Ollama uses unified memory. Models are swapped in/out,
-        # so typically only 2 models are loaded simultaneously (main + one of fast/vision).
-        # We estimate concurrent VRAM as disk_size * 1.2 (weights + KV cache), NOT min_ram_gb
-        # which is the standalone system requirement and already includes OS overhead.
+        # Combined memory headroom for concurrently-resident models.
+        #
+        # This used to be `disk_size_gb * 1.2` from the registry — a declared size times a
+        # magic factor, which is exactly the guesswork `model_sizing` replaced (the old
+        # estimator was off by −16 % to +99 %, and reported 0.0 GB for both arctic builds,
+        # which read as "fits"). Weights are now read from the checkpoint.
+        #
+        # The concurrency model changed too. The old comment reasoned "Ollama swaps models
+        # in/out, so typically only 2 are loaded" — MLX has no such rotation and holds every
+        # loaded model until something evicts it, so assuming 2 UNDERSTATES the footprint.
         OS_HEADROOM_GB = 3  # macOS, app, embeddings, system services
         
         def _model_vram(name: str) -> float:
-            """Estimate actual VRAM footprint for a loaded model."""
-            # If this is the target we already have live data for, use it
-            if name == target_ollama_name and _live:
-                return _live["size_gb"] * 1.2
+            """Resident cost of a loaded model, in GB: exact weights + activation slack."""
+            if not name:
+                return 0.0
+            try:
+                from services.model_sizing import exact_weight_gb
+                w = exact_weight_gb(name)
+                if w:
+                    # 1.2× for activations/scratch, matching model_sizing.fit's factor. KV is
+                    # excluded deliberately — it scales with context, and this check is about
+                    # whether the SET of models can co-reside at all.
+                    return round(w * 1.2, 2)
+            except Exception:
+                pass
             info = registry.get_model(name)
             if info and info.disk_size_gb > 0:
-                return info.disk_size_gb * 1.2  # weights + KV cache overhead
-            return 3.0  # conservative default for unknown models without live data
+                return info.disk_size_gb * 1.2
+            return 3.0  # conservative default for an unknown, unmeasurable model
         
         if role == "main_model":
             main_vram = _model_vram(target_ollama_name)
@@ -253,7 +251,7 @@ class LLMLocker:
 
         # Context extraction (P7: informational only). This is the model's NATIVE
         # window shown in the swap summary. The window the app actually uses at
-        # runtime is set by ollama_service.effective_num_ctx_cap (RAM-tier-aware) +
+        # runtime is set by llm_runtime.effective_num_ctx_cap (RAM-tier-aware) +
         # compute_num_ctx per call — NOT by this value. No code reads
         # LOCALBOOK_MAX_RAG_CONTEXT; it's a display/record field, so keep it as the
         # native ceiling and let the runtime cap govern.
@@ -263,117 +261,80 @@ class LLMLocker:
         return True, msg, changes
 
     @classmethod
-    def execute_swap(cls, target_ollama_name: str, role: str) -> str:
-        """
-        Executes the swap physically into the environment and config states.
-        Wave 9.4: engine-aware — an MLX target flips the role's engine flag to "mlx"
-        (and sets the mlx_* model id); an Ollama target flips it back to "ollama". So
-        selecting an MLX model in the Locker adopts MLX with NO .env editing.
-        """
-        # MLX target → engine=mlx swap (bypasses Ollama analyze_swap / disk math).
-        if cls._is_mlx_target(target_ollama_name):
-            return cls._execute_mlx_swap(target_ollama_name, role)
+    def execute_swap(cls, target_model: str, role: str) -> str:
+        """Point `role` at `target_model` — persisted to .env and applied in-memory.
 
-        is_safe, message, changes = cls.analyze_swap(target_ollama_name, role)
+        There used to be two paths here: an MLX target flipped the role's `*_engine` flag to
+        "mlx" and set an `mlx_*` id, an Ollama target flipped it back. The v2.3.0 collapse
+        removed both the flags and the second engine, so a swap is now just "which checkpoint
+        does this role use".
+        """
+        is_safe, message, changes = cls.analyze_swap(target_model, role)
 
         if not is_safe:
             raise ModelSwapError(message)
 
-        # Ensure the role's engine flag reflects an Ollama target (undo a prior MLX pin).
-        _eng = {"main_model": "main_engine", "fast_model": "fast_engine",
-                "vision_model": "vision_engine", "embedding_model": "embed_engine"}.get(role)
-        if _eng:
-            changes[_eng] = "ollama"
-        # Option A (reverse) — switching MAIN back to Ollama returns vision to Ollama too;
-        # its runtime `resolve_vision_model` then rides the (vision-capable) main model.
+        # Option A — a vision-capable MAIN model absorbs the vision slot too (one gemma load
+        # serves text + vision; the memory win depends on NOT loading it twice).
         if role == "main_model":
-            changes["vision_engine"] = "ollama"
+            try:
+                from evaluator.capability_probe import probe_capabilities
+                caps = probe_capabilities(target_model)
+                if caps and caps.vision:
+                    changes["vision_model"] = target_model
+                    message += " (vision follows — Option A)"
+            except Exception:
+                pass
 
         # Write changes to the config environment
         cls._patch_environment(changes)
 
         return message
 
-    @staticmethod
-    def _is_mlx_target(name: str) -> bool:
-        """True if `name` refers to an MLX model (a configured mlx_* id or a known MLX org repo)."""
-        from config import settings as s
-        if name in {getattr(s, "mlx_main_model", None), getattr(s, "mlx_fast_model", None),
-                    getattr(s, "mlx_vision_model", None), getattr(s, "mlx_embedding_model", None)}:
-            return True
-        return "/" in name and any(name.startswith(o) for o in (
-            "mlx-community/", "Runpod/", "lmstudio-community/", "unsloth/",
-            "AITRADER/", "themindstudio/"))
-
     @classmethod
-    def _execute_mlx_swap(cls, mlx_model: str, role: str) -> str:
-        """Flip a role to the MLX engine + set its mlx model id. Persisted + in-memory."""
-        role_map = {
-            "main_model": ("main_engine", "mlx_main_model"),
-            "fast_model": ("fast_engine", "mlx_fast_model"),
-            "vision_model": ("vision_engine", "mlx_vision_model"),
-            "embedding_model": ("embed_engine", "mlx_embedding_model"),
-        }
-        if role not in role_map:
-            raise ModelSwapError(f"MLX engine swap is not supported for role '{role}'")
-        eng_attr, model_attr = role_map[role]
-        changes = {eng_attr: "mlx", model_attr: mlx_model}
-        # Option A — a vision-capable MLX MAIN model absorbs the vision slot too (one gemma
-        # load serves text + vision; the memory win depends on NOT loading it twice). Mirrors
-        # the Ollama `resolve_vision_model` behaviour. Only when the model actually has vision.
-        extra = ""
-        if role == "main_model":
-            try:
-                from evaluator.capability_probe import probe_capabilities
-                caps = probe_capabilities(mlx_model, provider="mlx")
-                if caps and caps.vision:
-                    changes["vision_engine"] = "mlx"
-                    changes["mlx_vision_model"] = mlx_model
-                    extra = " (vision follows — Option A)"
-            except Exception:
-                pass
-        cls._patch_environment(changes)
-        # When the user has gone all-MLX for the text/vision roles, bring the two remaining
-        # capabilities onto MLX too and kick off their downloads in the background NOW — so the
-        # first time they're used the model is already on disk instead of stalling on a lazy
-        # first-use fetch mid-session (user requests 2026-07-17 image, 2026-07-22 embeddings):
-        #   • image generation (klein/mflux, ~4 GB) — else "Klein model not installed"
-        #   • embeddings (arctic-embed-l-v2.0, ~0.6 GB) — else the first RAG search / @curator
-        #     routing / constellation clustering / memory recall blocks on the download.
-        # Embeddings run the SAME arctic model at the SAME 1024 dim as Ollama → NO re-index; both
-        # hooks are fallback-safe (a failed download just falls back to the Ollama path).
+    def _check_mlx_swap_safe(cls, mlx_model: str, role: str) -> None:
+        """Refuse a swap that cannot run on this machine. Raises ModelSwapError.
+
+        Two failure modes, both silent before this existed:
+          · the model is not on disk — the swap "succeeds" and the app then stalls on a
+            multi-GB download inside the user's first request, or fails outright offline;
+          · the model does not fit — on a 16 GB box that means swap-death or, at the extreme
+            documented in mlx-lm#883, a GPU watchdog reboot, because wired memory blocks
+            Jetsam so the driver panics instead of the process being killed.
+
+        Deliberately permissive where the data is missing: an unknown SIZE warns rather than
+        refuses. Refusing on a guess is how the old estimator's 0.00 GB for arctic would have
+        blocked a model that runs fine.
+        """
         try:
-            from config import settings as _s
-            text_all_mlx = (getattr(_s, "main_engine", "") == "mlx"
-                            and getattr(_s, "fast_engine", "") == "mlx"
-                            and getattr(_s, "vision_engine", "") == "mlx")
-            if text_all_mlx:
-                import asyncio
-                from services.mlx_download import mlx_download_manager
+            from services.model_presence import is_present
+            if not is_present(mlx_model):
+                raise ModelSwapError(
+                    f"{mlx_model} is not downloaded. Download it first — swapping now would "
+                    f"stall your next request on a multi-GB download (or fail offline).")
+        except ModelSwapError:
+            raise
+        except Exception as e:
+            logger.debug(f"[locker] MLX presence check skipped: {e}")
 
-                def _prefetch(model_id: str) -> bool:
-                    """Start a background HF download so the model is ready, not fetched mid-use.
-                    No running loop (sync caller) → returns False; the model still downloads lazily."""
-                    if not model_id:
-                        return False
-                    try:
-                        asyncio.get_running_loop().create_task(mlx_download_manager.start(model_id))
-                        return True
-                    except RuntimeError:
-                        return False
+        try:
+            from services.model_sizing import fit
+            f = fit(mlx_model, 16384)
+            if f.get("fits") is False:
+                raise ModelSwapError(
+                    f"{mlx_model} needs ~{f.get('total_needed_gb')} GB (weights + KV at 16k) "
+                    f"but this machine's budget is {f.get('budget_gb')} GB. "
+                    f"Loading it risks swap-death on a {round(f.get('working_set_gb', 0))} GB "
+                    f"working set. Choose a smaller model or quantization.")
+            if f.get("recommendation") == "tight":
+                logger.warning(f"[locker] {mlx_model} is a TIGHT fit "
+                               f"({f.get('total_needed_gb')} of {f.get('budget_gb')} GB) — "
+                               f"expect memory pressure with other models resident")
+        except ModelSwapError:
+            raise
+        except Exception as e:
+            logger.debug(f"[locker] MLX fit check skipped: {e}")
 
-                if getattr(_s, "image_engine", "ollama") != "mlx":
-                    cls._patch_environment({"image_engine": "mlx"})
-                    if _prefetch(getattr(_s, "mlx_image_model", "")):
-                        extra += " · image→MLX (klein downloading)"
-                if getattr(_s, "embed_engine", "ollama") != "mlx":
-                    cls._patch_environment({"embed_engine": "mlx"})
-                    if _prefetch(getattr(_s, "mlx_embedding_model", "")):
-                        extra += " · embed→MLX (arctic downloading)"
-        except Exception as _e:
-            logger.debug(f"[llm_locker] all-MLX prefetch hook skipped: {_e}")
-        return f"Switched {role} to the MLX engine: {mlx_model}{extra}"
-        
     @classmethod
     def _patch_environment(cls, changes: Dict[str, Any]):
         """Persists changes back to the .env file and reloads config settings."""
@@ -395,21 +356,18 @@ class LLMLocker:
                 
         # Apply the changes
         for k, v in changes.items():
+            # BARE field names: pydantic reads .env by field name, and a LOCALBOOK_-prefixed
+            # key is ignored for these. (Before the collapse the role keys mapped to
+            # LOCALBOOK_OLLAMA_* while the mlx_* keys were bare — folding the two together
+            # left duplicate entries where the later one silently won.)
             key_map = {
-                "ollama_main_model": "LOCALBOOK_OLLAMA_MODEL",
-                "ollama_model": "LOCALBOOK_OLLAMA_MODEL",
-                "ollama_fast_model": "LOCALBOOK_OLLAMA_FAST_MODEL",
-                "vision_model": "LOCALBOOK_VISION_MODEL",
-                "embedding_model": "LOCALBOOK_EMBEDDING_MODEL",
+                "main_model": "main_model",
+                "fast_model": "fast_model",
+                "vision_model": "vision_model",
+                "image_model": "image_model",
+                "embedding_model": "embedding_model",
                 "embedding_dim": "LOCALBOOK_EMBEDDING_DIM",
                 "MAX_RAG_CONTEXT": "LOCALBOOK_MAX_RAG_CONTEXT",
-                # Wave 9.4 — engine flags + mlx model ids use BARE field names (pydantic
-                # reads these from .env by field name; LOCALBOOK_-prefixed keys are ignored).
-                "main_engine": "main_engine", "fast_engine": "fast_engine",
-                "vision_engine": "vision_engine", "image_engine": "image_engine",
-                "embed_engine": "embed_engine",
-                "mlx_main_model": "mlx_main_model", "mlx_fast_model": "mlx_fast_model",
-                "mlx_vision_model": "mlx_vision_model", "mlx_embedding_model": "mlx_embedding_model",
             }
             env_key = key_map.get(k, k.upper())
             
@@ -421,19 +379,19 @@ class LLMLocker:
                 env_dict[env_key] = str(v)
                 
         # Sync back to memory 
-        if "ollama_model" in changes:
-            settings.ollama_model = changes["ollama_model"]
-        if "ollama_fast_model" in changes:
-            setattr(settings, 'ollama_fast_model', changes["ollama_fast_model"])
+        if "main_model" in changes:
+            settings.main_model = changes["main_model"]
+        if "fast_model" in changes:
+            setattr(settings, 'fast_model', changes["fast_model"])
         if "vision_model" in changes:
             setattr(settings, 'vision_model', changes["vision_model"])
         if "embedding_model" in changes:
             setattr(settings, 'embedding_model', changes["embedding_model"])
         if "embedding_dim" in changes:
             setattr(settings, 'embedding_dim', int(changes["embedding_dim"]))
-        # Wave 9.4 — sync engine flags + mlx model ids to the live settings (session-immediate).
-        for _attr in ("main_engine", "fast_engine", "vision_engine", "image_engine", "embed_engine",
-                      "mlx_main_model", "mlx_fast_model", "mlx_vision_model", "mlx_embedding_model"):
+        # Sync role models to the live settings (session-immediate).
+        for _attr in ("main_model", "fast_model", "vision_model", "image_model",
+                      "embedding_model"):
             if _attr in changes:
                 setattr(settings, _attr, changes[_attr])
             

@@ -68,8 +68,7 @@ class KnowledgeGraphService:
         self._cache_loaded = False
         
         # LLM settings
-        self.ollama_url = settings.ollama_base_url
-        self.extraction_model = settings.ollama_fast_model
+        self.extraction_model = settings.fast_model
         
         # Clustering settings
         self.min_cluster_size = 3
@@ -80,8 +79,8 @@ class KnowledgeGraphService:
     async def get_embedding(self, text: str) -> List[float]:
         """Generate embedding for text via the canonical Ollama service."""
         try:
-            from services.ollama_service import ollama_service
-            data = await ollama_service.embed(text, model=self.embedding_model_name)
+            from services.llm_runtime import llm_runtime
+            data = await llm_runtime.embed(text, model=self.embedding_model_name)
             embs = data.get("embeddings") or []
             if embs:
                 return embs[0]
@@ -865,8 +864,8 @@ Respond ONLY with JSON:"""
 
 What theme or topic connects them? Respond with just a 2-4 word name (no punctuation):"""
             
-            from services.ollama_service import ollama_service
-            _resp = await ollama_service.generate(
+            from services.llm_runtime import llm_runtime
+            _resp = await llm_runtime.generate(
                 prompt=prompt,
                 model=self.extraction_model,
                 temperature=0.3,
@@ -1204,13 +1203,13 @@ What theme or topic connects them? Respond with just a 2-4 word name (no punctua
     
     async def _call_llm(self, prompt: str, max_retries: int = 2) -> Optional[Dict]:
         """Call LLM and parse JSON response with adaptive timeout and retry"""
-        from services.ollama_service import ollama_service
+        from services.llm_runtime import llm_runtime
         for attempt in range(max_retries):
             # Adaptive timeout: shorter first attempt, longer on retry.
             timeout = 15.0 if attempt == 0 else 30.0
             try:
                 print(f"[KG-LLM] Calling {self.extraction_model} (attempt {attempt + 1}, timeout={timeout}s)")
-                _resp = await ollama_service.generate(
+                _resp = await llm_runtime.generate(
                     prompt=prompt,
                     model=self.extraction_model,
                     temperature=0.1,
@@ -1218,7 +1217,7 @@ What theme or topic connects them? Respond with just a 2-4 word name (no punctua
                     timeout=timeout,
                 )
                 text = _resp.get("response", "")
-                # ollama_service returns an empty response on timeout/failure
+                # llm_runtime returns an empty response on timeout/failure
                 # (rather than raising) — treat that as the retry trigger.
                 if not text:
                     if attempt < max_retries - 1:

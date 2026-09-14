@@ -184,7 +184,7 @@ async def _dispatch_multi_intent(chat_query: "ChatQuery", agent_type: str, handl
     pre-multi-intent error recovery path.
     """
     from services.intent_classifier import classify_intent
-    from services.ollama_service import ollama_service
+    from services.llm_runtime import llm_runtime
 
     q = chat_query.question
 

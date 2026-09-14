@@ -386,20 +386,6 @@ main() {
         fi
     }
 
-    ensure_ollama() {
-        if command -v ollama &>/dev/null; then
-            success "Ollama"
-            return
-        fi
-        info "Installing Ollama..."
-        brew install ollama
-        if command -v ollama &>/dev/null; then
-            success "Ollama installed"
-        else
-            fail "Ollama installation failed"
-            exit 1
-        fi
-    }
 
     ensure_brew_pkg() {
         local cmd="$1"
@@ -633,64 +619,12 @@ main() {
 
     download_models() {
         step 6 "Downloading AI models"
-        info "This downloads ~9GB of language models via Ollama"
+        info "Fetching the MLX models the app runs on"
         info "Download speed depends on your internet connection"
 
-        # Start Ollama if not running
-        if ! curl -s http://localhost:11434/api/tags >/dev/null 2>&1; then
-            info "Starting Ollama service..."
-            ollama serve >/dev/null 2>&1 &
-            local retries=0
-            while ! curl -s http://localhost:11434/api/tags >/dev/null 2>&1; do
-                sleep 2
-                retries=$((retries + 1))
-                if [ $retries -gt 15 ]; then
-                    fail "Ollama failed to start after 30 seconds"
-                    exit 1
-                fi
-            done
-            success "Ollama service started"
-        fi
-
-        local models
-        models=$(ollama list 2>/dev/null || echo "")
-
-        # Main model (System 2: chat, vision, synthesis) — gemma4:e4b is the
-        # v2.0 default (replaces olmo-3; see backend/config.py ollama_model).
-        if echo "$models" | grep -q "gemma4:e4b"; then
-            success "gemma4:e4b (already downloaded)"
-        else
-            info "Downloading gemma4:e4b (~9.6GB) — main model (chat + native vision)..."
-            ollama pull gemma4:e4b
-            success "gemma4:e4b downloaded"
-        fi
-
-        # NOTE: olmo-3 (legacy main) and granite3.2-vision (vision fallback) are
-        # NOT downloaded by default — gemma4 is the main model and absorbs the
-        # vision slot (Option A). Pull them manually only to swap/test via the
-        # LLM Locker: `ollama pull olmo-3:7b-instruct` / `ollama pull granite3.2-vision:2b`.
-
-        # Fast model (System 1: quick extraction, classification)
-        if echo "$models" | grep -q "phi4-mini"; then
-            success "phi4-mini (already downloaded)"
-        else
-            info "Downloading phi4-mini (~2GB) — fast response model..."
-            ollama pull phi4-mini
-            success "phi4-mini downloaded"
-        fi
-
-        # Embedding model (vector search)
-        if echo "$models" | grep -q "snowflake-arctic-embed2"; then
-            success "snowflake-arctic-embed2 (already downloaded)"
-        else
-            info "Downloading snowflake-arctic-embed2 (~500MB) — embedding model..."
-            ollama pull snowflake-arctic-embed2
-            success "snowflake-arctic-embed2 downloaded"
-        fi
-
-        # (Vision is handled by gemma4's native vision — no separate granite pull.)
-
-        echo ""
+        # The Ollama pulls that used to be here (gemma4 / phi4-mini /
+        # snowflake-arctic-embed2, ~9 GB, preceded by `ollama serve`) are gone with the
+        # engine. MLX checkpoints land in the HuggingFace cache via the Python block below.
 
         # ── Python-based models (need venv) ──────────────────────────────
         info "Checking additional AI models..."
@@ -787,24 +721,25 @@ print('Reranker model cached and validated successfully')
         else
             info "Downloading Kokoro TTS model (~330MB) — text-to-speech engine..."
             python -c "
-import os, signal, requests
-from requests.adapters import HTTPAdapter
+import os, sys, signal
 def _alarm(*_): raise SystemExit('Download timed out')
 signal.signal(signal.SIGALRM, _alarm)
-signal.alarm(900)  # 15-minute hard timeout
-class _T(HTTPAdapter):
-    def send(self, *a, **kw):
-        kw.setdefault('timeout', (30, 120))
-        return super().send(*a, **kw)
-from huggingface_hub import configure_http_backend
-def _f():
-    s = requests.Session()
-    s.mount('http://', _T(max_retries=3))
-    s.mount('https://', _T(max_retries=3))
-    if os.environ.get('LOCALBOOK_SSL_NOVERIFY') == '1':
-        s.verify = False
-    return s
-configure_http_backend(backend_factory=_f)
+signal.alarm(900)
+# ONE transport implementation (backend/services/hf_transport.py). This block used to call
+# huggingface_hub's configure_http_backend, REMOVED in hf_hub 1.x — it raised ImportError on
+# every run, so the SSL bypass never applied and these downloads failed on any machine needing it.
+# Derive the backend dir from the running interpreter — these blocks execute inside
+# <backend>/.venv, so this is correct on BOTH the fresh and upgrade paths (INSTALL_DIR is
+# empty during a fresh install) and independent of cwd.
+for _cand in (os.path.dirname(os.path.dirname(os.path.dirname(sys.executable))),
+              os.path.join(os.getcwd(), 'backend'), os.getcwd()):
+    if os.path.isfile(os.path.join(_cand, 'services', 'hf_transport.py')):
+        sys.path.insert(0, _cand); break
+try:
+    from services.hf_transport import install_hf_transport
+    install_hf_transport()
+except Exception as _e:
+    print(f'[install] hf transport not configured ({_e}); using library defaults')
 from huggingface_hub import snapshot_download
 local_dir = snapshot_download(
     repo_id='mlx-community/Kokoro-82M-bf16',
@@ -826,24 +761,25 @@ print(f'Kokoro model cached at: {local_dir}')
         else
             info "Downloading Whisper transcription model (~150MB) — audio/video transcription..."
             python -c "
-import os, signal, requests
-from requests.adapters import HTTPAdapter
+import os, sys, signal
 def _alarm(*_): raise SystemExit('Download timed out')
 signal.signal(signal.SIGALRM, _alarm)
-signal.alarm(600)  # 10-minute hard timeout
-class _T(HTTPAdapter):
-    def send(self, *a, **kw):
-        kw.setdefault('timeout', (30, 120))
-        return super().send(*a, **kw)
-from huggingface_hub import configure_http_backend
-def _f():
-    s = requests.Session()
-    s.mount('http://', _T(max_retries=3))
-    s.mount('https://', _T(max_retries=3))
-    if os.environ.get('LOCALBOOK_SSL_NOVERIFY') == '1':
-        s.verify = False
-    return s
-configure_http_backend(backend_factory=_f)
+signal.alarm(600)
+# ONE transport implementation (backend/services/hf_transport.py). This block used to call
+# huggingface_hub's configure_http_backend, REMOVED in hf_hub 1.x — it raised ImportError on
+# every run, so the SSL bypass never applied and these downloads failed on any machine needing it.
+# Derive the backend dir from the running interpreter — these blocks execute inside
+# <backend>/.venv, so this is correct on BOTH the fresh and upgrade paths (INSTALL_DIR is
+# empty during a fresh install) and independent of cwd.
+for _cand in (os.path.dirname(os.path.dirname(os.path.dirname(sys.executable))),
+              os.path.join(os.getcwd(), 'backend'), os.getcwd()):
+    if os.path.isfile(os.path.join(_cand, 'services', 'hf_transport.py')):
+        sys.path.insert(0, _cand); break
+try:
+    from services.hf_transport import install_hf_transport
+    install_hf_transport()
+except Exception as _e:
+    print(f'[install] hf transport not configured ({_e}); using library defaults')
 from huggingface_hub import snapshot_download
 local_dir = snapshot_download(
     repo_id='mlx-community/whisper-base-mlx',
@@ -856,6 +792,109 @@ print(f'Whisper model cached at: {local_dir}')
                 success "Whisper transcription model downloaded"
             fi
         fi
+
+        # MLX embedding model (~1.1GB) — in-process embeddings via MLX (arctic-embed-l-v2.0 bf16).
+        # Size MEASURED 2026-08-19 (1.058 GiB on disk); the old ~2.3GB figure was ~2x over.
+        # Same model + 1024 dim as the Ollama `snowflake-arctic-embed2` → same vector space, no re-index.
+        # Pre-download here (with the SSL-tolerant session below) so the frozen app never has to fetch it
+        # at first use, where OpenSSL can't verify the HF cert. Skip for Ollama-embed users
+        # (LOCALBOOK_EMBED_ENGINE=ollama) — the default is mlx.
+        if [ "${LOCALBOOK_EMBED_ENGINE:-mlx}" = "ollama" ]; then
+            info "MLX embeddings disabled (LOCALBOOK_EMBED_ENGINE=ollama) — skipping bf16 embed download"
+        else
+            local embed_hf_cache="$HOME/.cache/huggingface/hub/models--mlx-community--snowflake-arctic-embed-l-v2.0-bf16"
+            if [ -d "$embed_hf_cache" ]; then
+                success "MLX embedding model (already cached)"
+            else
+                info "Downloading MLX embedding model (~1.1GB) — in-process embeddings engine..."
+                python -c "
+import os, sys, signal
+def _alarm(*_): raise SystemExit('Download timed out')
+signal.signal(signal.SIGALRM, _alarm)
+signal.alarm(1200)
+# ONE transport implementation (backend/services/hf_transport.py). This block used to call
+# huggingface_hub's configure_http_backend, REMOVED in hf_hub 1.x — it raised ImportError on
+# every run, so the SSL bypass never applied and these downloads failed on any machine needing it.
+# Derive the backend dir from the running interpreter — these blocks execute inside
+# <backend>/.venv, so this is correct on BOTH the fresh and upgrade paths (INSTALL_DIR is
+# empty during a fresh install) and independent of cwd.
+for _cand in (os.path.dirname(os.path.dirname(os.path.dirname(sys.executable))),
+              os.path.join(os.getcwd(), 'backend'), os.getcwd()):
+    if os.path.isfile(os.path.join(_cand, 'services', 'hf_transport.py')):
+        sys.path.insert(0, _cand); break
+try:
+    from services.hf_transport import install_hf_transport
+    install_hf_transport()
+except Exception as _e:
+    print(f'[install] hf transport not configured ({_e}); using library defaults')
+from huggingface_hub import snapshot_download
+local_dir = snapshot_download(
+    repo_id='mlx-community/snowflake-arctic-embed-l-v2.0-bf16',
+    allow_patterns=['config.json', '*.safetensors', '*.json', 'tokenizer*', '*.txt', '*.model', 'sentencepiece*'],
+    max_workers=1,
+)
+signal.alarm(0)
+print(f'MLX embedding model cached at: {local_dir}')
+" || warn "MLX embedding download failed (non-fatal — app falls back to Ollama embeddings until cached)"
+                if [ -d "$embed_hf_cache" ]; then
+                    success "MLX embedding model downloaded"
+                fi
+            fi
+        fi
+
+        # MLX MAIN + FAST models (~6.8GB total) — Stage 3.7 of the MLX cutover.
+        # Once Ollama is removed these are the ONLY way the app can answer anything, so a cold
+        # HF cache means a machine that cannot chat at all. Pre-download here rather than
+        # letting a ~4.8GB fetch land inside the user's first message, where there is no UI,
+        # no progress and (in the frozen app) an OpenSSL that cannot verify the HF cert.
+        # Non-fatal per model, but the MAIN model gets escalated copy — losing it is not a
+        # degraded install, it is a non-functional one.
+        for _mlx_pair in "mlx-community/gemma-4-e4b-it-4bit:4.8GB:main chat + vision" \
+                         "mlx-community/Phi-4-mini-instruct-4bit:2.0GB:fast/background"; do
+            _mlx_id="${_mlx_pair%%:*}"
+            _mlx_rest="${_mlx_pair#*:}"
+            _mlx_size="${_mlx_rest%%:*}"
+            _mlx_role="${_mlx_rest#*:}"
+            _mlx_cache="$HOME/.cache/huggingface/hub/models--$(echo "$_mlx_id" | sed 's|/|--|')"
+            if [ -d "$_mlx_cache" ]; then
+                success "MLX $_mlx_role model (already cached)"
+                continue
+            fi
+            info "Downloading MLX $_mlx_role model ($_mlx_size) — $_mlx_id ..."
+            MLX_TARGET_ID="$_mlx_id" python -c "
+import os, sys, signal
+def _alarm(*_): raise SystemExit('Download timed out')
+signal.signal(signal.SIGALRM, _alarm)
+signal.alarm(2700)   # 45 min — a 4.8GB fetch on a slow link
+for _cand in (os.path.dirname(os.path.dirname(os.path.dirname(sys.executable))),
+              os.path.join(os.getcwd(), 'backend'), os.getcwd()):
+    if os.path.isfile(os.path.join(_cand, 'services', 'hf_transport.py')):
+        sys.path.insert(0, _cand); break
+try:
+    from services.hf_transport import install_hf_transport
+    install_hf_transport()
+except Exception as _e:
+    print(f'[install] hf transport not configured ({_e}); using library defaults')
+from huggingface_hub import snapshot_download
+# allow_patterns matters: a wrong set yields a snapshot that loads on mlx-lm but NOT mlx-vlm
+# (gemma needs its processor/preprocessor config for the vision path).
+local_dir = snapshot_download(
+    repo_id=os.environ['MLX_TARGET_ID'],
+    allow_patterns=['*.json', '*.safetensors', 'tokenizer*', '*.txt', '*.model', '*.jinja'],
+    max_workers=1,
+)
+signal.alarm(0)
+print(f'cached at: {local_dir}')
+" || {
+                if [ "$_mlx_role" = "main chat + vision" ]; then
+                    warn "MAIN MLX model download FAILED — the app cannot chat until this is"
+                    warn "  downloaded. Re-run the installer, or fetch it in-app from LLM Studio."
+                else
+                    warn "MLX $_mlx_role model download failed (non-fatal — retry from LLM Studio)"
+                fi
+            }
+            [ -d "$_mlx_cache" ] && success "MLX $_mlx_role model downloaded"
+        done
 
         # Playwright Chromium browser — video slides, Mermaid diagrams, social features
         local pw_cache="$HOME/Library/Caches/ms-playwright"
@@ -1033,8 +1072,15 @@ print(f'Whisper model cached at: {local_dir}')
         info "Current version:  ${BOLD}v${current_ver}${NC}"
 
         # Fetch latest branch + all tags so we can resolve the target release tag.
+        # MUST include the TRACKED branch, not just master: under `--branch dev` the
+        # comparison below resolves `origin/dev`, and if that ref was never fetched it is
+        # stale (or absent), so the check either reports "already up to date" against old
+        # code or upgrades to it. Same failure clone_repo guards against — this path was
+        # missed. (Reported 2026-08-21.)
         info "Checking for updates..."
-        git fetch origin "$REPO_BRANCH" --tags 2>/dev/null || git fetch --tags 2>/dev/null
+        local fetch_refs=("$REPO_BRANCH")
+        [ "$TRACK_BRANCH" != "$REPO_BRANCH" ] && fetch_refs=("$TRACK_BRANCH" "$REPO_BRANCH")
+        git fetch origin "${fetch_refs[@]}" --tags 2>/dev/null || git fetch --tags 2>/dev/null
 
         # Resolve the ref we should upgrade to (latest release tag by default;
         # a branch HEAD under --dev/--branch; branch fallback if no tag resolves).
@@ -1193,18 +1239,8 @@ print(f'Whisper model cached at: {local_dir}')
         # Step 6: Verify AI models
         step 6 "Verifying AI models"
 
-        # Check Ollama models
-        if ! curl -s http://localhost:11434/api/tags >/dev/null 2>&1; then
-            info "Starting Ollama service..."
-            ollama serve >/dev/null 2>&1 &
-            sleep 3
-        fi
-        local models
-        models=$(ollama list 2>/dev/null || echo "")
-        echo "$models" | grep -q "gemma4:e4b" && success "gemma4:e4b" || { info "Pulling gemma4:e4b (main + native vision)..."; ollama pull gemma4:e4b; }
-        echo "$models" | grep -q "phi4-mini" && success "phi4-mini" || { info "Pulling phi4-mini..."; ollama pull phi4-mini; }
-        echo "$models" | grep -q "snowflake-arctic-embed2" && success "snowflake-arctic-embed2" || { info "Pulling snowflake-arctic-embed2..."; ollama pull snowflake-arctic-embed2; }
-        # olmo-3 (legacy) + granite3.2-vision (vision fallback) intentionally NOT pulled — gemma4 covers main + vision.
+        # Ollama model verification removed with the engine — the MLX checkpoints are
+        # verified by the Python block below, which is now the only model check that matters.
 
         # Check Python-based models (reranker + TTS)
         # shellcheck disable=SC1091
@@ -1289,24 +1325,25 @@ print('Reranker cached and validated')
         else
             info "Downloading Kokoro TTS model (~330MB)..."
             python -c "
-import os, signal, requests
-from requests.adapters import HTTPAdapter
+import os, sys, signal
 def _alarm(*_): raise SystemExit('Download timed out')
 signal.signal(signal.SIGALRM, _alarm)
 signal.alarm(900)
-class _T(HTTPAdapter):
-    def send(self, *a, **kw):
-        kw.setdefault('timeout', (30, 120))
-        return super().send(*a, **kw)
-from huggingface_hub import configure_http_backend
-def _f():
-    s = requests.Session()
-    s.mount('http://', _T(max_retries=3))
-    s.mount('https://', _T(max_retries=3))
-    if os.environ.get('LOCALBOOK_SSL_NOVERIFY') == '1':
-        s.verify = False
-    return s
-configure_http_backend(backend_factory=_f)
+# ONE transport implementation (backend/services/hf_transport.py). This block used to call
+# huggingface_hub's configure_http_backend, REMOVED in hf_hub 1.x — it raised ImportError on
+# every run, so the SSL bypass never applied and these downloads failed on any machine needing it.
+# Derive the backend dir from the running interpreter — these blocks execute inside
+# <backend>/.venv, so this is correct on BOTH the fresh and upgrade paths (INSTALL_DIR is
+# empty during a fresh install) and independent of cwd.
+for _cand in (os.path.dirname(os.path.dirname(os.path.dirname(sys.executable))),
+              os.path.join(os.getcwd(), 'backend'), os.getcwd()):
+    if os.path.isfile(os.path.join(_cand, 'services', 'hf_transport.py')):
+        sys.path.insert(0, _cand); break
+try:
+    from services.hf_transport import install_hf_transport
+    install_hf_transport()
+except Exception as _e:
+    print(f'[install] hf transport not configured ({_e}); using library defaults')
 from huggingface_hub import snapshot_download
 local_dir = snapshot_download(
     repo_id='mlx-community/Kokoro-82M-bf16',
@@ -1325,24 +1362,25 @@ print(f'Kokoro cached at: {local_dir}')
         else
             info "Downloading Whisper transcription model (~150MB)..."
             python -c "
-import os, signal, requests
-from requests.adapters import HTTPAdapter
+import os, sys, signal
 def _alarm(*_): raise SystemExit('Download timed out')
 signal.signal(signal.SIGALRM, _alarm)
 signal.alarm(600)
-class _T(HTTPAdapter):
-    def send(self, *a, **kw):
-        kw.setdefault('timeout', (30, 120))
-        return super().send(*a, **kw)
-from huggingface_hub import configure_http_backend
-def _f():
-    s = requests.Session()
-    s.mount('http://', _T(max_retries=3))
-    s.mount('https://', _T(max_retries=3))
-    if os.environ.get('LOCALBOOK_SSL_NOVERIFY') == '1':
-        s.verify = False
-    return s
-configure_http_backend(backend_factory=_f)
+# ONE transport implementation (backend/services/hf_transport.py). This block used to call
+# huggingface_hub's configure_http_backend, REMOVED in hf_hub 1.x — it raised ImportError on
+# every run, so the SSL bypass never applied and these downloads failed on any machine needing it.
+# Derive the backend dir from the running interpreter — these blocks execute inside
+# <backend>/.venv, so this is correct on BOTH the fresh and upgrade paths (INSTALL_DIR is
+# empty during a fresh install) and independent of cwd.
+for _cand in (os.path.dirname(os.path.dirname(os.path.dirname(sys.executable))),
+              os.path.join(os.getcwd(), 'backend'), os.getcwd()):
+    if os.path.isfile(os.path.join(_cand, 'services', 'hf_transport.py')):
+        sys.path.insert(0, _cand); break
+try:
+    from services.hf_transport import install_hf_transport
+    install_hf_transport()
+except Exception as _e:
+    print(f'[install] hf transport not configured ({_e}); using library defaults')
 from huggingface_hub import snapshot_download
 local_dir = snapshot_download(
     repo_id='mlx-community/whisper-base-mlx',
@@ -1380,39 +1418,27 @@ print(f'Whisper cached at: {local_dir}')
             info "This enriches your search index with HyDE metadata and GraphRAG summaries."
             info "(May take several minutes depending on data size and local LLM speed)"
 
-            # Ensure Ollama is running (should be from Step 6, but verify)
-            if ! curl -s http://localhost:11434/api/tags >/dev/null 2>&1; then
-                info "Starting Ollama service for RAG upgrade..."
-                ollama serve >/dev/null 2>&1 &
-                local ollama_retries=0
-                while ! curl -s http://localhost:11434/api/tags >/dev/null 2>&1; do
-                    sleep 2
-                    ollama_retries=$((ollama_retries + 1))
-                    if [ $ollama_retries -gt 15 ]; then
-                        warn "Ollama failed to start — skipping RAG upgrade (will run on next upgrade)"
-                        break
-                    fi
-                done
+            # No engine health gate: this used to run only `if curl ollama` answered, so
+            # with Ollama gone the upgrade would be skipped forever AND the
+            # `.rag_v3_upgraded` sentinel below would never be written — meaning every future
+            # upgrade retried it and every one skipped again. The body runs unconditionally;
+            # upgrade_rag_v3.py reports its own failures.
+            # shellcheck disable=SC1091
+            source "$INSTALL_DIR/backend/.venv/bin/activate"
+
+            # Set LOCALBOOK_DATA_DIR so the upgrade script finds the right database
+            export LOCALBOOK_DATA_DIR="$DATA_DIR"
+
+            if python "$INSTALL_DIR/backend/scripts/upgrade_rag_v3.py" 2>&1; then
+                # Write sentinel so subsequent upgrades skip this step
+                date -u "+%Y-%m-%dT%H:%M:%SZ" > "$rag_v3_marker"
+                success "RAG V3 upgrade complete"
+            else
+                warn "RAG upgrade encountered issues (non-fatal — app will still work)"
+                info "You can re-run the upgrade later: cd $INSTALL_DIR/backend && python scripts/upgrade_rag_v3.py"
             fi
 
-            if curl -s http://localhost:11434/api/tags >/dev/null 2>&1; then
-                # shellcheck disable=SC1091
-                source "$INSTALL_DIR/backend/.venv/bin/activate"
-
-                # Set LOCALBOOK_DATA_DIR so the upgrade script finds the right database
-                export LOCALBOOK_DATA_DIR="$DATA_DIR"
-
-                if python "$INSTALL_DIR/backend/scripts/upgrade_rag_v3.py" 2>&1; then
-                    # Write sentinel so subsequent upgrades skip this step
-                    date -u "+%Y-%m-%dT%H:%M:%SZ" > "$rag_v3_marker"
-                    success "RAG V3 upgrade complete"
-                else
-                    warn "RAG upgrade encountered issues (non-fatal — app will still work)"
-                    info "You can re-run the upgrade later: cd $INSTALL_DIR/backend && python scripts/upgrade_rag_v3.py"
-                fi
-
-                deactivate
-            fi
+            deactivate
         else
             info "No existing vector data found — skipping RAG upgrade (not needed for fresh data)"
             success "RAG engine up to date"
@@ -1516,7 +1542,6 @@ print(f'Whisper cached at: {local_dir}')
         ensure_python
         ensure_node
         ensure_rust
-        ensure_ollama
         ensure_brew_pkg "ffmpeg" "ffmpeg" "ffmpeg (audio/video processing)"
         ensure_brew_pkg "tesseract" "tesseract" "Tesseract (OCR)"
         ensure_brew_pkg "espeak-ng" "espeak-ng" "espeak-ng (TTS phonemizer)"

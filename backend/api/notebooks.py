@@ -14,6 +14,7 @@ class NotebookCreate(BaseModel):
     title: str
     description: Optional[str] = None
     color: Optional[str] = None
+    type: Optional[str] = "standard"
 
 class Notebook(BaseModel):
     id: str
@@ -24,6 +25,8 @@ class Notebook(BaseModel):
     updated_at: str
     source_count: int = 0
     is_primary: bool = False
+    type: str = "standard"
+    config: Optional[dict] = None
 
 class NotebookColorUpdate(BaseModel):
     color: str
@@ -67,9 +70,12 @@ async def list_notebooks():
 
 @router.post("/", response_model=Notebook)
 async def create_notebook(notebook: NotebookCreate):
-    """Create a new notebook"""
-    result = await notebook_store.create(notebook.title, notebook.description, notebook.color)
-    return result
+    """Create a new notebook."""
+    return await notebook_store.create(
+        notebook.title, notebook.description, notebook.color,
+        type=notebook.type or "standard",
+    )
+
 
 @router.get("/{notebook_id}", response_model=Notebook)
 async def get_notebook(notebook_id: str):
@@ -88,7 +94,7 @@ async def delete_notebook(notebook_id: str):
     
     # Clean up all associated data
     cleanup_errors = []
-    
+
     # 1. Remove collector config + data directory
     try:
         notebook_data_dir = Path(settings.data_dir) / "notebooks" / notebook_id

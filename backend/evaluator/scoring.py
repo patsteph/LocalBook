@@ -331,7 +331,7 @@ async def score_faithfulness(answer: str, citations: list[dict], judge_model: st
     if not answer or not citations:
         return 50
     
-    from services.ollama_service import ollama_service
+    from services.llm_runtime import llm_runtime
     context = "\n---\n".join(c.get("text", "")[:500] for c in citations[:4])
     
     prompt = f"""Evaluate if this answer is FAITHFUL to the provided context.
@@ -347,7 +347,7 @@ Respond ONLY with JSON: {{"faithful": <0-100>, "reason": "<brief>"}}.
 100 = fully faithful, 50 = mixed, 0 = mostly hallucinated."""
     
     try:
-        result = await ollama_service.generate(
+        result = await llm_runtime.generate(
             prompt=prompt,
             model=judge_model,
             system="You are a strict faithfulness evaluator. Return only valid JSON.",
@@ -384,7 +384,7 @@ async def llm_judge_score(
     """
     # v1.8.0: route via ollama_client (provider-aware). Works for both Ollama
     # and llama-server sidecar judge models, and respects ollama_base_url.
-    from services.ollama_service import ollama_service
+    from services.llm_runtime import llm_runtime
 
     prompt = f"""You are an expert evaluator. Score the following AI answer on a scale of 0-100.
 
@@ -397,7 +397,7 @@ Answer: {_normalize(answer)[:3000]}
 Respond with ONLY a JSON object: {{"score": <0-100>, "reason": "<one sentence>"}}"""
 
     try:
-        result = await ollama_service.generate(
+        result = await llm_runtime.generate(
             prompt=prompt,
             model=judge_model,
             system="You are a strict but fair answer quality evaluator. Always respond with valid JSON only.",

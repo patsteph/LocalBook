@@ -87,7 +87,12 @@ def test_save_viewport_upsert(conn):
 
 
 def test_edge_states_constant():
-    assert cl.EDGE_STATES == ("candidate", "provenance", "user", "curator", "researched")
+    # Adding a state is fine; SILENTLY DROPPING one is not — the frontend's EdgeState union,
+    # EDGE_VISUAL and the legend are all keyed off these, and `api/canvas.py:109` rejects
+    # anything not listed.
+    assert cl.EDGE_STATES == (
+        "candidate", "provenance", "user", "curator", "researched", "tension",
+    )
 
 
 # ── width/height resize-persistence (2.2.0) ──────────────────────────────────────────
@@ -143,3 +148,111 @@ def test_ensure_schema_migrates_legacy_table():
     # Existing row survives, new dims default to NULL, and it round-trips.
     n1 = cl._get_layout(c, "nb1")["nodes"][0]
     assert n1["id"] == "n1" and n1["width"] is None and n1["height"] is None
+
+
+def test_parents_are_returned_before_their_children(conn):
+    """React Flow v12 resolves `parentId` against nodes it has ALREADY seen, so a child listed
+    first renders detached — its parent-relative position is treated as absolute and the thread
+    lands elsewhere on the canvas while its topic card shows up empty.
+
+    The SQL order alone can't guarantee this: threads keep their ORIGINAL created_at (months old)
+    while a topic card is minted at populate time, so `ORDER BY z, created_at` puts every child
+    ahead of its parent. Observed on live data 2026-08-12: 43 of 55 children preceded their card.
+    """
+    card = {"id": "topic_1", "x": 100.0, "y": 100.0, "kind": "topic", "ref_type": "topic",
+            "ref_id": "t1", "title": "Card", "width": 656.0, "height": 480.0,
+            "created_at": "2026-08-12T10:00:00"}          # minted NOW
+    kids = [
+        {"id": f"k{i}", "x": 16.0, "y": 64.0, "kind": "chat_turn", "ref_type": "exploration_query",
+         "ref_id": f"q{i}", "parent_id": "topic_1", "created_at": f"2026-05-{10 + i:02d}T09:00:00"}
+        for i in range(3)                                  # ...but threads are MONTHS older
+    ]
+    # Saved parent-first, exactly as the layout emits it.
+    cl._save_layout(conn, "nb1", [card, *kids], [], {"x": 0, "y": 0, "zoom": 1})
+
+    nodes = cl._get_layout(conn, "nb1")["nodes"]
+    pos = {n["id"]: i for i, n in enumerate(nodes)}
+    for n in nodes:
+        if n.get("parent_id"):
+            assert pos[n["parent_id"]] < pos[n["id"]], (
+                f"child {n['id']} precedes parent {n['parent_id']} — it will render detached")
+
+
+def test_child_ordering_preserves_relative_order_within_a_group(conn):
+    """Parents-first must be a STABLE partition — z/recency order inside each group survives."""
+    nodes = [
+        {"id": "p1", "x": 0.0, "y": 0.0, "kind": "topic", "ref_type": "topic", "ref_id": "t1",
+         "created_at": "2026-08-01T00:00:00"},
+        {"id": "p2", "x": 0.0, "y": 0.0, "kind": "topic", "ref_type": "topic", "ref_id": "t2",
+         "created_at": "2026-08-02T00:00:00"},
+        {"id": "a", "x": 1.0, "y": 1.0, "kind": "chat_turn", "ref_type": "exploration_query",
+         "ref_id": "q1", "parent_id": "p1", "created_at": "2026-05-01T00:00:00"},
+        {"id": "b", "x": 1.0, "y": 1.0, "kind": "chat_turn", "ref_type": "exploration_query",
+         "ref_id": "q2", "parent_id": "p1", "created_at": "2026-05-02T00:00:00"},
+    ]
+    cl._save_layout(conn, "nb1", nodes, [], {"x": 0, "y": 0, "zoom": 1})
+    got = [n["id"] for n in cl._get_layout(conn, "nb1")["nodes"]]
+    assert got == ["p1", "p2", "a", "b"]
+
+
+# ── Derived-node identity (2026-08-17) ───────────────────────────────────────────────
+#
+# Populate rebuilds every derived node from capture, and canvas_populate strips the working id
+# before persisting — so a fresh uuid4 used to be minted on EVERY populate. Everything keyed by
+# node id was orphaned each time: canvas_recall review history, P4 elicited intents, edges.
+# A node's identity is what it POINTS AT, so it is now uuid5(notebook:ref_type:ref_id).
+
+def _derived(ref_type, ref_id, **kw):
+    return {"x": 0.0, "y": 0.0, "kind": "chat_turn", "ref_type": ref_type, "ref_id": ref_id, **kw}
+
+
+def test_derived_node_id_is_stable_across_populates(conn):
+    """THE regression: re-populating the same capture must not re-mint ids."""
+    first = [_derived("exploration_query", "q1"), _derived("source", "s1")]
+    cl._save_layout(conn, "nb1", first, [], {"x": 0, "y": 0, "zoom": 1})
+    ids_1 = [n["id"] for n in cl._get_layout(conn, "nb1")["nodes"]]
+
+    # Same capture, fresh dicts (exactly what populate does — no ids supplied).
+    second = [_derived("exploration_query", "q1"), _derived("source", "s1")]
+    cl._save_layout(conn, "nb1", second, [], {"x": 0, "y": 0, "zoom": 1})
+    ids_2 = [n["id"] for n in cl._get_layout(conn, "nb1")["nodes"]]
+
+    assert ids_1 == ids_2, "derived node ids changed across populates — id-keyed state is orphaned"
+
+
+def test_derived_ids_are_notebook_scoped(conn):
+    """The same source in two notebooks must not collide on one PRIMARY KEY."""
+    cl._save_layout(conn, "nbA", [_derived("source", "s1")], [], {"x": 0, "y": 0, "zoom": 1})
+    cl._save_layout(conn, "nbB", [_derived("source", "s1")], [], {"x": 0, "y": 0, "zoom": 1})
+    a = cl._get_layout(conn, "nbA")["nodes"][0]["id"]
+    b = cl._get_layout(conn, "nbB")["nodes"][0]["id"]
+    assert a != b
+
+
+def test_distinct_refs_get_distinct_ids(conn):
+    cl._save_layout(conn, "nb1", [_derived("source", "s1"), _derived("source", "s2")], [],
+                    {"x": 0, "y": 0, "zoom": 1})
+    ids = {n["id"] for n in cl._get_layout(conn, "nb1")["nodes"]}
+    assert len(ids) == 2
+
+
+def test_caller_supplied_id_always_wins(conn):
+    """Topic cards mint their own ids (_topic_node_id) — never override them."""
+    cl._save_layout(conn, "nb1", [_derived("topic", "t1", id="topic_t1", kind="topic")], [],
+                    {"x": 0, "y": 0, "zoom": 1})
+    assert cl._get_layout(conn, "nb1")["nodes"][0]["id"] == "topic_t1"
+
+
+def test_node_without_a_ref_still_persists(conn):
+    """A user-placed note has no ref — it keeps a random id rather than being dropped."""
+    cl._save_layout(conn, "nb1", [{"x": 1.0, "y": 2.0, "kind": "note"}], [],
+                    {"x": 0, "y": 0, "zoom": 1})
+    nodes = cl._get_layout(conn, "nb1")["nodes"]
+    assert len(nodes) == 1 and nodes[0]["id"]
+
+
+def test_duplicate_refs_do_not_abort_the_save(conn):
+    """`id` is the PRIMARY KEY — two nodes sharing a ref must not lose the whole batch."""
+    dupes = [_derived("source", "s1"), _derived("source", "s1"), _derived("source", "s2")]
+    cl._save_layout(conn, "nb1", dupes, [], {"x": 0, "y": 0, "zoom": 1})
+    assert len(cl._get_layout(conn, "nb1")["nodes"]) == 3

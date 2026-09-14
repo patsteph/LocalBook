@@ -55,11 +55,11 @@ def _cosine(a: List[float], b: List[float]) -> float:
 
 
 async def _embed(text: str) -> List[float]:
-    """Embed text via ollama_service. Returns empty list on failure."""
+    """Embed text via llm_runtime. Returns empty list on failure."""
     if not text or not text.strip():
         return []
-    from services.ollama_service import ollama_service
-    result = await ollama_service.embed(text=text[:6000])
+    from services.llm_runtime import llm_runtime
+    result = await llm_runtime.embed(text=text[:6000])
     vecs = (result or {}).get("embeddings") or []
     return list(vecs[0]) if vecs and isinstance(vecs[0], list) else []
 

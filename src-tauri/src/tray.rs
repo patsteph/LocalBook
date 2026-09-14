@@ -48,7 +48,7 @@ struct Status {
     metrics: Metrics,
     #[serde(default)]
     enrichment: Enrich,
-    // Wave 9.6 — "mlx" (all roles) | "mixed" | "ollama". Surfaced in the status line
+    // Always "mlx" post-cutover. Anything else (or an unreachable backend) renders no tag.
     // so the menu bar persists which engine is live (user #5).
     #[serde(default)]
     engine: String,
@@ -146,9 +146,11 @@ fn render_up(
     synth: &MenuItem<Wry>,
     st: &Status,
 ) {
+    // One engine post-cutover, so this is always "⚡ MLX". The match survives (rather than a
+    // hardcoded string) because a backend that fails to report falls through to "" — a blank
+    // suffix rather than a confident claim about an engine that never answered.
     let engine_tag = match st.engine.as_str() {
         "mlx" => " · ⚡ MLX",
-        "mixed" => " · ⚡ MLX+Ollama",
         _ => "",
     };
     let _ = status.set_text(format!("🟢 LocalBook running (:8000){}", engine_tag));

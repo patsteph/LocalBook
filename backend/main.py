@@ -7,22 +7,42 @@ import sys
 if getattr(sys, 'frozen', False):
     multiprocessing.freeze_support()
 
-# ── Fix SSL certificates for fresh macOS Python installs ──
-# Python 3.12+ from Homebrew may lack CA bundle; certifi provides it.
-# Must run before any HTTPS downloads (HuggingFace, FlashRank, etc.)
-try:
-    import certifi
-    _ca = certifi.where()
-    os.environ.setdefault("SSL_CERT_FILE", _ca)
-    os.environ.setdefault("REQUESTS_CA_BUNDLE", _ca)
-    os.environ.setdefault("CURL_CA_BUNDLE", _ca)
-except ImportError:
-    if os.path.exists("/etc/ssl/cert.pem"):
-        os.environ.setdefault("SSL_CERT_FILE", "/etc/ssl/cert.pem")
+# ── Fix SSL certificates for the bundled (PyInstaller) app + fresh macOS Python ──
+# The frozen app's Python has no usable default CA bundle, so HTTPS (HuggingFace model
+# downloads, FlashRank, etc.) fails with CERTIFICATE_VERIFY_FAILED. Point ssl/requests/httpx at a
+# CA bundle that actually EXISTS on disk. The previous version used certifi.where() unconditionally,
+# but in the frozen app certifi imports while its cacert.pem is NOT bundled → that path doesn't
+# exist, and setdefault pinned a missing file. Verify existence, fall back, and OVERRIDE a broken
+# pre-set value. Runs before any HTTPS.
+def _pick_ca_bundle():
+    candidates = []
+    try:
+        import certifi
+        candidates.append(certifi.where())
+    except Exception:
+        pass
+    candidates += ["/etc/ssl/cert.pem", "/private/etc/ssl/cert.pem"]
+    return next((c for c in candidates if c and os.path.exists(c)), None)
+
+_ca = _pick_ca_bundle()
+if _ca:
+    for _var in ("SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE"):
+        _cur = os.environ.get(_var)
+        if not _cur or not os.path.exists(_cur):   # override a missing/broken pre-set value
+            os.environ[_var] = _ca
 
 # ── Rich logging: colored output + better tracebacks ──
 from utils.logging_config import setup_logging
 setup_logging()
+
+# ── TLS trust: the keychain, not just certifi ────────────────────────────────
+# The CA bundle picked above carries PUBLIC roots only. On a network that inspects HTTPS,
+# every connection is re-signed by a private root that macOS trusts and certifi has never
+# heard of, so curl works and Python does not. Route verification through the platform
+# verifier instead. Must run before any service import constructs an HTTPS client, and
+# before the first request either way — injection swaps `ssl.SSLContext` globally.
+from services.hf_transport import install_system_trust
+install_system_trust()
 
 # ── Quick-exit CLI flags (must run before any heavy imports) ──
 if "--verify-kokoro" in sys.argv or "--verify-tts" in sys.argv:
@@ -70,32 +90,34 @@ from config import settings
 # defaults and then overlay the user's validated choice.
 import json as _json
 _prefs_path = settings.data_dir / "user_preferences.json"
+
+# Prefs schema v3 — must run HERE, before the restore loop below reads default_combo. It
+# rewrites saved "ollama" role engines to "mlx" where the MLX weights are on disk; running it
+# after the restore (where it used to live) applied the promotion a launch late, so the first
+# launch on a new build still came up all-Ollama. Backs up first, never deletes a key,
+# idempotent, never raises.
+try:
+    from storage.migrate_prefs_v2 import run as _migrate_prefs
+    _migrate_prefs()
+except Exception as e:
+    print(f"⚠️ prefs migration skipped: {e}")
+
 if _prefs_path.exists():
     try:
         _prefs = _json.loads(_prefs_path.read_text())
         _default_combo = _prefs.get("default_combo", {})
-        # Only overwrite the OLLAMA model name for a role that's actually on Ollama. When the
-        # saved default is MLX, main_model is a HuggingFace id (mlx-community/…); writing that
-        # into settings.ollama_model would break the Ollama FALLBACK path (Ollama 404s on an HF
-        # id). For MLX roles the engine flags + mlx_* ids below carry the config, and ollama_model
-        # stays at its valid config default so a fallback still works. (Wave 9.6.)
-        if _default_combo.get("main_model") and _default_combo.get("main_engine", "ollama") != "mlx":
-            settings.ollama_model = _default_combo["main_model"]
-        if _default_combo.get("fast_model") and _default_combo.get("fast_engine", "ollama") != "mlx":
-            settings.ollama_fast_model = _default_combo["fast_model"]
-        if _default_combo.get("vision_model") and _default_combo.get("vision_engine", "ollama") != "mlx":
-            settings.vision_model = _default_combo["vision_model"]
-        # Wave 9 — restore per-role engine flags + MLX model ids so an adopted MLX config
-        # survives the .env purge above (persisted in user_preferences.json, the durable
-        # safe store, exactly like the Ollama model names). Absent keys keep the config
-        # defaults (all "ollama"), so an old prefs file is fully backward-compatible.
-        for _k in ("main_engine", "fast_engine", "vision_engine", "image_engine", "embed_engine",
-                   "mlx_main_model", "mlx_fast_model", "mlx_vision_model", "mlx_image_model",
-                   "mlx_embedding_model"):
+        # One attribute per role, each holding a checkpoint id. Before the v2.3.0 collapse a
+        # role was a PAIR (an Ollama name + an mlx_* id) with an engine flag choosing between
+        # them, so this loop had to skip the Ollama name whenever the role was on MLX. With
+        # one engine that reduces to: restore what the user saved.
+        #
+        # The migration (run above, BEFORE this) is what guarantees the keys are already in
+        # the new shape — a v3-or-older file still stores mlx_main_model etc.
+        for _k in ("main_model", "fast_model", "vision_model", "image_model", "embedding_model"):
             if _default_combo.get(_k):
                 setattr(settings, _k, _default_combo[_k])
-        print(f"[SafeStart] Applied user default combo: {settings.ollama_model} + {settings.ollama_fast_model} "
-              f"(engines: main={settings.main_engine} fast={settings.fast_engine} vision={settings.vision_engine})")
+        print(f"[SafeStart] Applied user default combo: "
+              f"main={settings.main_model} fast={settings.fast_model}")
     except Exception as e:
         print(f"[SafeStart] Failed to load user preferences, using built-in defaults: {e}")
 
@@ -119,6 +141,16 @@ if settings.use_sqlite:
     except Exception as e:
         print(f"⚠️ SQLite migration failed, falling back to JSON: {e}")
         settings.use_sqlite = False
+
+# One-shot: purge Cursor Style residue (feature removed in v2.3.0). Must run AFTER the SQLite
+# migration (it reads those tables) and BEFORE the stores cache anything. Marker-guarded and
+# never-raises — see the module docstring for why the catalog rows are actively harmful.
+if settings.use_sqlite:
+    try:
+        from storage.migrate_purge_cursor import run as _purge_cursor
+        _purge_cursor()
+    except Exception as e:
+        print(f"⚠️ cursor purge skipped: {e}")
 
 # Initialize findings store before API imports (uses deferred init pattern)
 from storage.findings_store import init_findings_store
@@ -156,8 +188,7 @@ async def _run_startup_tasks():
     # ── Banner ────────────────────────────────────────────────────────────
     print(f"🚀 LocalBook API starting on {settings.api_host}:{settings.api_port}")
     print(f"📁 Data directory: {settings.data_dir}")
-    print(f"🤖 LLM Provider: {settings.llm_provider}")
-    print(f"🔥 Models: {settings.ollama_model} (think), {settings.ollama_fast_model} (fast)")
+    print(f"🔥 Models: {settings.main_model} (main), {settings.fast_model} (fast)")
     print(f"💾 Storage: {'SQLite' if settings.use_sqlite else 'JSON files'}")
     
     # ── Step 1: Upgrade check ─────────────────────────────────────────────
@@ -438,14 +469,6 @@ async def lifespan(app: FastAPI):
     # Layer 2: Start heartbeat logger (30s interval)
     start_heartbeat()
 
-    # v1.8.0: Auto-start llama-server sidecar when the active combo uses one
-    # (or when user_preferences.json → sidecar.auto_start is truthy). Runs
-    # in a background task so a slow Metal init never blocks FastAPI boot.
-    try:
-        from services.sidecar_manager import maybe_auto_start_on_boot
-        safe_create_task(maybe_auto_start_on_boot(), name="sidecar-autostart")
-    except Exception as _e:
-        logger.debug(f"[main] sidecar auto-start skipped: {_e}")
 
     # Curator Phase 1: start the event bus consumer loop. Agents emit
     # observability events post-action; brain consumer persists + logs.
@@ -468,12 +491,6 @@ async def lifespan(app: FastAPI):
     # ── Graceful shutdown: flush stores, cancel tasks, close connections ──
     print("👋 LocalBook API shutting down — flushing stores...")
     
-    # v1.8.0: Stop sidecar cleanly so we don't leak llama-server across restarts
-    try:
-        from services.sidecar_manager import sidecar_manager
-        await sidecar_manager.stop(grace_seconds=5.0)
-    except Exception as _e:
-        logger.debug(f"[main] sidecar stop error: {_e}")
 
     # Curator Phase 1: stop the event bus consumer loop cleanly.
     try:

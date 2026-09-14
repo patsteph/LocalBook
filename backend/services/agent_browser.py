@@ -155,8 +155,7 @@ Return a JSON array of action steps:
 Only return the JSON array, no other text."""
 
     def __init__(self):
-        self._ollama_url = settings.ollama_base_url
-        self._model = settings.ollama_fast_model  # Use fast model for element matching
+        self._model = settings.fast_model  # Use fast model for element matching
     
     async def find_element(
         self,
@@ -376,8 +375,8 @@ Only return the JSON array, no other text."""
     
     async def _call_llm(self, prompt: str) -> str:
         """Call the LLM via the canonical Ollama service."""
-        from services.ollama_service import ollama_service
-        _resp = await ollama_service.generate(
+        from services.llm_runtime import llm_runtime
+        _resp = await llm_runtime.generate(
             prompt=prompt,
             model=self._model,
             temperature=0.1,

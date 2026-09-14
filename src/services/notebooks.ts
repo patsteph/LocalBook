@@ -22,10 +22,15 @@ export const notebookService = {
     return response.data.notebooks;
   },
 
-  async create(title: string, description?: string, color?: string): Promise<Notebook> {
+  async create(
+    title: string,
+    description?: string,
+    color?: string,
+  ): Promise<Notebook> {
     const response = await api.post('/notebooks/', { title, description, color });
     return response.data;
   },
+
 
   async get(id: string): Promise<Notebook> {
     const response = await api.get(`/notebooks/${id}`);
