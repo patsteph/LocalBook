@@ -643,6 +643,8 @@ transformers==5.12.1
     # via
     #   -r requirements.in
     #   sentence-transformers
+truststore==0.10.4
+    # via -r requirements.in
 typer==0.21.1
     # via transformers
 typer-slim==0.21.2

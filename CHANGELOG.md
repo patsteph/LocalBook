@@ -34,6 +34,17 @@ never tagged; its notes are kept in full below.
   than in manifest order and flattened. DRM-protected files are detected and declined.
 
 ### Fixed
+- **HTTPS failed entirely on networks that inspect TLS.** Such a network re-signs every
+  connection with its own root certificate; macOS trusts it, so Safari and the browser extension
+  work, but Python verified against a bundle of public roots only and rejected all of them. The
+  visible symptom was the model browser reporting "Could not reach Hugging Face" on a Mac with a
+  working connection, but model downloads, the embedding checkpoint, the reranker and article
+  fetching were affected the same way. TLS is now verified against the system trust store, the
+  same one `curl` uses. Untrusted and expired certificates are still rejected.
+- **A failed model browse said "check your connection" no matter what went wrong.** Rate limiting,
+  a refused request and a rejected certificate now each say so, and the log keeps the underlying
+  error rather than only its type — the two failures that matter most are indistinguishable by
+  type alone.
 - **The app could not launch** — a startup banner printed a setting deleted in the config
   collapse, which raised inside a background task, so the backend served HTTP but never reported
   ready and the shell restarted it every ~30s, with a clean log. Now covered by a static check

@@ -35,6 +35,15 @@ if _ca:
 from utils.logging_config import setup_logging
 setup_logging()
 
+# ── TLS trust: the keychain, not just certifi ────────────────────────────────
+# The CA bundle picked above carries PUBLIC roots only. On a network that inspects HTTPS,
+# every connection is re-signed by a private root that macOS trusts and certifi has never
+# heard of, so curl works and Python does not. Route verification through the platform
+# verifier instead. Must run before any service import constructs an HTTPS client, and
+# before the first request either way — injection swaps `ssl.SSLContext` globally.
+from services.hf_transport import install_system_trust
+install_system_trust()
+
 # ── Quick-exit CLI flags (must run before any heavy imports) ──
 if "--verify-kokoro" in sys.argv or "--verify-tts" in sys.argv:
     failed = []

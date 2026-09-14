@@ -361,6 +361,8 @@ python -W ignore -m PyInstaller \
     --hidden-import=sklearn.cluster \
     --hidden-import=trafilatura \
     --hidden-import=httpx \
+    --hidden-import=truststore \
+    --collect-submodules=truststore \
     --hidden-import=youtube_transcript_api \
     --hidden-import=keyring \
     --hidden-import=dateparser \

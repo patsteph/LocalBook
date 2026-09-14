@@ -98,6 +98,15 @@ class _MLXDownloadManager:
                 return {"status": "downloading"}
             self._state[model_id] = {"status": "downloading", "total_bytes": 0, "error": None, "pct": 0}
 
+        # `hf_transport` says to call this before ANY snapshot_download, and this path never
+        # did — so the SSL bypass and the Xet limits it configures reached every download route
+        # except the one the model browser actually uses. Idempotent.
+        try:
+            from services.hf_transport import install_hf_transport
+            install_hf_transport()
+        except Exception:
+            pass
+
         # Total size for the progress bar (best-effort — indeterminate if it fails).
         total = 0
         try:

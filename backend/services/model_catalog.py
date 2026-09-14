@@ -372,12 +372,50 @@ def _cached(key: str):
     return None
 
 
-def _get_json(url: str, timeout: float = 20.0):
-    """GET JSON from the Hub. Returns None on ANY failure — offline is a normal state here."""
+def _reason_for_status(code: int) -> str:
+    """What an HTTP status from the Hub means, in the user's terms."""
+    if code == 429:
+        return "Hugging Face is rate-limiting this machine (HTTP 429). Try again in a minute."
+    if code in (401, 403):
+        return (f"Hugging Face refused the request (HTTP {code}). A gated or private model "
+                "needs an access token.")
+    if code == 404:
+        return "Hugging Face has no such model (HTTP 404)."
+    if code >= 500:
+        return f"Hugging Face is having trouble (HTTP {code}). Try again shortly."
+    return f"Hugging Face returned HTTP {code}."
+
+
+def _reason_for_exception(e: Exception, detail: str) -> str:
+    """What a transport failure means. The three cases below are NOT the same problem."""
+    low = detail.lower()
+    if "certificate" in low or "ssl" in low or "tls" in low:
+        # The one that cost six diagnostic commands on 2026-09-14. macOS trusts the
+        # intercepting root, Python doesn't, so curl succeeds while the app fails — and
+        # "check your connection" sends the user hunting in exactly the wrong place.
+        return ("Could not verify Hugging Face's certificate. This network appears to inspect "
+                "HTTPS traffic; its root certificate has to be trusted by this Mac.")
+    if "timeout" in type(e).__name__.lower() or "timed out" in low:
+        return "Timed out reaching Hugging Face. The connection may be slow or blocked."
+    return "Could not reach Hugging Face. The browser needs a connection."
+
+
+def _get_json(url: str, timeout: float = 20.0) -> Tuple[Optional[Any], Optional[str]]:
+    """GET JSON from the Hub. Returns `(data, None)` or `(None, reason)`.
+
+    Failure is a normal state here, but the KINDS of failure are not interchangeable and
+    this used to flatten all of them to `None` → "could not reach Hugging Face". A 429, a
+    403 and a rejected certificate all read as an unplugged cable, and the log kept only
+    `type(e).__name__` — which is `ConnectError` for a refused socket AND for a failed TLS
+    handshake. Diagnosing one required reproducing it outside the app. So: keep `str(e)`,
+    and say which of the three it was.
+    """
     try:
         import httpx
-        # Same SSL/proxy handling the model downloads use, so a machine that needs the
-        # bypass to download can also browse.
+        # Shares the app's TLS trust: `install_hf_transport` injects the system trust store,
+        # which the client below inherits through `ssl`. (Before 2026-09-14 this call
+        # configured huggingface_hub's client only — never this one — while the comment
+        # claimed otherwise, so a machine needing the bypass could download but not browse.)
         try:
             from services.hf_transport import install_hf_transport
             install_hf_transport()
@@ -386,12 +424,14 @@ def _get_json(url: str, timeout: float = 20.0):
         with httpx.Client(timeout=timeout, follow_redirects=True) as c:
             r = c.get(url, headers={"User-Agent": "LocalBook/2.3"})
             if r.status_code != 200:
-                logger.info(f"[model-catalog] HF returned {r.status_code} for {url[:80]}")
-                return None
-            return r.json()
+                logger.warning(f"[model-catalog] HF returned {r.status_code} for {url[:120]}")
+                return None, _reason_for_status(r.status_code)
+            return r.json(), None
     except Exception as e:
-        logger.info(f"[model-catalog] HF unreachable ({type(e).__name__}) — offline?")
-        return None
+        detail = str(e).strip() or type(e).__name__
+        logger.warning(f"[model-catalog] HF request failed "
+                       f"({type(e).__name__}: {detail[:200]}) for {url[:120]}")
+        return None, _reason_for_exception(e, detail)
 
 
 def _enrich(raw: dict, installed: set) -> dict:
@@ -456,7 +496,7 @@ _SORT_FIELD = {
 
 
 def _fetch_pipeline(pipeline: str, query: str, sort: str, limit: int):
-    """One HF page for a single pipeline. Returns None on failure (caller decides offline)."""
+    """One HF page for a single pipeline. Returns `(rows, reason)`; caller decides offline."""
     # `filter=mlx` (the TAG), not `library=mlx`. The library form matches loosely and returns
     # plain sentence-transformers/BERT repos that this engine cannot load at all — verified:
     # its top results were all `mlx_tag=False`. The tag is what a genuine MLX conversion sets.
@@ -502,11 +542,14 @@ def search(
     if hit is not None:
         return hit
 
-    pages = {p: _fetch_pipeline(p, query, sort, per) for p in pipelines}
-    if all(v is None for v in pages.values()):
-        return {"models": [], "offline": True,
-                "reason": "Could not reach Hugging Face. The browser needs a connection; "
-                          "models already downloaded still work offline."}
+    fetched = {p: _fetch_pipeline(p, query, sort, per) for p in pipelines}
+    pages = {p: rows for p, (rows, _) in fetched.items()}
+    if all(rows is None for rows in pages.values()):
+        # Every pipeline failed the same way in practice — they are the same host, one after
+        # another — so the first reason is the reason. The panel appends its own "models you
+        # already downloaded still work" line, so this must not repeat it.
+        reason = next((r for _, r in fetched.values() if r), "Could not reach Hugging Face.")
+        return {"models": [], "offline": True, "reason": reason}
 
     try:
         from services.model_presence import enumerate_cached
@@ -594,13 +637,13 @@ def card(model_id: str) -> Dict[str, Any]:
     if hit is not None:
         return hit
 
-    meta = _get_json(
+    meta, reason = _get_json(
         f"{HF_API}/models/{model_id}?expand[]=downloads&expand[]=likes&expand[]=safetensors"
         f"&expand[]=tags&expand[]=pipeline_tag&expand[]=gated&expand[]=lastModified"
         f"&expand[]=createdAt&expand[]=cardData&expand[]=siblings"
     )
     if meta is None:
-        return {"error": "Could not reach Hugging Face", "offline": True}
+        return {"error": reason or "Could not reach Hugging Face.", "offline": True}
 
     try:
         from services.model_presence import enumerate_cached

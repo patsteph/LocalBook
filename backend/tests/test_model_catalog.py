@@ -47,7 +47,7 @@ def test_everything_is_shown_by_default_and_labelled(monkeypatch):
          "pipeline_tag": "text-generation", "safetensors": {"parameters": {"BF16": 1_000_000}},
          "downloads": 10, "likes": 1},
     ]
-    monkeypatch.setattr(mc, "_get_json", lambda *a, **k: fake)
+    monkeypatch.setattr(mc, "_get_json", lambda *a, **k: (fake, None))
     mc.reset_cache()
     res = mc.search()
     ids = [m["model_id"] for m in res["models"]]
@@ -69,7 +69,7 @@ def test_the_user_can_filter_by_origin_themselves(monkeypatch):
          "pipeline_tag": "text-generation", "safetensors": {"parameters": {"BF16": 1_000_000}},
          "downloads": 10, "likes": 1},
     ]
-    monkeypatch.setattr(mc, "_get_json", lambda *a, **k: fake)
+    monkeypatch.setattr(mc, "_get_json", lambda *a, **k: (fake, None))
     mc.reset_cache()
     res = mc.search(exclude_countries="CN,AE")
     ids = [m["model_id"] for m in res["models"]]
@@ -83,7 +83,7 @@ def test_a_caller_can_still_request_a_restricted_set(monkeypatch):
     does not use it."""
     fake = [{"id": "mlx-community/Qwen3-8B-4bit", "tags": ["mlx"], "pipeline_tag": "text-generation",
              "safetensors": {"parameters": {"BF16": 1_000_000}}, "downloads": 1, "likes": 0}]
-    monkeypatch.setattr(mc, "_get_json", lambda *a, **k: fake)
+    monkeypatch.setattr(mc, "_get_json", lambda *a, **k: (fake, None))
     mc.reset_cache()
     res = mc.search(include_blocked=False)
     assert res["models"] == []
@@ -132,7 +132,7 @@ def test_a_model_that_fills_no_slot_is_not_listed(monkeypatch):
     fake = [{"id": "mlx-community/parakeet-tdt-0.6b-v2", "tags": ["mlx"],
              "pipeline_tag": "automatic-speech-recognition",
              "safetensors": {"parameters": {"F32": 617869958}}, "downloads": 2243785, "likes": 45}]
-    monkeypatch.setattr(mc, "_get_json", lambda *a, **k: fake)
+    monkeypatch.setattr(mc, "_get_json", lambda *a, **k: (fake, None))
     mc.reset_cache()
     assert mc.search()["models"] == []
 
@@ -157,12 +157,17 @@ def test_unknown_size_never_claims_to_fit():
 def test_offline_returns_a_reason_rather_than_raising(monkeypatch):
     """The browser is the one networked surface. Losing the Hub must not break the panel or
     imply the user's downloaded models are gone."""
-    monkeypatch.setattr(mc, "_get_json", lambda *a, **k: None)
+    monkeypatch.setattr(
+        mc, "_get_json", lambda *a, **k: (None, "Could not reach Hugging Face. The browser needs a connection."))
     mc.reset_cache()
     res = mc.search()
     assert res["offline"] is True
     assert res["models"] == []
     assert "Hugging Face" in res["reason"]
+    # The panel appends "Models already downloaded still work — the browser is the only part
+    # that needs a connection." Saying it here too is what produced the doubled sentence the
+    # user read on 2026-09-14.
+    assert "already downloaded" not in res["reason"]
 
 
 # ── Architecture-based lineage (2026-08-20) ─────────────────────────────────────
@@ -263,7 +268,7 @@ def test_the_origin_filter_matches_lineage_not_the_leading_flag(monkeypatch):
     fake = [{"id": "prism-ml/Bonsai-8B-mlx-1bit", "tags": ["mlx", "qwen3"],
              "pipeline_tag": "text-generation",
              "safetensors": {"parameters": {"BF16": 1_000_000}}, "downloads": 5, "likes": 1}]
-    monkeypatch.setattr(mc, "_get_json", lambda *a, **k: fake)
+    monkeypatch.setattr(mc, "_get_json", lambda *a, **k: (fake, None))
     mc.reset_cache()
     assert mc.search()["models"], "shown by default — nothing is withheld"
     mc.reset_cache()
@@ -296,7 +301,7 @@ def test_the_role_filter_is_pushed_to_the_api(monkeypatch):
 
     def fake(url, *a, **k):
         seen.append(url)
-        return []
+        return [], None
 
     monkeypatch.setattr(mc, "_get_json", fake)
     mc.reset_cache()
@@ -311,7 +316,7 @@ def test_offline_needs_every_pipeline_to_fail(monkeypatch):
 
     def flaky(url, *a, **k):
         calls["n"] += 1
-        return None if calls["n"] == 1 else []
+        return (None, "Hugging Face returned HTTP 404.") if calls["n"] == 1 else ([], None)
 
     monkeypatch.setattr(mc, "_get_json", flaky)
     mc.reset_cache()
@@ -331,3 +336,91 @@ def test_nothing_gates_a_download():
     code = "\n".join(l for l in src.splitlines() if not l.strip().startswith("#"))
     assert "origin_of" not in code, "origin must not gate the download"
     assert "403" not in code, "no refusal path belongs here"
+
+
+# ── Why a browse failed, not just that it did (2026-09-14) ──────────────────────
+#
+# The panel reported "Could not reach Hugging Face" for every failure, and the log kept only
+# `type(e).__name__`. That name is `ConnectError` for a refused socket AND for a rejected
+# certificate, so the real cause — a network inspecting TLS, whose root macOS trusts and
+# certifi does not — was invisible from inside the app and took six commands to find. These
+# tests pin the distinction rather than the wording.
+
+class _Resp:
+    def __init__(self, status_code: int, payload=None):
+        self.status_code = status_code
+        self._payload = payload if payload is not None else []
+
+    def json(self):
+        return self._payload
+
+
+def _client_returning(resp=None, raises=None):
+    """A stand-in httpx.Client context manager."""
+    class _C:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def get(self, url, **kw):
+            if raises is not None:
+                raise raises
+            return resp
+
+    return lambda **kw: _C()
+
+
+def test_a_rejected_certificate_does_not_read_as_a_dead_network(monkeypatch):
+    """The failure that started this. httpx reports a TLS rejection as ConnectError, so the
+    type name cannot carry the diagnosis — the message has to."""
+    import httpx
+
+    err = httpx.ConnectError(
+        "[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: "
+        "unable to get local issuer certificate (_ssl.c:1032)")
+    monkeypatch.setattr(httpx, "Client", _client_returning(raises=err))
+    data, reason = mc._get_json("https://huggingface.co/api/models")
+    assert data is None
+    assert "certificate" in reason.lower()
+    assert "inspect" in reason.lower(), "the user needs to know WHERE to look"
+    assert "no network" not in reason.lower(), "this machine's network is fine"
+
+
+def test_rate_limiting_is_not_reported_as_offline(monkeypatch):
+    """A 429 means the Hub answered. Telling the user to check their connection sends them
+    to the wrong place, and the old code could not tell the two apart."""
+    import httpx
+
+    monkeypatch.setattr(httpx, "Client", _client_returning(resp=_Resp(429)))
+    data, reason = mc._get_json("https://huggingface.co/api/models")
+    assert data is None
+    assert "429" in reason
+    assert "could not reach" not in reason.lower()
+
+
+def test_a_transport_failure_logs_the_message_not_just_the_type(monkeypatch, caplog):
+    """`ConnectError` alone is not a diagnosis. Without str(e) the log cannot distinguish a
+    refused socket from a rejected certificate — which is exactly what happened."""
+    import logging
+
+    import httpx
+
+    err = httpx.ConnectError("[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed")
+    monkeypatch.setattr(httpx, "Client", _client_returning(raises=err))
+    with caplog.at_level(logging.WARNING, logger=mc.logger.name):
+        mc._get_json("https://huggingface.co/api/models")
+    logged = " ".join(r.message for r in caplog.records)
+    assert "CERTIFICATE_VERIFY_FAILED" in logged, "the cause must survive into the log"
+
+
+def test_the_reason_survives_to_the_panel(monkeypatch):
+    """search() must hand the real cause up, not flatten it back to a generic sentence."""
+    monkeypatch.setattr(
+        mc, "_get_json",
+        lambda *a, **k: (None, "Hugging Face is rate-limiting this machine (HTTP 429)."))
+    mc.reset_cache()
+    res = mc.search()
+    assert res["offline"] is True
+    assert "429" in res["reason"]

@@ -27,6 +27,7 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 _INSTALLED = False
+_TRUST_INJECTED = False
 
 CONNECT_TIMEOUT = 30.0
 READ_TIMEOUT = 120.0
@@ -36,6 +37,50 @@ RETRIES = 3
 def ssl_noverify_requested() -> bool:
     """The installer sets this when it had to fall back to an unverified handshake."""
     return os.environ.get("LOCALBOOK_SSL_NOVERIFY") == "1"
+
+
+def install_system_trust(force: bool = False) -> bool:
+    """Verify TLS against the macOS keychain instead of certifi. Idempotent; never raises.
+
+    Why (2026-09-14): on a machine whose network inspects HTTPS, the middlebox re-signs every
+    connection with a private root. macOS trusts it — `curl`, Safari and the browser extension
+    all work — but Python does not, because certifi ships PUBLIC roots only and has no way to
+    learn about a locally-installed one. Every httpx call then dies with
+    `CERTIFICATE_VERIFY_FAILED: unable to get local issuer certificate`, which httpx surfaces as
+    a bare `ConnectError` — indistinguishable from an unplugged cable.
+
+    The symptom was "the model browser can't reach Hugging Face", but the blast radius is every
+    Python-side HTTPS call: model downloads, the embedding checkpoint, FlashRank, article
+    fetching. Kokoro TTS was the only survivor, and only because `audio_llm` shells out to
+    `curl -k` when frozen — an accident, not a design.
+
+    `truststore` routes verification through the platform verifier, which is exactly what curl
+    already does. It does NOT weaken anything: a self-signed or expired certificate still fails
+    (verified against badssl.com — "certificate is not trusted" / "certificate is expired").
+    That distinction matters, because the pre-existing escape hatch (`LOCALBOOK_SSL_NOVERIFY`)
+    turns verification OFF, and this must not quietly become that.
+
+    Injection is global — it swaps `ssl.SSLContext` — so it has to run before the clients that
+    depend on it are constructed. `main.py` calls it during startup, ahead of every service
+    import, and `install_hf_transport()` calls it again for any path that reaches the network
+    without going through startup (the installer's standalone python blocks).
+    """
+    global _TRUST_INJECTED
+    if _TRUST_INJECTED and not force:
+        return True
+    try:
+        import truststore
+
+        truststore.inject_into_ssl()
+        _TRUST_INJECTED = True
+        logger.info("[hf-transport] TLS verifies against the system trust store")
+        return True
+    except Exception as e:
+        # certifi remains in place; this is a downgrade, not a failure. Warn rather than
+        # info: on an intercepted network it is the line that explains everything after it.
+        logger.warning(f"[hf-transport] system trust store unavailable ({type(e).__name__}: {e}); "
+                       "falling back to certifi — HTTPS will fail if this network inspects TLS")
+        return False
 
 
 def install_hf_transport(force: bool = False) -> bool:
@@ -48,6 +93,11 @@ def install_hf_transport(force: bool = False) -> bool:
         return True
 
     no_verify = ssl_noverify_requested()
+
+    # Trust first: the client factory below is built with `verify=True` in the normal case, so
+    # it inherits whatever `ssl` resolves to at construction time.
+    if not no_verify:
+        install_system_trust()
 
     # Xet bypasses the configured client entirely, so an SSL bypass would not reach the bytes.
     # Only disabled when we actually need the bypass — Xet is faster when it works.

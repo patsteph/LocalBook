@@ -136,6 +136,12 @@ playwright>=1.40.0  # Browser automation for social platform auth
 # Utilities
 python-dotenv>=1.0.0
 httpx>=0.28.0
+# TLS verification against the macOS keychain rather than certifi's public-roots-only bundle.
+# Required on any network that inspects HTTPS: the middlebox's root is trusted by the system
+# but unknown to certifi, so every Python HTTPS call fails while curl and Safari succeed.
+# Pure Python, no transitive deps; pip uses it for the same reason. Imported lazily in
+# services/hf_transport.py, so build_backend.sh carries a --hidden-import for it.
+truststore>=0.10.0
 keyring>=25.5.0
 dateparser>=1.2.0
 tiktoken>=0.7.0  # Token counting for memory management
