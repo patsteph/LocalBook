@@ -655,7 +655,12 @@ async def model_readiness():
     try:
         from services.model_presence import engine_ok
         out["engine_ok"] = engine_ok()
-        if any(e == "mlx" for e in engines.values()) and not out["engine_ok"]:
+        # Was `any(e == "mlx" for e in engines.values())` over the pre-collapse per-role engine
+        # map. That name died with the map; every role is MLX now, so the question is simply
+        # whether any role needs the engine at all. The NameError landed inside the bare
+        # `except` below, so readiness could report ready with a dead engine — on the endpoint
+        # the debugging playbook sends you to first.
+        if any(roles.values()) and not out["engine_ok"]:
             out["ready"] = False
             out["blocking"].append("mlx_engine_unavailable")
     except Exception:

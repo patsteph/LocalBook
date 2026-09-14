@@ -3,6 +3,7 @@
 Provides comprehensive health checks, diagnostics, and repair actions.
 """
 import asyncio
+import logging
 import platform
 import shutil
 import sys
@@ -10,6 +11,11 @@ import subprocess
 from datetime import datetime
 from typing import Dict, Any, List, Optional
 from pathlib import Path
+
+# Eight call sites logged through a `logger` this module never defined — each one a NameError
+# waiting in a diagnostic path, which is the worst possible place for one: the lifeboat has to
+# work when everything else is already broken.
+logger = logging.getLogger(__name__)
 
 import httpx
 import psutil
@@ -358,6 +364,7 @@ async def full_health_check():
       # Embedding Model Test — go through the real seam, not a hand-rolled HTTP call, so
       # this exercises the same code path ingestion uses (including the zero-vector guard).
       try:
+          from services.llm_runtime import llm_runtime
           _emb = await llm_runtime.embed("test")
           _vecs = _emb.get("embeddings") or []
           emb_dim = len(_vecs[0]) if _vecs else 0

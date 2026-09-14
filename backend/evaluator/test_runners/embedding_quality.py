@@ -4,7 +4,6 @@ import time
 import math
 from datetime import datetime
 from evaluator.models import EvalResult
-from evaluator.capabilities import capabilities_for, FEATURES
 
 
 def _cosine_similarity(a: list[float], b: list[float]) -> float:
@@ -60,15 +59,13 @@ async def run(notebook_id: str, config: dict, combo_name: str, hw_fingerprint: s
         result.mark_skipped("No embedding model configured")
         print("[EVAL-EMBED] skipped — no embedding model configured")
         return [result]
-    # The capability gate is Ollama-oriented (probes /api/show). Skip it on MLX — the arctic
-    # model is a known embedding model and is served in-process, not via /api/embeddings.
-    if not _mlx_embed:
-        _caps = capabilities_for(embed_model)
-        if not _caps.supports(FEATURES.EMBEDDINGS):
-            reason = _caps.skip_reason(FEATURES.EMBEDDINGS) or f"{embed_model} backend has no /api/embeddings"
-            result.mark_skipped(reason)
-            print(f"[EVAL-EMBED] skipped — {reason}")
-            return [result]
+    # The Ollama capability gate that stood here (probe /api/show for an /api/embeddings
+    # endpoint) is gone with the engine it probed. Its guard read `_mlx_embed`, defined as
+    # `settings.embed_engine == "mlx"` until the config collapse deleted `embed_engine` and
+    # left the reader behind — so every evaluation run died with `name '_mlx_embed' is not
+    # defined` before reaching a single assertion. Embeddings are served in-process now;
+    # there is no second backend to interrogate, and `_embed` below already reports a dead
+    # embedder as an empty vector.
 
     test_passages = [
         "Retrieval-augmented generation combines retrieval with generation.",

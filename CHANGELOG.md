@@ -41,6 +41,21 @@ never tagged; its notes are kept in full below.
   working connection, but model downloads, the embedding checkpoint, the reranker and article
   fetching were affected the same way. TLS is now verified against the system trust store, the
   same one `curl` uses. Untrusted and expired certificates are still rejected.
+- **Every evaluation run failed immediately** with `name '_mlx_embed' is not defined`. The config
+  collapse removed the per-role engine setting but left one reader behind, in the gate that used
+  to decide whether to probe Ollama for an embeddings endpoint. There is no second engine to
+  probe now, so the gate is gone.
+- **Mermaid diagrams could not be rendered to images** — the shared-browser refactor removed the
+  render page but not the code reading it, so PPTX and image export raised on every diagram. The
+  page is rebuilt from the vendored copy of mermaid.js, which keeps it working offline and inside
+  the app bundle.
+- **Bulk-approving correspondent queue items failed** — a missing type import left the request
+  model unbuildable.
+- **`/system/model-readiness` could report ready while the engine was dead.** The same config
+  collapse orphaned a name in the engine check, and the error was swallowed by the surrounding
+  `except`. This is the endpoint the troubleshooting docs reach for first.
+- Diagnostic logging in the health portal referenced a logger that was never defined, so several
+  repair and check paths raised instead of reporting.
 - **A failed model browse said "check your connection" no matter what went wrong.** Rate limiting,
   a refused request and a rejected certificate now each say so, and the log keeps the underlying
   error rather than only its type — the two failures that matter most are indistinguishable by

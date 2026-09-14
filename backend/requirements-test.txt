@@ -18,3 +18,7 @@ fastapi
 # Real runtime dep (requirements.in) — py_compute's `read_df` data handle returns a DataFrame,
 # and tests/test_py_compute.py exercises it.
 pandas
+# Static undefined-name check (tests/test_no_undefined_names.py). Test-tier only — it must NOT
+# go in requirements.in or it ships inside the app for nothing. Without it that test skips
+# silently, which is how five NameErrors reached a release build at once.
+pyflakes
