@@ -241,3 +241,54 @@ def test_an_unlabelled_case_is_skipped_not_failed(monkeypatch):
 def test_no_gold_pairs_skips_the_category(monkeypatch):
     results = _run_runner(monkeypatch, ["anything"], [])
     assert len(results) == 1 and results[0].skipped is True
+
+
+# ── Asymmetric embedding: the query prefix ──────────────────────────────────
+#
+# Arctic Embed v2.0 is trained with a "query: " prefix on queries and none on documents. We sent
+# both sides unprefixed, so every search asked for the nearest PASSAGE to a passage. Identified
+# 2026-08-21, deferred because nothing could measure it; measured 2026-09-14 on the 22-question
+# gold set against a real index:
+#
+#   app path, prefix off :  recall@5 19/22  nDCG@10 0.774  mean rank 2.5
+#   app path, prefix on  :  recall@5 20/22  nDCG@10 0.810  mean rank 1.9
+#   vector only, off/on  :  mean rank 6.3 -> 2.0
+#
+# DOCUMENTS ARE NEVER PREFIXED — that is what makes this query-side only, with no re-index.
+
+def test_the_query_prefix_is_applied_only_when_asked(monkeypatch):
+    from services import rag_embeddings as re_
+
+    monkeypatch.setattr(re_, "query_prefix", lambda: "query: ")
+    assert re_._apply_query_prefix(["what is RAG?"]) == ["query: what is RAG?"]
+
+
+def test_the_prefix_is_not_doubled(monkeypatch):
+    """Re-embedding an already-prefixed string must not produce 'query: query: …'."""
+    from services import rag_embeddings as re_
+
+    monkeypatch.setattr(re_, "query_prefix", lambda: "query: ")
+    assert re_._apply_query_prefix(["query: already"]) == ["query: already"]
+
+
+def test_an_unrecognised_embedder_gets_no_prefix(monkeypatch):
+    """A symmetrically-trained model would be made WORSE by a prefix it never saw in training,
+    so anything not in the table is left exactly as it was."""
+    from services import rag_embeddings as re_
+
+    monkeypatch.setattr(re_, "query_prefix", lambda: "")
+    assert re_._apply_query_prefix(["unchanged"]) == ["unchanged"]
+
+
+def test_the_active_model_resolves_to_its_family_prefix(monkeypatch):
+    from services import rag_embeddings as re_
+
+    class _S:
+        embedding_model = "mlx-community/snowflake-arctic-embed-l-v2.0-bf16"
+
+    import config
+    monkeypatch.setattr(config, "settings", _S)
+    assert re_.query_prefix() == "query: "
+
+    _S.embedding_model = "some-org/mystery-embedder-v9"
+    assert re_.query_prefix() == "", "unknown models must not be guessed at"

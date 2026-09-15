@@ -136,17 +136,66 @@ def _get_embeddings_batch_sync(texts: List[str]) -> List[List[float]]:
     )
 
 
-def encode(texts: Union[str, List[str]]) -> np.ndarray:
+# ─── Asymmetric embedding: queries are not documents ────────────────────────────
+#
+# Arctic Embed v2.0 is trained ASYMMETRICALLY — a query is embedded with a "query: " prefix,
+# a document with none. We were sending both sides unprefixed, so every search embedded the
+# question in the document space and asked for the nearest passage to a passage. It still
+# works (the spaces are close), which is why it went unnoticed; it just ranks worse.
+#
+# Identified in the 2026-08-21 research and deferred ever since because nothing could measure
+# whether it helped. The Phase 3 retrieval harness is that measurement.
+#
+# Keyed by model family, NOT applied blindly: a model trained symmetrically would be made WORSE
+# by a prefix it never saw in training, so an unrecognised embedder gets "" and behaves exactly
+# as before. DOCUMENTS ARE NEVER PREFIXED — that is what makes this query-side only and means
+# no existing index needs rebuilding.
+_QUERY_PREFIXES = {
+    "arctic-embed": "query: ",   # Snowflake Arctic Embed v1 / v2
+    "e5-": "query: ",            # intfloat E5 family ("query: " / "passage: ")
+    "multilingual-e5": "query: ",
+    "bge-": "Represent this sentence for searching relevant passages: ",
+    "gte-": "",                  # symmetric — explicitly none
+    "nomic-embed": "search_query: ",
+}
+
+
+def query_prefix() -> str:
+    """The prefix the ACTIVE embedding model expects on a query, or "" if unknown."""
+    try:
+        from config import settings
+        model = (getattr(settings, "embedding_model", "") or "").lower()
+    except Exception:
+        return ""
+    for key, prefix in _QUERY_PREFIXES.items():
+        if key in model:
+            return prefix
+    return ""
+
+
+def _apply_query_prefix(texts: List[str]) -> List[str]:
+    prefix = query_prefix()
+    if not prefix:
+        return texts
+    return [t if t.startswith(prefix) else f"{prefix}{t}" for t in texts]
+
+
+def encode(texts: Union[str, List[str]], *, is_query: bool = False) -> np.ndarray:
     """Encode texts to embeddings (compatible with SentenceTransformer interface).
 
     This is the primary sync encoding entry point. All callers
     (rag_engine.encode, external services) route through here.
+
+    `is_query=True` applies the active model's query prefix. It defaults to False so every
+    existing DOCUMENT call site keeps its exact behaviour and no index becomes stale.
 
     WARNING: this blocks. In an async context use ``encode_async`` instead — a
     sync embed on the event loop is what froze the loop on 2026-06-26.
     """
     if isinstance(texts, str):
         texts = [texts]
+    if is_query:
+        texts = _apply_query_prefix(texts)
 
     if _use_ollama:
         embeddings = _get_embeddings_batch_sync(texts)
@@ -202,14 +251,18 @@ async def _get_embeddings_batch_async(texts: List[str], max_concurrent: int = 10
     return results
 
 
-async def encode_async(texts: Union[str, List[str]]) -> np.ndarray:
+async def encode_async(texts: Union[str, List[str]], *, is_query: bool = False) -> np.ndarray:
     """Async encode texts to embeddings using batched processing.
 
     Use this instead of encode() in async contexts — one batched call per 64 texts
     instead of one blocking call per text.
+
+    `is_query=True` applies the active model's query prefix (see `encode`).
     """
     if isinstance(texts, str):
         texts = [texts]
+    if is_query:
+        texts = _apply_query_prefix(texts)
 
     if _use_ollama:
         embeddings = await _get_embeddings_batch_async(texts)

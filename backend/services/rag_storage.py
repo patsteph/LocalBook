@@ -496,7 +496,7 @@ def search_chunks(notebook_id: str, query_text: str, top_k: int = 5) -> List[Dic
         table = get_table(notebook_id)
         if table.count_rows() == 0:
             return []
-        query_emb = rag_embeddings.encode(query_text)[0].tolist()
+        query_emb = rag_embeddings.encode(query_text, is_query=True)[0].tolist()
         results = table.search(query_emb).limit(top_k).to_list()
         return results
     except Exception as e:

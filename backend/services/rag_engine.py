@@ -117,16 +117,16 @@ class RAGEngine:
         """Lazy load embedding model (for sentence-transformers fallback)"""
         return rag_embeddings.get_embedding_model()
     
-    def encode(self, texts: Union[str, List[str]]) -> np.ndarray:
+    def encode(self, texts: Union[str, List[str]], *, is_query: bool = False) -> np.ndarray:
         """Encode texts to embeddings (compatible with SentenceTransformer interface)"""
-        return rag_embeddings.encode(texts)
+        return rag_embeddings.encode(texts, is_query=is_query)
     
-    async def encode_async(self, texts: Union[str, List[str]]) -> np.ndarray:
+    async def encode_async(self, texts: Union[str, List[str]], *, is_query: bool = False) -> np.ndarray:
         """Async encode texts to embeddings using parallel processing.
         
         Use this instead of encode() in async contexts for 10-20x speedup.
         """
-        return await rag_embeddings.encode_async(texts)
+        return await rag_embeddings.encode_async(texts, is_query=is_query)
 
     def _get_stored_vector_dim(self, table) -> Optional[int]:
         """Get the dimension of vectors stored in a table from schema"""
@@ -265,7 +265,7 @@ class RAGEngine:
             query_embedding = cached_emb
             rag_metrics.record_cache_hit("embedding", True)
         else:
-            query_embedding = self.encode(basic_expanded)[0].tolist()
+            query_embedding = self.encode(basic_expanded, is_query=True)[0].tolist()
             embedding_cache.put(basic_expanded, query_embedding)
             rag_metrics.record_cache_hit("embedding", False)
         rag_metrics.end_stage(RAGStage.EMBEDDING)
@@ -338,7 +338,7 @@ class RAGEngine:
                 for sub_q in sub_questions:
                     sub_emb = embedding_cache.get(sub_q)
                     if sub_emb is None:
-                        sub_emb = self.encode(sub_q)[0].tolist()
+                        sub_emb = self.encode(sub_q, is_query=True)[0].tolist()
                         embedding_cache.put(sub_q, sub_emb)
                     sub_embeddings.append(sub_emb)
                 
@@ -893,7 +893,7 @@ JSON:"""
         # watchdog (2026-07-09 faulthandler dump). encode_async keeps the loop alive (slow but
         # not fatal) when Ollama is contended.
         basic_expanded = self._expand_query(question)
-        query_embedding = (await self.encode_async(basic_expanded))[0].tolist()
+        query_embedding = (await self.encode_async(basic_expanded, is_query=True))[0].tolist()
 
         # Phase 1b (2026-06-24): answer cache on the STREAMING path. The WS2 audit
         # found answer_cache was wired ONLY into the non-streaming query() — so
