@@ -5,10 +5,18 @@ result (run_full_evaluation does this internally), and — unless --no-compare �
 diffs the overall score against the previous persisted run, exiting non-zero on a
 regression so release.sh (and the Wave-3 triage loop) can gate on quality.
 
+Two independent gates, because they catch different things:
+  • REGRESSION — the overall score dropped more than `--threshold` vs the previous run.
+    Blind to anything that was already broken at the baseline.
+  • BROKEN — a capability scored below the fail floor, however good the average is. The
+    overall is a weighted mean, so one dead feature dissolves into it (2026-09-14: a release
+    run reported 87.7 B+ with a category at the bottom of the table).
+
 Usage:
-  python -m evaluator.run                 # run + persist + regression-check vs previous
+  python -m evaluator.run                 # run + persist + both gates
   python -m evaluator.run --no-compare    # run + persist only
   python -m evaluator.run --threshold 8   # allow overall to drop up to 8 pts (default 5)
+  python -m evaluator.run --allow-failures # ignore the fail floor (exploratory runs)
   python -m evaluator.run --json          # machine-readable summary to stdout
 
 NOTE: the actual run needs a live model (Ollama/MLX) + writes to the production
@@ -21,6 +29,30 @@ import asyncio
 import json
 import sys
 from typing import Optional, Tuple
+
+
+def blocking_failures(summary: Optional[dict]) -> list:
+    """Capabilities that FAILED outright, independent of the overall average.
+
+    The overall score is a weighted MEAN, so one broken capability dissolves into it — the
+    2026-09-14 release run reported 87.7 (B+) with a category sitting at the bottom of the
+    table. A mean is the wrong instrument for "is anything actually broken"; that needs a
+    floor. Regression-vs-baseline does not catch it either: a capability that has been broken
+    since the baseline shows no drop at all.
+
+    Reuses the verdicts `feature_parity` already computes (score < 40 and not skipped → fail)
+    rather than re-deriving a second definition of "broken" that could disagree with what the
+    UI shows. Skipped/not-applicable categories are never blockers — a feature that is not part
+    of this combo has not failed.
+    """
+    if not summary:
+        return []
+    return [
+        {"category": e.get("category"), "feature": e.get("feature"),
+         "score": float(e.get("score") or 0)}
+        for e in (summary.get("feature_parity") or [])
+        if e.get("verdict") == "fail"
+    ]
 
 
 def evaluate_regression(
@@ -49,6 +81,7 @@ async def _run(args) -> int:
     summary = await run_full_evaluation()  # scores + persists internally
     new_score = float(summary.overall_score)
     is_reg, drop = evaluate_regression(baseline, new_score, args.threshold)
+    blockers = [] if args.allow_failures else blocking_failures(summary.to_dict())
 
     base_score = baseline.get("overall_score") if baseline else None
     payload = {
@@ -58,6 +91,8 @@ async def _run(args) -> int:
         "drop": drop,
         "threshold": args.threshold,
         "regression": is_reg,
+        "readiness": (summary.production_readiness or {}).get("headline"),
+        "blocking_failures": blockers,
     }
     if args.json:
         print(json.dumps(payload, indent=2))
@@ -66,8 +101,14 @@ async def _run(args) -> int:
         if base_score is not None and drop is not None:
             print(f"[eval] baseline {float(base_score):.1f} → drop {drop:+.1f} "
                   f"(threshold {args.threshold})")
-        print(f"[eval] {'REGRESSION' if is_reg else 'OK'}")
-    return 1 if is_reg else 0
+        readiness = (summary.production_readiness or {}).get("headline")
+        if readiness:
+            print(f"[eval] readiness: {readiness}")
+        for b in blockers:
+            print(f"[eval] ✗ BROKEN: {b['feature']} scored {b['score']:.0f}")
+        verdict = "REGRESSION" if is_reg else ("BROKEN" if blockers else "OK")
+        print(f"[eval] {verdict}")
+    return 1 if (is_reg or blockers) else 0
 
 
 def main(argv=None) -> int:
@@ -79,6 +120,9 @@ def main(argv=None) -> int:
     p.add_argument("--threshold", type=float, default=5.0,
                    help="max allowed overall-score drop vs baseline before it's a regression (default 5)")
     p.add_argument("--json", action="store_true", help="emit a machine-readable JSON summary")
+    p.add_argument("--allow-failures", action="store_true",
+                   help="do not fail the run when a capability scores below the fail floor "
+                        "(exploratory runs on a model you already know is partial)")
     args = p.parse_args(argv)
     return asyncio.run(_run(args))
 

@@ -161,3 +161,61 @@ def test_a_measured_zero_still_counts():
     assert overall == 50
     assert detail["coverage"] == 1.0
     assert detail["unmeasured"] == []
+
+
+# ── The fail floor: a mean cannot answer "is anything broken?" ───────────────
+#
+# The 2026-09-14 release run reported 87.7 (B+) while a category sat at the bottom of the
+# table. Two gates are needed because they catch different things: regression-vs-baseline is
+# blind to anything already broken AT the baseline, and the weighted mean dissolves a single
+# dead capability into an otherwise healthy average.
+
+from evaluator.run import blocking_failures, evaluate_regression
+
+
+def test_a_failed_capability_blocks_even_with_a_high_overall():
+    summary = {
+        "overall_score": 87.7,
+        "feature_parity": [
+            {"category": "rag_chat", "feature": "RAG Chat Q&A", "verdict": "pass", "score": 91},
+            {"category": "structured_json", "feature": "Structured JSON", "verdict": "fail", "score": 12},
+        ],
+    }
+    blockers = blocking_failures(summary)
+    assert [b["category"] for b in blockers] == ["structured_json"]
+    assert blockers[0]["score"] == 12
+
+
+def test_a_skipped_capability_is_never_a_blocker():
+    """A feature that is not part of this combo has not failed — conflating the two is what
+    made `field_edges: 0 (F)` look like a broken model when it had nothing to run."""
+    summary = {"feature_parity": [
+        {"category": "vision", "feature": "Vision", "verdict": "not_applicable", "score": 0},
+    ]}
+    assert blocking_failures(summary) == []
+
+
+def test_degraded_is_not_blocking():
+    """Degraded means weaker, not broken — it must not stop a release on its own."""
+    summary = {"feature_parity": [
+        {"category": "streaming", "feature": "Streaming", "verdict": "degraded", "score": 55},
+    ]}
+    assert blocking_failures(summary) == []
+
+
+def test_no_parity_data_blocks_nothing():
+    assert blocking_failures({}) == []
+    assert blocking_failures(None) == []
+
+
+def test_the_two_gates_are_independent():
+    """A capability broken since the baseline shows NO regression — the drop is zero — which
+    is exactly the case the floor exists to catch."""
+    baseline = {"overall_score": 87.7}
+    is_reg, drop = evaluate_regression(baseline, 87.7, 5.0)
+    assert is_reg is False and drop == 0.0
+
+    summary = {"feature_parity": [
+        {"category": "structured_json", "feature": "Structured JSON", "verdict": "fail", "score": 5},
+    ]}
+    assert blocking_failures(summary), "the floor must catch what the regression gate cannot"

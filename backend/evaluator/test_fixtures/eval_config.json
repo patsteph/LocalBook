@@ -205,6 +205,7 @@
       "prompt_safety": 10,
       "embedding_quality": 8,
       "instruction_follow": 6,
+      "field_edges": 6,
       "document_gen": 5,
       "structured_json": 5,
       "needle_haystack": 4,

@@ -608,7 +608,18 @@ async def run_full_evaluation() -> ComboEvalSummary:
         print(f"\n[EVALUATOR] ═══════════════════════════════════════════")
         print(f"[EVALUATOR] OVERALL: {summary.overall_score:.1f} ({summary.overall_grade})")
         print(f"[EVALUATOR] Time: {summary.total_run_time_seconds:.0f}s")
+        # A category with nothing to run scores 0.0/"F" internally (compute_category_score has
+        # no other way to say "empty"), but printing that as `field_edges: 0 (F)` reports a
+        # failing grade for a test that never ran — and it is EXCLUDED from the overall, so the
+        # same summary shows an F alongside a B+ that does not contain it. The warnings list
+        # above already makes this distinction; the breakdown did not.
+        _skipped_cats = {c.get("category") for c in (summary.skipped_categories or [])}
         for k, v in summary.category_scores.items():
+            if k in _skipped_cats:
+                _why = next((c.get("reason") for c in summary.skipped_categories
+                             if c.get("category") == k), "") or "nothing to run"
+                print(f"[EVALUATOR]   {k}: — (not applicable: {_why})")
+                continue
             grade = _score_to_grade(v)
             print(f"[EVALUATOR]   {k}: {v:.0f} ({grade})")
         if summary.warnings:

@@ -59,6 +59,11 @@ _CATEGORY_TO_FEATURE = {
     "refinement": "Refinement Pass",
     "translation": "Translation",
     "confidence": "Confidence Calibration",
+    # Missing until 2026-09-14, which made field_edges the only category invisible in BOTH
+    # views: absent from category_weights (no effect on the overall) AND absent here (no
+    # verdict, so the fail floor could not see it either). It is the promoted real-world
+    # near-miss suite — the closest thing to ground truth in the harness.
+    "field_edges": "Field-Edge Regressions",
 }
 
 
