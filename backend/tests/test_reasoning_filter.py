@@ -129,3 +129,51 @@ def test_the_held_buffer_cannot_grow_without_bound():
     for _ in range(1000):
         f.feed("<")
     assert len(f._held) <= 16
+
+
+# ── The vision seam (2026-09-15) ────────────────────────────────────────────
+#
+# `scan_pipeline` and `multimodal_extractor` called `llm_runtime.vision_describe` directly,
+# bypassing `llm_service.generate_with_vision`. That looked harmless because the seam was a
+# bare pass-through — it added nothing to skip. It does now: vision output is shown to the user
+# verbatim (image descriptions, scanned receipts, capture modes), so a reasoning model would
+# otherwise put its scratchpad into the document.
+
+def test_the_vision_seam_strips_reasoning():
+    import asyncio
+
+    from services import llm_service
+
+    async def _fake(image_b64, prompt, **kwargs):
+        return "<think>the image seems to show a receipt</think>Total: $42.00"
+
+    class _FakeRuntime:
+        vision_describe = staticmethod(_fake)
+
+    import services.llm_runtime as lr
+    real = lr.llm_runtime
+    lr.llm_runtime = _FakeRuntime()
+    try:
+        out = asyncio.run(llm_service.generate_with_vision("b64", "describe"))
+        assert out == "Total: $42.00", f"reasoning reached the user: {out!r}"
+        ocr = asyncio.run(llm_service.ocr_backend("b64", "read"))
+        assert "<think>" not in ocr, "OCR text goes straight into a document the user reads"
+    finally:
+        lr.llm_runtime = real
+
+
+def test_production_vision_callers_use_the_seam():
+    """The shortcut must not creep back: only llm_service may call the runtime directly."""
+    from pathlib import Path
+
+    backend = Path(__file__).resolve().parents[1]
+    offenders = []
+    for f in (backend / "services").glob("*.py"):
+        if f.name in ("llm_service.py", "llm_runtime.py"):
+            continue
+        if "llm_runtime.vision_describe(" in f.read_text():
+            offenders.append(f.name)
+    assert not offenders, (
+        f"{offenders} bypass llm_service.generate_with_vision — they would skip the reasoning "
+        f"strip and token recording"
+    )

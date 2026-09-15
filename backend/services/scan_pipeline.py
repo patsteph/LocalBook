@@ -22,6 +22,7 @@ from config import settings
 from services.image_preprocessor import check_blur, enhance_for_ocr
 from services.memory_steward import free_for_pipeline
 from services.llm_runtime import llm_runtime
+from services.llm_service import generate_with_vision
 from services.page_classifier import classify_page
 from services.progress_reporter import ProgressReporter, get_noop_reporter
 from services.rag_engine import rag_engine
@@ -945,7 +946,7 @@ class ScanPipeline:
                     "If this page continues that section, keep using the same heading level."
                 )
         logger.info(f"[scan] Vision ({mode}) on {file_path}")
-        raw = await llm_runtime.vision_describe(
+        raw = await generate_with_vision(
             image_b64=b64_image,
             prompt=prompt,
             model=vision_model_name,
@@ -967,7 +968,7 @@ class ScanPipeline:
                 f"(mode={mode}, model={vision_model_name}, len={len(raw.strip())}); "
                 "retrying with bare prompt at temp 0.0"
             )
-            retry = await llm_runtime.vision_describe(
+            retry = await generate_with_vision(
                 image_b64=b64_image,
                 prompt=bare_prompt,
                 model=vision_model_name,
@@ -1045,7 +1046,7 @@ class ScanPipeline:
         outputs and small models scrambled the format.
         """
         logger.info("[scan] Vision (photo)")
-        raw = await llm_runtime.vision_describe(
+        raw = await generate_with_vision(
             image_b64=b64_image,
             prompt=MODE_PROMPTS["photo"],
             model=vision_model_name,
@@ -1145,7 +1146,7 @@ class ScanPipeline:
         # Step 1: Heuristic-first classification with LLM fallback
         async def _llm_classify(bytes_in: bytes) -> str:
             b64 = base64.b64encode(bytes_in).decode("utf-8")
-            classification = await llm_runtime.vision_describe(
+            classification = await generate_with_vision(
                 image_b64=b64,
                 prompt=CLASSIFY_PROMPT,
                 model=vision_model_name,

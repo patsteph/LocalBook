@@ -302,7 +302,8 @@ Focus on information that would be useful for answering questions about this doc
         try:
             # Use the universal vision dispatcher — handles both /api/generate
             # (Granite/LLaVA) and /api/chat (Gemma4/Llama3.2) automatically
-            from services.llm_runtime import llm_runtime, PRIORITY_BACKGROUND
+            from services.llm_runtime import llm_runtime
+from services.llm_service import generate_with_vision, PRIORITY_BACKGROUND
             # Image description is ENRICHMENT (the doc is already searchable on
             # its text) and the gemma vision call shares the single gemma lane
             # with the user's chat query, which can't preempt an in-flight call
@@ -315,7 +316,7 @@ Focus on information that would be useful for answering questions about this doc
             api_style = self._get_vision_api_style()
             # PDF image-description is bulk background ingest — yield the
             # (single-wide) gemma4 lane to any user-initiated foreground call.
-            description = await llm_runtime.vision_describe(
+            description = await generate_with_vision(
                 image_b64=image_b64,
                 prompt=prompt,
                 model=self.vision_model,
@@ -449,7 +450,7 @@ Focus on information that would be useful for answering questions about this doc
                     # ocr_mode: pure page transcription → free on-device Apple
                     # Vision OCR (no gemma load), falling back to the LLM vision
                     # model when Vision is unavailable.
-                    description = await llm_runtime.vision_describe(
+                    description = await generate_with_vision(
                         image_b64=image_b64,
                         prompt=PAGE_TEXT_EXTRACT_PROMPT,
                         model=self.vision_model,

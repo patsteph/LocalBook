@@ -387,7 +387,15 @@ def clamp_num_predict(prompt_text: str, num_predict: Optional[int], num_ctx: Opt
 
 
 def _record_tokens(data: dict):
-    """Extract and record token usage from an Ollama response/final chunk."""
+    """Record token usage from a response/final chunk. THE single recording point.
+
+    Feeds BOTH meters (2026-09-15). There used to be two copies of this — this one recording
+    only to `rag_metrics`, and a second in `llm_service` recording to rag_metrics AND
+    `throughput_meter`. So a generation's speed was counted or not depending purely on which
+    layer the caller happened to enter at, which is why the menu bar (rag_metrics, lifetime)
+    and the Evaluator (throughput_meter, per-run) reported different tok/s for the same work.
+    One implementation, both meters, every caller.
+    """
     try:
         prompt_tokens = data.get("prompt_eval_count", 0) or 0
         completion_tokens = data.get("eval_count", 0) or 0
@@ -395,8 +403,10 @@ def _record_tokens(data: dict):
         if prompt_tokens > 0 or completion_tokens > 0:
             from services.rag_metrics import rag_metrics
             rag_metrics.record_tokens(prompt_tokens, completion_tokens, eval_duration_ns)
+            from services.throughput_meter import record as _tp_record
+            _tp_record(completion_tokens, eval_duration_ns, prompt_tokens)
     except Exception as _e:
-        logger.debug(f"[ollama-service] {type(_e).__name__}: {_e}")
+        logger.debug(f"[llm-runtime] token recording: {type(_e).__name__}: {_e}")
 
 
 def _mark_model_used(model: str):
@@ -637,6 +647,10 @@ class LLMRuntime:
                     _res = await mlx_engine.vision_describe(
                         image_b64, prompt, model=_mlx_vid, num_predict=num_predict or 400)
                 _mark_model_used(_mlx_vid)
+                # Vision recorded NOTHING before 2026-09-15 — not rag_metrics, not
+                # throughput_meter — so every image description, OCR pass and scan in the app
+                # contributed zero to token accounting.
+                _record_tokens(_res)
                 _desc = _res.get("response", "")
                 logger.info(f"[LLMRuntime→MLX] vision OK model→{_mlx_vid} ({len(_desc)} chars)")
                 return _desc

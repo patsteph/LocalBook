@@ -55,21 +55,14 @@ def _get_model_options(model_name: str) -> dict:
 
 
 def _record_ollama_tokens(data: dict):
-    """Extract and record token usage from an Ollama response/final chunk."""
-    try:
-        prompt_tokens = data.get("prompt_eval_count", 0) or 0
-        completion_tokens = data.get("eval_count", 0) or 0
-        eval_duration_ns = data.get("eval_duration", 0) or 0
-        if prompt_tokens > 0 or completion_tokens > 0:
-            from services.rag_metrics import rag_metrics
-            rag_metrics.record_tokens(prompt_tokens, completion_tokens, eval_duration_ns)
-            # Run-scoped throughput. Both engines reach here with Ollama-shaped fields
-            # (mlx_engine emits eval_count/eval_duration deliberately), so ONE hook makes
-            # every generation a speed sample instead of the 2 that time themselves.
-            from services.throughput_meter import record as _tp_record
-            _tp_record(completion_tokens, eval_duration_ns, prompt_tokens)
-    except Exception:
-        pass  # Never let metrics recording break LLM calls
+    """Delegates to the ONE recorder in llm_runtime (2026-09-15).
+
+    This used to be a second copy that fed rag_metrics AND throughput_meter while
+    llm_runtime's fed only rag_metrics — so whether a generation counted toward the
+    Evaluator's speed figure depended on which layer the caller entered at.
+    """
+    from services.llm_runtime import _record_tokens
+    _record_tokens(data)
 
 
 def _record_engine_fallback(detail: str, role_model: str, severity: str = "error") -> None:
@@ -486,15 +479,25 @@ async def stream_text(
 # ─── Vision / OCR seam (doc-20) ─────────────────────────────────────────────
 
 async def generate_with_vision(image_b64: str, prompt: str, **kwargs):
-    """Engine-routed vision generation (currently Ollama; resolve_vision_model
-    picks gemma4 on Option-A boxes, the configured fallback otherwise)."""
+    """Engine-routed vision generation — THE seam for anything that looks at an image.
+
+    Strips reasoning traces, exactly as `generate_text` does. Vision output is shown to the
+    user directly (image descriptions, scan results, capture modes), so a reasoning model would
+    otherwise put its scratchpad into a scanned receipt. This was a pass-through until
+    2026-09-15, which is why `scan_pipeline` and `multimodal_extractor` calling
+    `llm_runtime.vision_describe` instead looked harmless — the seam added nothing to skip.
+    """
     from services.llm_runtime import llm_runtime
-    return await llm_runtime.vision_describe(image_b64, prompt, **kwargs)
+    from utils.reasoning import strip_reasoning
+    return strip_reasoning(await llm_runtime.vision_describe(image_b64, prompt, **kwargs))
 
 
 async def ocr_backend(image_b64: str, prompt: str, **kwargs):
-    """Engine-routed OCR slice (currently Apple Vision with Ollama fallback,
-    via vision_describe's ocr_mode routing)."""
+    """Engine-routed OCR slice (Apple Vision fast-path, model fallback via ocr_mode).
+
+    Also strips reasoning: OCR text goes straight into a document the user reads.
+    """
     from services.llm_runtime import llm_runtime
+    from utils.reasoning import strip_reasoning
     kwargs.setdefault("ocr_mode", True)
-    return await llm_runtime.vision_describe(image_b64, prompt, **kwargs)
+    return strip_reasoning(await llm_runtime.vision_describe(image_b64, prompt, **kwargs))
