@@ -47,6 +47,68 @@ def chunk_text_smart(text: str, source_type: str, filename: str) -> List[str]:
 
 # ─── Hierarchical Chunking ──────────────────────────────────────────────────────
 
+def _merge_adjacent(pieces: List[tuple]) -> List[str]:
+    """Combine adjacent leaf chunks up to `chunk_size`, preserving document order.
+
+    `pieces` is [(group_id, text), …] in document order, where group_id is the section.
+
+    Why (2026-09-14): the old code emitted each leaf as its own chunk and DROPPED anything
+    under 100 characters. On the test PDF that produced 20 chunks averaging 213 characters
+    against a configured `chunk_size` of 1000 — so retrieval returned fragments with almost no
+    surrounding context, the reranker had little to work with, and every fragment cost its own
+    embedding. Worse, the 100-char floor silently discarded short sections: content that was in
+    the document simply never reached the index.
+
+    Merging preferentially within a section keeps a chunk about one topic. A run that is still
+    tiny after that is merged across the boundary anyway — a 130-character chunk is worse for
+    retrieval than a slightly mixed one, and far worse than the alternative of dropping it.
+    """
+    from config import settings
+
+    target = getattr(settings, "chunk_size", 1000)
+    floor = max(1, target // 4)
+
+    out: List[str] = []
+    buf: List[str] = []
+    buf_group = None
+
+    def _flush():
+        if buf:
+            out.append("\n\n".join(buf).strip())
+
+    for group, body in pieces:
+        body = (body or "").strip()
+        if not body:
+            continue
+        if not buf:
+            buf, buf_group = [body], group
+            continue
+
+        current_len = sum(len(b) for b in buf) + 2 * len(buf)
+        same_section = group == buf_group
+        would_fit = current_len + len(body) <= target
+
+        # Same section and it fits → merge. Different section but the buffer is still below the
+        # floor → merge anyway rather than emit a fragment. Otherwise start a new chunk.
+        if would_fit and (same_section or current_len < floor):
+            buf.append(body)
+            if not same_section:
+                buf_group = group
+        else:
+            _flush()
+            buf, buf_group = [body], group
+
+    _flush()
+    out = [c for c in out if c]
+
+    # Merging only ever looks forward, so a small final run has nothing to join. Fold a
+    # sub-floor tail back into its predecessor rather than indexing a fragment.
+    if len(out) > 1 and len(out[-1]) < floor and len(out[-2]) + len(out[-1]) <= target * 1.5:
+        tail = out.pop()
+        out[-1] = f"{out[-1]}\n\n{tail}"
+    return out
+
+
 def chunk_hierarchical(text: str, filename: str) -> List[str]:
     """Hierarchical chunking for structured documents.
     
@@ -64,19 +126,44 @@ def chunk_hierarchical(text: str, filename: str) -> List[str]:
             include_sentences=False
         )
         
-        result = []
-        for chunk in hier_chunks:
-            if chunk.level in [1, 2]:
-                if chunk.section_title and chunk.level == 2:
-                    chunk_text = f"[{chunk.section_title}]\n{chunk.text}"
-                else:
-                    chunk_text = chunk.text
-                
-                if len(chunk_text) >= 100:
-                    result.append(chunk_text)
-        
+        # LEAVES ONLY (2026-09-14). This used to emit every level-1 AND level-2 chunk, so a
+        # section and its own paragraphs both went into the store: measured on the test PDF,
+        # 15 of 16 paragraph chunks were contained verbatim in a section chunk — 4,239 chars
+        # indexed from a 2,901-char document, 1.46× duplication. That cost ~2x the embedding
+        # calls at ingest (the reported PDF slowness), and duplicate text competed for the five
+        # retrieval slots, pushing genuinely different material out of the results.
+        #
+        # A section is a leaf only when it has no paragraph children; otherwise its children
+        # represent it. `parent_id` is what makes that decidable.
+        parented = {c.parent_id for c in hier_chunks if c.level == 2 and c.parent_id}
+        leaves = [
+            c for c in hier_chunks
+            if c.level == 2 or (c.level == 1 and c.chunk_id not in parented)
+        ]
+
+        # A heading's own text is consumed into `section_title` and is NOT part of any node's
+        # `.text`, so it never reaches the index. That is invisible for a heading like
+        # "Overview", and lossy for this chunker's numbered-section pattern
+        # (`^\d+\.\s+([A-Z].+)$`), which classifies the steps of a numbered LIST as headings.
+        # Measured on the test PDF: "Embeds the query using the Snowflake Arctic Embed 2
+        # model", "Searches the LanceDB vector store" and "Reranks results using cross-encoder
+        # scoring" — the actual content of the RAG-pipeline list — were absent from the index
+        # entirely, under the old code as well as the new. Emitting the heading ahead of its
+        # children restores it and gives the children their context.
+        # Heading text now lives in the section body itself (`hierarchical_chunker.
+        # _detect_sections` keeps the heading line), so it reaches the index through normal
+        # content and does NOT need to be re-emitted here. Re-emitting it as well pushed the
+        # index to 1.65x the source — trading one kind of duplication for another.
+        pieces = [
+            (c.parent_id or c.chunk_id, c.text)
+            for c in leaves
+        ]
+
+        result = _merge_adjacent(pieces)
+
         if result:
-            print(f"[RAG] Hierarchical chunking: {len(result)} chunks from {len(hier_chunks)} total levels")
+            print(f"[RAG] Hierarchical chunking: {len(result)} chunks "
+                  f"({len(leaves)} leaves of {len(hier_chunks)} hierarchy nodes)")
             return result
         
     except Exception as e:

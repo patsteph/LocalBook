@@ -70,7 +70,23 @@ class HierarchicalChunker:
                 if current_content:
                     sections.append((current_title, '\n'.join(current_content)))
                 current_title = header_text
-                current_content = []
+                # KEEP THE HEADING LINE AS CONTENT (2026-09-14). It used to be consumed into
+                # `current_title` and dropped from the body, so heading text never reached the
+                # index — invisible for a heading like "Overview", and outright content loss
+                # for `^\d+\.\s+([A-Z].+)$`, which classifies the steps of a numbered LIST as
+                # headings.
+                #
+                # Worse, consecutive headings hit `if current_content:` while it was still
+                # empty, so every section but the last was discarded WITH its title. Measured
+                # on the test PDF, a five-step numbered list lost steps 1-4 completely: "Embeds
+                # the query using the Snowflake Arctic Embed 2 model", "Searches the LanceDB
+                # vector store", "Reranks results using cross-encoder scoring" and "Builds an
+                # adaptive context window" were absent from the index entirely — unanswerable
+                # questions about text that was right there in the document.
+                #
+                # Keeping the line also means a chunk carries its own heading, which is what
+                # you want for retrieval anyway.
+                current_content = [line]
             else:
                 current_content.append(line)
         
