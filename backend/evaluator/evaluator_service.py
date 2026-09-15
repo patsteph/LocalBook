@@ -159,9 +159,15 @@ def _tier_gate(category: str, tier: str, coro):
 def _tier_config(config: dict, tier: str) -> dict:
     """Smoke drops the network-fetched sources: on 2026-09-14 YouTube took 94s and the web
     scrape 90s of a 352s ingestion, and neither says anything about the model."""
+    # Runners that repeat a measurement to beat sampling noise need to know which tier they
+    # are in: repeats are what make a number trustworthy, and also what would destroy the
+    # smoke tier's whole reason for existing.
     if tier != "smoke":
-        return config
+        out = dict(config)
+        out["_tier"] = tier
+        return out
     trimmed = dict(config)
+    trimmed["_tier"] = tier
     sources = {k: v for k, v in (config.get("content_sources") or {}).items()
                if k not in _NETWORK_SOURCES}
     trimmed["content_sources"] = sources
@@ -497,7 +503,11 @@ async def _run_evaluation(tier: str = "full") -> ComboEvalSummary:
         # Phase 13: Instruction Following
         _update_progress(13, "Instruction Following")
         instruct_results = await _run_phase_with_timeout(
-            _tier_gate("instruction_follow", tier, instruction_follow.run(notebook_id, config, combo.name, hw.fingerprint)), "Instruction Follow")
+            _tier_gate("instruction_follow", tier, instruction_follow.run(notebook_id, config, combo.name, hw.fingerprint)),
+            # 4 tests x 3 samples of full RAG generation in the full tier. At 20-40s each, the
+            # 180s default guaranteed a timeout — which would have EXCLUDED the category and
+            # hidden the very instability the repeats exist to expose.
+            "Instruction Follow", timeout=900)
         cat = _build_category("instruction_follow", "Instruction Following", instruct_results,
                               _tier_skip_reason("instruction_follow", tier))
         category_results["instruction_follow"] = cat
@@ -753,7 +763,14 @@ async def _run_evaluation(tier: str = "full") -> ComboEvalSummary:
 
         # Performance profile
         _tps, _ttft = _PERF["tps"], _PERF["ttft"]
-        summary.avg_tokens_per_sec = sum(_tps) / len(_tps) if _tps else 0
+        # The throughput METER is the honest source: it records every generation that actually
+        # went through llm_runtime, and reports total tokens over total generation time rather
+        # than a mean of per-call rates that over-weights tiny fast calls. The per-runner list
+        # is a fallback for when the meter recorded nothing.
+        _meter_tps = float((summary.throughput or {}).get("tokens_per_sec") or 0)
+        summary.avg_tokens_per_sec = (
+            _meter_tps if _meter_tps > 0 else (sum(_tps) / len(_tps) if _tps else 0)
+        )
         summary.avg_ttft_ms = sum(_ttft) / len(_ttft) if _ttft else 0
         # Distribution, not just a mean: a p95 TTFT regression is what a user notices, and a
         # sample count is what tells a reader whether the mean means anything.
@@ -882,8 +899,19 @@ def _reset_perf() -> None:
     _PERF["tps"], _PERF["ttft"] = [], []
 
 
+# Runners whose `tokens_per_second` is NOT generation throughput and must never be averaged
+# into the headline figure (2026-09-15):
+#   embedding_quality — sets EMBEDS per second (a different unit entirely)
+#   concurrency       — sets tokens SUMMED ACROSS 3 PARALLEL streams, so ~3x a single stream
+# Mixing them produced an implausible "200.0 tok/s" for a model whose real rate was nothing
+# like that, and quietly distorted every other run too.
+_NON_GENERATION_TPS = {"embedding_quality", "concurrency"}
+
+
 def _collect_perf(results: list) -> None:
     for r in results or []:
+        if getattr(r, "category", "") in _NON_GENERATION_TPS:
+            continue
         if getattr(r, "tokens_per_second", 0) > 0:
             _PERF["tps"].append(r.tokens_per_second)
         if getattr(r, "time_to_first_token_ms", 0) > 0:

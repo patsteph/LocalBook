@@ -28,6 +28,10 @@ INSTRUCTION_TESTS = [
 async def run(notebook_id: str, config: dict, combo_name: str, hw_fingerprint: str) -> list[EvalResult]:
     """Run IFEval-style instruction following tests."""
     from services.rag_engine import rag_engine
+
+    # 3 samples in the full tier, 1 in smoke. Each sample is a full RAG generation (20-40s),
+    # so this is the difference between a trustworthy number and a quick one.
+    _samples = 1 if (config or {}).get("_tier") == "smoke" else 3
     from config import settings
 
     results = []
@@ -63,17 +67,42 @@ async def run(notebook_id: str, config: dict, combo_name: str, hw_fingerprint: s
             result.output_chars = len(answer)
             result.actual_output_preview = answer[:500]
 
-            format_score = scoring.score_format_compliance(answer, q["expected_format"])
+            scores = [scoring.score_format_compliance(answer, q["expected_format"])]
+
+            # REPEAT to beat sampling noise (2026-09-15). One draw at production temperature is
+            # a coin flip: the SAME model scored this category 83.8, 68.8 and 56.2 across three
+            # consecutive runs — 27 points — so a single sample cannot distinguish two models,
+            # and three different models landing on exactly 74 was coincidence, not agreement.
+            # The median is reported and the spread recorded, so instability stays visible.
+            #
+            # Smoke keeps one sample: repeats are what make the number trustworthy and also
+            # what would destroy the tier that exists to be quick. It says which it did.
+            for _ in range(max(0, _samples - 1)):
+                _resp = await rag_engine.query(notebook_id=notebook_id,
+                                               question=q["question"], top_k=4)
+                _ans = _resp.answer if hasattr(_resp, "answer") else _resp.get("answer", "")
+                scores.append(scoring.score_format_compliance(_ans, q["expected_format"]))
+
+            scores.sort()
+            format_score = scores[len(scores) // 2]
+            spread = scores[-1] - scores[0]
             result.format_score = format_score
             result.overall_score = format_score
             result.passed = format_score >= 50
-            
+
             # Surface the IFEval category for dashboard grouping
             result.sub_scores = {
                 "category": q["expected_format"].get("category", "unknown"),
                 "compliance": format_score,
+                "samples": scores,
+                "spread": spread,
+                "single_sample": _samples == 1,
             }
 
+            if spread >= 30:
+                result.mark_degraded(
+                    f"UNSTABLE: {spread} points across {_samples} identical runs "
+                    f"({scores}) — treat as indicative")
             if format_score < 50:
                 result.failure_reason = f"Format compliance {format_score}% < 50%"
 
