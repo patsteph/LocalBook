@@ -191,9 +191,21 @@ def _stub_search(ranked_texts):
 
 
 def _run_runner(monkeypatch, ranked_texts, gold_questions):
+    """Drive the runner's VERDICT logic with both retrieval paths stubbed.
+
+    Both must be stubbed: the scored path is adaptive now, and leaving it real makes the test
+    open an actual LanceDB table (empty, so every case scores 0 — and slowly).
+    """
     from services import rag_engine as _re
     from evaluator.test_runners import retrieval
 
+    chunks = [{"text": t} for t in ranked_texts]
+
+    async def _adaptive(engine, table, question, top_k):
+        return chunks[:top_k]
+
+    monkeypatch.setattr(retrieval, "_search_adaptive", _adaptive)
+    monkeypatch.setattr(_re.rag_engine, "_get_table", lambda nb: object())
     monkeypatch.setattr(_re.rag_engine, "search_chunks_async", _stub_search(ranked_texts))
     monkeypatch.setattr(retrieval, "_load_gold", lambda: gold_questions)
     return asyncio.run(retrieval.run("nb", {}, "combo", "hw"))

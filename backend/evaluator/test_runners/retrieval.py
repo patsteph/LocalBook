@@ -15,19 +15,26 @@ Gold pairs: `test_fixtures/retrieval_gold.json` (committed, built against the co
 merged with `<data_dir>/eval/retrieval_gold.local.json` if present — the local overlay is how
 real field questions get added without putting notebook content in a public repo.
 
-⚠️ SCOPE — what this measures, precisely
-----------------------------------------
-`search_chunks_async` is **pure vector search**: no hybrid BM25, no query expansion, no
-FlashRank rerank. That is deliberate for a first cut — it isolates EMBEDDING quality from
-everything layered on top, which is exactly what the `query: ` prefix and unembedded-notes
-changes affect, and it has no model-dependent behaviour to confound a cross-model comparison.
+TWO PATHS, because they answer different questions
+--------------------------------------------------
+- **adaptive** — hybrid BM25 + query expansion + FlashRank rerank. What chat actually does, so
+  this is what the category SCORES.
+- **vector** — `search_chunks_async`, raw nearest-neighbour. Reported alongside, because it
+  isolates EMBEDDING quality from everything layered on top.
 
-But it is NOT the path chat uses. `rag_search.adaptive_search` is, and a rerank or
-`retrieval_overcollect` change will NOT show up here. Adding a second, adaptive-path variant is
-the obvious next step; it needs `table` / `query_embedding` / `analysis` built the way
-`rag_engine.query` builds them, so it wants a live index to validate against rather than being
-written blind. Until then, read this category as "embedding + vector retrieval", which is what
-its scores honestly describe.
+Keeping both is not redundancy, it is the difference between two diagnoses. Measured on the
+22-question gold set when the `query: ` prefix landed (2026-09-14):
+
+    vector   mean rank 6.3 → 2.0      (the embedding change, seen clearly)
+    adaptive mean rank 2.5 → 1.9      (the same change, largely masked by rerank)
+
+Read only the adaptive number and you would conclude the prefix barely mattered; read only the
+vector number and you would overstate it. And a rerank or `retrieval_overcollect` change moves
+the adaptive number while leaving the vector one untouched.
+
+⚠️ This split is also a trap I walked into on 2026-09-14: recovered content sat at vector ranks
+7-13 and I reported a ranking problem. On the adaptive path 3 of those 4 were already top-5.
+**The scored number is the adaptive one. The vector number is a diagnostic, not a verdict.**
 """
 import json
 import time
@@ -71,6 +78,20 @@ def _load_gold() -> list:
     return questions
 
 
+async def _search_adaptive(rag_engine, table, question: str, top_k: int):
+    """Retrieve the way chat does — expansion + hybrid + rerank — without generating.
+
+    Mirrors the opening of `rag_engine.query`: expand, embed AS A QUERY, then adaptive_search.
+    The analysis dict is the minimum `adaptive_search` reads; the full LLM query analysis is
+    deliberately skipped so this measures RETRIEVAL rather than the analyzer's mood, and stays
+    comparable across models.
+    """
+    expanded = rag_engine._expand_query(question)
+    embedding = (await rag_engine.encode_async(expanded, is_query=True))[0].tolist()
+    analysis = {"intent": "factual", "keywords": [], "expanded_query": expanded}
+    return await rag_engine._adaptive_search(table, question, embedding, analysis, top_k) or []
+
+
 async def run(notebook_id: str, config: dict, combo_name: str, hw_fingerprint: str) -> list:
     """One EvalResult per gold question."""
     from config import settings
@@ -112,13 +133,38 @@ async def run(notebook_id: str, config: dict, combo_name: str, hw_fingerprint: s
 
         try:
             start = time.time()
-            chunks = await rag_engine.search_chunks_async(notebook_id, question, top_k=_DEEP_K)
+            # The SCORED path: what chat does — INCLUDING its real top_k.
+            #
+            # `adaptive_search` derives its candidate pool from top_k (hybrid fetches k*2 before
+            # reranking), so the parameter changes the retrieval, not just how much of it you
+            # see. Passing the harness's deep 20 made the reranker order 40 candidates instead
+            # of 10 and measurably WORSENED the top of the list — nDCG@10 0.507 vs 0.718 —
+            # i.e. the harness scored a configuration the app never runs. Use the app's value.
+            try:
+                table = rag_engine._get_table(notebook_id)
+                app_top_k = getattr(settings, "retrieval_top_k", 5)
+                chunks = await _search_adaptive(rag_engine, table, question, app_top_k)
+            except Exception as _ae:
+                print(f"[EVAL-RETRIEVAL] adaptive path unavailable ({_ae}) — vector only")
+                chunks = await rag_engine.search_chunks_async(notebook_id, question,
+                                                             top_k=_DEEP_K)
             elapsed = (time.time() - start) * 1000
             result.total_time_ms = elapsed
             result.input_chars = len(question)
 
             relevance = rm.relevance_from_markers(chunks or [], markers)
             rank = rm.first_relevant_rank(relevance)
+
+            # The DIAGNOSTIC path: same question, embeddings only. A gold chunk that the vector
+            # path ranks 14th and rerank lifts to 2nd tells you the embedding is weak and the
+            # reranker is carrying it — which is invisible from either number alone.
+            try:
+                vec = await rag_engine.search_chunks_async(notebook_id, question, top_k=_DEEP_K)
+                vec_rel = rm.relevance_from_markers(vec or [], markers)
+                vector_rank = rm.first_relevant_rank(vec_rel)
+                vector_ndcg = round(rm.ndcg_at_k(vec_rel, 10), 4)
+            except Exception:
+                vector_rank, vector_ndcg = None, None
 
             if rank is not None and rank <= _SHALLOW_K:
                 result.overall_score = _SCORE_TOP5
@@ -146,12 +192,19 @@ async def run(notebook_id: str, config: dict, combo_name: str, hw_fingerprint: s
                 "first_relevant_rank": rank,
                 "chunks_returned": len(chunks or []),
                 "latency_ms": round(elapsed, 1),
+                # Diagnostic only — never scored. See the module docstring.
+                "vector_rank": vector_rank,
+                "vector_ndcg_at_10": vector_ndcg,
+                "rerank_lift": (
+                    (vector_rank - rank) if (vector_rank and rank) else None
+                ),
             }
             result.actual_output_preview = (
                 f"rank={rank} of {len(chunks or [])} | ndcg@10="
-                f"{result.sub_scores['ndcg_at_10']:.3f}"
+                f"{result.sub_scores['ndcg_at_10']:.3f} | vector rank={vector_rank}"
             )
-            print(f"[EVAL-RETRIEVAL] {qid}: rank={rank} score={result.overall_score} "
+            print(f"[EVAL-RETRIEVAL] {qid}: rank={rank} (vector {vector_rank}) "
+                  f"score={result.overall_score} "
                   f"ndcg@10={result.sub_scores['ndcg_at_10']:.3f} ({elapsed:.0f}ms)")
 
         except Exception as e:
@@ -164,9 +217,18 @@ async def run(notebook_id: str, config: dict, combo_name: str, hw_fingerprint: s
 
     scored = [r for r in results if not r.skipped]
     if scored:
+        n = len(scored)
         hits5 = sum(r.sub_scores.get("hit_at_5", 0) for r in scored)
         hits20 = sum(r.sub_scores.get("hit_at_20", 0) for r in scored)
-        ndcg = sum(r.sub_scores.get("ndcg_at_10", 0) for r in scored) / len(scored)
-        print(f"[EVAL-RETRIEVAL] recall@5={hits5}/{len(scored)} "
-              f"recall@20={hits20}/{len(scored)} mean nDCG@10={ndcg:.3f}")
+        ndcg = sum(r.sub_scores.get("ndcg_at_10", 0) for r in scored) / n
+        ranks = [r.sub_scores.get("first_relevant_rank") for r in scored]
+        mean_rank = sum(x or 99 for x in ranks) / n
+        print(f"[EVAL-RETRIEVAL] ADAPTIVE (scored): recall@5={hits5:.0f}/{n} "
+              f"recall@20={hits20:.0f}/{n} nDCG@10={ndcg:.3f} mean-rank={mean_rank:.1f}")
+        vranks = [r.sub_scores.get("vector_rank") for r in scored]
+        if any(v is not None for v in vranks):
+            vmean = sum(v or 99 for v in vranks) / n
+            vndcg = sum(r.sub_scores.get("vector_ndcg_at_10") or 0 for r in scored) / n
+            print(f"[EVAL-RETRIEVAL] vector (diagnostic): nDCG@10={vndcg:.3f} "
+                  f"mean-rank={vmean:.1f}  — gap to adaptive shows what rerank is carrying")
     return results
