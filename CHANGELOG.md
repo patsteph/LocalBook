@@ -34,6 +34,10 @@ never tagged; its notes are kept in full below.
   than in manifest order and flattened. DRM-protected files are detected and declined.
 
 ### Fixed
+- **Image generation never worked in the released build.** FLUX Klein could not load, because
+  two of the libraries it needs at runtime were not installed — so a downloaded image model
+  produced nothing. Both are now included. Nothing had ever tested the image model, which is
+  why it shipped broken.
 - **HTTPS failed entirely on networks that inspect TLS.** Such a network re-signs every
   connection with its own root certificate; macOS trusts it, so Safari and the browser extension
   work, but Python verified against a bundle of public roots only and rejected all of them. The

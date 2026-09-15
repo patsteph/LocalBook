@@ -64,6 +64,8 @@ _CATEGORY_TO_FEATURE = {
     # near-miss suite — the closest thing to ground truth in the harness.
     "field_edges": "Field-Edge Regressions",
     "retrieval": "Vector Retrieval",
+    "entity_extract": "Entity Extraction",
+    "image_gen": "Image Generation",
 }
 
 

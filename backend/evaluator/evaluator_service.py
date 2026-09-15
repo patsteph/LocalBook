@@ -41,6 +41,8 @@ from evaluator.test_runners import (
     translation,
     field_edges,
     retrieval,
+    image_gen,
+    entity_extract,
 )
 from evaluator import scoring
 
@@ -453,6 +455,26 @@ async def run_full_evaluation() -> ComboEvalSummary:
         cat = _build_category("retrieval", "Vector Retrieval", retrieval_results)
         category_results["retrieval"] = cat
         _progress.results_so_far["retrieval"] = {"score": cat.score, "grade": cat.grade}
+
+        # Entity extraction — feeds the knowledge graph, Constellation, cross-notebook
+        # connections AND retrieval. Judge-free precision/recall, so it compares across models.
+        _update_progress(22, "Entity Extraction")
+        entity_results = await _run_phase_with_timeout(
+            entity_extract.run(notebook_id, config, combo.name, hw.fingerprint), "Entity Extraction")
+        cat = _build_category("entity_extract", "Entity Extraction", entity_results)
+        category_results["entity_extract"] = cat
+        _progress.results_so_far["entity_extract"] = {"score": cat.score, "grade": cat.grade}
+
+        # Image generation — the image_model ROLE had NO coverage at all before 2026-09-14, so
+        # "this combo works" was a claim about four roles out of five. Skips cleanly when the
+        # model is absent; one small draft render, not a quality benchmark.
+        _update_progress(22, "Image Generation")
+        image_results = await _run_phase_with_timeout(
+            image_gen.run(notebook_id, config, combo.name, hw.fingerprint), "Image Generation",
+            timeout=300)
+        cat = _build_category("image_gen", "Image Generation", image_results)
+        category_results["image_gen"] = cat
+        _progress.results_so_far["image_gen"] = {"score": cat.score, "grade": cat.grade}
 
         # ── Phase 23: Score & Persist ────────────────────────────────────
         _update_progress(23, "Scoring & persisting results")

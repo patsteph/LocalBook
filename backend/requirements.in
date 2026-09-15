@@ -150,6 +150,18 @@ PyYAML>=6.0.0  # YAML config parsing
 numpy>=1.21.0  # Looser requirement for compatibility
 pyarrow>=14.0.0
 
+# mflux (FLUX.2 Klein image generation) imports `toml` at model-load time. It is NOT a
+# declared mflux dependency and NOT picked up by PyInstaller's static analysis, so v2.3.0
+# shipped 627 mflux modules without it and image generation failed for every user with
+# "No module named 'toml'" — a whole role broken, silently, because nothing measured it.
+# Found by evaluator/test_runners/image_gen.py within minutes of that runner existing.
+toml>=0.10.2
+# Same story: mflux writes EXIF into the PNG it returns, so `piexif` is needed the moment
+# Klein generates anything. Both are declared by mflux but mflux is installed --no-deps
+# (build_backend.sh), on a comment asserting "its runtime deps are already present" — which
+# enumerated five of its twenty-five and was wrong about these two.
+piexif>=1.1.3
+
 # Build tools (for creating distributable binary)
 pyinstaller>=6.0.0
 pyobjc-framework-Vision>=10.0; sys_platform == "darwin"  # Apple Vision on-device OCR (engine strategy)

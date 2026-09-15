@@ -63,8 +63,11 @@ if ! python -c "import importlib.metadata as m; assert m.version('mlx-lm')=='$ML
 fi
 
 # mflux: FLUX.2 Klein image generation on MLX (Wave 9.3b, opt-in image_engine=mlx).
-# --no-deps to avoid re-pinning our stack; its runtime deps (mlx, numpy, Pillow, huggingface_hub,
-# tqdm) are already present. Lazy-imported. PINNED for the same reproducibility reason: mflux 0.18.0
+# --no-deps to avoid re-pinning our stack. ⚠️ Its runtime deps are NOT all "already present":
+# that assumption enumerated five of mflux's twenty-five and missed `toml` and `piexif`, so
+# Klein could never load and image generation was broken in the shipped app (found 2026-09-14
+# by evaluator/test_runners/image_gen.py, the first thing ever to test the image role). Both are
+# now declared in requirements.in with --hidden-import entries. Lazy-imported. PINNED for the same reproducibility reason: mflux 0.18.0
 # validated against our mlx 0.32 (its declared mlx<0.32 cap is advisory — it imports + runs fine).
 MFLUX_VER="0.18.0"
 if ! python -c "import importlib.metadata as m; assert m.version('mflux')=='$MFLUX_VER'" 2>/dev/null; then
@@ -362,6 +365,8 @@ python -W ignore -m PyInstaller \
     --hidden-import=trafilatura \
     --hidden-import=httpx \
     --hidden-import=truststore \
+    --hidden-import=toml \
+    --hidden-import=piexif \
     --collect-submodules=truststore \
     --hidden-import=youtube_transcript_api \
     --hidden-import=keyring \
