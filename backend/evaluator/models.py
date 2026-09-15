@@ -60,7 +60,6 @@ class HardwareProfile:
             "os_version": self.os_version,
             "ollama_version": self.ollama_version,
             "tier": self.tier,
-            "grade_cap_reason": self.grade_cap_reason,
             "fingerprint": self.fingerprint,
         }
 
@@ -568,6 +567,7 @@ class ComboEvalSummary:
             "preflight": self.preflight,
             "scoring_version": self.scoring_version,
             "tier": self.tier,
+            "grade_cap_reason": self.grade_cap_reason,
         }
 
 

@@ -470,3 +470,48 @@ def test_capping_never_raises_a_grade():
     """A model already below the cap keeps its worse grade."""
     assert _grade_after_cap("F", 1) == "F"
     assert _grade_after_cap("D", 5) == "D"
+
+
+# ── Every to_dict() must actually serialise ─────────────────────────────────
+#
+# 2026-09-15: a scripted edit added `"grade_cap_reason": self.grade_cap_reason` to
+# HardwareProfile.to_dict() instead of ComboEvalSummary.to_dict(), because BOTH classes have a
+# `tier` field and the replacement matched the wrong one. HardwareProfile has no such
+# attribute, so profiling raised, the Test-environment panel showed "—" for every value, and
+# EVERY evaluation died with:
+#
+#     Evaluation failed: 'HardwareProfile' object has no attribute 'grade_cap_reason'
+#
+# The full suite stayed green throughout, because nothing called these to_dict()s. A dataclass
+# whose serialiser is never exercised is a dataclass whose serialiser is not tested.
+
+def test_every_evaluator_dataclass_serialises():
+    import dataclasses
+
+    from evaluator import models as m
+
+    checked = 0
+    for name in dir(m):
+        obj = getattr(m, name)
+        if not (isinstance(obj, type) and dataclasses.is_dataclass(obj)):
+            continue
+        if not hasattr(obj, "to_dict"):
+            continue
+        try:
+            instance = obj()          # every field must have a default
+        except TypeError:
+            continue                  # required args — not a default-constructible payload
+        d = instance.to_dict()        # THE ASSERTION: this must not raise
+        assert isinstance(d, dict), f"{name}.to_dict() returned {type(d)}"
+        checked += 1
+    assert checked >= 3, f"expected several serialisable dataclasses, checked {checked}"
+
+
+def test_hardware_profile_serialises_with_real_values():
+    """The specific surface that broke — it feeds the Test-environment panel."""
+    from evaluator.hardware_profiler import get_hardware_profile
+
+    d = get_hardware_profile().to_dict()
+    for key in ("chip", "memory_gb", "tier", "fingerprint"):
+        assert key in d, f"hardware panel needs {key}"
+    assert "grade_cap_reason" not in d, "that field belongs to the run summary, not the hardware"
