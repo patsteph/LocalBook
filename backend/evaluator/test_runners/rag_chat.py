@@ -82,6 +82,13 @@ async def run(notebook_id: str, config: dict, combo_name: str, hw_fingerprint: s
             "speed": (speed_score, 0.10),
         })
 
+        # A FIT observation, not a quality one: reasoning is stripped everywhere now
+        # (production included), so it no longer breaks anything — but it costs output budget
+        # and latency, and silently normalizing it away would hide a real property of the
+        # model. Recorded so "this model reasons out loud" is visible in the result.
+        from utils.reasoning import looks_like_reasoning
+        result.sub_scores["emitted_reasoning"] = looks_like_reasoning(answer)
+
         if not result.sub_scores["coverage"]:
             result.mark_degraded("no scoring axis could be measured")
             result.passed = False
@@ -163,6 +170,13 @@ async def run(notebook_id: str, config: dict, combo_name: str, hw_fingerprint: s
             "citations": (citation_score, 0.10),
             "speed": (speed_score, 0.10),
         })
+
+        # A FIT observation, not a quality one: reasoning is stripped everywhere now
+        # (production included), so it no longer breaks anything — but it costs output budget
+        # and latency, and silently normalizing it away would hide a real property of the
+        # model. Recorded so "this model reasons out loud" is visible in the result.
+        from utils.reasoning import looks_like_reasoning
+        result.sub_scores["emitted_reasoning"] = looks_like_reasoning(answer)
 
         if not result.sub_scores["coverage"]:
             result.mark_degraded("no scoring axis could be measured")

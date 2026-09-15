@@ -230,7 +230,15 @@ async def generate_text(
                 pass
             print(f"[mlx-engine] {use_model}→{_mlx_id} generate OK "
                   f"({_res.get('eval_count', 0)} tok, {_res.get('eval_duration', 0)/1e9:.1f}s)")
-            return _res.get("response", "")
+            # Reasoning traces never reach a caller. Until 2026-09-14 the ONLY defence was a
+            # hand-written `stop_sequences` entry per model in known_models.json — so a model
+            # with no row, or one that reasons in <think> rather than gemma's <|channel|>,
+            # leaked its deliberation into chat answers, generated documents and podcast
+            # scripts. The Evaluator has always stripped this before scoring, which made the
+            # harness MORE forgiving than the app: a reasoning model could pass evaluation and
+            # be unusable in production. Model-agnostic, so a new model needs no registry row.
+            from utils.reasoning import strip_reasoning
+            return strip_reasoning(_res.get("response", ""))
         except Exception as _mlx_e:
             logger.error(f"[llm_service] generate FAILED ({use_model}→{_mlx_id}): {_mlx_e}")
             _record_engine_fallback(
@@ -402,6 +410,12 @@ async def stream_text(
         # ingest. Holding across yields is intentional: the model is busy for that whole
         # window, and releasing between tokens would let ingest interleave into it.
         from services.llm_runtime import model_lane, PRIORITY_FOREGROUND
+        # Reasoning must be removed from the STREAM too, and it cannot be done chunk-by-chunk
+        # with a plain replace: `<think>` arrives as `<thi` + `nk>`, and text already yielded
+        # is already on the user's screen. The filter withholds anything that might still
+        # become an opener and releases it once that is settled.
+        from utils.reasoning import ReasoningStreamFilter
+        _reasoning = ReasoningStreamFilter()
         try:
             async with model_lane(model, PRIORITY_FOREGROUND):
                 async for _chunk in mlx_engine.stream_generate(
@@ -414,8 +428,10 @@ async def stream_text(
                 ):
                     _t = _chunk.get("response")
                     if _t:
-                        _emitted = True
-                        yield _t
+                        _visible = _reasoning.feed(_t)
+                        if _visible:
+                            _emitted = True
+                            yield _visible
                     if _chunk.get("done"):
                         _record_ollama_tokens(_chunk)
                     # The streaming guard ABORTED on degeneration. Nothing consumed this
@@ -434,6 +450,13 @@ async def stream_text(
                             )
                         except Exception:
                             pass
+            # Release anything held back that never became a tag. Emits nothing if the stream
+            # ended INSIDE a reasoning block — an unclosed block means no answer was produced,
+            # and showing the deliberation instead would be worse than showing nothing.
+            _tail = _reasoning.flush()
+            if _tail:
+                _emitted = True
+                yield _tail
             print(f"[mlx-engine] {model}→{_mlx_id} stream OK")
             return
         except Exception as _mlx_e:

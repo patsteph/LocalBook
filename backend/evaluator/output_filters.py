@@ -25,40 +25,18 @@ import re
 from typing import Optional, Protocol, runtime_checkable
 
 # Reasoning-block markers seen across families. Matched case-insensitively.
-_THINK_TAGS = [
-    ("<think>", "</think>"),
-    ("<reasoning>", "</reasoning>"),
-    ("<thought>", "</thought>"),
-    ("◁think▷", "◁/think▷"),   # Kimi
-]
 
 
 def strip_thinking(text: str) -> str:
     """Remove reasoning traces, returning the model's FINAL answer.
 
-    - Closed blocks (<think>…</think>) are removed wherever they appear.
-    - An UNCLOSED opener (reasoning that hit the token cap with no closer, or a
-      model that emitted only reasoning) means no final answer was produced →
-      everything from the opener onward is dropped (scorer fairly sees "no answer"
-      rather than scoring the reasoning as if it were the answer).
-    - No markers → returned unchanged.
+    Delegates to `utils.reasoning.strip_reasoning`, which is now the single implementation —
+    production strips reasoning through the same code (2026-09-14). Keeping a second copy here
+    is what let the Evaluator be MORE forgiving than the app: the scorer never saw a reasoning
+    block, so a reasoning model could pass evaluation and then leak `<think>` to users.
     """
-    if not text or not isinstance(text, str):
-        return text or ""
-    out = text
-    for open_tag, close_tag in _THINK_TAGS:
-        # Remove all closed blocks (non-greedy, dot-all, case-insensitive).
-        out = re.sub(
-            re.escape(open_tag) + r"[\s\S]*?" + re.escape(close_tag),
-            "",
-            out,
-            flags=re.IGNORECASE,
-        )
-        # Drop a dangling unclosed opener + everything after it.
-        m = re.search(re.escape(open_tag), out, flags=re.IGNORECASE)
-        if m:
-            out = out[: m.start()]
-    return out.strip()
+    from utils.reasoning import strip_reasoning
+    return strip_reasoning(text)
 
 
 def extract_json(text: str) -> Optional[str]:
