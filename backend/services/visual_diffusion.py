@@ -19,6 +19,7 @@ generation (set keep_alive: 0 on last call) when in swap mode.
 from __future__ import annotations
 
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 import base64
 import logging
 import re
@@ -99,6 +100,24 @@ class KleinDiffusionService:
         # Wave 9.3b — mflux (FLUX.2 Klein on MLX) resident model, lazy-loaded once.
         self._mflux_model = None
         self._mflux_lock = asyncio.Lock()
+        # ONE dedicated thread for every mflux call (2026-09-15).
+        #
+        # MLX streams are THREAD-LOCAL. Loading and generating both used `asyncio.to_thread`,
+        # which draws from the default pool, so the model could be loaded on one thread and
+        # generated on another:
+        #
+        #     mflux Klein generate failed: There is no Stream(cpu, 7) in current thread.
+        #
+        # Non-deterministic by nature — an idle pool reuses a single thread, so it passed in
+        # isolation on the dev box and failed inside a full evaluation on a 48 GB machine where
+        # the pool had already grown. `mlx_engine._run` solved this the same way; this mirrors
+        # it. max_workers=1 is the fix, not a tuning choice.
+        self._exec = ThreadPoolExecutor(max_workers=1, thread_name_prefix="mflux")
+
+    async def _run_on_mflux_thread(self, fn):
+        """Every mflux call goes through here, so load and generate always share a thread."""
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(self._exec, fn)
 
     async def generate(
         self,
@@ -173,7 +192,7 @@ class KleinDiffusionService:
                     model_path=settings.image_model,
                     lora_paths=None, lora_scales=None)
 
-            self._mflux_model = await asyncio.to_thread(_load)
+            self._mflux_model = await self._run_on_mflux_thread(_load)
             logger.info(f"[visual_diffusion] mflux Klein loaded ({settings.image_model})")
             return self._mflux_model
 
@@ -199,7 +218,7 @@ class KleinDiffusionService:
 
         try:
             logger.info(f"[visual_diffusion] mflux generate {width}x{height} steps={steps}")
-            png = await asyncio.to_thread(_gen)
+            png = await self._run_on_mflux_thread(_gen)
         except Exception as e:
             return DiffusionResult(success=False, model=settings.image_model,
                                    elapsed_ms=int((time.time() - t0) * 1000),

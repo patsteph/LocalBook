@@ -442,7 +442,12 @@ async def _run_evaluation(tier: str = "full") -> ComboEvalSummary:
         # Phase 8: Structured JSON (Quiz)
         _update_progress(8, "Structured JSON (Quiz)")
         json_results = await _run_phase_with_timeout(
-            _tier_gate("structured_json", tier, structured_json.run(notebook_id, config, combo.name, hw.fingerprint)), "Structured JSON")
+            _tier_gate("structured_json", tier, structured_json.run(notebook_id, config, combo.name, hw.fingerprint)),
+            # Quiz generation is several grammar-constrained generations in sequence; a slower
+            # main model (Ornith 9B, 2026-09-15) pushes it past 180s. The wall-clock guard in
+            # mlx_engine now bounds each generation, so a longer phase budget cannot hide a
+            # runaway one.
+            "Structured JSON", timeout=420)
         cat = _build_category("structured_json", "Structured JSON", json_results,
                               _tier_skip_reason("structured_json", tier))
         category_results["structured_json"] = cat
@@ -478,7 +483,12 @@ async def _run_evaluation(tier: str = "full") -> ComboEvalSummary:
         # Phase 12: TTS Audio
         _update_progress(12, "TTS Audio")
         tts_results = await _run_phase_with_timeout(
-            _tier_gate("tts_audio", tier, tts_audio.run(notebook_id, config, combo.name, hw.fingerprint)), "TTS Audio")
+            _tier_gate("tts_audio", tier, tts_audio.run(notebook_id, config, combo.name, hw.fingerprint)),
+            # Generating a podcast — script THEN synthesis — does not fit in 180s on any
+            # machine, so the default timeout was measuring the timeout rather than the model.
+            # It timed out on an idle 48 GB box on 2026-09-15 and was excluded from the score,
+            # which silently removed a whole capability from the result.
+            "TTS Audio", timeout=600)
         cat = _build_category("tts_audio", "TTS Audio", tts_results,
                               _tier_skip_reason("tts_audio", tier))
         category_results["tts_audio"] = cat
@@ -666,9 +676,15 @@ async def _run_evaluation(tier: str = "full") -> ComboEvalSummary:
                       f"mlx_active_end={_mem.get('mlx_active_end_gb')}GB "
                       f"swap_delta={_mem.get('swap_out_delta')}")
                 if _mem.get("sustained_swap"):
+                    # Quantified, so a reader can judge it rather than take it on faith — a bare
+                    # claim of over-commitment is what discredited a clean 48 GB run on
+                    # 2026-09-15 when the real figure was a rounding error.
+                    _swapped = _mem.get("swap_out_delta_mb")
                     summary.warnings.append(
-                        "sustained swap-out during this run — the machine was over-committed, "
-                        "so timing numbers are not representative")
+                        f"sustained swap-out during this run "
+                        f"({_swapped:.0f} MB paged out system-wide) — timing numbers are not "
+                        f"representative" if _swapped is not None else
+                        "sustained swap-out during this run — timing numbers are not representative")
             except Exception as _ms_e:
                 print(f"[EVALUATOR] memory summary failed: {_ms_e}")
 

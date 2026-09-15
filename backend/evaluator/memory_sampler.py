@@ -30,6 +30,10 @@ logger = logging.getLogger(__name__)
 
 GB = 1024 ** 3
 
+# Bytes of system-wide swap-out during a run before the timings are called unrepresentative.
+# 512 MB over a multi-minute run is real pressure; a few MB is macOS housekeeping.
+_SUSTAINED_SWAP_BYTES = 512 * 1024 * 1024
+
 
 def _mlx_readings() -> Dict[str, Optional[float]]:
     """MLX's own accounting. Never imports mlx at module scope (thread-affinity: mlx-lm#1256)."""
@@ -195,7 +199,20 @@ class MemorySampler:
                 (s["mlx_active_gb"] for s in self._samples if s.get("mlx_active_gb") is not None),
                 None),
             "swap_out_delta": swap_delta,
-            "sustained_swap": bool(swap_delta and swap_delta > 0),
+            "swap_out_delta_mb": (round(swap_delta / (1024 ** 2), 1)
+                                  if swap_delta is not None else None),
+            # `sout` is CUMULATIVE BYTES SWAPPED OUT SINCE BOOT, system-wide — every process,
+            # not just ours. `delta > 0` therefore meant "macOS paged out at least one byte
+            # during a 20-minute window", which is almost always true and says nothing about
+            # pressure. On 2026-09-15 a 48 GB machine, idle, peaking at 33 GB used with no
+            # swapping, reported "sustained swap-out — the machine was over-committed" and
+            # discredited a set of perfectly good timing numbers.
+            #
+            # "Sustained" has to mean sustained. The threshold is deliberately coarse: this is
+            # a "do not trust the timings" flag, and the cost of a false positive (throwing
+            # away valid measurements) is higher than a false negative (a mild page-out that
+            # barely moved the numbers).
+            "sustained_swap": bool(swap_delta and swap_delta > _SUSTAINED_SWAP_BYTES),
             # ── GATE METRICS ──
             "min_system_available_gb_gate": min(avail) if avail else None,
             **bands,
