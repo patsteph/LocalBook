@@ -140,9 +140,9 @@ async def run(notebook_id: str, config: dict, combo_name: str, hw_fingerprint: s
             # see. Passing the harness's deep 20 made the reranker order 40 candidates instead
             # of 10 and measurably WORSENED the top of the list — nDCG@10 0.507 vs 0.718 —
             # i.e. the harness scored a configuration the app never runs. Use the app's value.
+            app_top_k = getattr(settings, "retrieval_top_k", 5)
             try:
                 table = rag_engine._get_table(notebook_id)
-                app_top_k = getattr(settings, "retrieval_top_k", 5)
                 chunks = await _search_adaptive(rag_engine, table, question, app_top_k)
             except Exception as _ae:
                 print(f"[EVAL-RETRIEVAL] adaptive path unavailable ({_ae}) — vector only")
@@ -166,22 +166,30 @@ async def run(notebook_id: str, config: dict, combo_name: str, hw_fingerprint: s
             except Exception:
                 vector_rank, vector_ndcg = None, None
 
-            if rank is not None and rank <= _SHALLOW_K:
+            # Three outcomes, and the middle one needs BOTH paths to detect.
+            #
+            # Scoring on the app's real top_k means the adaptive path returns ~5 results, so it
+            # can no longer tell "at rank 11" from "absent" on its own. The vector path, fetched
+            # deep, supplies that: found there but not surfaced here means the text is indexed
+            # and findable, and the loss is in ranking or the top-k cut. That is a different
+            # (and usually cheaper) fix than an embedding that cannot find it at all, so
+            # collapsing the two into a single zero would throw away the actionable half.
+            if rank is not None:
                 result.overall_score = _SCORE_TOP5
                 result.passed = True
-            elif rank is not None:
+            elif vector_rank is not None:
                 result.overall_score = _SCORE_TOP20
                 result.passed = True
                 result.failure_reason = (
-                    f"found at rank {rank} — retrievable, but below the top {_SHALLOW_K} the "
-                    f"app actually uses"
+                    f"not in the app's top {app_top_k}, but vector search finds it at rank "
+                    f"{vector_rank} — indexed and findable; the loss is ranking, not retrieval"
                 )
             else:
                 result.overall_score = 0
                 result.passed = False
                 result.failure_reason = (
-                    f"no gold chunk in the top {_DEEP_K} — the text is in the index but "
-                    f"retrieval never surfaced it"
+                    f"no gold chunk in either path (adaptive top {app_top_k}, vector top "
+                    f"{_DEEP_K}) — the text is in the index but nothing surfaces it"
                 )
 
             result.sub_scores = {

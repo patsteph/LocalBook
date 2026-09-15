@@ -222,15 +222,16 @@ def test_a_gold_chunk_in_the_top_five_scores_full(monkeypatch):
 
 
 def test_a_buried_chunk_gets_partial_credit_and_says_where(monkeypatch):
-    """Rank 11 means retrieval CAN find it but the top-k cut hides it — a ranking fix, not an
-    embedding one. Scoring it zero would erase that distinction."""
+    """The middle outcome, which needs BOTH paths: the app's top-5 misses it, but deep vector
+    search finds it at rank 11. That is a ranking problem, not an embedding one, and scoring it
+    zero would erase the distinction that makes it actionable."""
     ranked = ["noise"] * 10 + ["THE FACT"] + ["noise"] * 9
     results = _run_runner(monkeypatch, ranked, GOLD)
     assert results[0].overall_score == 60
-    assert results[0].sub_scores["first_relevant_rank"] == 11
-    assert results[0].sub_scores["hit_at_5"] == 0.0
-    assert results[0].sub_scores["hit_at_20"] == 1.0
+    assert results[0].sub_scores["first_relevant_rank"] is None, "the app's top-5 missed it"
+    assert results[0].sub_scores["vector_rank"] == 11, "deep vector search found it"
     assert "rank 11" in results[0].failure_reason
+    assert "ranking, not retrieval" in results[0].failure_reason
 
 
 def test_a_complete_miss_scores_zero_and_names_the_problem(monkeypatch):
@@ -238,7 +239,8 @@ def test_a_complete_miss_scores_zero_and_names_the_problem(monkeypatch):
     assert results[0].overall_score == 0
     assert results[0].passed is False
     assert results[0].sub_scores["first_relevant_rank"] is None
-    assert "never surfaced it" in results[0].failure_reason
+    assert "nothing surfaces it" in results[0].failure_reason
+    assert "either path" in results[0].failure_reason, "a total miss must name both paths"
 
 
 def test_an_unlabelled_case_is_skipped_not_failed(monkeypatch):
