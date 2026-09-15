@@ -318,18 +318,20 @@ async def write_klein_brief(
         f"Write the Klein prompt now. Front-load art direction. Drop any "
         f"label/caption/annotation text requests."
     )
+    # Through the SEAM (2026-09-15). `timeout` is dropped deliberately: it is inert on the MLX
+    # path (mlx_engine never reads it), and the engine's wall-clock guard is the real bound.
     from services.llm_runtime import PRIORITY_FOREGROUND
-    result = await llm_runtime.generate(
-        prompt=user_msg,
-        system=KLEIN_BRIEF_SYSTEM,
+    from services.llm_service import generate_text
+    result = await generate_text(
+        KLEIN_BRIEF_SYSTEM,
+        user_msg,
         model=model,
         temperature=0.4,
         num_predict=2500,
-        timeout=180.0,
         voice_modifier=False,
         priority=PRIORITY_FOREGROUND,  # user is waiting on this image
     )
-    raw = (result.get("response") or "").strip()
+    raw = (result or "").strip()
     if not raw:
         return None
     cleaned = re.sub(r'^["\']+|["\']+$', "", raw).strip()

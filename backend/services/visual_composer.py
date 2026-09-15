@@ -66,6 +66,38 @@ logger = logging.getLogger(__name__)
 # tail. Prompts over this go through the art director compressor.
 KLEIN_PROMPT_PASSTHROUGH_LIMIT = 1500
 
+# Subjects that CANNOT be drawn without the model attempting glyphs (2026-09-15).
+#
+# Klein has no character-level knowledge, so anything it writes is illegible — the field report
+# was "a whiteboard of gibberish". The negative prompt already says "no text in image", but a
+# diffusion model weights the POSITIVE prompt far more heavily: ask for a whiteboard and you
+# get a whiteboard, covered in fake letters, negatives notwithstanding.
+#
+# Branch A (passthrough + short) is the only path that reaches Klein without the art-director
+# pass, whose brief explicitly instructs "Drop any label/caption/annotation text requests". So
+# a passthrough prompt naming one of these subjects is routed through that pass instead of
+# going verbatim. Art direction is preserved — the compressor keeps it, that is its job.
+_TEXT_BEARING_SUBJECTS = (
+    "whiteboard", "blackboard", "chalkboard", "sign", "signage", "poster", "billboard",
+    "slide", "presentation", "chart", "graph", "diagram", "label", "caption", "title",
+    "headline", "text", "word", "writing", "handwriting", "letter", "typography", "font",
+    "menu", "receipt", "newspaper", "book cover", "screenshot", "ui mockup", "infographic",
+)
+
+
+def _requests_rendered_text(prompt: str) -> str:
+    """Return the text-bearing subject named in the prompt, or "".
+
+    Longest match first, so "handwriting" is not reported as "writing" — the term is logged to
+    explain WHY a passthrough was overridden, and a vague reason is a reason nobody trusts.
+    """
+    low = (prompt or "").lower()
+    for term in sorted(_TEXT_BEARING_SUBJECTS, key=len, reverse=True):
+        if term in low:
+            return term
+    return ""
+
+
 
 # ──────────────────────────────────────────────────────────────────────
 # Result types — unified across Mermaid (template path) and SVG (freeform)
@@ -519,12 +551,26 @@ class VisualComposer:
         #      one-shot write_klein_prompt). Produces a 50-150 word prompt
         #      assembled in Klein-optimal order (style → palette → lighting
         #      → subject → composition).
-        if intent.passthrough_recommended and len(prompt_source) <= KLEIN_PROMPT_PASSTHROUGH_LIMIT:
+        _text_subject = _requests_rendered_text(prompt_source)
+        if (intent.passthrough_recommended
+                and len(prompt_source) <= KLEIN_PROMPT_PASSTHROUGH_LIMIT
+                and not _text_subject):
             klein_prompt = prompt_source
             logger.info(
                 f"[visual_composer] full-bleed passthrough (verbatim, "
                 f"{len(klein_prompt)} chars within encoder budget)"
             )
+        elif intent.passthrough_recommended and _text_subject:
+            # Verbatim would ask Klein to draw glyphs it cannot form. The art-director pass
+            # keeps the art direction and drops the text request.
+            logger.info(
+                f"[visual_composer] full-bleed passthrough OVERRIDDEN: prompt names "
+                f"'{_text_subject}', which Klein cannot letter legibly — routing through the "
+                f"art-director pass so typography stays with the SVG overlay"
+            )
+            klein_prompt = await write_klein_brief(
+                user_prompt=prompt_source, title=title, capability=capability,
+            ) or prompt_source
         elif intent.passthrough_recommended:
             logger.info(
                 f"[visual_composer] full-bleed passthrough requested but prompt is "

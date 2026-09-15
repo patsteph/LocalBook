@@ -112,6 +112,10 @@ async def _run_slotfill(system: str, content: str, model: str, topic: str = "") 
             f"SOURCE CONTENT:\n{content}\n\n"
             "Fill in every slot from the schema based on the source content. Return JSON only."
         )
+    # DELIBERATELY at the runtime level: this needs `format="json"`, the grammar constraint
+    # that guarantees parseable slots, and `llm_service.generate_text` does not expose it.
+    # Routing it through the seam would trade valid JSON for a reasoning strip it does not
+    # need — the grammar already prevents a <think> block from appearing. (2026-09-15 audit.)
     try:
         result = await llm_runtime.generate(
             prompt=prompt,
@@ -657,14 +661,19 @@ async def _poster_title(content: str, model: str) -> str:
     if not text:
         return ""
     try:
-        r = await llm_runtime.generate(
-            prompt=(f"Source request: {text[:500]}\n\n"
-                    "Write a punchy 2-4 word cover title in Title Case. "
-                    "Title only — no quotes, no trailing punctuation, no explanation."),
-            system="You write short, evocative poster/cover titles.",
-            model=model, temperature=0.4, num_predict=16, timeout=20.0,
+        # Through the SEAM: this title is rendered onto the poster, so a reasoning model
+        # must not put a <think> block in it. `timeout` is dropped deliberately — it is inert
+        # on the MLX path (mlx_engine never reads it); the engine's wall-clock guard is the
+        # real bound now.
+        from services.llm_service import generate_text
+        r = await generate_text(
+            "You write short, evocative poster/cover titles.",
+            (f"Source request: {text[:500]}\n\n"
+             "Write a punchy 2-4 word cover title in Title Case. "
+             "Title only — no quotes, no trailing punctuation, no explanation."),
+            model=model, temperature=0.4, num_predict=16, voice_modifier=False,
         )
-        line = ((r or {}).get("response") or "").strip().splitlines()[0] if (r or {}).get("response") else ""
+        line = (r or "").strip().splitlines()[0] if (r or "").strip() else ""
     except Exception as e:
         logger.debug(f"[infographic] L4 poster-title failed: {e}")
         return ""

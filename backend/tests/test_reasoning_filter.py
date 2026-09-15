@@ -177,3 +177,37 @@ def test_production_vision_callers_use_the_seam():
         f"{offenders} bypass llm_service.generate_with_vision — they would skip the reasoning "
         f"strip and token recording"
     )
+
+
+# ── Klein cannot letter (2026-09-15 field report: "a whiteboard of gibberish") ──
+#
+# Klein has no character-level knowledge, so any glyph it draws is illegible. The design is
+# sound — Klein makes the art, the SVG overlay renders every word, and `write_klein_brief`
+# instructs "Drop any label/caption/annotation text requests". But ONE branch bypassed that:
+# a passthrough-recommended prompt under the encoder limit went to Klein VERBATIM. Ask for a
+# whiteboard and you get a whiteboard covered in fake letters, because a diffusion model weights
+# the positive prompt far above the "no text in image" negative.
+
+@pytest.mark.parametrize("prompt,expected", [
+    ("a whiteboard showing the project phases", "whiteboard"),
+    ("a poster for a jazz night", "poster"),
+    ("a chart of quarterly revenue", "chart"),
+    ("a street sign at dusk", "sign"),
+    ("handwriting on aged paper", "handwriting"),
+])
+def test_text_bearing_subjects_are_detected(prompt, expected):
+    from services.visual_composer import _requests_rendered_text
+    assert _requests_rendered_text(prompt) == expected
+
+
+@pytest.mark.parametrize("prompt", [
+    "a serene mountain range at dawn, cinematic lighting",
+    "an abstract gradient mesh in teal and amber",
+    "flowing liquid metal ribbons, studio lighting",
+    "a minimalist geometric composition",
+])
+def test_pure_art_direction_still_passes_through_verbatim(prompt):
+    """The override must not hijack ordinary art prompts — passthrough exists to preserve
+    every comma of the user's art direction."""
+    from services.visual_composer import _requests_rendered_text
+    assert _requests_rendered_text(prompt) == ""
