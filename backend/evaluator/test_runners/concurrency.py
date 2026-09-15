@@ -27,6 +27,11 @@ async def run(notebook_id: str, config: dict, combo_name: str, hw_fingerprint: s
     )
     result.stamp_provider(main_model)
     
+    # DELIBERATELY at the runtime level, not the llm_service seam (2026-09-15 audit).
+    # This test measures the RUNTIME's behaviour under parallel load and needs the raw
+    # eval_count / eval_duration fields, which `generate_text` does not return. Its tokens are
+    # also excluded from the run's headline tok/s on purpose (they are summed across three
+    # parallel streams, so they are not a single-stream rate).
     # Pre-warm model to ensure cold-start doesn't skew concurrency math
     try:
         await llm_runtime.generate(prompt="hi", model=main_model, num_predict=1)

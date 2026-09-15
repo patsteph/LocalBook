@@ -532,6 +532,10 @@ class ComboEvalSummary:
     tier: str = "full"
     # Set when outright capability failures cap the grade below what the weighted mean gives.
     grade_cap_reason: str = ""
+    # Weighted score per model ROLE (main / fast / embedding / image / tts). The overall score
+    # answers "does this combo work"; `role_scores["main"]` answers "is this main model better",
+    # which is the question a bake-off is actually asking.
+    role_scores: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return {
@@ -568,6 +572,7 @@ class ComboEvalSummary:
             "scoring_version": self.scoring_version,
             "tier": self.tier,
             "grade_cap_reason": self.grade_cap_reason,
+            "role_scores": self.role_scores,
         }
 
 

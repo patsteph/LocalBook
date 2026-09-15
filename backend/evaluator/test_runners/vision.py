@@ -79,7 +79,14 @@ async def run(notebook_id: str, config: dict, combo_name: str, hw_fingerprint: s
 
         start = time.time()
 
-        from services.llm_runtime import llm_runtime
+        from services.llm_runtime import llm_runtime  # noqa: F401 — see note below
+
+# FAITHFUL to production, which is the point — but worth knowing WHY it looks like a seam
+# violation. `scan_pipeline` and `multimodal_extractor` both call `llm_runtime.vision_describe`
+# directly rather than `llm_service.generate_with_vision`, so this runner matches the code the
+# app actually runs. The gap is in PRODUCTION: vision output therefore skips the reasoning
+# strip and is absent from throughput_meter. Fix it there first; changing only the test would
+# make the harness measure something the app does not do.
         description = await llm_runtime.vision_describe(
             image_b64=b64_image,
             prompt="Describe this chart in detail. What data does it show? What are the values?",

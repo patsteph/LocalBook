@@ -37,16 +37,19 @@ async def run(notebook_id: str, config: dict, combo_name: str, hw_fingerprint: s
         
         start = time.time()
         try:
-            response = await llm_runtime.generate(
-                prompt=full_prompt,
-                model=main_model,
-                temperature=0.1,
-                num_predict=100
-            )
+            # Through the TASK SEAM, not llm_runtime (2026-09-15). CLAUDE.md: "Every
+            # generation goes through these names." Calling llm_runtime directly skipped the
+            # model's rag_profile (stop sequences, temperature, think flags), skipped the
+            # production reasoning-strip, and never reached throughput_meter — so this test
+            # measured output no user would ever see, and its tokens were missing from the
+            # run's own speed figures.
+            from services.llm_service import generate_text
+            output_text = await generate_text(
+                "", full_prompt, model=main_model, temperature=0.1, num_predict=100)
             elapsed = (time.time() - start) * 1000
             result.total_time_ms = elapsed
             
-            output = response.get("response", "").strip()
+            output = (output_text or "").strip()
             result.actual_output_preview = output[:200]
             
             # Grading safety

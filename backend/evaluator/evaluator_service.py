@@ -117,6 +117,57 @@ SMOKE_CATEGORIES = frozenset({
     "entity_extract",     # fast, judge-free, feeds the graph AND retrieval
 })
 
+# ─── Which ROLE each category actually exercises ────────────────────────────
+#
+# The overall score answers "does this COMBO work", which is the right question for adoption
+# and correctly includes fast-model work because the app genuinely routes it there. It is the
+# WRONG question for a main-model bake-off, and the 2026-09-15 three-model comparison showed
+# why: `intent_classify` scored 98 for all three candidates because `intent_classifier` calls
+# `settings.fast_model`, which never changed. `entity_extract` is the same (`entity_extractor`
+# → fast_model) and additionally injects that model's sampling noise into every comparison.
+#
+# Together they carry 9 of 136 weight that CANNOT discriminate main models. That does not
+# invalidate a ranking — a constant shifts every candidate equally — but it dilutes the signal
+# and makes a swing look like a difference. So the roles are declared, and role-scoped scores
+# are reported alongside the combo score rather than replacing it.
+CATEGORY_ROLE = {
+    "rag_chat": "main", "streaming": "main", "document_gen": "main",
+    "structured_json": "main", "instruction_follow": "main", "concurrency": "main",
+    "needle_haystack": "main", "prompt_safety": "main", "voice_modifier": "main",
+    "capture_modes": "main", "refinement": "main", "translation": "main",
+    "vision": "main", "ingestion": "main",
+    # Served by the FAST model in production — correct behaviour, wrong signal for a
+    # main-model comparison.
+    "intent_classify": "fast", "entity_extract": "fast", "fast_followup": "fast",
+    "field_edges": "fast",
+    "embedding_quality": "embedding", "retrieval": "embedding",
+    "image_gen": "image",
+    "tts_audio": "tts",
+}
+
+
+def _role_scores(category_results: dict, weights: dict) -> dict:
+    """Weighted score per role, over the categories that actually exercise that role.
+
+    `main` is the number to read when choosing a main model; the combo `overall_score` is the
+    number to read when deciding whether the whole configuration works.
+    """
+    out = {}
+    for role in sorted(set(CATEGORY_ROLE.values())):
+        num = den = 0.0
+        for key, cat in (category_results or {}).items():
+            if CATEGORY_ROLE.get(key) != role or getattr(cat, "skipped", False):
+                continue
+            w = float(weights.get(key, 0) or 0)
+            if w <= 0:
+                continue
+            num += float(cat.score) * w
+            den += w
+        if den:
+            out[role] = round(num / den, 1)
+    return out
+
+
 # Sources that cost network time rather than telling us anything about the model.
 _NETWORK_SOURCES = ("youtube", "web")
 
@@ -661,6 +712,8 @@ async def _run_evaluation(tier: str = "full") -> ComboEvalSummary:
         # with like before calling a difference a regression.
         summary.scoring_version = scoring.SCORING_VERSION
         summary.tier = tier
+        # Per-role scores alongside the combo score. `main` is what a bake-off should read.
+        summary.role_scores = _role_scores(category_results, weights)
 
         # Engine fallbacks during THIS run. Recorded on the summary so a reader can tell
         # whether an "MLX run" was actually served by MLX end-to-end. A non-zero count does
@@ -848,6 +901,10 @@ async def _run_evaluation(tier: str = "full") -> ComboEvalSummary:
         # same summary shows an F alongside a B+ that does not contain it. The warnings list
         # above already makes this distinction; the breakdown did not.
         _skipped_cats = {c.get("category") for c in (summary.skipped_categories or [])}
+        if summary.role_scores:
+            _rs = "  ".join(f"{r}={v:.0f}" for r, v in sorted(summary.role_scores.items()))
+            print(f"[EVALUATOR] by role: {_rs}   "
+                  f"(compare MAIN models on 'main'; the overall mixes in fast/embedding/image)")
         for k, v in summary.category_scores.items():
             if k in _skipped_cats:
                 _why = next((c.get("reason") for c in summary.skipped_categories
