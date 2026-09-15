@@ -10,6 +10,7 @@ import time
 from typing import Optional
 from evaluator.models import EvalResult, _score_to_grade
 from evaluator import output_filters
+from utils.json_repair import robust_json_parse
 import logging
 logger = logging.getLogger(__name__)
 
@@ -253,14 +254,15 @@ def score_has_headings(output: str, min_headings: int = 1) -> int:
 
 # ─── Semantic Scoring (RAGAS-style, industry standard) ─────────────────────
 
-async def score_semantic_similarity(answer: str, reference_answer: str) -> int:
+async def score_semantic_similarity(answer: str, reference_answer: str) -> Optional[int]:
     """Semantic similarity between generated answer and reference answer.
-    
+
     Uses the local embedding model to compute cosine similarity. This is the
     industry-standard "Answer Correctness" metric used by RAGAS, TruLens, etc.
     Replaces brittle keyword matching.
-    
-    Returns 0-100 (cosine sim mapped: 0.0→0, 0.5→50, 0.85+→100).
+
+    Returns 0-100 (cosine sim mapped: 0.0→0, 0.5→50, 0.85+→100), 0 when there is nothing to
+    compare, or None when the comparison could not be MADE (embedder unavailable).
     """
     if not answer or not reference_answer:
         return 0
@@ -277,8 +279,12 @@ async def score_semantic_similarity(answer: str, reference_answer: str) -> int:
         normalized = max(0.0, min(1.0, (cos_sim - 0.3) / 0.55))
         return int(normalized * 100)
     except Exception as e:
-        logger.warning(f"[scoring] semantic similarity failed: {e}")
-        return 50  # Neutral fallback
+        # Embeddings RAISE by contract when nothing can serve them (a zero vector is permanent
+        # index corruption), so reaching here means the comparison genuinely did not happen.
+        # Reporting 50 made a dead embedder look like a half-right answer — on the axis that
+        # carries the most weight in rag_chat.
+        logger.warning(f"[scoring] semantic similarity UNMEASURED: {e}")
+        return None
 
 
 def score_context_recall(citations: list[dict], gold_chunk_marker) -> int:
@@ -320,17 +326,59 @@ def score_context_recall(citations: list[dict], gold_chunk_marker) -> int:
     return 0
 
 
-async def score_faithfulness(answer: str, citations: list[dict], judge_model: str) -> int:
+# ─── The judge budget and its parsing ───────────────────────────────────────
+#
+# A judge that reasons before answering needs room to finish. The old 80/100 caps cut the
+# response off mid-thought, the truncated text then failed to parse, and the parse failure was
+# scored as a mid value — so a model whose judge output ran long looked mediocre rather than
+# unmeasured. Generous enough for a short preamble plus the JSON object.
+_JUDGE_NUM_PREDICT = 320
+
+
+def _judge_number(raw: str, key: str, *, label: str) -> Optional[int]:
+    """Pull a 0-100 integer out of judge output. Returns None when it ISN'T THERE.
+
+    None means UNMEASURED, and callers must never coerce it to a number. Returning 50 for a
+    failed parse (as this did until 2026-09-14) makes "the judge broke" indistinguishable from
+    "the answer was middling", which is the difference between a signal and a lie. Same failure
+    shape as the research_engine quality scorer fixed in 7aec6dc.
+    """
+    if not raw or not raw.strip():
+        return None
+    # Reasoners emit <think> even when thinking is "off" — strip before parsing, or the JSON
+    # extractor picks up numbers out of the reasoning trace.
+    text = output_filters.strip_thinking(raw)
+    parsed = robust_json_parse(text, expect="object", label=label)
+    value = parsed.get(key) if isinstance(parsed, dict) else None
+    if value is None:
+        # Last resort: the key/value pair inside otherwise-malformed output.
+        match = re.search(rf'"{re.escape(key)}"\s*:\s*(\d+)', text)
+        value = match.group(1) if match else None
+    if value is None:
+        return None
+    try:
+        return max(0, min(100, int(float(value))))
+    except (TypeError, ValueError):
+        return None
+
+
+async def score_faithfulness(
+    answer: str, citations: list[dict], judge_model: str
+) -> Optional[int]:
     """Faithfulness: Does the answer ONLY use information from retrieved context?
-    
+
     LLM judge evaluates whether claims in the answer are supported by citations.
     This catches hallucination — the most critical RAG failure mode.
 
     Build C: the answer is normalized (reasoning stripped) before judging.
+
+    Returns None when faithfulness could not be MEASURED — no answer, nothing to check it
+    against, or a judge that failed to produce a usable verdict. The caller decides what an
+    unmeasured axis means; it must not become a number here.
     """
     if not answer or not citations:
-        return 50
-    
+        return None   # nothing to judge — NOT "50% faithful"
+
     from services.llm_runtime import llm_runtime
     context = "\n---\n".join(c.get("text", "")[:500] for c in citations[:4])
     
@@ -352,21 +400,17 @@ Respond ONLY with JSON: {{"faithful": <0-100>, "reason": "<brief>"}}.
             model=judge_model,
             system="You are a strict faithfulness evaluator. Return only valid JSON.",
             temperature=0.1,
-            num_predict=80,
+            num_predict=_JUDGE_NUM_PREDICT,
             timeout=30.0,
         )
-        text = (result or {}).get("response", "")
-        try:
-            parsed = json.loads(text.strip())
-            return max(0, min(100, int(parsed.get("faithful", 50))))
-        except (json.JSONDecodeError, ValueError):
-            match = re.search(r'"faithful"\s*:\s*(\d+)', text)
-            if match:
-                return max(0, min(100, int(match.group(1))))
-            return 50
+        score = _judge_number((result or {}).get("response", ""), "faithful",
+                              label="scoring.faithfulness")
+        if score is None:
+            logger.warning("[scoring] faithfulness UNMEASURED — judge returned no usable verdict")
+        return score
     except Exception as e:
         logger.warning(f"[scoring] faithfulness check failed: {e}")
-        return 50
+        return None
 
 
 # ─── LLM-as-Judge Scoring ───────────────────────────────────────────────────
@@ -376,14 +420,16 @@ async def llm_judge_score(
     answer: str,
     judge_model: str,
     criteria: str = "accuracy, completeness, and coherence",
-) -> int:
-    """Use a secondary LLM to evaluate answer quality. Returns 0-100.
-    
-    Uses the Ollama API directly — the judge model should be different from
-    the model that generated the answer to avoid self-evaluation bias.
+) -> Optional[int]:
+    """Use a secondary LLM to evaluate answer quality. Returns 0-100, or None if UNMEASURED.
+
+    The judge should be a different model from the one that generated the answer, to avoid
+    self-evaluation bias — a fixed judge keeps that bias constant across candidates, which is
+    what makes two models comparable at all.
+
+    Routes through `llm_runtime` like every other generation (the docstring claimed "the Ollama
+    API directly" long after that stopped being true).
     """
-    # v1.8.0: route via ollama_client (provider-aware). Works for both Ollama
-    # and llama-server sidecar judge models, and respects ollama_base_url.
     from services.llm_runtime import llm_runtime
 
     prompt = f"""You are an expert evaluator. Score the following AI answer on a scale of 0-100.
@@ -402,32 +448,57 @@ Respond with ONLY a JSON object: {{"score": <0-100>, "reason": "<one sentence>"}
             model=judge_model,
             system="You are a strict but fair answer quality evaluator. Always respond with valid JSON only.",
             temperature=0.1,
-            num_predict=100,
+            num_predict=_JUDGE_NUM_PREDICT,
             timeout=30.0,
         )
 
-        # ollama_client.generate always returns a dict with "response" (possibly
-        # containing "Error: ..." on transport failure). Treat success as non-empty
-        # non-error text.
-        if result and isinstance(result, dict):
-            text = result.get("response", "") or ""
-            # Extract score from JSON
-            try:
-                parsed = json.loads(text.strip())
-                return max(0, min(100, int(parsed.get("score", 50))))
-            except (json.JSONDecodeError, ValueError):
-                # Try regex extraction
-                match = re.search(r'"score"\s*:\s*(\d+)', text)
-                if match:
-                    return max(0, min(100, int(match.group(1))))
-                return 50  # Default to middle if can't parse
-        return 50  # result was not a usable dict
+        # `generate` returns a dict with "response" (possibly "Error: ..." on transport
+        # failure). Anything that is not a usable verdict is UNMEASURED, not average.
+        text = result.get("response", "") or "" if isinstance(result, dict) else ""
+        score = _judge_number(text, "score", label="scoring.llm_judge")
+        if score is None:
+            logger.warning("[scoring] llm_judge UNMEASURED — no usable verdict from "
+                           f"{judge_model}")
+        return score
     except Exception as e:
-        print(f"[SCORING] LLM judge failed: {e}")
-        return 50  # Default score on failure
+        logger.warning(f"[scoring] llm_judge failed: {e}")
+        return None
 
 
 # ─── Composite Scoring ──────────────────────────────────────────────────────
+
+def combine_measured(axes: dict) -> tuple:
+    """Weighted combine across the axes that were actually MEASURED.
+
+    `axes` maps name → (score or None, weight). An axis whose score is None was not measured,
+    so it is DROPPED and its weight redistributed proportionally across the axes that were —
+    rather than being filled with an invented constant.
+
+    That substitution is what this replaces. rag_chat used to score faithfulness as a flat 60
+    whenever there were no citations or the judge matched the main model, so 20% of the
+    category was a number nobody measured; a failed judge or a dead embedder contributed 50 the
+    same way. Redistribution keeps the remaining axes honestly weighted relative to each other,
+    and `coverage` says how much of the intended weight actually got measured — so a result
+    resting on half its axes can be told apart from one resting on all of them.
+
+    Returns `(overall, detail)`. `detail` carries every axis (None preserved, so the gap stays
+    visible in the persisted result) plus `coverage`, the fraction of total weight measured.
+    A coverage of 0.0 means NOTHING was measured: overall is 0 and the caller should treat the
+    test as unmeasured, not as a score of zero.
+    """
+    measured = {k: (s, w) for k, (s, w) in axes.items() if s is not None}
+    total_weight = sum(w for _, w in axes.values()) or 1.0
+    measured_weight = sum(w for _, w in measured.values())
+
+    detail = {k: s for k, (s, _) in axes.items()}
+    detail["coverage"] = round(measured_weight / total_weight, 3)
+    detail["unmeasured"] = sorted(k for k, (s, _) in axes.items() if s is None)
+
+    if not measured_weight:
+        return 0, detail
+    overall = sum(s * w for s, w in measured.values()) / measured_weight
+    return int(round(overall)), detail
+
 
 def compute_weighted_score(scores: dict[str, float], weights: dict[str, float]) -> float:
     """Compute weighted average from named scores and weights.

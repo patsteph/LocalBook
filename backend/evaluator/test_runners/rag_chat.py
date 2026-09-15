@@ -55,42 +55,49 @@ async def run(notebook_id: str, config: dict, combo_name: str, hw_fingerprint: s
             answer_correctness = scoring.score_must_contain(answer, q.get("expected_facts", []))
         
         # 3. Faithfulness: does answer use only retrieved context (no hallucination)?
+        # None when it could not be judged — a self-judging combo, no citations to check
+        # against, or a judge that returned no usable verdict. `combine_measured` drops it and
+        # redistributes its weight; it is never backfilled with a constant.
         judge_model = getattr(settings, 'fast_model', settings.main_model)
+        faithfulness = None
         if judge_model != settings.main_model and citations:
             faithfulness = await scoring.score_faithfulness(answer, citations, judge_model)
-        else:
-            faithfulness = 60
-        
+
         # 4. Citation presence (lightweight format check, deweighted)
         citation_score = scoring.score_has_citations(answer, min_citations=1)
-        
+
         # 5. Speed (separate quality axis)
         speed_score = 100 if elapsed < 15000 else max(0, int(100 - (elapsed - 15000) / 500))
 
-        result.accuracy_score = answer_correctness
-        result.completeness_score = faithfulness
+        result.accuracy_score = answer_correctness or 0
+        result.completeness_score = faithfulness or 0
         result.format_score = citation_score
-        # Weighted: correctness (35%) + recall (25%) + faithfulness (20%) + citations (10%) + speed (10%)
-        result.overall_score = int(
-            answer_correctness * 0.35 + context_recall * 0.25 + faithfulness * 0.20 +
-            citation_score * 0.10 + speed_score * 0.10
-        )
-        
-        result.sub_scores = {
-            "context_recall": context_recall,
-            "answer_correctness": answer_correctness,
-            "faithfulness": faithfulness,
-            "citations": citation_score,
-            "speed": speed_score,
-        }
-        result.passed = result.overall_score >= 40
-        if not result.passed:
-            result.failure_reason = f"Score {result.overall_score} < 40"
+        # correctness 35 · recall 25 · faithfulness 20 · citations 10 · speed 10,
+        # renormalized over whatever was actually measured.
+        result.overall_score, result.sub_scores = scoring.combine_measured({
+            "answer_correctness": (answer_correctness, 0.35),
+            "context_recall": (context_recall, 0.25),
+            "faithfulness": (faithfulness, 0.20),
+            "citations": (citation_score, 0.10),
+            "speed": (speed_score, 0.10),
+        })
 
+        if not result.sub_scores["coverage"]:
+            result.mark_degraded("no scoring axis could be measured")
+            result.passed = False
+            result.failure_reason = "unmeasured — no axis produced a score"
+        else:
+            result.passed = result.overall_score >= 40
+            if not result.passed:
+                result.failure_reason = f"Score {result.overall_score} < 40"
+
+        _unmeasured = result.sub_scores["unmeasured"]
         print(f"[EVAL-RAG] Simple query: score={result.overall_score} "
               f"(recall={context_recall}, correctness={answer_correctness}, "
               f"faithful={faithfulness}, citations={citation_score}, speed={speed_score}) "
-              f"{elapsed:.0f}ms")
+              f"{elapsed:.0f}ms"
+              + (f"  ⚠ unmeasured: {', '.join(_unmeasured)} "
+                 f"(coverage {result.sub_scores['coverage']:.0%})" if _unmeasured else ""))
 
     except Exception as e:
         result.passed = False
@@ -139,34 +146,37 @@ async def run(notebook_id: str, config: dict, combo_name: str, hw_fingerprint: s
             answer_correctness = scoring.score_must_contain(answer, q.get("expected_facts", []))
         
         judge_model = getattr(settings, 'fast_model', settings.main_model)
+        faithfulness = None
         if judge_model != settings.main_model and citations:
             faithfulness = await scoring.score_faithfulness(answer, citations, judge_model)
-        else:
-            faithfulness = 60
-        
+
         citation_score = scoring.score_has_citations(answer, min_citations=2)
         speed_score = 100 if elapsed < 25000 else max(0, int(100 - (elapsed - 25000) / 500))
 
-        result.accuracy_score = answer_correctness
-        result.completeness_score = faithfulness
+        result.accuracy_score = answer_correctness or 0
+        result.completeness_score = faithfulness or 0
         result.format_score = citation_score
-        result.overall_score = int(
-            answer_correctness * 0.35 + context_recall * 0.25 + faithfulness * 0.20 +
-            citation_score * 0.10 + speed_score * 0.10
-        )
-        
-        result.sub_scores = {
-            "context_recall": context_recall,
-            "answer_correctness": answer_correctness,
-            "faithfulness": faithfulness,
-            "citations": citation_score,
-            "speed": speed_score,
-        }
-        result.passed = result.overall_score >= 40
+        result.overall_score, result.sub_scores = scoring.combine_measured({
+            "answer_correctness": (answer_correctness, 0.35),
+            "context_recall": (context_recall, 0.25),
+            "faithfulness": (faithfulness, 0.20),
+            "citations": (citation_score, 0.10),
+            "speed": (speed_score, 0.10),
+        })
 
+        if not result.sub_scores["coverage"]:
+            result.mark_degraded("no scoring axis could be measured")
+            result.passed = False
+            result.failure_reason = "unmeasured — no axis produced a score"
+        else:
+            result.passed = result.overall_score >= 40
+
+        _unmeasured = result.sub_scores["unmeasured"]
         print(f"[EVAL-RAG] Complex query: score={result.overall_score} "
               f"(recall={context_recall}, correctness={answer_correctness}, "
-              f"faithful={faithfulness}) {elapsed:.0f}ms")
+              f"faithful={faithfulness}) {elapsed:.0f}ms"
+              + (f"  ⚠ unmeasured: {', '.join(_unmeasured)} "
+                 f"(coverage {result.sub_scores['coverage']:.0%})" if _unmeasured else ""))
 
     except Exception as e:
         result.passed = False

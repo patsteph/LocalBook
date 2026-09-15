@@ -127,29 +127,35 @@ async def run(notebook_id: str, config: dict, combo_name: str, hw_fingerprint: s
         # Semantic similarity — both answers should be saying the same
         # thing about hash tables, just in different voice. We reuse the
         # existing scorer which uses embeddings (async).
-        try:
-            sim_score = await scoring.score_semantic_similarity(off_text, on_text)
-        except Exception:
-            # Fallback: trivially-close lengths suggest similar content.
-            len_ratio = min(len(off_text), len(on_text)) / max(len(off_text), len(on_text), 1)
-            sim_score = int(len_ratio * 80)
+        # None when the embedder could not serve the comparison. The old code fell back to a
+        # length ratio, which is a proxy for "similar size", not "saying the same thing" — a
+        # guess wearing a score's clothing. Drop the axis instead and let hedging carry the
+        # result, with `coverage` recording that half the intended weight went unmeasured.
+        sim_score = await scoring.score_semantic_similarity(off_text, on_text)
 
+        result.overall_score, _detail = scoring.combine_measured({
+            "hedging_score": (hedging_score, 0.5),
+            "semantic_similarity": (sim_score, 0.5),
+        })
         result.sub_scores = {
             "hedging_off": off_hedges,
             "hedging_on": on_hedges,
-            "hedging_score": hedging_score,
-            "semantic_similarity": sim_score,
+            **_detail,
         }
         result.accuracy_score = hedging_score
-        result.completeness_score = sim_score
-        result.overall_score = int(hedging_score * 0.5 + sim_score * 0.5)
-        result.passed = result.overall_score >= 50 and sim_score >= 40
-
-        if sim_score < 40:
-            result.failure_reason = (
-                f"Semantic similarity too low ({sim_score}) — voice modifier is "
-                "destroying meaning, not just tone."
-            )
+        result.completeness_score = sim_score or 0
+        # An UNMEASURED similarity must not read as a passing one. The meaning-destruction
+        # check simply cannot run, so say so rather than letting `None` satisfy the gate.
+        if sim_score is None:
+            result.passed = result.overall_score >= 50
+            result.failure_reason = "semantic similarity unmeasured — meaning-loss check did not run"
+        else:
+            result.passed = result.overall_score >= 50 and sim_score >= 40
+            if sim_score < 40:
+                result.failure_reason = (
+                    f"Semantic similarity too low ({sim_score}) — voice modifier is "
+                    "destroying meaning, not just tone."
+                )
 
         print(
             f"[EVAL-VOICE] hedging off={off_hedges} on={on_hedges} → "
