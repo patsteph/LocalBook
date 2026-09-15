@@ -282,3 +282,72 @@ def test_every_runner_category_is_weighted_and_mapped():
         f"runner(s) have no feature-parity verdict: {sorted(unmapped)} — the fail floor "
         f"cannot see them"
     )
+
+
+# ── Tiers: a cheap run that is honest about being cheap ─────────────────────
+#
+# The full suite takes 15-30 min and spends a third of it downloading a YouTube transcript and
+# a Wikipedia page. A harness that expensive does not get run, and one that does not get run is
+# not a safety net — it was twice mistaken for hung during a release on 2026-09-14.
+#
+# The danger of a cheap tier is silent incomparability: a smoke run scores over ~a third of the
+# categories, so its overall is a DIFFERENT quantity, not a worse one.
+
+from evaluator.run import tier_changed
+from evaluator import evaluator_service as es
+
+
+def test_a_smoke_run_is_never_compared_to_a_full_baseline():
+    """Otherwise the first `--tier smoke` after a full run reports a catastrophic regression
+    that is purely an artefact of counting fewer categories."""
+    assert tier_changed({"overall_score": 86.8, "tier": "full"}, "smoke") is True
+    assert tier_changed({"overall_score": 70.0, "tier": "smoke"}, "full") is True
+    assert tier_changed({"overall_score": 70.0, "tier": "smoke"}, "smoke") is False
+
+
+def test_runs_predating_tiers_count_as_full():
+    assert tier_changed({"overall_score": 86.8}, "full") is False
+    assert tier_changed({"overall_score": 86.8}, "smoke") is True
+
+
+def test_smoke_keeps_the_categories_that_decide_usability():
+    """The tier has to answer 'can this model do the job at all'. Retrieval, the chat loop,
+    JSON and instruction-following are the ones that make a model unusable if they fail."""
+    for essential in ("rag_chat", "retrieval", "structured_json", "instruction_follow"):
+        assert essential in es.SMOKE_CATEGORIES, f"{essential} must survive the smoke tier"
+
+
+def test_smoke_drops_the_slow_and_the_networked():
+    """Podcast generation and a Klein render are minutes each; neither answers 'does this model
+    work at all' better than the cheaper categories already do."""
+    for expensive in ("tts_audio", "image_gen", "vision", "concurrency", "needle_haystack"):
+        assert expensive not in es.SMOKE_CATEGORIES
+
+
+def test_smoke_ingests_local_files_only():
+    """YouTube took 94s and the web scrape 90s of a 352s ingestion, and neither measures the
+    model — it measures the network."""
+    cfg = {"content_sources": {"pdf": {}, "docx": {}, "youtube": {}, "web": {}, "note": {}}}
+    trimmed = es._tier_config(cfg, "smoke")
+    assert set(trimmed["content_sources"]) == {"pdf", "docx", "note"}
+    # full is untouched, and the original dict is not mutated
+    assert set(es._tier_config(cfg, "full")["content_sources"]) == {"pdf", "docx", "youtube", "web", "note"}
+    assert "youtube" in cfg["content_sources"]
+
+
+def test_the_tier_gate_does_not_run_an_excluded_category():
+    """Coroutines are lazy, so gating at the call site costs nothing — but the discarded one
+    must be closed, or Python warns about a coroutine that was never awaited."""
+    import asyncio
+
+    ran = {"yes": False}
+
+    async def _runner():
+        ran["yes"] = True
+        return ["result"]
+
+    out = asyncio.run(es._tier_gate("tts_audio", "smoke", _runner()))
+    assert out == [] and ran["yes"] is False, "an excluded category must not execute"
+
+    out = asyncio.run(es._tier_gate("rag_chat", "smoke", _runner()))
+    assert out == ["result"] and ran["yes"] is True, "an included category must run"

@@ -92,6 +92,82 @@ def _load_config() -> dict:
 _PHASE_TIMEOUT_SECONDS = 180  # 3 min max per test phase — prevents indefinite hangs
 
 
+# ─── Tiers ──────────────────────────────────────────────────────────────────
+#
+# The full suite takes 15-30 minutes on a 16 GB box and spends a third of it downloading a
+# YouTube transcript and a Wikipedia page — neither of which measures the model. A harness that
+# expensive does not get run, and a harness that does not get run is not a safety net. It was
+# twice mistaken for hung during a release on 2026-09-14.
+#
+# SMOKE answers one question: can this model do the job AT ALL? It keeps the categories that
+# would make a model unusable if they failed, and drops everything that is slow, network-bound,
+# or a refinement of something already covered.
+#
+# ⚠️ A smoke score is computed over FEWER categories, so it is NOT comparable to a full score.
+# The tier is persisted on the run and the regression gate refuses to compare across tiers —
+# without that, one `--tier smoke` run would poison the baseline and the next full run would
+# look like a catastrophic regression.
+SMOKE_CATEGORIES = frozenset({
+    "ingestion",          # local files only in smoke (see _tier_config)
+    "retrieval",          # fast, judge-free, and the core of every answer
+    "rag_chat",           # the product loop itself
+    "structured_json",    # JSON capability — half the app's features need it
+    "instruction_follow", # does it do what it is told
+    "embedding_quality",  # cheap, and everything retrieval-shaped depends on it
+    "entity_extract",     # fast, judge-free, feeds the graph AND retrieval
+})
+
+# Sources that cost network time rather than telling us anything about the model.
+_NETWORK_SOURCES = ("youtube", "web")
+
+
+def _in_tier(category: str, tier: str) -> bool:
+    return tier != "smoke" or category in SMOKE_CATEGORIES
+
+
+def _tier_skip_reason(category: str, tier: str) -> str:
+    """Why a category produced nothing — deliberately excluded, or genuinely absent.
+
+    `_build_category` assumed that no results meant the phase TIMED OUT, which was true until
+    tiers existed. The first smoke run then reported fourteen categories as
+    "phase timed out — no data recorded", which is alarming, wrong, and exactly the kind of
+    misleading report this whole overhaul has been about. A skipped category should say it was
+    skipped.
+    """
+    if not _in_tier(category, tier):
+        return f"not part of the {tier} tier — run the full tier to measure it"
+    return ""
+
+
+def _tier_gate(category: str, tier: str, coro):
+    """Return `coro` when the category is in this tier, else discard it and return no results.
+
+    Creating a coroutine does not run it, so gating here costs nothing — but an un-awaited
+    coroutine warns, hence the explicit close(). An empty result list flows into
+    `_build_category`, which already treats "no results" as not-applicable rather than zero.
+    """
+    if _in_tier(category, tier):
+        return coro
+    coro.close()
+
+    async def _noop():
+        return []
+
+    return _noop()
+
+
+def _tier_config(config: dict, tier: str) -> dict:
+    """Smoke drops the network-fetched sources: on 2026-09-14 YouTube took 94s and the web
+    scrape 90s of a 352s ingestion, and neither says anything about the model."""
+    if tier != "smoke":
+        return config
+    trimmed = dict(config)
+    sources = {k: v for k, v in (config.get("content_sources") or {}).items()
+               if k not in _NETWORK_SOURCES}
+    trimmed["content_sources"] = sources
+    return trimmed
+
+
 
 def _count_engine_fallbacks() -> int:
     """How many engine-fallback signals exist right now (a monotonic watermark)."""
@@ -151,7 +227,7 @@ def _check_available_memory() -> tuple[bool, str]:
         return True, "psutil not available, skipping memory check"
 
 
-async def run_full_evaluation() -> ComboEvalSummary:
+async def run_full_evaluation(tier: str = "full") -> ComboEvalSummary:
     """Run the complete evaluation suite.
     
     This is the main entry point. It:
@@ -163,6 +239,21 @@ async def run_full_evaluation() -> ComboEvalSummary:
     6. Cleans up the test notebook
     """
     from config import settings
+
+    tier = (tier or "full").lower()
+    if tier not in ("full", "smoke"):
+        tier = "full"
+
+    # Sweep any leftover test notebook BEFORE starting. A run that is killed — which happened
+    # twice during the v2.3.0 release, and is now a documented escape hatch (SKIP_EVAL, the
+    # release timeout) — never reaches its own cleanup, so its notebook and LanceDB table stay
+    # on disk forever. `api/evaluator.py` already did this for UI-triggered runs; the headless
+    # entry point did not, so `python -m evaluator.run` accumulated one orphan per abandoned
+    # run. Matches on the configured test-notebook NAME only, so it cannot touch real data.
+    try:
+        await cleanup_stale_notebook()
+    except Exception as _ce:
+        print(f"[EVALUATOR] stale-notebook sweep skipped (non-fatal): {_ce}")
 
     # Note: _progress.running and run_start_time are already set by the /run endpoint
     # to prevent race conditions with the frontend status polling.
@@ -239,7 +330,7 @@ async def run_full_evaluation() -> ComboEvalSummary:
         if preflight_report.blocking_failure:
             raise RuntimeError(f"Pre-flight failed: {preflight_report.blocking_failure}")
 
-        config = _load_config()
+        config = _tier_config(_load_config(), tier)
         combo = ModelCombo.from_config(settings)
 
         # ── Phase 0: Hardware Profile ────────────────────────────────────
@@ -293,88 +384,99 @@ async def run_full_evaluation() -> ComboEvalSummary:
         # Phase 4: RAG Chat
         _update_progress(4, "RAG Chat Q&A")
         rag_results = await _run_phase_with_timeout(
-            rag_chat.run(notebook_id, config, combo.name, hw.fingerprint), "RAG Chat")
-        cat = _build_category("rag_chat", "RAG Chat Q&A", rag_results)
+            _tier_gate("rag_chat", tier, rag_chat.run(notebook_id, config, combo.name, hw.fingerprint)), "RAG Chat")
+        cat = _build_category("rag_chat", "RAG Chat Q&A", rag_results,
+                              _tier_skip_reason("rag_chat", tier))
         category_results["rag_chat"] = cat
         _progress.results_so_far["rag_chat"] = {"score": cat.score, "grade": cat.grade}
 
         # Phase 5: Streaming
         _update_progress(5, "Streaming Generation")
         stream_results = await _run_phase_with_timeout(
-            streaming.run(notebook_id, config, combo.name, hw.fingerprint), "Streaming")
-        cat = _build_category("streaming", "Streaming Generation", stream_results)
+            _tier_gate("streaming", tier, streaming.run(notebook_id, config, combo.name, hw.fingerprint)), "Streaming")
+        cat = _build_category("streaming", "Streaming Generation", stream_results,
+                              _tier_skip_reason("streaming", tier))
         category_results["streaming"] = cat
         _progress.results_so_far["streaming"] = {"score": cat.score, "grade": cat.grade}
 
         # Phase 6: Fast Follow-Up
         _update_progress(6, "Fast Follow-Up")
         followup_results = await _run_phase_with_timeout(
-            fast_followup.run(notebook_id, config, combo.name, hw.fingerprint), "Fast Follow-Up")
-        cat = _build_category("fast_followup", "Fast Follow-Up", followup_results)
+            _tier_gate("fast_followup", tier, fast_followup.run(notebook_id, config, combo.name, hw.fingerprint)), "Fast Follow-Up")
+        cat = _build_category("fast_followup", "Fast Follow-Up", followup_results,
+                              _tier_skip_reason("fast_followup", tier))
         category_results["fast_followup"] = cat
         _progress.results_so_far["fast_followup"] = {"score": cat.score, "grade": cat.grade}
 
         # Phase 7: Document Generation
         _update_progress(7, "Document Generation")
         docgen_results = await _run_phase_with_timeout(
-            document_gen.run(notebook_id, config, combo.name, hw.fingerprint), "Document Gen")
-        cat = _build_category("document_gen", "Document Generation", docgen_results)
+            _tier_gate("document_gen", tier, document_gen.run(notebook_id, config, combo.name, hw.fingerprint)), "Document Gen")
+        cat = _build_category("document_gen", "Document Generation", docgen_results,
+                              _tier_skip_reason("document_gen", tier))
         category_results["document_gen"] = cat
         _progress.results_so_far["document_gen"] = {"score": cat.score, "grade": cat.grade}
 
         # Phase 8: Structured JSON (Quiz)
         _update_progress(8, "Structured JSON (Quiz)")
         json_results = await _run_phase_with_timeout(
-            structured_json.run(notebook_id, config, combo.name, hw.fingerprint), "Structured JSON")
-        cat = _build_category("structured_json", "Structured JSON", json_results)
+            _tier_gate("structured_json", tier, structured_json.run(notebook_id, config, combo.name, hw.fingerprint)), "Structured JSON")
+        cat = _build_category("structured_json", "Structured JSON", json_results,
+                              _tier_skip_reason("structured_json", tier))
         category_results["structured_json"] = cat
         _progress.results_so_far["structured_json"] = {"score": cat.score, "grade": cat.grade}
 
         # Phase 9: Intent Classification
         _update_progress(9, "Intent Classification")
         intent_results = await _run_phase_with_timeout(
-            intent_classify.run(notebook_id, config, combo.name, hw.fingerprint), "Intent Classify")
-        cat = _build_category("intent_classify", "Intent Classification", intent_results)
+            _tier_gate("intent_classify", tier, intent_classify.run(notebook_id, config, combo.name, hw.fingerprint)), "Intent Classify")
+        cat = _build_category("intent_classify", "Intent Classification", intent_results,
+                              _tier_skip_reason("intent_classify", tier))
         category_results["intent_classify"] = cat
         _progress.results_so_far["intent_classify"] = {"score": cat.score, "grade": cat.grade}
 
         # Phase 10: Embedding Quality
         _update_progress(10, "Embedding Quality")
         embed_results = await _run_phase_with_timeout(
-            embedding_quality.run(notebook_id, config, combo.name, hw.fingerprint), "Embedding Quality")
-        cat = _build_category("embedding_quality", "Embedding Quality", embed_results)
+            _tier_gate("embedding_quality", tier, embedding_quality.run(notebook_id, config, combo.name, hw.fingerprint)), "Embedding Quality")
+        cat = _build_category("embedding_quality", "Embedding Quality", embed_results,
+                              _tier_skip_reason("embedding_quality", tier))
         category_results["embedding_quality"] = cat
         _progress.results_so_far["embedding_quality"] = {"score": cat.score, "grade": cat.grade}
 
         # Phase 11: Vision
         _update_progress(11, "Vision / Image")
         vision_results = await _run_phase_with_timeout(
-            vision.run(notebook_id, config, combo.name, hw.fingerprint), "Vision")
-        cat = _build_category("vision", "Vision / Image", vision_results)
+            _tier_gate("vision", tier, vision.run(notebook_id, config, combo.name, hw.fingerprint)), "Vision")
+        cat = _build_category("vision", "Vision / Image", vision_results,
+                              _tier_skip_reason("vision", tier))
         category_results["vision"] = cat
         _progress.results_so_far["vision"] = {"score": cat.score, "grade": cat.grade}
 
         # Phase 12: TTS Audio
         _update_progress(12, "TTS Audio")
         tts_results = await _run_phase_with_timeout(
-            tts_audio.run(notebook_id, config, combo.name, hw.fingerprint), "TTS Audio")
-        cat = _build_category("tts_audio", "TTS Audio", tts_results)
+            _tier_gate("tts_audio", tier, tts_audio.run(notebook_id, config, combo.name, hw.fingerprint)), "TTS Audio")
+        cat = _build_category("tts_audio", "TTS Audio", tts_results,
+                              _tier_skip_reason("tts_audio", tier))
         category_results["tts_audio"] = cat
         _progress.results_so_far["tts_audio"] = {"score": cat.score, "grade": cat.grade}
 
         # Phase 13: Instruction Following
         _update_progress(13, "Instruction Following")
         instruct_results = await _run_phase_with_timeout(
-            instruction_follow.run(notebook_id, config, combo.name, hw.fingerprint), "Instruction Follow")
-        cat = _build_category("instruction_follow", "Instruction Following", instruct_results)
+            _tier_gate("instruction_follow", tier, instruction_follow.run(notebook_id, config, combo.name, hw.fingerprint)), "Instruction Follow")
+        cat = _build_category("instruction_follow", "Instruction Following", instruct_results,
+                              _tier_skip_reason("instruction_follow", tier))
         category_results["instruction_follow"] = cat
         _progress.results_so_far["instruction_follow"] = {"score": cat.score, "grade": cat.grade}
 
         # Phase 14: Concurrency & Load
         _update_progress(14, "Concurrency & Load")
         concurrency_results = await _run_phase_with_timeout(
-            concurrency.run(notebook_id, config, combo.name, hw.fingerprint), "Concurrency")
-        cat = _build_category("concurrency", "Concurrency & Load", concurrency_results)
+            _tier_gate("concurrency", tier, concurrency.run(notebook_id, config, combo.name, hw.fingerprint)), "Concurrency")
+        cat = _build_category("concurrency", "Concurrency & Load", concurrency_results,
+                              _tier_skip_reason("concurrency", tier))
         category_results["concurrency"] = cat
         _progress.results_so_far["concurrency"] = {"score": cat.score, "grade": cat.grade}
 
@@ -384,49 +486,54 @@ async def run_full_evaluation() -> ComboEvalSummary:
         # so prompt-eval of tens of thousands of tokens can exceed the default 180s.
         # Give this deliberate stress test a longer ceiling so it completes + scores.
         needle_results = await _run_phase_with_timeout(
-            needle_haystack.run(notebook_id, config, combo.name, hw.fingerprint),
-            "Needle Haystack", timeout=420)
-        cat = _build_category("needle_haystack", "Context Capacity", needle_results)
+            _tier_gate("needle_haystack", tier, needle_haystack.run(notebook_id, config, combo.name, hw.fingerprint)), "Needle Haystack", timeout=420)
+        cat = _build_category("needle_haystack", "Context Capacity", needle_results,
+                              _tier_skip_reason("needle_haystack", tier))
         category_results["needle_haystack"] = cat
         _progress.results_so_far["needle_haystack"] = {"score": cat.score, "grade": cat.grade}
 
         # Phase 16: Prompt Safety (Adversarial)
         _update_progress(16, "Prompt Safety (Adversarial)")
         safety_results = await _run_phase_with_timeout(
-            prompt_safety.run(notebook_id, config, combo.name, hw.fingerprint), "Prompt Safety")
-        cat = _build_category("prompt_safety", "Prompt Safety", safety_results)
+            _tier_gate("prompt_safety", tier, prompt_safety.run(notebook_id, config, combo.name, hw.fingerprint)), "Prompt Safety")
+        cat = _build_category("prompt_safety", "Prompt Safety", safety_results,
+                              _tier_skip_reason("prompt_safety", tier))
         category_results["prompt_safety"] = cat
         _progress.results_so_far["prompt_safety"] = {"score": cat.score, "grade": cat.grade}
 
         # Phase 17: Voice Modifier (apples-to-apples voice consistency)
         _update_progress(17, "Voice Modifier")
         voice_results = await _run_phase_with_timeout(
-            voice_modifier.run(notebook_id, config, combo.name, hw.fingerprint), "Voice Modifier")
-        cat = _build_category("voice_modifier", "Voice Modifier", voice_results)
+            _tier_gate("voice_modifier", tier, voice_modifier.run(notebook_id, config, combo.name, hw.fingerprint)), "Voice Modifier")
+        cat = _build_category("voice_modifier", "Voice Modifier", voice_results,
+                              _tier_skip_reason("voice_modifier", tier))
         category_results["voice_modifier"] = cat
         _progress.results_so_far["voice_modifier"] = {"score": cat.score, "grade": cat.grade}
 
         # Phase 18: Capture Modes — multi-mode vision coverage
         _update_progress(18, "Capture Modes")
         modes_results = await _run_phase_with_timeout(
-            capture_modes.run(notebook_id, config, combo.name, hw.fingerprint), "Capture Modes")
-        cat = _build_category("capture_modes", "Capture Modes", modes_results)
+            _tier_gate("capture_modes", tier, capture_modes.run(notebook_id, config, combo.name, hw.fingerprint)), "Capture Modes")
+        cat = _build_category("capture_modes", "Capture Modes", modes_results,
+                              _tier_skip_reason("capture_modes", tier))
         category_results["capture_modes"] = cat
         _progress.results_so_far["capture_modes"] = {"score": cat.score, "grade": cat.grade}
 
         # Phase 19: Refinement Pass Fidelity
         _update_progress(19, "Refinement Pass")
         refine_results = await _run_phase_with_timeout(
-            refinement.run(notebook_id, config, combo.name, hw.fingerprint), "Refinement")
-        cat = _build_category("refinement", "Refinement Pass", refine_results)
+            _tier_gate("refinement", tier, refinement.run(notebook_id, config, combo.name, hw.fingerprint)), "Refinement")
+        cat = _build_category("refinement", "Refinement Pass", refine_results,
+                              _tier_skip_reason("refinement", tier))
         category_results["refinement"] = cat
         _progress.results_so_far["refinement"] = {"score": cat.score, "grade": cat.grade}
 
         # Phase 20: Translation
         _update_progress(20, "Translation")
         trans_results = await _run_phase_with_timeout(
-            translation.run(notebook_id, config, combo.name, hw.fingerprint), "Translation")
-        cat = _build_category("translation", "Translation", trans_results)
+            _tier_gate("translation", tier, translation.run(notebook_id, config, combo.name, hw.fingerprint)), "Translation")
+        cat = _build_category("translation", "Translation", trans_results,
+                              _tier_skip_reason("translation", tier))
         category_results["translation"] = cat
         _progress.results_so_far["translation"] = {"score": cat.score, "grade": cat.grade}
 
@@ -439,8 +546,9 @@ async def run_full_evaluation() -> ComboEvalSummary:
         # Phase 22: Field Edges (promoted daily-use near-misses → regression cases)
         _update_progress(22, "Field Edges")
         field_edge_results = await _run_phase_with_timeout(
-            field_edges.run(notebook_id, config, combo.name, hw.fingerprint), "Field Edges")
-        cat = _build_category("field_edges", "Field Edges", field_edge_results)
+            _tier_gate("field_edges", tier, field_edges.run(notebook_id, config, combo.name, hw.fingerprint)), "Field Edges")
+        cat = _build_category("field_edges", "Field Edges", field_edge_results,
+                              _tier_skip_reason("field_edges", tier))
         category_results["field_edges"] = cat
         _progress.results_so_far["field_edges"] = {"score": cat.score, "grade": cat.grade}
 
@@ -451,8 +559,9 @@ async def run_full_evaluation() -> ComboEvalSummary:
         # ingest. (Retrieval-harness gap identified 2026-08-21; built 2026-09-14.)
         _update_progress(22, "Vector Retrieval")
         retrieval_results = await _run_phase_with_timeout(
-            retrieval.run(notebook_id, config, combo.name, hw.fingerprint), "Retrieval")
-        cat = _build_category("retrieval", "Vector Retrieval", retrieval_results)
+            _tier_gate("retrieval", tier, retrieval.run(notebook_id, config, combo.name, hw.fingerprint)), "Retrieval")
+        cat = _build_category("retrieval", "Vector Retrieval", retrieval_results,
+                              _tier_skip_reason("retrieval", tier))
         category_results["retrieval"] = cat
         _progress.results_so_far["retrieval"] = {"score": cat.score, "grade": cat.grade}
 
@@ -460,8 +569,9 @@ async def run_full_evaluation() -> ComboEvalSummary:
         # connections AND retrieval. Judge-free precision/recall, so it compares across models.
         _update_progress(22, "Entity Extraction")
         entity_results = await _run_phase_with_timeout(
-            entity_extract.run(notebook_id, config, combo.name, hw.fingerprint), "Entity Extraction")
-        cat = _build_category("entity_extract", "Entity Extraction", entity_results)
+            _tier_gate("entity_extract", tier, entity_extract.run(notebook_id, config, combo.name, hw.fingerprint)), "Entity Extraction")
+        cat = _build_category("entity_extract", "Entity Extraction", entity_results,
+                              _tier_skip_reason("entity_extract", tier))
         category_results["entity_extract"] = cat
         _progress.results_so_far["entity_extract"] = {"score": cat.score, "grade": cat.grade}
 
@@ -470,9 +580,10 @@ async def run_full_evaluation() -> ComboEvalSummary:
         # model is absent; one small draft render, not a quality benchmark.
         _update_progress(22, "Image Generation")
         image_results = await _run_phase_with_timeout(
-            image_gen.run(notebook_id, config, combo.name, hw.fingerprint), "Image Generation",
+            _tier_gate("image_gen", tier, image_gen.run(notebook_id, config, combo.name, hw.fingerprint)), "Image Generation",
             timeout=300)
-        cat = _build_category("image_gen", "Image Generation", image_results)
+        cat = _build_category("image_gen", "Image Generation", image_results,
+                              _tier_skip_reason("image_gen", tier))
         category_results["image_gen"] = cat
         _progress.results_so_far["image_gen"] = {"score": cat.score, "grade": cat.grade}
 
@@ -507,6 +618,7 @@ async def run_full_evaluation() -> ComboEvalSummary:
         # Stamp what these numbers MEAN, so a later run can tell whether it is comparing like
         # with like before calling a difference a regression.
         summary.scoring_version = scoring.SCORING_VERSION
+        summary.tier = tier
 
         # Engine fallbacks during THIS run. Recorded on the summary so a reader can tell
         # whether an "MLX run" was actually served by MLX end-to-end. A non-zero count does
@@ -722,7 +834,8 @@ def _pctl(values: list, p: float) -> float:
     return round(float(v[k]), 1)
 
 
-def _build_category(name: str, display_name: str, results: list[EvalResult]) -> CategoryResult:
+def _build_category(name: str, display_name: str, results: list[EvalResult],
+                    no_data_reason: str = "") -> CategoryResult:
     """Build a CategoryResult from individual test results.
 
     v1.8.2: if every test in a category was skipped (e.g. vision category on a
@@ -761,7 +874,9 @@ def _build_category(name: str, display_name: str, results: list[EvalResult]) -> 
         skipped=all_skipped,
         skip_reason=(
             results[0].skip_reason if all_skipped and results
-            else ("phase timed out — no data recorded, excluded from the score" if no_data else "")
+            else ((no_data_reason or
+                   "phase timed out — no data recorded, excluded from the score")
+                  if no_data else "")
         ),
     )
     # Add warnings for failed tests
@@ -835,16 +950,30 @@ def get_result_by_id(run_id: str) -> dict | None:
     return None
 
 
-def get_latest_result() -> dict | None:
-    """Get the most recent evaluation run."""
+def get_latest_result(tier: str | None = None) -> dict | None:
+    """Get the most recent evaluation run, optionally restricted to one tier.
+
+    `tier` matters for the regression gate. Without it, alternating a quick `--tier smoke`
+    check with occasional full runs means every run's predecessor is the OTHER tier, the gate
+    declines to compare every time, and the safety net silently stops working. Comparing
+    smoke-to-smoke and full-to-full keeps both meaningful.
+
+    Runs written before tiers existed carry no `tier` field and were all full runs.
+    """
     runs = get_results_list()
     if not runs:
         return None
-    latest = runs[-1]
     results_dir = _get_results_dir()
-    run_path = results_dir / "runs" / latest["file"]
-    if run_path.exists():
-        return json.loads(run_path.read_text())
+    for entry in reversed(runs):
+        run_path = results_dir / "runs" / entry["file"]
+        if not run_path.exists():
+            continue
+        try:
+            data = json.loads(run_path.read_text())
+        except Exception:
+            continue
+        if tier is None or (data.get("tier") or "full") == tier:
+            return data
     return None
 
 

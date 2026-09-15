@@ -31,6 +31,22 @@ import sys
 from typing import Optional, Tuple
 
 
+def tier_changed(baseline: Optional[dict], current_tier: str) -> bool:
+    """True when the baseline was produced by a DIFFERENT tier.
+
+    A smoke run scores over roughly a third of the categories, so its overall is a different
+    quantity — not a worse one. Comparing across tiers would report a catastrophic regression
+    the first time anyone ran `--tier smoke` after a full run, and would quietly hide a real
+    one in the other direction. Same reasoning as `scoring_changed`: a number is only
+    comparable to another number that means the same thing.
+
+    Runs predating tiers carry no `tier` and were all full runs.
+    """
+    if not baseline:
+        return False
+    return (baseline.get("tier") or "full") != (current_tier or "full")
+
+
 def scoring_changed(baseline: Optional[dict], current_version: int) -> bool:
     """True when the baseline was scored under a DIFFERENT scoring model.
 
@@ -96,12 +112,13 @@ async def _run(args) -> int:
 
     from evaluator.scoring import SCORING_VERSION
 
-    baseline = None if args.no_compare else get_latest_result()
-    summary = await run_full_evaluation()  # scores + persists internally
+    # Compare like with like: smoke-to-smoke, full-to-full.
+    baseline = None if args.no_compare else get_latest_result(tier=args.tier)
+    summary = await run_full_evaluation(tier=args.tier)  # scores + persists internally
     new_score = float(summary.overall_score)
 
     # A scoring-model change re-baselines rather than reporting itself as a regression.
-    rebaselined = scoring_changed(baseline, SCORING_VERSION)
+    rebaselined = scoring_changed(baseline, SCORING_VERSION) or tier_changed(baseline, args.tier)
     if rebaselined:
         is_reg, drop = False, None
     else:
@@ -119,13 +136,17 @@ async def _run(args) -> int:
         "readiness": (summary.production_readiness or {}).get("headline"),
         "blocking_failures": blockers,
         "scoring_version": SCORING_VERSION,
+        "tier": args.tier,
         "rebaselined": rebaselined,
     }
     if args.json:
         print(json.dumps(payload, indent=2))
     else:
         print(f"[eval] overall {new_score:.1f} ({summary.overall_grade})")
-        if rebaselined:
+        if tier_changed(baseline, args.tier):
+            print(f"[eval] tier changed ({(baseline or {}).get('tier', 'full')} → {args.tier}) — "
+                  f"RE-BASELINED, not compared. A smoke run scores over fewer categories.")
+        elif rebaselined:
             print(f"[eval] scoring model changed (v{int((baseline or {}).get('scoring_version', 1))}"
                   f" → v{SCORING_VERSION}) — RE-BASELINED, not compared. "
                   f"This run becomes the new baseline.")
@@ -150,6 +171,10 @@ def main(argv=None) -> int:
                    help="run + persist only; skip the baseline regression check")
     p.add_argument("--threshold", type=float, default=5.0,
                    help="max allowed overall-score drop vs baseline before it's a regression (default 5)")
+    p.add_argument("--tier", choices=("full", "smoke"), default="full",
+                   help="smoke: the ~few-minute 'can this model do the job at all' subset — "
+                        "local sources only, core categories only. Its score is NOT comparable "
+                        "to a full run's, and the regression gate will not compare them.")
     p.add_argument("--json", action="store_true", help="emit a machine-readable JSON summary")
     p.add_argument("--allow-failures", action="store_true",
                    help="do not fail the run when a capability scores below the fail floor "

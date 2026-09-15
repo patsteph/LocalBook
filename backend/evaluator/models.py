@@ -527,6 +527,9 @@ class ComboEvalSummary:
     # The regression gate refuses to compare across a bump, so improving the measurement
     # cannot masquerade as the product getting worse.
     scoring_version: int = 1
+    # "full" | "smoke". A smoke run scores over FEWER categories, so its overall is not
+    # comparable to a full one — the regression gate refuses to compare across tiers.
+    tier: str = "full"
 
     def to_dict(self) -> dict:
         return {
@@ -561,6 +564,7 @@ class ComboEvalSummary:
             "production_readiness": self.production_readiness,
             "preflight": self.preflight,
             "scoring_version": self.scoring_version,
+            "tier": self.tier,
         }
 
 
