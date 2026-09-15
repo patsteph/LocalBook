@@ -25,9 +25,27 @@ fi
 # Activate virtual environment
 source .venv/bin/activate
 
-# Install dependencies if needed
+# Install dependencies if needed.
+#
+# ⚠️ EXPECTED NOISE: pip prints "ERROR: pip's dependency resolver does not currently take into
+# account all the packages that are installed" followed by mflux complaints. pip still EXITS 0,
+# so `set -e` does not stop the build — and every one of those complaints is a false alarm here.
+# Verified 2026-09-15 by mapping each package to the mflux modules that import it:
+#
+#   fonttools, hf-transfer  — imported by ZERO mflux modules (transitive/optional)
+#   matplotlib              — only concept_util.py   (the "concept" feature, not generation)
+#   opencv-python           — only controlnet_util.py (ControlNet variant, not Klein)
+#   twine                   — only pypi_publisher.py (mflux's own PUBLISHING tooling)
+#   mlx 0.32 / numpy 1.26   — the dev box runs exactly these and Klein generates fine
+#
+# The two that DID matter, `toml` and `piexif`, are now in requirements.in — they were missing
+# and image generation was broken in the shipped v2.3.0 app because of it.
+#
+# Do NOT "fix" this by installing mflux's full dependency set: matplotlib alone would add tens
+# of megabytes to the bundle for a code path the app never calls.
 if ! python -c "import pyinstaller" 2>/dev/null; then
     echo -e "${YELLOW}Installing dependencies...${NC}"
+    echo -e "${YELLOW}  (mflux resolver warnings below are expected and harmless — see the comment in this script)${NC}"
     pip install -q -r requirements.txt
 fi
 
