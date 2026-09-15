@@ -228,6 +228,28 @@ def _check_available_memory() -> tuple[bool, str]:
 
 
 async def run_full_evaluation(tier: str = "full") -> ComboEvalSummary:
+    """Public entry point. Wraps the real run in an EXCLUSIVE guard — see `_run_evaluation`."""
+    # An evaluation is a measurement, and a measurement shares nothing. Background work —
+    # enrichment, digests, the correspondent poller, idle research — competes for exactly the
+    # resource being measured, and on the 16 GB dev box that competition IS the result: the
+    # 2026-09-14 runs warned of "sustained swap-out … timing numbers are not representative",
+    # scored speed 28/100, and one generation took 23 minutes at ~2.8s/token.
+    #
+    # `foreground_guard` is the existing lever: the Enrichment Worker treats it as the ACTIVE
+    # presence tier and CANCELS in-flight background work the instant it is raised, and
+    # `await_background_clearance()` callers block until it drops. Depth-counted, so this
+    # composes with any foreground op already running.
+    #
+    # ⚠️ This machine is the TIGHTEST of the three (16 GB M4; the others are ≥18 GB M-Pro).
+    # Numbers measured here are a floor, not a representative figure — quitting other apps
+    # before a run is the difference between measuring the model and measuring the swap.
+    from services.memory_steward import foreground_guard
+
+    async with foreground_guard("evaluator"):
+        return await _run_evaluation(tier)
+
+
+async def _run_evaluation(tier: str = "full") -> ComboEvalSummary:
     """Run the complete evaluation suite.
     
     This is the main entry point. It:

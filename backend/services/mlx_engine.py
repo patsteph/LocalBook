@@ -369,19 +369,85 @@ def _json_complete(text: str) -> bool:
 
 
 # ─── Blocking generation helpers (run via thread) ────────────────────────────────
+
+def _deadline_seconds() -> int:
+    try:
+        from config import settings
+        return max(5, int(getattr(settings, "mlx_max_generation_seconds", 180) or 180))
+    except Exception:
+        return 180
+
+
+# Seconds of grace per requested token, on top of the floor. A healthy run does 15-25 tok/s
+# (0.04-0.07 s/tok); the pathological 2026-09-15 run did ~2.8 s/tok. 0.25 s/tok sits far below
+# broken and far above healthy, so a legitimate 3000-token document gets 12 minutes while a
+# stalled generation is still cut off long before it can run for 23.
+_SECONDS_PER_TOKEN_BUDGET = 0.25
+
+
+def _gen_deadline(num_predict: int | None = None) -> float:
+    """Absolute time by which a single generation must stop.
+
+    Enforced INSIDE the token loop because that is the only place it can be. `_run` dispatches
+    to `loop.run_in_executor` and an executor future cannot be interrupted once running, so
+    every outer timeout — asyncio, the evaluator's phase timeout, the release script's — can
+    bound the WAIT but never the WORK. On 2026-09-15 a single generation ran 23 minutes through
+    a 180s phase timeout that never fired.
+    """
+    return time.perf_counter() + _deadline_for(num_predict)
+
+
+def _deadline_for(num_predict: int | None) -> float:
+    """Scale the bound to what was ASKED FOR.
+
+    A flat ceiling is the wrong shape: 180s is generous for a 200-token chat reply and would
+    TRUNCATE a legitimate 3000-token document, which would be a worse bug than the one this
+    guard exists to fix. The floor catches short-prompt stalls; the per-token allowance keeps
+    long, honest work intact.
+    """
+    floor = _deadline_seconds()
+    if not num_predict or num_predict <= 0:
+        return float(floor)
+    return float(max(floor, num_predict * _SECONDS_PER_TOKEN_BUDGET))
+
+
+def _over_deadline(deadline: float) -> bool:
+    return deadline is not None and time.perf_counter() > deadline
+
+
+def _record_generation_timeout(model: str, gtoks: int, seconds: float) -> None:
+    """A truncated generation must never be silent — it looks like a short answer otherwise,
+    which is invisible to the user, the logs, and any quality measurement."""
+    logger.warning(f"[mlx-engine] generation hit the {seconds:.0f}s wall-clock bound for {model} "
+                   f"after {gtoks} tokens — returning partial output")
+    try:
+        from services.quality_signals import record_signal
+        record_signal(
+            "degraded", "mlx_engine",
+            f"generation exceeded {seconds:.0f}s ({model}) after {gtoks} tokens — output truncated",
+            severity="warn", key="generation_wall_clock",
+        )
+    except Exception:
+        pass
+
+
 def _lm_generate_sync(model, tokenizer, prompt_str, *, max_tokens, temperature, stop,
-                      logits_processors=None, json_stop=False):
+                      logits_processors=None, json_stop=False, deadline=None, label="mlx"):
     """mlx-lm non-streaming (accumulate). Returns (text, prompt_tokens, gen_tokens, gen_ns).
     gen_ns is decode-only time (first→last token) for tokens/sec parity with Ollama."""
     from mlx_lm import stream_generate  # lazy
     kwargs: Dict[str, Any] = {"max_tokens": max_tokens}
     kwargs.update(_decode_kwargs("lm", temperature, logits_processors))
+    _model_label, _deadline_limit = label, _deadline_for(max_tokens)
     text = ""
     ptoks = gtoks = 0
     t_first = None
     for resp in stream_generate(model, tokenizer, prompt_str, **kwargs):
         if t_first is None:
             t_first = time.perf_counter()
+        if _over_deadline(deadline):
+            _record_generation_timeout(_model_label, gtoks, _deadline_limit)
+            break
         text += resp.text
         ptoks = getattr(resp, "prompt_tokens", ptoks) or ptoks
         gtoks = getattr(resp, "generation_tokens", gtoks) or gtoks
@@ -395,19 +461,23 @@ def _lm_generate_sync(model, tokenizer, prompt_str, *, max_tokens, temperature, 
 
 
 def _vlm_generate_sync(model, processor, config, prompt_str, *, max_tokens, stop,
-                       temperature=0.3, logits_processors=None, json_stop=False):
+                       temperature=0.3, logits_processors=None, json_stop=False, deadline=None, label="mlx"):
     """mlx-vlm text-only non-streaming (gemma). Returns (text, prompt_tokens, gen_tokens, gen_ns)."""
     from mlx_vlm import stream_generate  # lazy
     from mlx_vlm.prompt_utils import apply_chat_template
     formatted = apply_chat_template(processor, config, prompt_str, num_images=0)
     vkwargs: Dict[str, Any] = {"image": [], "max_tokens": max_tokens}
     vkwargs.update(_decode_kwargs("vlm", temperature, logits_processors))
+    _model_label, _deadline_limit = label, _deadline_for(max_tokens)
     text = ""
     ptoks = gtoks = 0
     t_first = None
     for resp in stream_generate(model, processor, formatted, **vkwargs):
         if t_first is None:
             t_first = time.perf_counter()
+        if _over_deadline(deadline):
+            _record_generation_timeout(_model_label, gtoks, _deadline_limit)
+            break
         text += resp.text
         ptoks = getattr(resp, "prompt_tokens", ptoks) or ptoks
         gtoks = getattr(resp, "generation_tokens", gtoks) or gtoks
@@ -959,7 +1029,7 @@ class MLXEngine:
                 return await self._run(
                     _vlm_generate_sync, mobj, processor, cfg, _combine(system, prompt),
                     max_tokens=num_predict, stop=stop, temperature=_temp, logits_processors=_lps,
-                    json_stop=_json_stop)
+                    json_stop=_json_stop, deadline=_gen_deadline(num_predict), label=model)
             mobj, tok = pair
             messages = ([{"role": "system", "content": system}] if system else []) + \
                        [{"role": "user", "content": prompt}]
@@ -970,7 +1040,7 @@ class MLXEngine:
             return await self._run(
                 _lm_generate_sync, mobj, tok, prompt_str,
                 max_tokens=num_predict, temperature=_temp, stop=stop, logits_processors=_lps,
-                json_stop=_json_stop)
+                json_stop=_json_stop, deadline=_gen_deadline(num_predict), label=model)
 
         async with lock:
             text, ptoks, gtoks, gen_ns = await _gen(temperature, lps)
@@ -1057,10 +1127,21 @@ class MLXEngine:
                 ptoks = gtoks = 0
                 since_check = 0
                 degenerate = False      # streaming guard: set if we abort on garbage
+                timed_out = False       # wall-clock guard: set if we stop on the deadline
+                _deadline = _gen_deadline(num_predict)
+                _limit = _deadline_for(num_predict)
                 t_first = None          # decode start = first token (parity with Ollama eval_duration)
                 for resp in gen:
                     if t_first is None:
                         t_first = time.perf_counter()
+                    # Wall-clock bound. num_predict caps TOKENS; under memory pressure a token
+                    # can cost seconds, so only a clock stops a generation running for minutes.
+                    # The user sees a short answer instead of a frozen one, and the signal below
+                    # makes the truncation visible rather than silent.
+                    if _over_deadline(_deadline):
+                        timed_out = True
+                        _record_generation_timeout(model, gtoks, _limit)
+                        break
                     tok_text = resp.text
                     acc += tok_text
                     ptoks = getattr(resp, "prompt_tokens", ptoks) or ptoks
@@ -1092,7 +1173,7 @@ class MLXEngine:
                 # tokens/sec computes identically across engines (was hardcoded 0 → blank MLX stats).
                 gen_ns = int((time.perf_counter() - t_first) * 1e9) if t_first else 0
                 loop.call_soon_threadsafe(q.put_nowait, {
-                    "response": "", "done": True, "degenerate": degenerate,
+                    "response": "", "done": True, "degenerate": degenerate, "timed_out": timed_out,
                     "prompt_eval_count": ptoks, "eval_count": gtoks, "eval_duration": gen_ns})
             except Exception as e:
                 loop.call_soon_threadsafe(q.put_nowait, {"__error__": f"{type(e).__name__}: {e}"})

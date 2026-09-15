@@ -351,3 +351,81 @@ def test_the_tier_gate_does_not_run_an_excluded_category():
 
     out = asyncio.run(es._tier_gate("rag_chat", "smoke", _runner()))
     assert out == ["result"] and ran["yes"] is True, "an included category must run"
+
+
+# ── The wall-clock bound, and exclusivity ───────────────────────────────────
+#
+# On 2026-09-15 a single generation ran 23 minutes (1,392,230ms) straight through a 180s phase
+# timeout that never fired. `mlx_engine._run` dispatches to `loop.run_in_executor`, and an
+# executor future cannot be interrupted once running — so asyncio, the phase timeout and the
+# release script can all bound the WAIT, never the WORK. The only enforceable place is inside
+# the token loop.
+
+def test_a_generation_deadline_exists_and_is_configurable():
+    from config import settings
+    from services import mlx_engine as me
+
+    assert getattr(settings, "mlx_max_generation_seconds", None), \
+        "the bound must be a setting, not a hardcoded number"
+    assert me._deadline_seconds() >= 5
+
+
+def test_an_expired_deadline_is_detected():
+    import time
+    from services import mlx_engine as me
+
+    assert me._over_deadline(time.perf_counter() - 1) is True
+    assert me._over_deadline(me._gen_deadline()) is False
+    assert me._over_deadline(None) is False, "no deadline must never look expired"
+
+
+def test_both_token_loops_check_the_deadline():
+    """num_predict caps TOKENS. Under memory pressure a token can cost seconds, so 500 tokens
+    is 23 minutes — only a clock catches that."""
+    import inspect
+    from services import mlx_engine as me
+
+    for fn in (me._lm_generate_sync, me._vlm_generate_sync):
+        src = inspect.getsource(fn)
+        assert "_over_deadline" in src, f"{fn.__name__} has no wall-clock bound"
+        assert "deadline" in inspect.signature(fn).parameters
+
+
+def test_a_truncated_generation_is_not_silent():
+    """A generation cut short looks like a SHORT ANSWER otherwise — invisible to the user, the
+    logs, and any quality measurement. Same failure shape as the judge returning 50."""
+    import inspect
+    from services import mlx_engine as me
+
+    src = inspect.getsource(me._record_generation_timeout)
+    assert "record_signal" in src, "the truncation must reach Quality Signals"
+    assert "logger.warning" in src
+
+
+def test_an_evaluation_runs_exclusively():
+    """Background work competes for the exact resource being measured. On the 16 GB box that
+    competition IS the result — 'sustained swap-out … timing numbers are not representative'."""
+    import inspect
+    from evaluator import evaluator_service as es
+
+    src = inspect.getsource(es.run_full_evaluation)
+    assert "foreground_guard" in src, "an eval must pause background work for its duration"
+
+
+def test_the_bound_scales_with_what_was_requested():
+    """A flat ceiling is the wrong shape. 180s is generous for a 200-token chat reply and would
+    TRUNCATE a legitimate 3000-token document — a worse bug than the one the guard fixes."""
+    from services.mlx_engine import _deadline_for
+
+    chat = _deadline_for(500)
+    document = _deadline_for(3000)
+    assert document > chat, "a long document must get more time than a chat reply"
+    assert _deadline_for(None) == _deadline_for(0), "no request → the floor"
+    # Still bounded: even the largest request cannot approach the 23-minute failure.
+    assert _deadline_for(4000) < 1392, "the bound must stay under the failure it exists to stop"
+
+
+def test_the_floor_protects_short_requests():
+    """A 200-token reply that stalls must still be cut off, not given 200 x 0.25s."""
+    from services.mlx_engine import _deadline_for, _deadline_seconds
+    assert _deadline_for(50) == float(_deadline_seconds())

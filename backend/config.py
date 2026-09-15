@@ -103,6 +103,18 @@ class Settings(BaseSettings):
     use_reranker: bool = True  # Enable cross-encoder reranking for better retrieval
     reranker_model: str = "ms-marco-MiniLM-L-12-v2"  # FlashRank model - best quality
     reranker_type: str = "flashrank"  # "flashrank" (fast, CPU) or "cross-encoder" (slower, GPU)
+    # Hard wall-clock bound on a SINGLE MLX generation, enforced inside the token loop.
+    #
+    # This is the only place it CAN be enforced. `mlx_engine._run` dispatches to
+    # `loop.run_in_executor`, and an executor future cannot be interrupted once running — so
+    # `asyncio.wait_for`, the evaluator's 180s phase timeout and the release script's timeout
+    # can all bound the WAIT but never the WORK. On 2026-09-15 one generation ran 23 minutes
+    # (1,392,230ms) through a 180s phase timeout that never fired.
+    #
+    # num_predict caps TOKENS, not time: at ~2.8s/token under memory pressure, 500 tokens is
+    # 23 minutes. Only a clock catches that.
+    mlx_max_generation_seconds: int = 180
+
     retrieval_overcollect: int = 12  # Candidates from vector search before reranking
     retrieval_top_k: int = 5  # Final chunks after reranking
 
