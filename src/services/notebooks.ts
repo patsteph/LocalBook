@@ -41,6 +41,20 @@ export const notebookService = {
     await api.delete(`/notebooks/${id}`);
   },
 
+  /**
+   * Re-chunk and re-embed every source in a notebook.
+   *
+   * `force` is REQUIRED for this to do anything: without it the backend skips any source that
+   * already has chunks, which is every existing source. Slow — it re-embeds the whole notebook —
+   * so the caller should warn before starting and keep the UI responsive while it runs.
+   */
+  async reindex(id: string): Promise<{ message: string; processed: number; failed: number }> {
+    const response = await api.post(`/reindex/notebook/${id}`, undefined, {
+      params: { force: true },
+    });
+    return response.data;
+  },
+
   async updateColor(id: string, color: string): Promise<Notebook> {
     const response = await api.put(`/notebooks/${id}/color`, { color });
     return response.data;

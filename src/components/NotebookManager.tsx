@@ -54,6 +54,10 @@ export const NotebookManager: React.FC<NotebookManagerProps> = ({
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState('');
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
+  // Re-index is slow (re-embeds every source), so the id doubles as the in-flight guard: the
+  // menu item shows progress and cannot be started twice for the same notebook.
+  const [reindexing, setReindexing] = useState<string | null>(null);
+  const [reindexNote, setReindexNote] = useState<string | null>(null);
   const [editingSectionId, setEditingSectionId] = useState<string | null>(null);
   const [editingSectionName, setEditingSectionName] = useState('');
   const [showAddSection, setShowAddSection] = useState(false);
@@ -302,6 +306,37 @@ export const NotebookManager: React.FC<NotebookManagerProps> = ({
     }
   };
 
+  const handleReindexClick = async (id: string) => {
+    const nb = notebooks.find(n => n.id === id);
+    const name = nb?.title || 'this notebook';
+    // Re-chunking changes what is stored, and re-embedding costs real time on a laptop —
+    // the user should choose it deliberately rather than discover it as a frozen menu.
+    if (!window.confirm(
+      `Re-index every source in "${name}"?\n\n` +
+      `This re-chunks and re-embeds all of its content so it picks up the current chunking. ` +
+      `A large notebook can take several minutes. The notebook stays usable while it runs.`
+    )) return;
+
+    setContextMenu(null);
+    setReindexNote(null);
+    setReindexing(id);
+    try {
+      const res = await notebookService.reindex(id);
+      const failed = res?.failed || 0;
+      setReindexNote(
+        `Re-indexed "${name}": ${res?.processed ?? 0} source(s)` +
+        (failed ? `, ${failed} failed — see backend.log` : '')
+      );
+      // Chunk counts changed, so anything showing them is now stale.
+      await loadNotebooks();
+    } catch (err) {
+      console.error('Re-index failed:', err);
+      setError(`Re-index of "${name}" failed. Check that the backend is running.`);
+    } finally {
+      setReindexing(null);
+    }
+  };
+
   const handleDeleteClick = (id: string) => {
     setNotebookToDelete(id);
     setShowDeleteModal(true);
@@ -533,6 +568,20 @@ export const NotebookManager: React.FC<NotebookManagerProps> = ({
     <div className="px-3 py-2">
       {error && <ErrorMessage message={error} onDismiss={() => setError(null)} />}
 
+      {reindexNote && (
+        <div className="mb-2 px-2 py-1.5 rounded-lg text-xs bg-emerald-50 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-300 flex items-start gap-2">
+          <span className="mt-px">✓</span>
+          <span className="flex-1">{reindexNote}</span>
+          <button
+            onClick={() => setReindexNote(null)}
+            className="text-emerald-500 hover:text-emerald-700 dark:hover:text-emerald-200"
+            aria-label="Dismiss"
+          >
+            ✕
+          </button>
+        </div>
+      )}
+
       <div className="flex items-center justify-end gap-1 mb-1">
         <button
           onClick={() => setShowAddSection(true)}
@@ -746,6 +795,14 @@ export const NotebookManager: React.FC<NotebookManagerProps> = ({
           >
             <span className="w-3 text-center">↓</span>
             Export
+          </button>
+          <button
+            onClick={() => handleReindexClick(contextMenu.notebookId)}
+            disabled={!!reindexing}
+            className="w-full text-left px-3 py-1.5 text-xs text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 disabled:opacity-50 flex items-center gap-2"
+          >
+            <span className="w-3 text-center">↻</span>
+            {reindexing === contextMenu.notebookId ? 'Re-indexing…' : 'Re-index sources'}
           </button>
           <button
             onClick={() => handleDeleteClick(contextMenu.notebookId)}
