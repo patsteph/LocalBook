@@ -212,7 +212,11 @@
       "intent_classify": 4,
       "concurrency": 2,
       "vision": 1,
-      "tts_audio": 1
+      "tts_audio": 1,
+      "capture_modes": 3,
+      "refinement": 3,
+      "translation": 2,
+      "voice_modifier": 2
     },
     "ingestion_timeout_seconds": 300,
     "query_timeout_seconds": 60,

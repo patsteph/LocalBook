@@ -219,3 +219,66 @@ def test_the_two_gates_are_independent():
         {"category": "structured_json", "feature": "Structured JSON", "verdict": "fail", "score": 5},
     ]}
     assert blocking_failures(summary), "the floor must catch what the regression gate cannot"
+
+
+# ── Re-baselining: a scoring change is not a quality regression ──────────────
+
+from evaluator.run import scoring_changed
+from evaluator.scoring import SCORING_VERSION
+
+
+def test_a_scoring_change_re_baselines_instead_of_reporting_a_regression():
+    """Phase 0/1 moved the number by design — faithfulness stopped contributing a flat 60 and
+    four categories started counting. Comparing across that boundary is meaningless in both
+    directions: it can invent a regression that is really a fix, or hide a real one behind a
+    scoring change that happened to raise the average."""
+    assert scoring_changed({"overall_score": 87.3, "scoring_version": 1}, 2) is True
+    assert scoring_changed({"overall_score": 87.3, "scoring_version": 2}, 2) is False
+
+
+def test_a_baseline_written_before_versioning_is_treated_as_v1():
+    """Every run persisted before 2026-09-14 carries no scoring_version — which is exactly
+    what version 1 means."""
+    assert scoring_changed({"overall_score": 87.3}, 2) is True
+    assert scoring_changed({"overall_score": 87.3}, 1) is False
+
+
+def test_no_baseline_is_not_a_scoring_change():
+    assert scoring_changed(None, SCORING_VERSION) is False
+    assert scoring_changed({}, SCORING_VERSION) is False
+
+
+# ── Weights and runners must not drift apart ────────────────────────────────
+
+def test_every_runner_category_is_weighted_and_mapped():
+    """The bug this prevents: six runners executed and contributed NOTHING to the overall,
+    because `compute_overall_score` only sums categories present in `category_weights`. They
+    cost full runtime and implied coverage that did not exist. `field_edges` was worse — absent
+    from the weights AND from the feature map, so it had no verdict either.
+
+    A new runner must be weighted (it counts) or deliberately excluded here (with a reason).
+    """
+    import json
+    from pathlib import Path
+    from evaluator import feature_parity
+
+    root = Path(__file__).resolve().parents[1] / "evaluator"
+    weights = json.loads((root / "test_fixtures" / "eval_config.json").read_text())
+    weights = weights["scoring"]["category_weights"]
+
+    runners = {p.stem for p in (root / "test_runners").glob("*.py")
+               if p.stem != "__init__"}
+    # `ingestion` is scored as a phase rather than emitting a literal category= string.
+    known_unweighted: set = set()
+
+    unweighted = runners - set(weights) - known_unweighted
+    assert not unweighted, (
+        f"runner(s) execute but score nothing: {sorted(unweighted)} — weight them in "
+        f"eval_config.json or document why they are excluded"
+    )
+
+    unmapped = runners - set(feature_parity._CATEGORY_TO_FEATURE) - known_unweighted
+    assert not unmapped, (
+        f"runner(s) have no feature-parity verdict: {sorted(unmapped)} — the fail floor "
+        f"cannot see them"
+    )

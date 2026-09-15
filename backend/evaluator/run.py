@@ -31,6 +31,23 @@ import sys
 from typing import Optional, Tuple
 
 
+def scoring_changed(baseline: Optional[dict], current_version: int) -> bool:
+    """True when the baseline was scored under a DIFFERENT scoring model.
+
+    A regression check compares two numbers and assumes they mean the same thing. When the
+    scoring model changes they do not, and the comparison is meaningless in both directions:
+    it can invent a regression that is really a fix, or hide a real one behind a scoring
+    change that happened to raise the average. 2026-09-14 is exactly that case — faithfulness
+    stopped contributing a flat 60 and four categories started counting.
+
+    Baselines written before versioning carry no `scoring_version`; those are treated as
+    version 1, which is what they were.
+    """
+    if not baseline:
+        return False
+    return int(baseline.get("scoring_version", 1) or 1) != int(current_version)
+
+
 def blocking_failures(summary: Optional[dict]) -> list:
     """Capabilities that FAILED outright, independent of the overall average.
 
@@ -77,10 +94,18 @@ async def _run(args) -> int:
     # Heavy imports are lazy so `--help` and the unit test stay light.
     from evaluator.evaluator_service import run_full_evaluation, get_latest_result
 
+    from evaluator.scoring import SCORING_VERSION
+
     baseline = None if args.no_compare else get_latest_result()
     summary = await run_full_evaluation()  # scores + persists internally
     new_score = float(summary.overall_score)
-    is_reg, drop = evaluate_regression(baseline, new_score, args.threshold)
+
+    # A scoring-model change re-baselines rather than reporting itself as a regression.
+    rebaselined = scoring_changed(baseline, SCORING_VERSION)
+    if rebaselined:
+        is_reg, drop = False, None
+    else:
+        is_reg, drop = evaluate_regression(baseline, new_score, args.threshold)
     blockers = [] if args.allow_failures else blocking_failures(summary.to_dict())
 
     base_score = baseline.get("overall_score") if baseline else None
@@ -93,11 +118,17 @@ async def _run(args) -> int:
         "regression": is_reg,
         "readiness": (summary.production_readiness or {}).get("headline"),
         "blocking_failures": blockers,
+        "scoring_version": SCORING_VERSION,
+        "rebaselined": rebaselined,
     }
     if args.json:
         print(json.dumps(payload, indent=2))
     else:
         print(f"[eval] overall {new_score:.1f} ({summary.overall_grade})")
+        if rebaselined:
+            print(f"[eval] scoring model changed (v{int((baseline or {}).get('scoring_version', 1))}"
+                  f" → v{SCORING_VERSION}) — RE-BASELINED, not compared. "
+                  f"This run becomes the new baseline.")
         if base_score is not None and drop is not None:
             print(f"[eval] baseline {float(base_score):.1f} → drop {drop:+.1f} "
                   f"(threshold {args.threshold})")

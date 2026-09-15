@@ -34,7 +34,6 @@ from evaluator.test_runners import (
     capture_modes,
     refinement,
     translation,
-    confidence,
     field_edges,
 )
 from evaluator import scoring
@@ -423,13 +422,11 @@ async def run_full_evaluation() -> ComboEvalSummary:
         category_results["translation"] = cat
         _progress.results_so_far["translation"] = {"score": cat.score, "grade": cat.grade}
 
-        # Phase 21: Confidence Scoring Calibration (pure-function)
-        _update_progress(21, "Confidence Calibration")
-        conf_results = await _run_phase_with_timeout(
-            confidence.run(notebook_id, config, combo.name, hw.fingerprint), "Confidence")
-        cat = _build_category("confidence", "Confidence Calibration", conf_results)
-        category_results["confidence"] = cat
-        _progress.results_so_far["confidence"] = {"score": cat.score, "grade": cat.grade}
+        # Phase 21 (Confidence Calibration) was removed on 2026-09-14 and lives in
+        # tests/test_scan_pipeline_confidence.py. It called no model — it exercised the pure
+        # function `scan_pipeline._compute_confidence` — so it spent minutes of a model
+        # evaluation re-answering a question that cannot vary by model, and reported the answer
+        # as a property of the model. In pytest it runs in milliseconds on every commit.
 
         # Phase 22: Field Edges (promoted daily-use near-misses → regression cases)
         _update_progress(22, "Field Edges")
@@ -467,6 +464,9 @@ async def run_full_evaluation() -> ComboEvalSummary:
         )
         summary.overall_score = overall_score
         summary.overall_grade = overall_grade
+        # Stamp what these numbers MEAN, so a later run can tell whether it is comparing like
+        # with like before calling a difference a regression.
+        summary.scoring_version = scoring.SCORING_VERSION
 
         # Engine fallbacks during THIS run. Recorded on the summary so a reader can tell
         # whether an "MLX run" was actually served by MLX end-to-end. A non-zero count does

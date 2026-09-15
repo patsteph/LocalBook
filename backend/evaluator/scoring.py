@@ -11,6 +11,22 @@ from typing import Optional
 from evaluator.models import EvalResult, _score_to_grade
 from evaluator import output_filters
 from utils.json_repair import robust_json_parse
+
+# ─── Scoring model version ──────────────────────────────────────────────────
+#
+# Bump this whenever a change alters what a score MEANS — new weighted categories, a changed
+# axis contract, a different combination rule. Runs carry the version they were scored under,
+# and the regression gate skips its comparison across a version boundary, so a scoring change
+# re-baselines instead of reporting itself as a quality regression. Without it, improving the
+# measurement looks exactly like the product getting worse — and the honest fix (Phase 0) moves
+# the number by design.
+#
+#   1 — original (through v2.3.0)
+#   2 — 2026-09-14: unmeasured axes return None and their weight is redistributed rather than
+#       filled with a constant (faithfulness was a flat 60); field_edges weighted + mapped;
+#       capture_modes / refinement / translation / voice_modifier weighted; the pure-function
+#       `confidence` runner moved out of the evaluator into the pytest suite.
+SCORING_VERSION = 2
 import logging
 logger = logging.getLogger(__name__)
 

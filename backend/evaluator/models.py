@@ -523,6 +523,10 @@ class ComboEvalSummary:
     feature_parity: list = field(default_factory=list)   # [{category, feature, verdict, ...}]
     production_readiness: dict = field(default_factory=dict)  # {counts, headline}
     preflight: dict = field(default_factory=dict)         # PreflightReport.to_dict()
+    # Which scoring model produced these numbers (evaluator.scoring.SCORING_VERSION).
+    # The regression gate refuses to compare across a bump, so improving the measurement
+    # cannot masquerade as the product getting worse.
+    scoring_version: int = 1
 
     def to_dict(self) -> dict:
         return {
@@ -556,6 +560,7 @@ class ComboEvalSummary:
             "feature_parity": self.feature_parity,
             "production_readiness": self.production_readiness,
             "preflight": self.preflight,
+            "scoring_version": self.scoring_version,
         }
 
 
