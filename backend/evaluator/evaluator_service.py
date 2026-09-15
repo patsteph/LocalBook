@@ -1,7 +1,12 @@
 """Evaluator Service — Core orchestrator for end-to-end LLM evaluation.
 
-Creates test notebook → ingests content → runs 10 test categories →
+Creates test notebook → ingests content → runs 19 test categories →
 scores everything → persists results → cleans up.
+
+Every category that runs is WEIGHTED (eval_config.json) and MAPPED to a user-facing feature
+(feature_parity). Six once were neither, so they burned runtime and moved nothing;
+`tests/test_no_undefined_names.py`'s sibling `test_every_runner_category_is_weighted_and_mapped`
+now fails if a new runner is added without both.
 """
 
 import json
@@ -35,6 +40,7 @@ from evaluator.test_runners import (
     refinement,
     translation,
     field_edges,
+    retrieval,
 )
 from evaluator import scoring
 
@@ -150,7 +156,7 @@ async def run_full_evaluation() -> ComboEvalSummary:
     1. Profiles hardware
     2. Creates a test notebook  
     3. Ingests all test content
-    4. Runs all 10 test categories
+    4. Runs all 19 test categories
     5. Scores, persists, and returns results
     6. Cleans up the test notebook
     """
@@ -435,6 +441,18 @@ async def run_full_evaluation() -> ComboEvalSummary:
         cat = _build_category("field_edges", "Field Edges", field_edge_results)
         category_results["field_edges"] = cat
         _progress.results_so_far["field_edges"] = {"score": cat.score, "grade": cat.grade}
+
+        # Retrieval quality — the RANKING, measured directly. Every other retrieval signal
+        # arrives through a generated answer, mixed with prompt fit, sampling noise and judge
+        # variance; this one stops at the ranking, so an embedding or rerank change is finally
+        # measurable. Runs against the same ingested notebook, so it costs queries, not an
+        # ingest. (Retrieval-harness gap identified 2026-08-21; built 2026-09-14.)
+        _update_progress(22, "Vector Retrieval")
+        retrieval_results = await _run_phase_with_timeout(
+            retrieval.run(notebook_id, config, combo.name, hw.fingerprint), "Retrieval")
+        cat = _build_category("retrieval", "Vector Retrieval", retrieval_results)
+        category_results["retrieval"] = cat
+        _progress.results_so_far["retrieval"] = {"score": cat.score, "grade": cat.grade}
 
         # ── Phase 23: Score & Persist ────────────────────────────────────
         _update_progress(23, "Scoring & persisting results")

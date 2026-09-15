@@ -1,0 +1,137 @@
+{
+  "_comment": [
+    "Gold question -> acceptable-chunk-marker pairs for the retrieval harness.",
+    "",
+    "EVERY marker is a verbatim substring of the committed test corpus",
+    "(evaluator/test_content/generate_test_files.py), so a miss always means retrieval failed",
+    "to surface text that demonstrably exists in the index -- never that the label was wrong.",
+    "",
+    "Markers are ANY-OF: the same fact appears in several chunks, and finding any one of them",
+    "is a legitimate retrieval. Matching also searches parent_text and snippet, because a",
+    "marker phrase can straddle a chunk boundary.",
+    "",
+    "SCOPE: only the three LOCAL files (PDF/PPTX/DOCX) are labelled. The YouTube and Wikipedia",
+    "sources in the corpus are fetched live and their text can change, which would turn a",
+    "content edit upstream into a phantom retrieval regression.",
+    "",
+    "PRIVACY: this file is COMMITTED to a PUBLIC repo. Never add pairs derived from the user's",
+    "real notebooks. Local pairs belong in <data_dir>/eval/retrieval_gold.local.json, which the",
+    "runner merges automatically and which lives outside the repo.",
+    "",
+    "The 2026-08-21 research called for 60-120 pairs. This is a starting set built against the",
+    "corpus that already ships; grow it as real field questions get promoted."
+  ],
+
+  "questions": [
+    {
+      "id": "embed_model_dims",
+      "question": "What embedding model does LocalBook use and how many dimensions does it produce?",
+      "markers": ["Snowflake Arctic Embed 2 model (1024 dimensions)", "produces 1024-dimensional dense vectors", "1024-dimensional dense vectors"]
+    },
+    {
+      "id": "embed_params",
+      "question": "How many parameters does the embedding model have?",
+      "markers": ["568M parameters, produces 1024-dimensional vectors", "568M parameters"]
+    },
+    {
+      "id": "chunk_size",
+      "question": "How large are document chunks and how much do they overlap?",
+      "markers": ["passages of approximately 512 tokens with 50-token overlap", "512 tokens with 50-token overlap"]
+    },
+    {
+      "id": "chunk_strategy",
+      "question": "Does chunking split on character counts or on structure?",
+      "markers": ["uses semantic boundaries (paragraphs, headers) rather than fixed character counts", "semantic boundaries (paragraphs, headers)"]
+    },
+    {
+      "id": "architecture_layers",
+      "question": "What are the layers of the system architecture?",
+      "markers": ["Presentation Layer: Tauri webview", "Intelligence Layer: RAG engine, context builder", "Storage Layer: LanceDB for vector embeddings"]
+    },
+    {
+      "id": "vector_store",
+      "question": "Which database stores the vector embeddings?",
+      "markers": ["LanceDB for vector embeddings", "Vectors are stored in LanceDB, an embedded vector database", "Searches the LanceDB vector store"]
+    },
+    {
+      "id": "rag_pipeline_order",
+      "question": "What are the steps of the RAG pipeline when a user asks a question?",
+      "markers": ["Embeds the query using the Snowflake Arctic Embed 2 model", "Reranks results using cross-encoder scoring", "Builds an adaptive context window based on available token budget"]
+    },
+    {
+      "id": "rerank_method",
+      "question": "How are retrieved results reranked?",
+      "markers": ["Reranks results using cross-encoder scoring", "Top-k results are reranked using cross-encoder scoring"]
+    },
+    {
+      "id": "main_model_role",
+      "question": "Which model handles complex reasoning and document generation?",
+      "markers": ["Main Model (gemma4:e4b): Handles complex reasoning, document generation", "Handles complex reasoning, document generation"]
+    },
+    {
+      "id": "main_model_context",
+      "question": "What context window does the main model run with?",
+      "markers": ["context window of up to 16384", "Runs with a context window of up to 16384"]
+    },
+    {
+      "id": "fast_model_use",
+      "question": "What is the fast model used for?",
+      "markers": ["Used for quick tasks like intent classification, follow-up", "Fast Model (phi4-mini)"]
+    },
+    {
+      "id": "fast_model_params",
+      "question": "How many parameters does the fast model have and under what licence?",
+      "markers": ["3.8B parameters with MIT license", "3.8B parameters"]
+    },
+    {
+      "id": "vision_separate",
+      "question": "Does the system need a separate vision model?",
+      "markers": ["natively multimodal", "no separate vision model is required by default"]
+    },
+    {
+      "id": "throughput_m4",
+      "question": "What throughput does the main model achieve on an Apple M4?",
+      "markers": ["15-25 tokens/sec average", "Typical throughput: 15-25 tokens/second on M4 16GB"]
+    },
+    {
+      "id": "mteb_arctic",
+      "question": "What MTEB information-retrieval score did Snowflake Arctic Embed 2 achieve?",
+      "markers": ["MTEB IR score: 0.72", "0.72 (highest in class for its size)"]
+    },
+    {
+      "id": "mteb_nomic",
+      "question": "What MTEB score and throughput did Nomic Embed Text reach?",
+      "markers": ["MTEB IR score: 0.65", "Throughput: 200 embeddings/sec on M4 16GB"]
+    },
+    {
+      "id": "eval_corpus_size",
+      "question": "How many documents were used to evaluate the embedding models?",
+      "markers": ["corpus of 500 documents", "500 documents (research papers, web articles, and technical documentation)"]
+    },
+    {
+      "id": "embedding_recommendation",
+      "question": "Which embedding model was recommended and why?",
+      "markers": ["Snowflake Arctic Embed 2 provides the best balance of quality and efficiency", "best balance of quality and efficiency"]
+    },
+    {
+      "id": "embed_memory",
+      "question": "How much memory does the arctic embedding model use during inference?",
+      "markers": ["Memory: ~1.2 GB during inference", "~1.2 GB during inference"]
+    },
+    {
+      "id": "context_budget",
+      "question": "How does the context builder decide what to include?",
+      "markers": ["adaptive context builder manages the token budget", "Retrieval chunks are prioritized by relevance score"]
+    },
+    {
+      "id": "metal_speedup",
+      "question": "How much faster is Metal GPU acceleration than CPU inference?",
+      "markers": ["Metal GPU acceleration provides ~2x speedup over CPU inference", "~2x speedup over CPU inference"]
+    },
+    {
+      "id": "citation_metadata",
+      "question": "What source metadata is kept for citation tracking?",
+      "markers": ["Source metadata (filename, page) is included for citation tracking", "filename, page"]
+    }
+  ]
+}

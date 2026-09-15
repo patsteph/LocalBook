@@ -63,6 +63,7 @@ _CATEGORY_TO_FEATURE = {
     # verdict, so the fail floor could not see it either). It is the promoted real-world
     # near-miss suite — the closest thing to ground truth in the harness.
     "field_edges": "Field-Edge Regressions",
+    "retrieval": "Vector Retrieval",
 }
 
 

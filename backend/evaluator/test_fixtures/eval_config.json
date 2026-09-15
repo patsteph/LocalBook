@@ -199,6 +199,7 @@
   "scoring": {
     "category_weights": {
       "rag_chat": 18,
+      "retrieval": 12,
       "streaming": 14,
       "fast_followup": 10,
       "ingestion": 12,

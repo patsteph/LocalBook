@@ -327,19 +327,12 @@ def score_context_recall(citations: list[dict], gold_chunk_marker) -> int:
     if not markers_lower:
         return 0
     
-    for c in citations:
-        # Check text, parent_text, AND snippet — chunkers may split the marker
-        # phrase across boundaries, so checking the broader context catches
-        # legitimate retrievals that hit the right paragraph.
-        haystack = " ".join([
-            (c.get("text", "") or ""),
-            (c.get("parent_text", "") or ""),
-            (c.get("snippet", "") or ""),
-        ]).lower()
-        for marker in markers_lower:
-            if marker in haystack:
-                return 100
-    return 0
+    # ONE marker matcher, shared with the retrieval harness. Two copies of "does this chunk
+    # contain the answer" would be free to drift, and then context-recall here and hit@k there
+    # could disagree about the same retrieval — which would make the two categories
+    # incomparable exactly when someone is using them to judge a change.
+    from evaluator.retrieval_metrics import relevance_from_markers
+    return 100 if any(relevance_from_markers(citations, markers)) else 0
 
 
 # ─── The judge budget and its parsing ───────────────────────────────────────
