@@ -579,7 +579,7 @@ async def _run_evaluation(tier: str = "full") -> ComboEvalSummary:
         # variance; this one stops at the ranking, so an embedding or rerank change is finally
         # measurable. Runs against the same ingested notebook, so it costs queries, not an
         # ingest. (Retrieval-harness gap identified 2026-08-21; built 2026-09-14.)
-        _update_progress(22, "Vector Retrieval")
+        _update_progress(23, "Vector Retrieval")
         retrieval_results = await _run_phase_with_timeout(
             _tier_gate("retrieval", tier, retrieval.run(notebook_id, config, combo.name, hw.fingerprint)), "Retrieval")
         cat = _build_category("retrieval", "Vector Retrieval", retrieval_results,
@@ -589,7 +589,7 @@ async def _run_evaluation(tier: str = "full") -> ComboEvalSummary:
 
         # Entity extraction — feeds the knowledge graph, Constellation, cross-notebook
         # connections AND retrieval. Judge-free precision/recall, so it compares across models.
-        _update_progress(22, "Entity Extraction")
+        _update_progress(24, "Entity Extraction")
         entity_results = await _run_phase_with_timeout(
             _tier_gate("entity_extract", tier, entity_extract.run(notebook_id, config, combo.name, hw.fingerprint)), "Entity Extraction")
         cat = _build_category("entity_extract", "Entity Extraction", entity_results,
@@ -600,7 +600,7 @@ async def _run_evaluation(tier: str = "full") -> ComboEvalSummary:
         # Image generation — the image_model ROLE had NO coverage at all before 2026-09-14, so
         # "this combo works" was a claim about four roles out of five. Skips cleanly when the
         # model is absent; one small draft render, not a quality benchmark.
-        _update_progress(22, "Image Generation")
+        _update_progress(25, "Image Generation")
         image_results = await _run_phase_with_timeout(
             _tier_gate("image_gen", tier, image_gen.run(notebook_id, config, combo.name, hw.fingerprint)), "Image Generation",
             timeout=300)
@@ -610,7 +610,7 @@ async def _run_evaluation(tier: str = "full") -> ComboEvalSummary:
         _progress.results_so_far["image_gen"] = {"score": cat.score, "grade": cat.grade}
 
         # ── Phase 23: Score & Persist ────────────────────────────────────
-        _update_progress(23, "Scoring & persisting results")
+        _update_progress(26, "Scoring & persisting results")
 
         # Build summary
         summary.categories = {k: v.to_dict() for k, v in category_results.items()}
@@ -811,7 +811,7 @@ async def _run_evaluation(tier: str = "full") -> ComboEvalSummary:
 
     finally:
         # ── Phase 24: Cleanup ────────────────────────────────────────────
-        _update_progress(24, "Cleaning up test notebook")
+        _update_progress(27, "Cleaning up test notebook")
         if notebook_id:
             try:
                 await ingestion.cleanup_test_notebook(notebook_id)

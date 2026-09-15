@@ -197,7 +197,8 @@ export const evalApi = {
   getResult: (runId: string) => getJSON<{ result: EvalResult }>(`/evaluator/results/${runId}`),
   getLatest: () => getJSON<{ result: EvalResult | null }>('/evaluator/results/latest'),
   getStatus: () => getJSON<EvalStatus>('/evaluator/status'),
-  run: () => postJSON<{ status: string; message: string }>('/evaluator/run'),
+  run: (tier: 'full' | 'smoke' = 'full') =>
+    postJSON<{ status: string; message: string }>(`/evaluator/run?tier=${tier}`),
 };
 
 // Score → letter-grade band (mirrors the portal's getGradeClass thresholds).

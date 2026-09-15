@@ -592,10 +592,16 @@ EVAL_PHASES = [
     (18, "Capture Modes"),
     (19, "Refinement Pass"),
     (20, "Translation"),
-    (21, "Confidence Calibration"),
+    # 21 was Confidence Calibration — moved to pytest 2026-09-14 (it made no model call).
+    # Kept as a labelled slot rather than renumbered, so a persisted run's phase indices still
+    # mean what they meant when it was written.
+    (21, "(retired)"),
     (22, "Field Edges"),
-    (23, "Score & Persist"),
-    (24, "Cleanup"),
+    (23, "Vector Retrieval"),
+    (24, "Entity Extraction"),
+    (25, "Image Generation"),
+    (26, "Score & Persist"),
+    (27, "Cleanup"),
 ]
 
 TOTAL_PHASES = len(EVAL_PHASES)

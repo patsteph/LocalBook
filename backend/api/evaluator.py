@@ -45,9 +45,13 @@ async def get_registry():
 
 
 @router.post("/run")
-async def run_evaluation(background_tasks: BackgroundTasks):
-    """Run a full LLM evaluation suite.
-    
+async def run_evaluation(background_tasks: BackgroundTasks, tier: str = "full"):
+    """Run the LLM evaluation suite.
+
+    tier: "full" (everything) or "smoke" (~a third of the categories, local sources only —
+    "can this model do the job at all"). A smoke score is NOT comparable to a full one; the
+    tier is persisted on the run and the regression gate refuses to compare across tiers.
+
     Runs in background — poll /evaluator/status for progress.
     Returns immediately with run start confirmation.
     """
@@ -86,7 +90,7 @@ async def run_evaluation(background_tasks: BackgroundTasks):
     progress.current_test = "Initializing evaluation"
 
     # Run in background
-    background_tasks.add_task(_run_evaluation_background)
+    background_tasks.add_task(_run_evaluation_background, tier if tier in ("full", "smoke") else "full")
 
     return {
         "message": "Evaluation started. Poll /evaluator/status for progress.",
@@ -94,13 +98,13 @@ async def run_evaluation(background_tasks: BackgroundTasks):
     }
 
 
-async def _run_evaluation_background():
-    """Background task to run the full evaluation."""
+async def _run_evaluation_background(tier: str = "full"):
+    """Background task to run the evaluation. `tier` is "full" or "smoke"."""
     from evaluator.evaluator_service import run_full_evaluation, get_progress
 
     logger.info("[EVALUATOR] Background task started")
     try:
-        summary = await run_full_evaluation()
+        summary = await run_full_evaluation(tier=tier)
         logger.info(f"[EVALUATOR] Evaluation complete: {summary.overall_grade} ({summary.overall_score:.1f})")
     except Exception as e:
         logger.error(f"[EVALUATOR] Evaluation failed: {e}")

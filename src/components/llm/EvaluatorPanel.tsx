@@ -83,13 +83,13 @@ export function EvaluatorPanel() {
     return stopPolling;
   }, [loadLatest, startPolling, stopPolling]);
 
-  const run = async () => {
+  const run = async (tier: 'full' | 'smoke' = 'full') => {
     setError(null);
     setResult(null);
     setRunning(true);
     setStatus(null);
     try {
-      await evalApi.run();
+      await evalApi.run(tier);
       startPolling();
     } catch (e) {
       setRunning(false);
@@ -138,15 +138,27 @@ export function EvaluatorPanel() {
       {/* Run control */}
       <div className="flex items-center justify-between gap-3 flex-wrap">
         <p className="text-sm text-gray-600 dark:text-gray-400">
-          Exercises the full RAG, generation, and multimodal pipeline (~10-category suite).
+          Exercises retrieval, chat, generation, multimodal and image roles (19 scored
+          categories). Background work is paused for the duration, so the numbers reflect the
+          model rather than what else was running. Quit other apps first for a fair reading.
         </p>
-        <button
-          onClick={run}
-          disabled={running}
-          className="px-4 py-2 text-sm font-medium rounded-lg bg-blue-600 hover:bg-blue-700 text-white disabled:bg-gray-300 dark:disabled:bg-gray-700 disabled:text-gray-500 disabled:cursor-not-allowed"
-        >
-          {running ? 'Evaluating…' : '🧪 Run full evaluation'}
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => run('smoke')}
+            disabled={running}
+            title="Core categories, local sources only — can this model do the job at all? Not comparable to a full run."
+            className="px-3 py-2 text-sm font-medium rounded-lg border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {running ? '…' : '⚡ Smoke'}
+          </button>
+          <button
+            onClick={() => run('full')}
+            disabled={running}
+            className="px-4 py-2 text-sm font-medium rounded-lg bg-blue-600 hover:bg-blue-700 text-white disabled:bg-gray-300 dark:disabled:bg-gray-700 disabled:text-gray-500 disabled:cursor-not-allowed"
+          >
+            {running ? 'Evaluating…' : '🧪 Run full evaluation'}
+          </button>
+        </div>
       </div>
 
       {error && (
