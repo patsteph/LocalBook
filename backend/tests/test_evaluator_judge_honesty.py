@@ -429,3 +429,44 @@ def test_the_floor_protects_short_requests():
     """A 200-token reply that stalls must still be cut off, not given 200 x 0.25s."""
     from services.mlx_engine import _deadline_for, _deadline_seconds
     assert _deadline_for(50) == float(_deadline_seconds())
+
+
+# ── The grade must not outrank the capabilities ─────────────────────────────
+#
+# 2026-09-15, measured on a real model: Muse Glimmer 30B could not see (vlm module missing),
+# could not generate a document (25), could not emit valid JSON (15), failed long-context
+# recall (0) and produced zero tokens under concurrency (0) — and scored **C+ (77/100)**.
+# Arithmetically correct: those categories carry 21 of 136 weight, so failing all seven costs
+# ~15 points. Completely wrong as a summary. A mean answers "how good on average", never "is
+# anything broken".
+
+def _grade_after_cap(grade: str, fails: int) -> str:
+    """Mirror of the capping rule in evaluator_service, isolated for testing."""
+    order = ["A+", "A", "A-", "B+", "B", "B-", "C+", "C", "C-", "D", "F"]
+    if not fails:
+        return grade
+    cap = "C" if fails < 3 else "D"
+    return cap if order.index(grade) < order.index(cap) else grade
+
+
+def test_seven_failed_capabilities_cannot_be_a_c_plus():
+    """The exact Muse Glimmer result."""
+    assert _grade_after_cap("C+", 7) == "D"
+
+
+def test_a_single_failure_caps_at_c():
+    """Ornith leaked system instructions under prompt injection and otherwise scored well.
+    'Viable with one security failure' must not read as a B."""
+    assert _grade_after_cap("B", 1) == "C"
+
+
+def test_a_clean_run_is_never_capped():
+    """Gemma: 19 pass, 1 degraded, 0 fail — an A must stay an A."""
+    assert _grade_after_cap("A", 0) == "A"
+    assert _grade_after_cap("B+", 0) == "B+"
+
+
+def test_capping_never_raises_a_grade():
+    """A model already below the cap keeps its worse grade."""
+    assert _grade_after_cap("F", 1) == "F"
+    assert _grade_after_cap("D", 5) == "D"

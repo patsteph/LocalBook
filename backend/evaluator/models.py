@@ -60,6 +60,7 @@ class HardwareProfile:
             "os_version": self.os_version,
             "ollama_version": self.ollama_version,
             "tier": self.tier,
+            "grade_cap_reason": self.grade_cap_reason,
             "fingerprint": self.fingerprint,
         }
 
@@ -530,6 +531,8 @@ class ComboEvalSummary:
     # "full" | "smoke". A smoke run scores over FEWER categories, so its overall is not
     # comparable to a full one — the regression gate refuses to compare across tiers.
     tier: str = "full"
+    # Set when outright capability failures cap the grade below what the weighted mean gives.
+    grade_cap_reason: str = ""
 
     def to_dict(self) -> dict:
         return {

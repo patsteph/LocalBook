@@ -715,6 +715,33 @@ async def _run_evaluation(tier: str = "full") -> ComboEvalSummary:
             from evaluator import feature_parity as _fp
             summary.feature_parity = _fp.synthesize(summary.categories)
             summary.production_readiness = _fp.rollup(summary.feature_parity)
+
+            # ── The grade must not outrank the capabilities ──────────────────────────
+            #
+            # 2026-09-15: a model that could not SEE, could not generate a document, could not
+            # emit valid JSON, failed long-context recall and produced zero tokens under
+            # concurrency scored **C+ (77/100)**. Arithmetically correct — those seven
+            # categories carry 21 of 136 weight, so failing all of them costs ~15 points — and
+            # completely wrong as a summary. A weighted mean answers "how good on average",
+            # never "is anything broken", which is why `run.blocking_failures` exists for the
+            # release gate. The headline number needs the same discipline.
+            #
+            # The SCORE is left untouched: it is a valid statistic and changing it would make
+            # runs incomparable. The GRADE is capped, because the grade is what a human reads.
+            _fails = int((summary.production_readiness or {}).get("counts", {}).get("fail", 0))
+            if _fails:
+                _cap = "C" if _fails < 3 else "D"
+                _order = ["A+", "A", "A-", "B+", "B", "B-", "C+", "C", "C-", "D", "F"]
+                try:
+                    if _order.index(summary.overall_grade) < _order.index(_cap):
+                        summary.grade_cap_reason = (
+                            f"{_fails} capability/capabilities failed outright — grade capped at "
+                            f"{_cap} (raw weighted score {summary.overall_score:.1f})")
+                        summary.overall_grade = _cap
+                        summary.warnings.append(summary.grade_cap_reason)
+                        print(f"[EVALUATOR] {summary.grade_cap_reason}")
+                except ValueError:
+                    pass
         except Exception as _e:
             print(f"[EVALUATOR] feature_parity synthesis failed (non-fatal): {_e}")
 

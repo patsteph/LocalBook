@@ -23,6 +23,13 @@ from evaluator.models import EvalResult
 # One passage, entities enumerated by hand. Deliberately mixes the easy (capitalised proper
 # nouns) with the ones models usually drop: a versioned product name, an acronym expanded in
 # place, and an organisation that appears only in possessive form.
+# Samples per run. Three is enough to take a median and see the spread without tripling a
+# cheap runner into an expensive one.
+_SAMPLES = 3
+
+# Spread above which a median of three is still not a trustworthy number, and the result says so.
+_UNSTABLE_SPREAD = 0.30
+
 _PASSAGE = (
     "In March 2024, Anthropic released Claude 3, competing directly with OpenAI's GPT-4. "
     "The model was trained on hardware from NVIDIA, using clusters coordinated by Amazon Web "
@@ -78,18 +85,34 @@ async def run(notebook_id: str, config: dict, combo_name: str, hw_fingerprint: s
 
     try:
         start = time.time()
-        entities = await entity_extractor._extract_with_llm(_PASSAGE)
+        # SAMPLE MORE THAN ONCE (2026-09-15). A single LLM extraction is high-variance: the
+        # same extractor (phi-4-mini, constant across every combo) scored recall 64%, 36%, 36%
+        # and 64% on identical input across four runs. A number that swings 28 points run to
+        # run cannot support a decision, and averaging is cheap here — the whole runner is
+        # ~11s per sample.
+        #
+        # The MEDIAN is reported, and the spread is recorded, so instability is visible rather
+        # than averaged into false confidence.
+        samples = []
+        for _ in range(_SAMPLES):
+            entities = await entity_extractor._extract_with_llm(_PASSAGE)
+            names = []
+            for e in entities or []:
+                n = getattr(e, "name", None) or (e.get("name") if isinstance(e, dict) else None)
+                if n:
+                    names.append(str(n).lower())
+            samples.append(names)
         elapsed = (time.time() - start) * 1000
         result.total_time_ms = elapsed
 
-        names = []
-        for e in entities or []:
-            n = getattr(e, "name", None) or (e.get("name") if isinstance(e, dict) else None)
-            if n:
-                names.append(str(n).lower())
-
+        per_run_recall = [
+            sum(1 for grp in _EXPECTED if _matched(ns, grp)) / len(_EXPECTED) for ns in samples
+        ]
+        per_run_recall.sort()
+        recall = per_run_recall[len(per_run_recall) // 2]          # median
+        # Report against the median run so `missed` matches the reported recall.
+        names = samples[per_run_recall.index(recall)] if samples else []
         found = [grp for grp in _EXPECTED if _matched(names, grp)]
-        recall = len(found) / len(_EXPECTED)
         # Precision approximated: how many extracted names correspond to something expected.
         # Approximate because the passage does contain other legitimate entities (a date, a
         # concept) — so this is a noise indicator, not a strict precision figure. It is
@@ -104,6 +127,8 @@ async def run(notebook_id: str, config: dict, combo_name: str, hw_fingerprint: s
         missed = [grp[0] for grp in _EXPECTED if grp not in found]
         result.sub_scores = {
             "recall": round(recall, 3),
+            "recall_samples": [round(r, 3) for r in per_run_recall],
+            "recall_spread": round(max(per_run_recall) - min(per_run_recall), 3),
             "precision_approx": round(precision, 3),
             "expected": len(_EXPECTED),
             "found": len(found),
@@ -111,6 +136,15 @@ async def run(notebook_id: str, config: dict, combo_name: str, hw_fingerprint: s
             "missed": missed,
         }
         result.actual_output_preview = f"found {len(found)}/{len(_EXPECTED)}: {', '.join(names[:12])}"
+        spread = result.sub_scores["recall_spread"]
+        if spread > _UNSTABLE_SPREAD:
+            # Measured 0.545 on 2026-09-15 — 18%, 64%, 73% on identical input. A median over
+            # three samples is still shaky at that spread, so say so rather than presenting it
+            # as a settled number.
+            note = (f"UNSTABLE: recall varied {spread:.0%} across {_SAMPLES} identical runs "
+                    f"({', '.join(f'{r:.0%}' for r in per_run_recall)}) — treat as indicative")
+            result.mark_degraded(note)
+            print(f"[EVAL-ENTITY] {note}")
         if not result.passed:
             result.failure_reason = (
                 f"recall {recall:.0%} — missed {', '.join(missed[:6])}"
