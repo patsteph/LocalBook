@@ -11,6 +11,7 @@ from ._common import (
     _RESEARCH_HELP,
     _STUDIO_HELP,
 )
+from ._folders import FOLDER_INTENTS, handle as folder_handle
 
 async def _ingest_source_background(notebook_id: str, source_id: str, text: str, filename: str, source_type: str):
     """Background task: run the heavy RAG ingest pipeline (chunk → embed → entities).
@@ -1341,6 +1342,21 @@ async def _stream_collector(chat_query: ChatQuery, injected_action: Optional[Dic
         # -----------------------------------------------------------------
         # SHOW PENDING APPROVALS
         # -----------------------------------------------------------------
+        # -----------------------------------------------------------------
+        # LINKED FOLDERS — handled in _folders.py. Folder watching is a
+        # distinct responsibility from source collection, and this module is
+        # already well past the 800-line target.
+        # -----------------------------------------------------------------
+        elif intent in FOLDER_INTENTS:
+            try:
+                reply, folder_follow_ups = await folder_handle(intent, params, notebook_id)
+                if folder_follow_ups:
+                    follow_ups = folder_follow_ups
+            except Exception as e:
+                logger.warning(f"[collector] folder intent {intent} failed: {e}")
+                reply = ("I couldn't read the folder settings just now. "
+                         "They're in **Settings → Folders**.")
+
         elif intent == "show_pending":
             pending = collector_agent.get_pending_approvals()
             if not pending:

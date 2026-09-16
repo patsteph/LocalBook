@@ -81,6 +81,12 @@ COLLECTOR_INTENTS: List[Dict[str, str]] = [
     {"id": "show_profile", "desc": "User wants to see the collector's profile, configuration, or setup", "params": "none"},
     {"id": "show_status", "desc": "User wants a general status overview (default for vague messages)", "params": "none"},
     {"id": "show_history", "desc": "User wants to see recent collection run history or when the last run happened", "params": "none"},
+    # Linked folders (2026-09-16). Kept distinct from the source intents above:
+    # a linked folder is a directory on disk being watched, not a subscribed URL.
+    {"id": "folder_status", "desc": "User asks about LINKED FOLDERS — folders on their computer/disk that LocalBook watches and ingests from. Phrases like 'what folders am I watching', 'show my linked folders', 'is my recordings folder connected', 'what folder is feeding this notebook'. Distinct from sources/subscriptions, which are URLs.", "params": "none"},
+    {"id": "folder_scan_now", "desc": "User wants LocalBook to check a watched folder for new files right now — 'scan my folder', 'check the recordings folder', 'look for new files', 'did anything new land in my folder'.", "params": "none"},
+    {"id": "folder_review_queue", "desc": "User asks what recordings are waiting to be filed / awaiting a destination from a SMART FOLDER — 'what's waiting for review', 'what recordings need filing', 'show the review queue', 'what came in that I haven't placed'.", "params": "none"},
+    {"id": "folder_rules", "desc": "User asks about ROUTING RULES for recordings — 'what rules do I have', 'show my routing rules', 'what gets filed automatically', 'which recordings route themselves'.", "params": "none"},
 ]
 
 CORRESPONDENT_INTENTS: List[Dict[str, str]] = [

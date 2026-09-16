@@ -2,6 +2,41 @@
 
 All notable changes to LocalBook will be documented in this file.
 
+## Unreleased — Linked Folders
+
+**Point LocalBook at a folder and anything that lands in it becomes a source.** Built for a user
+whose audio recorder transcribes 1:1s to markdown: the recordings are now searchable, chattable,
+and usable in every artifact LocalBook makes, with no step for the user after the recording ends.
+
+### Added
+- **Linked folders.** Watch a directory per notebook, with a scan cadence from hourly to weekly.
+  The same file is never ingested twice — an unchanged file is skipped on a stat without being
+  opened, and a content hash catches one that was renamed or moved between watched folders.
+  Linking asks what to do with the files already there, showing the count. LocalBook only ever
+  **reads** a linked folder; it never moves, renames, edits or deletes anything in it.
+- Three ways in: at notebook creation, from a notebook's right-click menu, and **Settings →
+  Folders**, which lists every linked folder with what it has added and when it was last checked.
+- **Smart folders.** A folder with no notebook. Recordings are analysed — who is in them, what
+  they are about — and a destination is *suggested*, never applied. Nothing is filed without
+  either your click or a rule you wrote; there is no confidence score at which a recording files
+  itself. Approving offers "always route these", which writes a rule scoped to the people or
+  topics you choose, listed in plain English with what it has actually routed, and revocable.
+- **@collector understands folders.** Ask what folders are being watched, scan one now, what is
+  waiting for review, or what rules exist.
+
+### Fixed
+- **Text extraction blocked the event loop.** Seventeen extractors — PDF, Office, audio, video,
+  OCR — were written as asynchronous but ran synchronously, freezing the whole backend while they
+  worked. Researching a topic that returned PDFs could make the app stop responding. They now run
+  off the loop, which also stops large PDF uploads from stalling the interface.
+- **A frozen backend could survive its own watchdog.** Health monitoring only counted consecutive
+  failures, so a process answering intermittently was never restarted; it now also tracks
+  sustained degradation over five minutes. A leftover backend holding the port could also make
+  the next launch exit silently — startup now verifies the port is free and reports the process
+  holding it.
+- Post-ingest work — tagging, timeline extraction, image reading — is now applied from one place,
+  so content arriving by any route gets the same treatment.
+
 ## v2.3.0 — MLX-only engine, Model Browser
 
 **LocalBook no longer uses Ollama.** One in-process MLX engine now serves every role — chat,
