@@ -4,6 +4,8 @@ All uploaded content is treated as source information for RAG retrieval.
 The goal is to ensure every file type is accurately classified, stored, and
 optimized for semantic search so questions can be answered from the content.
 """
+import asyncio
+import functools
 import io
 from typing import Dict
 from pathlib import Path
@@ -11,6 +13,65 @@ from storage.source_store import source_store
 from services.rag_engine import rag_engine
 import logging
 logger = logging.getLogger(__name__)
+
+def _drive_without_awaiting(fn, args, kwargs):
+    """Run a coroutine function that never awaits, to completion, synchronously.
+
+    Raises if it DOES await — which is the point. `off_loop` is only correct for
+    a body that touches no event-loop state, so an `await` appearing later must
+    fail loudly here rather than quietly running loop-bound work on a worker
+    thread with a foreign (or absent) loop.
+    """
+    coro = fn(*args, **kwargs)
+    try:
+        coro.send(None)
+    except StopIteration as stop:
+        return stop.value
+    coro.close()
+    raise RuntimeError(
+        f"{fn.__qualname__} is decorated @off_loop but awaited something. "
+        f"Either remove the await or drop the decorator and make the call site "
+        f"non-blocking another way."
+    )
+
+
+def off_loop(fn):
+    """Move a CPU-bound `async def` off the event loop.
+
+    Text extraction is pure CPU — PyMuPDF, python-docx, openpyxl, Whisper — but
+    every one of these was written as `async def` with no `await` in it. That
+    reads as asynchronous and behaves as a hard block: while it runs, the single
+    event loop is frozen, `/health` included, and the Tauri watchdog eventually
+    decides the backend is dead.
+
+    Measured 2026-09-16: a @research deep-dive over ten arXiv PDFs stalled the
+    loop in 18-24s bursts (`loop_monitor`), each one a `pymupdf4llm.to_markdown`
+    table extraction running on the loop thread. Decorating at the DEFINITION
+    rather than the dispatcher matters — `web_scraper` calls `_extract_from_pdf`
+    directly, and that was the path that froze.
+    """
+    @functools.wraps(fn)
+    async def wrapper(*args, **kwargs):
+        return await asyncio.to_thread(_drive_without_awaiting, fn, args, kwargs)
+    wrapper.__off_loop__ = True
+    return wrapper
+
+
+# Every extension this processor knows how to read. Module-level and public
+# because Linked Folders needs the same answer: "what counts as a file worth
+# picking up?" must not be maintained in two places, or a format added here
+# would silently stay invisible to every watched folder.
+INGESTIBLE_EXTENSIONS = {
+    'pdf', 'docx', 'doc', 'xlsx', 'xls', 'csv', 'pptx', 'ppt',
+    'txt', 'md', 'markdown', 'json', 'xml', 'html', 'htm',
+    'py', 'js', 'ts', 'css', 'yaml', 'yml', 'tex', 'bib',
+    'epub', 'ipynb', 'odt', 'ods', 'rtf', 'svg',
+    'heic', 'heif', 'webp',
+    'mp3', 'wav', 'm4a', 'ogg', 'flac', 'aac', 'wma',
+    'mp4', 'mov', 'avi', 'mkv', 'webm', 'wmv', 'flv', 'm4v',
+    'png', 'jpg', 'jpeg', 'tiff', 'bmp', 'gif',
+}
+
 
 class DocumentProcessor:
     """Process and ingest documents"""
@@ -221,6 +282,7 @@ class DocumentProcessor:
             # Universal fallback: try multiple extraction strategies
             return await self._extract_with_fallback(content, filename, file_type)
 
+    @off_loop
     async def _extract_from_pdf(self, content: bytes, source_id: str = "", filename: str = "") -> str:
         """Extract text from PDF with page markers and table handling.
 
@@ -560,6 +622,7 @@ class DocumentProcessor:
         except Exception:
             return ""
 
+    @off_loop
     async def _extract_from_docx(self, content: bytes) -> str:
         """Extract text from DOCX including tables, headers, and footers.
         
@@ -615,6 +678,7 @@ class DocumentProcessor:
         except Exception as e:
             raise ValueError(f"Failed to process DOCX: {str(e)}")
     
+    @off_loop
     async def _extract_from_doc_legacy(self, content: bytes) -> str:
         """Extract text from legacy .doc files (Word 97-2003).
         
@@ -675,6 +739,7 @@ class DocumentProcessor:
         except Exception as e:
             raise ValueError(f"Failed to process legacy DOC: {str(e)}")
     
+    @off_loop
     async def _extract_from_ppt_legacy(self, content: bytes) -> str:
         """Extract text from legacy .ppt files (PowerPoint 97-2003).
         
@@ -765,6 +830,7 @@ class DocumentProcessor:
                 rows.append(" | ".join(cells))
             return "\n".join(rows)
 
+    @off_loop
     async def _extract_from_excel(self, content: bytes, file_type: str) -> str:
         """Extract text from Excel files.
         
@@ -930,6 +996,7 @@ class DocumentProcessor:
         
         return "\n".join(sentences) if len(sentences) > 2 else ""
 
+    @off_loop
     async def _extract_from_csv(self, content: bytes) -> str:
         """Extract text from CSV files.
         
@@ -960,6 +1027,7 @@ class DocumentProcessor:
         except Exception as e:
             raise ValueError(f"Failed to process CSV file: {str(e)}")
 
+    @off_loop
     async def _extract_from_pptx(self, content: bytes) -> str:
         """Extract text from PowerPoint files including tables and speaker notes.
         
@@ -1027,6 +1095,7 @@ class DocumentProcessor:
                 rows.append(" | ".join(cells))
             return "\n".join(rows)
 
+    @off_loop
     async def _extract_from_audio(self, content: bytes, filename: str) -> str:
         """Extract text from audio files using speech-to-text"""
         import tempfile
@@ -1052,6 +1121,7 @@ class DocumentProcessor:
         except Exception as e:
             raise ValueError(f"Failed to transcribe audio: {str(e)}")
 
+    @off_loop
     async def _extract_from_video(self, content: bytes, filename: str) -> str:
         """Extract text from video files by extracting audio and transcribing"""
         import tempfile
@@ -1101,6 +1171,7 @@ class DocumentProcessor:
         except Exception as e:
             raise ValueError(f"Failed to transcribe video: {str(e)}")
 
+    @off_loop
     async def _extract_from_epub(self, content: bytes) -> str:
         """Extract text from EPUB e-books, in SPINE (reading) order with headings preserved.
 
@@ -1236,6 +1307,7 @@ class DocumentProcessor:
         finally:
             zf.close()
     
+    @off_loop
     async def _extract_from_jupyter(self, content: bytes) -> str:
         """Extract text from Jupyter notebooks (.ipynb)."""
         try:
@@ -1267,6 +1339,7 @@ class DocumentProcessor:
         except Exception as e:
             raise ValueError(f"Failed to process Jupyter notebook: {str(e)}")
     
+    @off_loop
     async def _extract_from_odt(self, content: bytes) -> str:
         """Extract text from OpenDocument Text files (.odt) including tables."""
         try:
@@ -1338,6 +1411,7 @@ class DocumentProcessor:
                 rows.append(" | ".join(row))
             return "\n".join(rows)
     
+    @off_loop
     async def _extract_from_rtf(self, content: bytes) -> str:
         """Extract text from RTF files using striprtf library."""
         try:
@@ -1401,6 +1475,7 @@ class DocumentProcessor:
         except Exception as e:
             raise ValueError(f"Failed to process HEIC image: {str(e)}")
 
+    @off_loop
     async def _extract_from_svg(self, content: bytes) -> str:
         """Extract text content from SVG files.
         
@@ -1435,6 +1510,7 @@ class DocumentProcessor:
         except Exception as e:
             raise ValueError(f"Failed to process SVG: {str(e)}")
 
+    @off_loop
     async def _extract_from_ods(self, content: bytes) -> str:
         """Extract text from OpenDocument Spreadsheet files (.ods).
         
@@ -1466,6 +1542,7 @@ class DocumentProcessor:
         except Exception as e:
             raise ValueError(f"Failed to process ODS spreadsheet: {str(e)}")
 
+    @off_loop
     async def _extract_from_html(self, content: bytes) -> str:
         """Extract text from HTML files with proper tag stripping."""
         try:
@@ -1513,6 +1590,7 @@ class DocumentProcessor:
         except Exception as e:
             raise ValueError(f"Failed to process HTML: {str(e)}")
     
+    @off_loop
     async def _extract_from_image_ocr(self, content: bytes, filename: str) -> str:
         """Extract text from images using OCR (Tesseract)."""
         try:
@@ -1619,18 +1697,7 @@ class DocumentProcessor:
         ext = ext[1:] if ext else ""
         
         # If we have a known extension, use it
-        known_extensions = {
-            'pdf', 'docx', 'doc', 'xlsx', 'xls', 'csv', 'pptx', 'ppt',
-            'txt', 'md', 'markdown', 'json', 'xml', 'html', 'htm',
-            'py', 'js', 'ts', 'css', 'yaml', 'yml', 'tex', 'bib',
-            'epub', 'ipynb', 'odt', 'ods', 'rtf', 'svg',
-            'heic', 'heif', 'webp',
-            'mp3', 'wav', 'm4a', 'ogg', 'flac', 'aac', 'wma',
-            'mp4', 'mov', 'avi', 'mkv', 'webm', 'wmv', 'flv', 'm4v',
-            'png', 'jpg', 'jpeg', 'tiff', 'bmp', 'gif', 'webp'
-        }
-        
-        if ext in known_extensions:
+        if ext in INGESTIBLE_EXTENSIONS:
             return ext
         
         # Fallback: detect by magic bytes (file signature)

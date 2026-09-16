@@ -194,7 +194,60 @@ fn kill_existing_backend() {
 
         // Give it a moment to release the port
         std::thread::sleep(Duration::from_millis(500));
+
+        // ── VERIFY. Added 2026-09-16 after a field incident. ──
+        // A backend frozen inside a synchronous C call (PyMuPDF) cannot service
+        // SIGTERM — Python handles signals between bytecodes — so the graceful
+        // pass above silently does nothing and only SIGKILL lands. One survived
+        // 72 minutes at 98.7% CPU holding :8000; the next launch could not bind
+        // and exited before writing a single log line, so the user saw "it won't
+        // start" with nothing to explain why.
+        //
+        // Confirm the port is free, escalate if not, and if it is STILL held,
+        // name the PID. A diagnostic beats silence.
+        for attempt in 1..=6 {
+            let holders = port_8000_holders();
+            if holders.is_empty() {
+                if attempt > 1 {
+                    println!("[Backend] Port 8000 freed after {} attempt(s)", attempt);
+                }
+                return;
+            }
+            println!(
+                "[Backend] Port 8000 still held by {:?} (attempt {}/6) — sending SIGKILL",
+                holders, attempt
+            );
+            for pid in &holders {
+                let _ = std::process::Command::new("kill").args(["-9", pid]).output();
+            }
+            std::thread::sleep(Duration::from_millis(500));
+        }
+
+        let stuck = port_8000_holders();
+        if !stuck.is_empty() {
+            eprintln!(
+                "[Backend] FATAL: port 8000 still held by PID(s) {:?} after six SIGKILL \
+                 attempts. The new backend cannot bind and will not start. Recover with \
+                 `kill -9 $(lsof -t -i:8000)`.",
+                stuck
+            );
+        }
     }
+}
+
+/// PIDs currently listening on the backend port. Empty means the port is free.
+#[cfg(unix)]
+fn port_8000_holders() -> Vec<String> {
+    std::process::Command::new("lsof")
+        .args(["-t", "-i:8000"])
+        .output()
+        .map(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .split_whitespace()
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 // Function to start the backend from resources
@@ -357,9 +410,26 @@ async fn backend_watchdog(
     const RESTART_GRACE_SECS: u64 = 90;
     const MAX_RESTARTS: u32 = 5;
 
+    // ── Sustained-degradation window (2026-09-16, after a field incident) ──
+    //
+    // HTTP_FAIL_THRESHOLD counts only CONSECUTIVE failures, and one good check
+    // resets it to zero. That makes the watchdog blind to the failure mode we
+    // actually hit: a backend stalling ~20s out of every ~25s answers just often
+    // enough that the counter never reaches 8. One such process burned a full
+    // core for 72 minutes, unusable throughout, and the watchdog never fired
+    // because it was never unresponsive for 120s straight.
+    //
+    // So also track the last WINDOW_CHECKS outcomes (20 × 15s = 5 minutes). If
+    // half of them failed, this is not "slow under memory pressure" — it is
+    // broken, and a restart beats leaving it wedged.
+    const WINDOW_CHECKS: usize = 20;
+    const WINDOW_FAIL_THRESHOLD: usize = 10;
+
     let mut http_failures: u32 = 0;
     let mut pid_dead_count: u32 = 0;
     let mut restart_count: u32 = 0;
+    let mut recent: std::collections::VecDeque<bool> =
+        std::collections::VecDeque::with_capacity(WINDOW_CHECKS);
 
     // Wait for initial startup to complete before monitoring
     loop {
@@ -408,7 +478,16 @@ async fn backend_watchdog(
             // ── Tier 2: HTTP liveness — can it respond? ──
             let healthy = check_health().await.unwrap_or(false);
 
-            if healthy {
+            // Every outcome enters the rolling window, healthy or not.
+            if recent.len() == WINDOW_CHECKS {
+                recent.pop_front();
+            }
+            recent.push_back(healthy);
+            let window_failures = recent.iter().filter(|ok| !**ok).count();
+            let sustained =
+                recent.len() == WINDOW_CHECKS && window_failures >= WINDOW_FAIL_THRESHOLD;
+
+            if healthy && !sustained {
                 if http_failures > 0 {
                     println!(
                         "[Watchdog] Backend responsive after {} slow check(s) — healthy",
@@ -419,23 +498,42 @@ async fn backend_watchdog(
                 continue; // All good
             }
 
-            // Process alive but HTTP failed — likely slow under memory pressure
-            http_failures += 1;
-            println!(
-                "[Watchdog] HTTP liveness failed ({}/{}) — process alive, likely under pressure",
-                http_failures, HTTP_FAIL_THRESHOLD
-            );
+            if healthy {
+                // Answering right now is not recovery. Half of the last five
+                // minutes failed, so the backend is degraded, not merely slow.
+                println!(
+                    "[Watchdog] Backend degraded — {}/{} checks failed over the last {}s; \
+                     intermittent responsiveness is the symptom. Restarting.",
+                    window_failures,
+                    WINDOW_CHECKS,
+                    WINDOW_CHECKS as u64 * LIVENESS_INTERVAL.as_secs()
+                );
+                http_failures = 0;
+                recent.clear();
+            } else {
+                // Process alive but HTTP failed — often just slow under pressure
+                http_failures += 1;
+                println!(
+                    "[Watchdog] HTTP liveness failed ({}/{}; {}/{} in the last {}s) — process alive",
+                    http_failures,
+                    HTTP_FAIL_THRESHOLD,
+                    window_failures,
+                    recent.len(),
+                    recent.len() as u64 * LIVENESS_INTERVAL.as_secs()
+                );
 
-            if http_failures < HTTP_FAIL_THRESHOLD {
-                continue; // Be patient — process is alive, just slow
-            }
+                if http_failures < HTTP_FAIL_THRESHOLD && !sustained {
+                    continue; // Be patient — process is alive, just slow
+                }
+                recent.clear();
 
             // Exhausted patience — process alive but unresponsive for 2+ minutes
-            println!(
-                "[Watchdog] Backend unresponsive for {}s — initiating restart",
-                http_failures as u64 * LIVENESS_INTERVAL.as_secs()
-            );
-            http_failures = 0;
+                println!(
+                    "[Watchdog] Backend unresponsive for {}s — initiating restart",
+                    http_failures as u64 * LIVENESS_INTERVAL.as_secs()
+                );
+                http_failures = 0;
+            }
         }
 
         // ── Backend needs restart ──
@@ -518,6 +616,9 @@ async fn backend_watchdog(
 
         match start_backend(&app_handle).await {
             Ok(child_opt) => {
+                // A fresh backend starts with a clean record — it must not be
+                // judged on the failures of the process it replaced.
+                recent.clear();
                 if let Some(child) = child_opt {
                     if let Ok(mut process) = process_ref.lock() {
                         *process = Some(child);
