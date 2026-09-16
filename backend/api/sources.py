@@ -193,36 +193,13 @@ async def _process_upload_background(
             "characters": characters,
         })
 
-        # 5. Background extras (all non-fatal)
-        # Timeline extraction
-        try:
-            await extract_timeline_for_source(notebook_id, source_id, text, filename)
-        except Exception as _e:
-            logger.debug(f"[sources] {type(_e).__name__}: {_e}")
-
-        # Image processing for PDFs/PPTs — SPAWN, don't await. The gemma4 vision
-        # descriptions can take many minutes on a large/image-heavy PDF; awaiting
-        # here blocked the upload for the whole flood ("PDF stuck in processing").
-        # The other 3 upload paths already background this; match them so text is
-        # usable immediately and image descriptions append in the background.
-        file_ext = filename.lower().rsplit('.', 1)[-1] if '.' in filename else ''
-        if file_ext in ['pdf', 'pptx']:
-            from utils.tasks import safe_create_task
-            safe_create_task(
-                document_processor.process_images_background(
-                    content, notebook_id, source_id, filename
-                ),
-                name=f"image-ocr-{source_id}",
-            )
-
-        # Auto-tag
-        try:
-            from services.auto_tagger import auto_tagger
-            await auto_tagger.tag_source_in_notebook(
-                notebook_id, source_id, filename, text[:3000]
-            )
-        except Exception as _e:
-            logger.debug(f"[sources] {type(_e).__name__}: {_e}")
+        # 5. Post-ingest treatment (all non-fatal, one implementation).
+        #    notify=False because step 4 already broadcast this source.
+        from services.post_ingest import finalize_source
+        await finalize_source(
+            notebook_id, source_id, filename, text,
+            raw_bytes=content, origin="upload", notify=False,
+        )
 
     except Exception as e:
         import traceback
@@ -330,51 +307,22 @@ async def upload_source(
             notebook_id=notebook_id
         )
         
-        # Fetch source record for background tasks and auto-tagging
+        # Post-ingest treatment — tags, timeline, image pass, capture event.
+        # Centralised in services/post_ingest so every ingest path (upload,
+        # browser, linked folders) gets the same treatment from one place.
         source = None
         if result.get("source_id"):
             source = await source_store.get(result["source_id"])
+        from services.post_ingest import finalize_source
+        await finalize_source(
+            notebook_id, result["source_id"], filename,
+            (source or {}).get("content") or "",
+            raw_bytes=content,
+            origin="upload",
+            notify=False,          # the sync path already returns the record
+            defer=background_tasks.add_task if background_tasks else None,
+        )
 
-        # Auto-extract timeline in background (fire and forget)
-        if background_tasks and source:
-            if source and source.get("content"):
-                background_tasks.add_task(
-                    extract_timeline_for_source,
-                    notebook_id,
-                    result["source_id"],
-                    source["content"],
-                    filename
-                )
-                print(f"[UPLOAD] Queued timeline extraction for {filename}")
-            
-            # v1.0.5: Background image processing for PDFs/PPTs
-            file_ext = filename.lower().rsplit('.', 1)[-1] if '.' in filename else ''
-            if file_ext in ['pdf', 'pptx']:
-                background_tasks.add_task(
-                    document_processor.process_images_background,
-                    content,
-                    notebook_id,
-                    result["source_id"],
-                    filename
-                )
-                print(f"[UPLOAD] Queued background image processing for {filename}")
-        
-        # Auto-tag the uploaded document (non-fatal)
-        try:
-            from services.auto_tagger import auto_tagger
-            tag_text = (source.get("content", "") if source else "")[:3000]
-            await auto_tagger.tag_source_in_notebook(
-                notebook_id, result["source_id"], filename, tag_text
-            )
-        except Exception as tag_err:
-            print(f"[UPLOAD] Auto-tagging failed (non-fatal): {tag_err}")
-
-        # Log document capture event
-        try:
-            log_document_captured(notebook_id, filename, filename, "upload")
-        except Exception as _e:
-            logger.debug(f"[sources] {type(_e).__name__}: {_e}")
-        
         return result
     except Exception as e:
         error_msg = str(e)
