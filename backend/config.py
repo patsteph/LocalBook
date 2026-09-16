@@ -156,6 +156,21 @@ class Settings(BaseSettings):
     # {ok: True, suppressed: True} without persisting. Curator Phase 2a.
     engagement_tracking_enabled: bool = True
 
+    # ── Linked Folders (2026-09-16) ──────────────────────────────────
+    # How often the watcher loop wakes. This is NOT the scan cadence: each
+    # link carries its own frequency (hourly … weekly) and the loop only acts
+    # on links that are due. Live-editable via schedule_store("folder-watch").
+    folder_watch_interval_seconds: int = 300
+    # Files above this are skipped with a visible reason rather than silently.
+    # A transcript is small; a 200 MB stray file in a watched folder is not
+    # something to embed by accident.
+    folder_link_max_file_mb: int = 25
+    # Ceiling on files ingested per link per pass. A first scan of a large
+    # folder therefore drains over several passes instead of monopolising the
+    # machine — and the UI reports what is still pending rather than implying
+    # the folder is done.
+    folder_link_batch_limit: int = 25
+
     # Storage backend — use SQLite instead of JSON files
     use_sqlite: bool = True  # SQLite is default — auto-migrates from JSON on first launch
 

@@ -269,6 +269,25 @@ SCHEDULE_REGISTRY: List[ScheduleDef] = [
         advanced=True,
     ),
     ScheduleDef(
+        id="folder-watch",
+        name="Linked folder watch",
+        agent="system",
+        category=CAT_INFRA,
+        cadence_kind=KIND_INTERVAL,
+        default_seconds=5 * 60,
+        min_seconds=60,
+        max_seconds=6 * _H,
+        editable=True,
+        rung_c_candidate=True,
+        module_const="folder_watcher.DEFAULT_LOOP_SECONDS",
+        note="How often the watcher wakes to see which linked folders are due. "
+             "Each folder carries its own scan frequency (hourly … weekly), set "
+             "on the folder itself.",
+        tier="DAYDREAM",
+        managed_in="Settings → Linked Folders",
+        can_disable=True,
+    ),
+    ScheduleDef(
         id="stuck-source-recovery",
         name="Stuck-source recovery",
         agent="system",

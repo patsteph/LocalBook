@@ -14,6 +14,7 @@ import { CorrespondentSettings } from './CorrespondentSettings';
 import { TemplatesSection } from './settings/TemplatesSection';
 import { VoiceProfileSection } from './settings/VoiceProfileSection';
 import { ScheduleSection } from './settings/ScheduleSection';
+import { FolderLinksPanel } from './folders/FolderLinksPanel';
 
 class SettingsErrorBoundary extends React.Component<
   { children: React.ReactNode; fallbackLabel: string },
@@ -49,6 +50,7 @@ type SectionId =
     | 'api-keys' | 'credentials' | 'correspondent'
     | 'curator' | 'memory'
     | 'schedules'
+    | 'folders'
     | 'templates' | 'updates';
 
 interface SectionDef {
@@ -88,6 +90,7 @@ const SECTION_GROUPS: { title: string; items: SectionDef[] }[] = [
     {
         title: 'Workspace',
         items: [
+            { id: 'folders',   label: 'Folders',   icon: '📁', accent: 'blue' },
             { id: 'templates', label: 'Templates', icon: '📊', accent: 'blue' },
             { id: 'updates',   label: 'Updates',   icon: '🔄', accent: 'blue' },
         ],
@@ -159,6 +162,7 @@ export const Settings: React.FC = () => {
                     {activeSection === 'curator' && <SettingsErrorBoundary fallbackLabel="Curator"><CuratorSettings /></SettingsErrorBoundary>}
                     {activeSection === 'schedules' && <SettingsErrorBoundary fallbackLabel="Schedules"><ScheduleSection /></SettingsErrorBoundary>}
                     {activeSection === 'correspondent' && <SettingsErrorBoundary fallbackLabel="Correspondent"><CorrespondentSettings /></SettingsErrorBoundary>}
+                    {activeSection === 'folders' && <SettingsErrorBoundary fallbackLabel="Linked Folders"><FolderLinksPanel /></SettingsErrorBoundary>}
                     {activeSection === 'templates' && <TemplatesSection setError={setError} setSuccess={setSuccess} />}
                     {activeSection === 'updates' && <UpdatesSection />}
                 </div>

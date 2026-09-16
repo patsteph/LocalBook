@@ -13,6 +13,8 @@ import { Modal } from './shared/Modal';
 import { CollectorSetupWizard } from './collector';
 import { CreateNotebookModal } from './notebook/CreateNotebookModal';
 import { ExportModal } from './notebook/ExportModal';
+import { FolderLinksPanel } from './folders/FolderLinksPanel';
+import { createFolderLink } from '../services/folders';
 
 interface NotebookManagerProps {
   onNotebookSelect: (notebookId: string) => void;
@@ -54,6 +56,9 @@ export const NotebookManager: React.FC<NotebookManagerProps> = ({
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState('');
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
+  // Linked folders for one notebook — opened from the context menu, same panel
+  // the Settings section renders, just scoped.
+  const [foldersFor, setFoldersFor] = useState<{ id: string; title: string } | null>(null);
   // Re-index is slow (re-embeds every source), so the id doubles as the in-flight guard: the
   // menu item shows progress and cannot be started twice for the same notebook.
   const [reindexing, setReindexing] = useState<string | null>(null);
@@ -263,6 +268,7 @@ export const NotebookManager: React.FC<NotebookManagerProps> = ({
     title: string,
     color: string,
     files: File[],
+    folderLink?: { path: string; frequency: string; backfill: 'all' | 'new_only' },
   ) => {
     setCreating(true);
     setError(null);
@@ -271,6 +277,24 @@ export const NotebookManager: React.FC<NotebookManagerProps> = ({
       setNotebooks([...notebooks, newNotebook]);
       onNotebookSelect(newNotebook.id);
       setShowCreateModal(false);
+
+      // Link the folder AFTER the notebook exists — a failure here must not
+      // cost the user the notebook they just created, so it reports and moves on.
+      if (folderLink) {
+        try {
+          await createFolderLink({
+            path: folderLink.path,
+            notebook_id: newNotebook.id,
+            frequency: folderLink.frequency,
+            backfill: folderLink.backfill,
+          });
+        } catch (err: any) {
+          setError(
+            `"${title}" was created, but the folder could not be linked: ` +
+            `${err?.message || 'unknown error'}. Link it from the notebook menu.`
+          );
+        }
+      }
 
       if (files.length > 0) {
         const filenames: string[] = [];
@@ -790,6 +814,17 @@ export const NotebookManager: React.FC<NotebookManagerProps> = ({
             Configure Collector
           </button>
           <button
+            onClick={() => {
+              const nb = notebooks.find(n => n.id === contextMenu.notebookId);
+              setFoldersFor({ id: contextMenu.notebookId, title: nb?.title || 'Notebook' });
+              setContextMenu(null);
+            }}
+            className="w-full text-left px-3 py-1.5 text-xs text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 flex items-center gap-2"
+          >
+            <span className="w-3 text-center">🔗</span>
+            Linked folders…
+          </button>
+          <button
             onClick={() => handleExportClick(contextMenu.notebookId)}
             className="w-full text-left px-3 py-1.5 text-xs text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 flex items-center gap-2"
           >
@@ -812,6 +847,23 @@ export const NotebookManager: React.FC<NotebookManagerProps> = ({
             Delete
           </button>
         </div>
+      )}
+
+      {/* Linked folders for one notebook */}
+      {foldersFor && (
+        <Modal
+          isOpen
+          onClose={() => setFoldersFor(null)}
+          title={`Linked folders — ${foldersFor.title}`}
+        >
+          <div className="p-1">
+            <FolderLinksPanel
+              notebookId={foldersFor.id}
+              notebookTitle={foldersFor.title}
+              onLinked={() => setFoldersFor(null)}
+            />
+          </div>
+        </Modal>
       )}
 
       {/* Create Notebook Modal */}

@@ -4,5 +4,21 @@
 <dict>
     <key>NSMicrophoneUsageDescription</key>
     <string>LocalBook needs microphone access for voice-to-text transcription using Whisper</string>
+
+    <!-- Linked Folders (2026-09-16). TCC only PROMPTS for these locations when
+         the bundle declares a usage description; without one the read is
+         refused and the user never sees a dialog to approve. The folder is
+         always chosen by the user in a picker first — these strings just let
+         macOS ask on their behalf, and explain why.
+         The Python backend reads the folder as a child process, and TCC
+         attributes that to the responsible parent — this bundle. -->
+    <key>NSDocumentsFolderUsageDescription</key>
+    <string>LocalBook reads folders you choose to link, so new files in them become sources in your notebooks. It never modifies your files.</string>
+    <key>NSDesktopFolderUsageDescription</key>
+    <string>LocalBook reads folders you choose to link, so new files in them become sources in your notebooks. It never modifies your files.</string>
+    <key>NSDownloadsFolderUsageDescription</key>
+    <string>LocalBook reads folders you choose to link, so new files in them become sources in your notebooks. It never modifies your files.</string>
+    <key>NSRemovableVolumesUsageDescription</key>
+    <string>LocalBook reads folders you choose to link, including ones on external drives. It never modifies your files.</string>
 </dict>
 </plist>

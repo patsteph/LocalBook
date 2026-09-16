@@ -157,7 +157,7 @@ from storage.findings_store import init_findings_store
 init_findings_store(settings.data_dir)
 
 # NOW import API modules — stores will read the (possibly corrected) use_sqlite flag
-from api import notebooks, sources, chat, skills, audio, source_viewer, web, settings as settings_api, embeddings, timeline, export, reindex, memory, graph, constellation_ws, updates, content, exploration, quiz, visual, writing, voice, site_search, contradictions, credentials, browser, browser_transform, audio_llm, rag_health, health_portal, jobs, agent_browser, rlm, curator, collector, source_discovery, people, video, evaluator, flashcards, canvas_notes as canvas_notes_api, scan as scan_api, comparison, correspondent as correspondent_api, synthesis as synthesis_api, articles as articles_api, system as system_api, signals as signals_api, incidents as incidents_api, canvas as canvas_api
+from api import notebooks, sources, chat, skills, audio, source_viewer, web, settings as settings_api, embeddings, timeline, export, reindex, memory, graph, constellation_ws, updates, content, exploration, quiz, visual, writing, voice, site_search, contradictions, credentials, browser, browser_transform, audio_llm, rag_health, health_portal, jobs, agent_browser, rlm, curator, collector, source_discovery, people, video, evaluator, flashcards, canvas_notes as canvas_notes_api, scan as scan_api, comparison, correspondent as correspondent_api, synthesis as synthesis_api, articles as articles_api, system as system_api, signals as signals_api, incidents as incidents_api, canvas as canvas_api, folders as folders_api
 from api.capture import capture_router
 from api.updates import check_if_upgrade, set_startup_status, mark_startup_complete, CURRENT_VERSION
 from services.model_warmup import initial_warmup, start_warmup_task, stop_warmup_task
@@ -328,6 +328,11 @@ async def _run_startup_tasks():
         from services.enrichment_worker import enrichment_worker
         await enrichment_worker.start()
         print("🌙 Enrichment worker started (presence-aware night shift)")
+
+        # Linked Folders — polls watched directories and ingests what's new.
+        # Enqueues onto the enrichment worker above, so it must start after it.
+        from services.folder_watcher import folder_watcher
+        folder_watcher.start_background_task()
         from services.memory_manager import memory_manager
         safe_create_task(memory_manager.start_scheduler(), name="memory-scheduler")
         print("📝 Memory consolidation manager started")
@@ -649,6 +654,7 @@ app.include_router(embeddings.router, prefix="/embeddings", tags=["embeddings"])
 app.include_router(timeline.router, prefix="/timeline", tags=["timeline"])
 app.include_router(export.router, prefix="/export", tags=["export"])
 app.include_router(reindex.router, prefix="/reindex", tags=["reindex"])
+app.include_router(folders_api.router, prefix="/folders", tags=["linked-folders"])
 app.include_router(memory.router, tags=["memory"])
 app.include_router(graph.router, tags=["knowledge-graph"])
 app.include_router(constellation_ws.router, tags=["constellation"])

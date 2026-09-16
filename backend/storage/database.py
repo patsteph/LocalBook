@@ -678,6 +678,113 @@ class Database:
             )
         """)
 
+        # -- folder_links (Linked Folders, 2026-09-16) --
+        # A watched directory on the user's disk. notebook_id NULL = Smart Folder
+        # (Part 2): scanned the same way, but the destination is decided per file
+        # rather than fixed here.
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS folder_links (
+                id             TEXT PRIMARY KEY,
+                notebook_id    TEXT,
+                path           TEXT NOT NULL,
+                patterns       TEXT NOT NULL DEFAULT '[]',
+                frequency      TEXT NOT NULL DEFAULT 'hourly',
+                enabled        INTEGER NOT NULL DEFAULT 1,
+                recursive      INTEGER NOT NULL DEFAULT 0,
+                created_at     TEXT NOT NULL,
+                last_scan_at   TEXT,
+                last_error     TEXT,
+                files_ingested INTEGER NOT NULL DEFAULT 0,
+                FOREIGN KEY (notebook_id) REFERENCES notebooks(id) ON DELETE CASCADE
+            )
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_folder_links_notebook
+            ON folder_links(notebook_id)
+        """)
+
+        # -- folder_seen (the ingest ledger: never process the same file twice) --
+        # (mtime, size) is the FAST path — a rescan stats each file and skips
+        # unchanged ones without reading a byte. content_hash is the CORRECTNESS
+        # path — it survives a rename or a move, which mtime alone does not.
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS folder_seen (
+                link_id       TEXT NOT NULL,
+                abs_path      TEXT NOT NULL,
+                mtime         REAL NOT NULL,
+                size          INTEGER NOT NULL,
+                content_hash  TEXT,
+                source_id     TEXT,
+                notebook_id   TEXT,
+                status        TEXT NOT NULL DEFAULT 'ingested',
+                error         TEXT,
+                first_seen_at TEXT NOT NULL,
+                ingested_at   TEXT,
+                PRIMARY KEY (link_id, abs_path)
+            )
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_folder_seen_hash
+            ON folder_seen(content_hash)
+        """)
+
+        # -- routing_rules (Smart Folders, 2026-09-16) --
+        # An EXPLICIT, user-authored authorisation to file matching recordings
+        # automatically. Confidence never authorises anything on its own: the
+        # learning improves the SUGGESTION, and only a rule the user wrote
+        # permits the ACTION. That separation is the whole safety model — a
+        # performance conversation must never land in a shared notebook because
+        # a cosine score crossed a number nobody chose.
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS routing_rules (
+                id                 TEXT PRIMARY KEY,
+                scope_participants TEXT NOT NULL DEFAULT '[]',
+                scope_topics       TEXT NOT NULL DEFAULT '[]',
+                notebook_id        TEXT NOT NULL,
+                created_at         TEXT NOT NULL,
+                created_from       TEXT,
+                hit_count          INTEGER NOT NULL DEFAULT 0,
+                last_hit_at        TEXT,
+                enabled            INTEGER NOT NULL DEFAULT 1,
+                FOREIGN KEY (notebook_id) REFERENCES notebooks(id) ON DELETE CASCADE
+            )
+        """)
+
+        # -- folder_pending (Smart Folders review queue) --
+        # A file seen in a Smart Folder, analysed, and awaiting a human. It is
+        # NOT ingested and belongs to no notebook until someone says so.
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS folder_pending (
+                id              TEXT PRIMARY KEY,
+                link_id         TEXT NOT NULL,
+                abs_path        TEXT NOT NULL,
+                filename        TEXT NOT NULL,
+                content_hash    TEXT,
+                size            INTEGER NOT NULL DEFAULT 0,
+                mtime           REAL NOT NULL DEFAULT 0,
+                participants    TEXT NOT NULL DEFAULT '[]',
+                topics          TEXT NOT NULL DEFAULT '[]',
+                summary         TEXT DEFAULT '',
+                suggested_id    TEXT,
+                suggested_name  TEXT,
+                confidence      REAL NOT NULL DEFAULT 0,
+                alternatives    TEXT NOT NULL DEFAULT '[]',
+                status          TEXT NOT NULL DEFAULT 'pending',
+                created_at      TEXT NOT NULL,
+                resolved_at     TEXT,
+                resolved_to     TEXT,
+                error           TEXT
+            )
+        """)
+        cursor.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_folder_pending_path
+            ON folder_pending(link_id, abs_path)
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_folder_pending_status
+            ON folder_pending(status)
+        """)
+
         # -- migration tracking --
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS migration_meta (
