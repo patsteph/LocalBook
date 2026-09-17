@@ -210,6 +210,7 @@ python -W ignore -m PyInstaller \
     --hidden-import=api.writing \
     --hidden-import=services \
     --hidden-import=services.companions \
+    --hidden-import=services.companion_updates \
     --hidden-import=services.folder_watcher \
     --hidden-import=services.meeting_notes \
     --hidden-import=services.post_ingest \

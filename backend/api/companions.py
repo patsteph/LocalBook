@@ -153,6 +153,36 @@ async def disconnect(companion_id: str, remove_link: bool = False):
     return {"ok": True, "status": svc.status(manifest)}
 
 
+@router.post("/companions/{companion_id}/check-updates")
+async def check_updates(companion_id: str):
+    """Ask GitHub whether anything we run has actually changed.
+
+    Compares file CONTENT, not commit count — upstream can move a dozen times
+    without the installer changing a byte, and nagging about a README edit
+    teaches people to ignore the badge that matters.
+    """
+    import asyncio
+    manifest = _manifest_or_404(companion_id)
+    result = await asyncio.to_thread(svc.check_and_cache, manifest)
+    return {**result, "status": svc.status(manifest)}
+
+
+@router.post("/companions/{companion_id}/accept-update/{artifact_id:path}")
+async def accept_update(companion_id: str, artifact_id: str):
+    """Accept a newer upstream revision — an explicit act, never automatic.
+
+    The shipped manifest records the revision LocalBook reviewed; this records
+    the one THIS user chose, after seeing what changed. Every later verification
+    compares against it.
+    """
+    import asyncio
+    manifest = _manifest_or_404(companion_id)
+    result = await asyncio.to_thread(svc.accept_update, manifest, artifact_id)
+    if not result.get("ok"):
+        raise HTTPException(status_code=400, detail=result.get("error", "Could not update"))
+    return {**result, "status": svc.status(manifest)}
+
+
 @router.post("/companions/{companion_id}/preflight")
 async def preflight(companion_id: str):
     """Prepare the Mac, asking for the password exactly once.

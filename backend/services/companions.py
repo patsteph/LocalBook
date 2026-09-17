@@ -32,6 +32,7 @@ revocable without disturbing the app.
 from __future__ import annotations
 
 import json
+from datetime import datetime
 import logging
 import os
 import re
@@ -292,9 +293,10 @@ def install_source(manifest: Dict[str, Any]) -> Dict[str, Any]:
     read first.
     """
     install = manifest.get("install") or {}
-    src = install.get("source") or {}
+    src = _effective_pin(manifest.get("id", ""), "install", install.get("source") or {})
     return {
         "kind": install.get("kind"),
+        "user_accepted": src.get("user_accepted", False),
         "repo": src.get("repo"),
         "ref": src.get("ref"),
         "short_ref": (src.get("ref") or "")[:7],
@@ -317,7 +319,7 @@ def install_command(manifest: Dict[str, Any]) -> str:
     whatever the CDN hands back.
     """
     install = manifest.get("install") or {}
-    src = install.get("source") or {}
+    src = _effective_pin(manifest.get("id", ""), "install", install.get("source") or {})
     url, digest = src.get("url"), src.get("sha256")
     if not url:
         return install.get("command", "")
@@ -713,6 +715,268 @@ def run_preflight(manifest: Dict[str, Any]) -> Dict[str, Any]:
                      f"Still missing: {', '.join(s['label'] for s in remaining)}"}
 
 
+# ── updates: pinned, but not frozen ─────────────────────────────────────────
+#
+# Pinning to a commit protects the user from a moving `curl | bash` target. It
+# also freezes them: if upstream fixes a bug, nobody ever gets it. Both matter,
+# so the pin is kept and updates are made VISIBLE and EXPLICIT instead of
+# automatic.
+#
+# Two layers:
+#   the shipped manifest   — the revision LocalBook reviewed and ships
+#   companion_pins.json    — the revision THIS user chose to accept
+#
+# The overlay wins. Accepting an update is a deliberate act with the diff in
+# front of you; nothing here ever advances a pin on its own.
+#
+# The check itself costs nothing: hashing the raw file on the default branch
+# answers "did the part we actually run change?" directly, with no API call and
+# no rate limit. github.com's API (60/hour unauthenticated) is touched only when
+# something HAS changed, to name the new commit for provenance.
+
+def _pins_path() -> Path:
+    return Path(settings.data_dir) / "companion_pins.json"
+
+
+def _load_pins() -> Dict[str, Any]:
+    try:
+        p = _pins_path()
+        return json.loads(p.read_text()) if p.is_file() else {}
+    except Exception as e:
+        logger.warning(f"[companions] could not read accepted pins: {e}")
+        return {}
+
+
+def _save_pins(pins: Dict[str, Any]) -> None:
+    try:
+        p = _pins_path()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps(pins, indent=2))
+    except Exception as e:
+        logger.warning(f"[companions] could not save accepted pins: {e}")
+
+
+def _effective_pin(companion_id: str, artifact: str,
+                   shipped: Dict[str, Any]) -> Dict[str, Any]:
+    """What this user is actually running: their accepted pin, else ours."""
+    accepted = ((_load_pins().get(companion_id) or {}).get(artifact) or {})
+    if accepted.get("sha256") and accepted.get("url"):
+        return {**shipped, **accepted, "user_accepted": True}
+    return {**shipped, "user_accepted": False}
+
+
+def _artifacts(manifest: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Everything of upstream's that we fetch and run, as (id, label, source)."""
+    out = []
+    src = (manifest.get("install") or {}).get("source")
+    if src:
+        out.append({"id": "install", "label": "Installer", "source": src})
+    for e in manifest.get("extras") or []:
+        if e.get("source"):
+            out.append({"id": f"extra:{e['id']}", "label": e.get("name", e["id"]),
+                        "source": e["source"], "extra_id": e["id"]})
+    return out
+
+
+def _raw_url(source: Dict[str, Any], ref: str) -> Optional[str]:
+    repo, path = source.get("repo"), source.get("path")
+    if not repo or not path:
+        return None
+    return f"https://raw.githubusercontent.com/{repo}/{ref}/{path}"
+
+
+def _fetch(url: str, timeout: int = 30) -> Optional[bytes]:
+    try:
+        import urllib.request
+        with urllib.request.urlopen(url, timeout=timeout) as resp:
+            return resp.read()
+    except Exception as e:
+        logger.debug(f"[companions] fetch failed for {url}: {e}")
+        return None
+
+
+def _latest_ref(repo: str, branch: str) -> Optional[Dict[str, str]]:
+    """Name the commit now on the branch. One API call, only when something
+    already changed — so the 60/hour unauthenticated budget is never a concern."""
+    body = _fetch(f"https://api.github.com/repos/{repo}/commits/{branch}", timeout=20)
+    if not body:
+        return None
+    try:
+        data = json.loads(body)
+        return {
+            "ref": data.get("sha", ""),
+            "date": (data.get("commit", {}).get("committer", {}).get("date") or "")[:10],
+            "message": (data.get("commit", {}).get("message") or "").split("\n")[0][:140],
+            "author": (data.get("author") or {}).get("login") or "",
+        }
+    except Exception:
+        return None
+
+
+def check_updates(manifest: Dict[str, Any]) -> Dict[str, Any]:
+    """Has anything we run actually changed upstream?
+
+    Compares CONTENT, not commits. Upstream can move a dozen times without the
+    installer changing a byte — a README edit is not an update, and nagging
+    about one teaches people to dismiss the badge that matters.
+    """
+    cid = manifest.get("id", "")
+    results: List[Dict[str, Any]] = []
+
+    for art in _artifacts(manifest):
+        shipped = art["source"]
+        pin = _effective_pin(cid, art["id"], shipped)
+        repo = shipped.get("repo")
+        branch = shipped.get("branch") or "main"
+        url = _raw_url(shipped, branch)
+        entry = {
+            "id": art["id"], "label": art["label"],
+            "current_ref": (pin.get("ref") or "")[:7],
+            "user_accepted": pin.get("user_accepted", False),
+            "changed": False, "error": None,
+        }
+        if not url:
+            entry["error"] = "no upstream source recorded"
+            results.append(entry)
+            continue
+
+        body = _fetch(url)
+        if body is None:
+            entry["error"] = "could not reach GitHub"
+            results.append(entry)
+            continue
+
+        import hashlib
+        live = hashlib.sha256(body).hexdigest()
+        if live == pin.get("sha256"):
+            results.append(entry)
+            continue
+
+        entry["changed"] = True
+        entry["new_sha256"] = live
+        entry["new_url"] = url
+        latest = _latest_ref(repo, branch) if repo else None
+        if latest and latest.get("ref"):
+            entry["new_ref"] = latest["ref"][:7]
+            entry["new_ref_full"] = latest["ref"]
+            entry["new_date"] = latest.get("date")
+            entry["message"] = latest.get("message")
+            entry["compare_url"] = (
+                f"https://github.com/{repo}/compare/{pin.get('ref')}...{latest['ref']}"
+                if pin.get("ref") else f"https://github.com/{repo}/commits/{branch}")
+        results.append(entry)
+
+    changed = [r for r in results if r["changed"]]
+    return {
+        "checked_at": datetime.utcnow().isoformat(),
+        "has_updates": bool(changed),
+        "artifacts": results,
+        "summary": ("Up to date." if not changed else
+                    f"{len(changed)} update{'s' if len(changed) != 1 else ''} available."),
+    }
+
+
+def _update_cache_path() -> Path:
+    return Path(settings.data_dir) / "companion_updates.json"
+
+
+def cached_updates(companion_id: str) -> Dict[str, Any]:
+    """The last check's result, read from disk. Never touches the network.
+
+    `status()` is called every time the Settings tab renders and by a polling
+    card; doing a network round-trip there would make the UI wait on GitHub.
+    The check itself runs on a schedule, or when the user asks.
+    """
+    try:
+        p = _update_cache_path()
+        if not p.is_file():
+            return {"checked_at": None, "has_updates": False, "artifacts": []}
+        return (json.loads(p.read_text()).get(companion_id)
+                or {"checked_at": None, "has_updates": False, "artifacts": []})
+    except Exception:
+        return {"checked_at": None, "has_updates": False, "artifacts": []}
+
+
+def check_and_cache(manifest: Dict[str, Any]) -> Dict[str, Any]:
+    result = check_updates(manifest)
+    try:
+        p = _update_cache_path()
+        all_results = json.loads(p.read_text()) if p.is_file() else {}
+        all_results[manifest.get("id", "")] = result
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps(all_results, indent=2))
+    except Exception as e:
+        logger.warning(f"[companions] could not cache update check: {e}")
+    return result
+
+
+def check_all_for_updates() -> Dict[str, Any]:
+    """Background sweep. Only checks companions the user actually installed —
+    telling someone a tool they do not have has an update is pure noise."""
+    checked = {}
+    for manifest in load_manifests():
+        if not is_installed(manifest):
+            continue
+        try:
+            result = check_and_cache(manifest)
+            if result.get("has_updates"):
+                logger.info(f"[companions] {manifest['id']}: {result['summary']}")
+            checked[manifest["id"]] = result.get("summary")
+        except Exception as e:
+            logger.warning(f"[companions] update check failed for {manifest.get('id')}: {e}")
+    return checked
+
+
+def accept_update(manifest: Dict[str, Any], artifact_id: str) -> Dict[str, Any]:
+    """Record that the user accepted a newer upstream revision.
+
+    Deliberately re-fetches and re-hashes rather than trusting the numbers from
+    the check: those may be minutes old, and the pin recorded here is what every
+    later verification compares against. It must describe bytes we just saw.
+    """
+    cid = manifest.get("id", "")
+    art = next((a for a in _artifacts(manifest) if a["id"] == artifact_id), None)
+    if not art:
+        return {"ok": False, "error": "Unknown item"}
+
+    shipped = art["source"]
+    repo, branch = shipped.get("repo"), (shipped.get("branch") or "main")
+    latest = _latest_ref(repo, branch) if repo else None
+    ref = (latest or {}).get("ref") or branch
+    url = _raw_url(shipped, ref)
+    body = _fetch(url) if url else None
+    if body is None:
+        return {"ok": False, "error": "Could not download the new version."}
+
+    import hashlib
+    digest = hashlib.sha256(body).hexdigest()
+
+    pins = _load_pins()
+    pins.setdefault(cid, {})[artifact_id] = {
+        "ref": ref,
+        "ref_date": (latest or {}).get("date"),
+        "sha256": digest,
+        "url": url,
+        "review_url": f"https://github.com/{repo}/blob/{ref}/{shipped.get('path')}" if repo else None,
+        "accepted_at": datetime.utcnow().isoformat(),
+    }
+    _save_pins(pins)
+    logger.info(f"[companions] {cid}/{artifact_id} pinned to {ref[:7]} by the user")
+
+    # An extra is a file we placed — updating the pin means replacing it now.
+    # The installer is different: a new one only takes effect when it is re-run,
+    # which is the user's call, so we say so rather than running it for them.
+    if art.get("extra_id"):
+        result = install_extra(manifest, art["extra_id"])
+        if not result.get("ok"):
+            return {"ok": False, "error": result.get("error"),
+                    "pinned": ref[:7], "note": "The new version was pinned but not installed."}
+        return {"ok": True, "ref": ref[:7], "reinstalled": True}
+
+    return {"ok": True, "ref": ref[:7], "reinstalled": False,
+            "note": "Re-run the installer to apply it."}
+
+
 # ── extras: optional add-ons a companion offers ─────────────────────────────
 #
 # Meeting Notes ships an optional SwiftBar plugin that puts a microphone icon in
@@ -940,6 +1204,7 @@ def status(manifest: Dict[str, Any]) -> Dict[str, Any]:
         "has_checks": bool(manifest.get("verify")),
         "extras": extras_status(manifest),
         "preflight": preflight_plan(manifest),
+        "updates": cached_updates(manifest["id"]),
     }
 
 

@@ -57,6 +57,26 @@ export interface PreflightPlan {
   steps: PreflightStep[];
 }
 
+export interface UpdateArtifact {
+  id: string;
+  label: string;
+  current_ref: string;
+  user_accepted: boolean;
+  changed: boolean;
+  error: string | null;
+  new_ref?: string;
+  new_date?: string;
+  message?: string;
+  compare_url?: string;
+}
+
+export interface UpdateState {
+  checked_at: string | null;
+  has_updates: boolean;
+  artifacts: UpdateArtifact[];
+  summary?: string;
+}
+
 export interface CompanionExtra {
   id: string;
   name: string;
@@ -94,6 +114,7 @@ export interface Companion {
   has_checks?: boolean;
   extras: CompanionExtra[];
   preflight?: PreflightPlan;
+  updates?: UpdateState;
 }
 
 export interface CompanionList {
@@ -200,4 +221,18 @@ export async function runPreflight(id: string): Promise<{
   return jsonOrThrow(await localFetch(`${API_BASE_URL}/companions/${id}/preflight`, {
     method: 'POST',
   }));
+}
+
+export async function checkCompanionUpdates(id: string): Promise<UpdateState & { status: Companion }> {
+  return jsonOrThrow(await localFetch(`${API_BASE_URL}/companions/${id}/check-updates`, {
+    method: 'POST',
+  }));
+}
+
+export async function acceptCompanionUpdate(
+  id: string, artifactId: string,
+): Promise<{ ref: string; reinstalled: boolean; note?: string; status: Companion }> {
+  return jsonOrThrow(await localFetch(
+    `${API_BASE_URL}/companions/${id}/accept-update/${encodeURIComponent(artifactId)}`,
+    { method: 'POST' }));
 }

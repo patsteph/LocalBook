@@ -662,3 +662,194 @@ def test_every_module_this_feature_adds_is_declared_to_pyinstaller():
     ]
     missing = [m for m in required if f"--hidden-import={m} " not in build]
     assert not missing, f"not declared to PyInstaller: {missing}"
+
+
+# ── updates: pinned, but not frozen ─────────────────────────────────────────
+#
+# Pinning protects the user from a moving curl|bash target. It also freezes
+# them — upstream could fix a real bug and nobody would hear about it. The pin
+# stays; what moves is a check, and accepting remains an explicit click.
+
+def _fake_fetch(monkeypatch, body: bytes, commit: dict | None = None):
+    import json as _json
+
+    def _f(url, timeout=30):
+        if "api.github.com" in url:
+            return _json.dumps(commit or {
+                "sha": "b" * 40,
+                "commit": {"committer": {"date": "2026-09-20T10:00:00Z"},
+                           "message": "fix: handle spaces in the output path"},
+                "author": {"login": "kvango"},
+            }).encode()
+        return body
+    monkeypatch.setattr(svc, "_fetch", _f)
+
+
+def test_an_unchanged_upstream_is_not_reported_as_an_update(monkeypatch):
+    """Upstream can move a dozen times without the installer changing a byte.
+    Reporting a README edit as an update teaches people to dismiss the badge
+    that matters."""
+    import hashlib
+    m = svc.get_manifest("meeting-notes")
+    pinned = m["install"]["source"]["sha256"]
+
+    # Content whose hash equals the pin, for both tracked artifacts.
+    def _f(url, timeout=30):
+        if "install.sh" in url:
+            return _FakeBytes(pinned)
+        return _FakeBytes(m["extras"][0]["source"]["sha256"])
+    monkeypatch.setattr(svc, "_fetch", _f)
+    monkeypatch.setattr(hashlib, "sha256", _fake_sha256)
+
+    result = svc.check_updates(m)
+    assert result["has_updates"] is False
+    assert result["summary"] == "Up to date."
+
+
+class _FakeBytes(bytes):
+    """Carries the digest it should hash to, so tests need no real payloads."""
+    def __new__(cls, digest: str):
+        obj = super().__new__(cls, b"x")
+        obj.digest_value = digest
+        return obj
+
+
+def _fake_sha256(data):
+    class _H:
+        def hexdigest(self_inner):
+            return getattr(data, "digest_value", "different-" + str(len(data)))
+    return _H()
+
+
+def test_a_changed_installer_is_reported_with_somewhere_to_read_the_diff(monkeypatch):
+    """"Something changed" without a diff is not information the user can act
+    on — accepting means running someone else's code."""
+    import hashlib
+    _fake_fetch(monkeypatch, b"#!/bin/bash\n# genuinely new content\n")
+    monkeypatch.setattr(hashlib, "sha256", _fake_sha256)
+
+    result = svc.check_updates(svc.get_manifest("meeting-notes"))
+    assert result["has_updates"] is True
+    installer = next(a for a in result["artifacts"] if a["id"] == "install")
+    assert installer["changed"] is True
+    assert installer["compare_url"].startswith("https://github.com/")
+    assert installer["current_ref"] in installer["compare_url"]
+    assert installer["message"]
+
+
+def test_a_check_never_advances_the_pin(monkeypatch, tmp_path):
+    """THE safety property. Checking is passive: it must never change what the
+    install command would run."""
+    from config import settings
+    monkeypatch.setattr(settings, "data_dir", tmp_path, raising=False)
+    import hashlib
+    _fake_fetch(monkeypatch, b"new")
+    monkeypatch.setattr(hashlib, "sha256", _fake_sha256)
+
+    m = svc.get_manifest("meeting-notes")
+    before = svc.install_command(m)
+    svc.check_updates(m)
+    assert svc.install_command(m) == before, "a passive check changed the pinned command"
+    assert not (tmp_path / "companion_pins.json").exists()
+
+
+def test_accepting_records_the_users_own_pin(monkeypatch, tmp_path):
+    from config import settings
+    monkeypatch.setattr(settings, "data_dir", tmp_path, raising=False)
+    import hashlib
+    _fake_fetch(monkeypatch, b"brand new installer")
+    monkeypatch.setattr(hashlib, "sha256", _fake_sha256)
+
+    m = svc.get_manifest("meeting-notes")
+    result = svc.accept_update(m, "install")
+    assert result["ok"] and result["ref"] == "b" * 7
+
+    pins = json.loads((tmp_path / "companion_pins.json").read_text())
+    entry = pins["meeting-notes"]["install"]
+    assert entry["ref"] == "b" * 40
+    assert entry["accepted_at"]
+    assert entry["review_url"].startswith("https://github.com/")
+
+
+def test_the_accepted_pin_is_what_gets_verified_afterwards(monkeypatch, tmp_path):
+    """The shipped manifest is the revision LocalBook reviewed; the overlay is
+    the one this user consented to. Later checks must compare against theirs."""
+    from config import settings
+    monkeypatch.setattr(settings, "data_dir", tmp_path, raising=False)
+    import hashlib
+    _fake_fetch(monkeypatch, b"new")
+    monkeypatch.setattr(hashlib, "sha256", _fake_sha256)
+
+    m = svc.get_manifest("meeting-notes")
+    svc.accept_update(m, "install")
+    src = svc.install_source(m)
+    assert src["user_accepted"] is True
+    assert src["ref"] == "b" * 40
+    assert src["ref"] in svc.install_command(m) or src["sha256"] in svc.install_command(m)
+
+
+def test_accepting_re_downloads_rather_than_trusting_the_check(monkeypatch, tmp_path):
+    """The check's numbers may be minutes old, and the pin recorded here is what
+    every later verification compares against — it must describe bytes we just
+    saw."""
+    code = _code_without_docstring(svc.accept_update)
+    assert "_fetch(" in code
+    assert "sha256" in code
+
+
+def test_accepting_an_add_on_reinstalls_it_immediately(monkeypatch, tmp_path):
+    """A plugin is a file we placed — a new pin with the old file still on disk
+    would be a lie. The installer is different: it only takes effect when re-run,
+    which is the user's call."""
+    from config import settings
+    monkeypatch.setattr(settings, "data_dir", tmp_path, raising=False)
+    import hashlib
+    _fake_fetch(monkeypatch, b"new plugin")
+    monkeypatch.setattr(hashlib, "sha256", _fake_sha256)
+    called = {}
+
+    def _fake_install_extra(manifest, extra_id):
+        called["extra"] = extra_id
+        return {"ok": True}
+    monkeypatch.setattr(svc, "install_extra", _fake_install_extra)
+
+    result = svc.accept_update(svc.get_manifest("meeting-notes"), "extra:menubar")
+    assert result["ok"] and result["reinstalled"] is True
+    assert called["extra"] == "menubar"
+
+
+def test_accepting_the_installer_says_it_must_be_re_run(monkeypatch, tmp_path):
+    from config import settings
+    monkeypatch.setattr(settings, "data_dir", tmp_path, raising=False)
+    import hashlib
+    _fake_fetch(monkeypatch, b"new")
+    monkeypatch.setattr(hashlib, "sha256", _fake_sha256)
+    result = svc.accept_update(svc.get_manifest("meeting-notes"), "install")
+    assert result["reinstalled"] is False
+    assert "re-run" in result["note"].lower()
+
+
+def test_an_unreachable_github_is_not_reported_as_an_update(monkeypatch):
+    """Offline must never look like "nothing to update" OR like a change."""
+    monkeypatch.setattr(svc, "_fetch", lambda url, timeout=30: None)
+    result = svc.check_updates(svc.get_manifest("meeting-notes"))
+    assert result["has_updates"] is False
+    assert all(a["error"] for a in result["artifacts"])
+
+
+def test_status_reads_the_cache_and_never_the_network(monkeypatch):
+    """status() renders the Settings tab and is polled. A network round-trip
+    there would make the UI wait on GitHub."""
+    calls = []
+    monkeypatch.setattr(svc, "_fetch", lambda *a, **k: calls.append(a) or None)
+    svc.status(svc.get_manifest("meeting-notes"))
+    assert calls == [], "status() reached out to the network"
+
+
+def test_the_background_sweep_ignores_companions_that_are_not_installed(monkeypatch):
+    """Telling someone a tool they do not have has an update is pure noise."""
+    monkeypatch.setattr(svc, "is_installed", lambda m: False)
+    checked = []
+    monkeypatch.setattr(svc, "check_and_cache", lambda m: checked.append(m["id"]))
+    svc.check_all_for_updates()
+    assert checked == []

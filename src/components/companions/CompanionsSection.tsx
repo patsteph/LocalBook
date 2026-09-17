@@ -15,6 +15,8 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
   STATE_DOT,
+  acceptCompanionUpdate,
+  checkCompanionUpdates,
   checkInstallScript,
   installExtra,
   runPreflight,
@@ -394,12 +396,122 @@ function HealthPanel({ c, onClose }: { c: Companion; onClose: () => void }) {
   );
 }
 
+/**
+ * Upstream changes. The pin protects the user from a moving target; without
+ * this it would also freeze them — an upstream bug fix nobody ever hears about.
+ *
+ * So the pin stays and updating is an explicit act, with the diff one click
+ * away. "Something changed" without somewhere to read it is not information
+ * anyone can act on, since accepting means running someone else's code.
+ */
+function UpdatesPanel({ c, onChanged, onClose }: {
+  c: Companion; onChanged: () => void; onClose: () => void;
+}) {
+  const [state, setState] = useState(c.updates || null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [note, setNote] = useState<string | null>(null);
+
+  const recheck = async () => {
+    setBusy('check'); setError(null); setNote(null);
+    try {
+      setState(await checkCompanionUpdates(c.id));
+    } catch (e: any) {
+      setError(e?.message || 'Could not reach GitHub.');
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const accept = async (artifactId: string) => {
+    setBusy(artifactId); setError(null);
+    try {
+      const res = await acceptCompanionUpdate(c.id, artifactId);
+      setNote(res.reinstalled
+        ? `Updated to ${res.ref}.`
+        : `Pinned to ${res.ref}. ${res.note || ''}`);
+      setState(await checkCompanionUpdates(c.id));
+      onChanged();
+    } catch (e: any) {
+      setError(e?.message || 'Could not update.');
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const changed = (state?.artifacts || []).filter((a) => a.changed);
+
+  return (
+    <div className="mt-3 rounded-lg border dark:border-gray-700 bg-gray-50 dark:bg-gray-800/60 p-3 space-y-2.5">
+      <div className="flex items-center gap-2">
+        <p className="text-xs font-medium text-gray-700 dark:text-gray-300">
+          {state?.summary || 'Not checked yet.'}
+        </p>
+        <button onClick={recheck} disabled={!!busy}
+                className="ml-auto text-[11px] text-blue-600 dark:text-blue-400 hover:underline disabled:opacity-40">
+          {busy === 'check' ? 'Checking…' : 'Check now'}
+        </button>
+      </div>
+
+      {state?.checked_at && (
+        <p className="text-[11px] text-gray-400 dark:text-gray-500">
+          Last checked {new Date(state.checked_at + 'Z').toLocaleString()}
+        </p>
+      )}
+
+      {changed.map((a) => (
+        <div key={a.id} className="rounded border dark:border-gray-700 bg-white dark:bg-gray-900 px-2.5 py-2">
+          <p className="text-xs font-medium text-gray-900 dark:text-gray-100">{a.label}</p>
+          <p className="mt-0.5 text-[11px] text-gray-500 dark:text-gray-400">
+            You have <span className="font-mono">{a.current_ref}</span>
+            {a.new_ref && <> · upstream is <span className="font-mono">{a.new_ref}</span></>}
+            {a.new_date && <> ({a.new_date})</>}
+          </p>
+          {a.message && (
+            <p className="mt-0.5 text-[11px] text-gray-600 dark:text-gray-300 italic">
+              “{a.message}”
+            </p>
+          )}
+          <div className="mt-1.5 flex items-center gap-2">
+            {a.compare_url && (
+              <a href={a.compare_url} target="_blank" rel="noreferrer"
+                 className="text-[11px] text-blue-600 dark:text-blue-400 hover:underline">
+                See what changed
+              </a>
+            )}
+            <button
+              disabled={!!busy}
+              onClick={() => accept(a.id)}
+              className="ml-auto px-2.5 py-1 text-[11px] font-medium rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-40"
+            >
+              {busy === a.id ? 'Updating…' : 'Update'}
+            </button>
+          </div>
+        </div>
+      ))}
+
+      {(state?.artifacts || []).some((a) => a.error) && (
+        <p className="text-[11px] text-gray-500 dark:text-gray-400">
+          Some items could not be checked — GitHub may be unreachable.
+        </p>
+      )}
+      {note && <p className="text-[11px] text-green-700 dark:text-green-400">{note}</p>}
+      {error && <p className="text-[11px] text-red-600 dark:text-red-400">{error}</p>}
+
+      <button onClick={onClose}
+              className="text-[11px] text-gray-500 hover:text-gray-700 dark:hover:text-gray-300">
+        Close
+      </button>
+    </div>
+  );
+}
+
 function Card({ c, notebooks, onChanged }: {
   c: Companion;
   notebooks: Array<{ id: string; title: string }>;
   onChanged: () => void;
 }) {
-  const [panel, setPanel] = useState<'none' | 'prep' | 'install' | 'connect' | 'health'>('none');
+  const [panel, setPanel] = useState<'none' | 'prep' | 'install' | 'connect' | 'health' | 'updates'>('none');
   const [menu, setMenu] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -436,6 +548,15 @@ function Card({ c, notebooks, onChanged }: {
                 · using your {shortModel(c.using_model)}
               </span>
             )}
+            {c.updates?.has_updates && (
+              <button
+                onClick={() => setPanel('updates')}
+                className="ml-1 px-1.5 py-0.5 text-[10px] rounded-full bg-blue-600 text-white hover:bg-blue-700"
+                title="A newer version is available upstream"
+              >
+                Update available
+              </button>
+            )}
           </div>
 
           {c.linked_notebook_title && (
@@ -453,6 +574,9 @@ function Card({ c, notebooks, onChanged }: {
                           onCancel={() => setPanel('none')} />
           )}
           {panel === 'health' && <HealthPanel c={c} onClose={() => setPanel('none')} />}
+          {panel === 'updates' && (
+            <UpdatesPanel c={c} onChanged={onChanged} onClose={() => setPanel('none')} />
+          )}
           {panel === 'prep' && (
             <PreflightPanel c={c}
                             onDone={() => { onChanged(); setPanel('install'); }}
@@ -506,6 +630,10 @@ function Card({ c, notebooks, onChanged }: {
                       Disconnect (restore its own settings)
                     </button>
                   )}
+                  <button onClick={() => { setMenu(false); setPanel('updates'); }}
+                          className="w-full text-left px-3 py-1.5 text-xs text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800">
+                    Check for updates
+                  </button>
                   {c.has_checks && (
                     <button onClick={() => { setMenu(false); setPanel('health'); }}
                             className="w-full text-left px-3 py-1.5 text-xs text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800">

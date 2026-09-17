@@ -15,7 +15,8 @@
       "path": "install.sh",
       "url": "https://raw.githubusercontent.com/kvango/Meeting-Summarizer/21dc024f1a59b54e392e001c84be5601b3fad2a7/install.sh",
       "sha256": "9880ca800b244648d3a8006ccdadf1db1a41cbbaba5cf08512c22051d6b38ae9",
-      "review_url": "https://github.com/kvango/Meeting-Summarizer/blob/21dc024f1a59b54e392e001c84be5601b3fad2a7/install.sh"
+      "review_url": "https://github.com/kvango/Meeting-Summarizer/blob/21dc024f1a59b54e392e001c84be5601b3fad2a7/install.sh",
+      "branch": "main"
     },
     "interactive": true,
     "requires": [
@@ -109,7 +110,9 @@
         "ref": "21dc024f1a59b54e392e001c84be5601b3fad2a7",
         "url": "https://raw.githubusercontent.com/kvango/Meeting-Summarizer/21dc024f1a59b54e392e001c84be5601b3fad2a7/meeting-summarizer.10s.sh",
         "sha256": "5a4c01a0b7517cebf8fd1d476a8d33210f950dc81f8836dce232339d270a53db",
-        "review_url": "https://github.com/kvango/Meeting-Summarizer/blob/21dc024f1a59b54e392e001c84be5601b3fad2a7/meeting-summarizer.10s.sh"
+        "review_url": "https://github.com/kvango/Meeting-Summarizer/blob/21dc024f1a59b54e392e001c84be5601b3fad2a7/meeting-summarizer.10s.sh",
+        "branch": "main",
+        "repo": "kvango/Meeting-Summarizer"
       },
       "install": {
         "kind": "plugin_file",

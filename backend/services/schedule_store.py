@@ -269,6 +269,26 @@ SCHEDULE_REGISTRY: List[ScheduleDef] = [
         advanced=True,
     ),
     ScheduleDef(
+        id="companion-updates",
+        name="Companion update check",
+        agent="system",
+        category=CAT_INFRA,
+        cadence_kind=KIND_INTERVAL,
+        default_seconds=24 * _H,
+        min_seconds=1 * _H,
+        max_seconds=14 * _D,
+        editable=True,
+        rung_c_candidate=True,
+        module_const="companion_updates.CHECK_INTERVAL_SECONDS",
+        note="Asks GitHub whether an installed companion's installer or add-ons "
+             "have changed. Compares file contents, not commit counts, so a "
+             "README edit is not reported as an update. Only checks companions "
+             "that are actually installed.",
+        tier="DAYDREAM",
+        managed_in="Settings → Companions",
+        can_disable=True,
+    ),
+    ScheduleDef(
         id="folder-watch",
         name="Linked folder watch",
         agent="system",
