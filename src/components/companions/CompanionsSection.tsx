@@ -17,6 +17,7 @@ import {
   STATE_DOT,
   checkInstallScript,
   installExtra,
+  runPreflight,
   removeExtra,
   verifyCompanion,
   STATE_LABEL,
@@ -29,6 +30,90 @@ import {
   type Companion,
   type VerifyResult,
 } from '../../services/companions';
+
+/**
+ * Step one of installing: prepare the Mac, asking for the password once.
+ *
+ * Only three things in the whole install actually need root, and only one of
+ * them is a package. Doing them here — together — means the companion's own
+ * installer has nothing left to ask for, without our having changed a byte of
+ * their repository.
+ *
+ * The list is shown before the prompt, with a reason beside each item. Granting
+ * admin to a list of package names is not consent.
+ */
+function PreflightPanel({ c, onDone, onClose }: {
+  c: Companion; onDone: () => void; onClose: () => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [log, setLog] = useState<string[]>([]);
+  const plan = c.preflight;
+  if (!plan) return null;
+
+  const outstanding = plan.steps.filter((s) => !s.done && !s.incidental);
+
+  const go = async () => {
+    setBusy(true); setError(null);
+    try {
+      const res = await runPreflight(c.id);
+      setLog(res.log || []);
+      onDone();
+    } catch (e: any) {
+      setError(e?.message || 'Preparation failed.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="mt-3 rounded-lg border dark:border-gray-700 bg-gray-50 dark:bg-gray-800/60 p-3 space-y-2.5">
+      <p className="text-xs text-gray-600 dark:text-gray-300">{plan.summary}</p>
+
+      <div className="space-y-1.5">
+        {plan.steps.filter((s) => !s.incidental).map((s) => (
+          <div key={s.id} className="flex items-start gap-1.5 text-[11px]">
+            <span className={s.done ? 'text-green-600 dark:text-green-400' : 'text-gray-400'}>
+              {s.done ? '✓' : '○'}
+            </span>
+            <span className={s.done
+              ? 'text-gray-400 dark:text-gray-500 line-through'
+              : 'text-gray-700 dark:text-gray-300'}>
+              {s.label}
+              <span className="text-gray-400 dark:text-gray-500"> — {s.why}</span>
+              {s.needs_admin && !s.done && (
+                <span className="ml-1 text-amber-600 dark:text-amber-400">needs your password</span>
+              )}
+            </span>
+          </div>
+        ))}
+      </div>
+
+      {plan.will_prompt && (
+        <p className="text-[11px] text-gray-500 dark:text-gray-400">
+          macOS will ask for your password once. LocalBook never sees it — the
+          prompt is the system's own.
+        </p>
+      )}
+
+      {log.length > 0 && (
+        <p className="text-[11px] text-green-700 dark:text-green-400">{log.join(' · ')}</p>
+      )}
+      {error && <p className="text-[11px] text-red-600 dark:text-red-400">{error}</p>}
+
+      <div className="flex justify-end gap-2">
+        <button onClick={onClose} disabled={busy}
+                className="px-2.5 py-1 text-xs text-gray-500 hover:text-gray-700 dark:hover:text-gray-300">
+          Cancel
+        </button>
+        <button onClick={go} disabled={busy || outstanding.length === 0}
+                className="px-3 py-1 text-xs font-medium rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-40">
+          {busy ? 'Preparing…' : outstanding.length === 0 ? 'Nothing to do' : 'Prepare'}
+        </button>
+      </div>
+    </div>
+  );
+}
 
 function InstallPanel({ c, onClose }: { c: Companion; onClose: () => void }) {
   const [copied, setCopied] = useState(false);
@@ -314,7 +399,7 @@ function Card({ c, notebooks, onChanged }: {
   notebooks: Array<{ id: string; title: string }>;
   onChanged: () => void;
 }) {
-  const [panel, setPanel] = useState<'none' | 'install' | 'connect' | 'health'>('none');
+  const [panel, setPanel] = useState<'none' | 'prep' | 'install' | 'connect' | 'health'>('none');
   const [menu, setMenu] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -368,6 +453,11 @@ function Card({ c, notebooks, onChanged }: {
                           onCancel={() => setPanel('none')} />
           )}
           {panel === 'health' && <HealthPanel c={c} onClose={() => setPanel('none')} />}
+          {panel === 'prep' && (
+            <PreflightPanel c={c}
+                            onDone={() => { onChanged(); setPanel('install'); }}
+                            onClose={() => setPanel('none')} />
+          )}
 
           <Extras c={c} onChanged={onChanged} />
         </div>
@@ -375,9 +465,11 @@ function Card({ c, notebooks, onChanged }: {
         {/* One primary action for the state you're in. Everything else in ⋯ */}
         <div className="flex items-center gap-1 flex-shrink-0">
           {c.state === 'not_installed' && panel === 'none' && (
-            <button onClick={() => setPanel('install')}
-                    className="px-3 py-1.5 text-xs font-medium rounded-lg bg-blue-600 text-white hover:bg-blue-700">
-              Install…
+            <button
+              onClick={() => setPanel(c.preflight?.needed ? 'prep' : 'install')}
+              className="px-3 py-1.5 text-xs font-medium rounded-lg bg-blue-600 text-white hover:bg-blue-700"
+            >
+              {c.preflight?.needed ? 'Set up…' : 'Install…'}
             </button>
           )}
           {c.state === 'installed' && panel === 'none' && (

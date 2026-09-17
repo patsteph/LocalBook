@@ -153,6 +153,32 @@ async def disconnect(companion_id: str, remove_link: bool = False):
     return {"ok": True, "status": svc.status(manifest)}
 
 
+@router.post("/companions/{companion_id}/preflight")
+async def preflight(companion_id: str):
+    """Prepare the Mac, asking for the password exactly once.
+
+    Runs everything that needs no password first, then collapses the privileged
+    work — the audio driver's .pkg and the Core Audio restart — into a single
+    native authorization prompt. LocalBook never handles the password itself.
+
+    Afterwards the companion's own installer finds everything present, and the
+    lines that would have needed elevation are all written `|| true`, so it
+    carries on without our having changed a byte of their repository.
+    """
+    import asyncio
+    manifest = _manifest_or_404(companion_id)
+    # Off the event loop: brew can take minutes, and the authorization dialog
+    # blocks until the user answers it.
+    result = await asyncio.to_thread(svc.run_preflight, manifest)
+    if not result.get("ok"):
+        raise HTTPException(
+            status_code=409 if result.get("cancelled") else 400,
+            detail=result.get("error", "Preparation failed"))
+    return {"ok": True, "log": result.get("log", []),
+            "prompted": result.get("prompted", False),
+            "status": svc.status(manifest)}
+
+
 @router.post("/companions/{companion_id}/extras/{extra_id}")
 async def add_extra(companion_id: str, extra_id: str):
     """Install one optional add-on — e.g. the menu bar control.

@@ -464,3 +464,177 @@ def test_removing_the_extra_leaves_its_host_app_alone(tmp_path, monkeypatch):
 
 def test_an_unknown_extra_is_refused():
     assert svc.install_extra(svc.get_manifest("meeting-notes"), "nope")["ok"] is False
+
+
+# ── preflight: one password prompt, and LocalBook never sees the password ────
+#
+# Homebrew refuses to run as root (check-run-command-as-root), so the installer
+# cannot simply be wrapped in an admin prompt. Only three things actually need
+# elevation, and only one of them is a package: the BlackHole .pkg. Downloading
+# it as the USER and installing it as root is what collapses the whole thing
+# into a single native authorization.
+#
+# These tests never install anything — every subprocess is captured.
+
+@pytest.fixture
+def captured(monkeypatch):
+    """Record every command instead of running it."""
+    calls = []
+
+    class _Proc:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    # The mock must behave like reality: a binary appears only AFTER its install
+    # runs. A fixture that never lets one appear makes outcome verification fire
+    # correctly and abort — which looks like a code failure and is not one.
+    present = {"brew"}
+
+    def _run(args, **kw):
+        calls.append(list(args))
+        p = _Proc()
+        if len(args) >= 3 and args[1] == "install" and "--cask" not in args:
+            present.add(args[2])
+            if args[2] == "switchaudio-osx":
+                present.add("SwitchAudioSource")
+        if "--cache" in args:
+            p.stdout = "/tmp/fake/BlackHole2ch.pkg\n"
+        return p
+
+    monkeypatch.setattr(svc.subprocess, "run", _run)
+    monkeypatch.setattr(svc, "_which",
+                        lambda b: f"/opt/homebrew/bin/{b}" if b in present else None)
+    monkeypatch.setattr(svc, "_audio_devices", lambda: [])
+    monkeypatch.setattr(svc.Path, "is_file", lambda self: True)
+    return calls
+
+
+def test_the_plan_separates_what_needs_a_password(captured):
+    plan = svc.preflight_plan(svc.get_manifest("meeting-notes"))
+    by_label = {s["label"]: s for s in plan["steps"]}
+    assert by_label["ffmpeg"]["needs_admin"] is False
+    assert by_label["switchaudio-osx"]["needs_admin"] is False
+    assert by_label["BlackHole audio driver"]["needs_admin"] is True
+    assert plan["will_prompt"] is True
+
+
+def test_every_step_explains_why_it_is_needed():
+    """A list of package names is not consent. The user is granting admin — they
+    should be able to see what each piece is for."""
+    plan = svc.preflight_plan(svc.get_manifest("meeting-notes"))
+    for s in plan["steps"]:
+        assert s["why"], f"{s['label']} has no explanation"
+
+
+def test_homebrew_is_never_run_as_root(captured):
+    """brew.sh has check-run-command-as-root and will refuse — and running a
+    package manager as root is wrong regardless."""
+    svc.run_preflight(svc.get_manifest("meeting-notes"))
+    for call in captured:
+        joined = " ".join(call)
+        if "brew" in joined:
+            assert "osascript" not in joined
+            assert "administrator privileges" not in joined
+            assert not joined.startswith("sudo")
+
+
+def test_exactly_one_password_prompt(captured):
+    """The whole point. Two prompts for one install is the thing we are fixing."""
+    svc.run_preflight(svc.get_manifest("meeting-notes"))
+    prompts = [c for c in captured
+               if any("administrator privileges" in str(a) for a in c)]
+    assert len(prompts) == 1, f"expected one authorization, got {len(prompts)}"
+
+
+def test_the_privileged_step_installs_the_pkg_and_restarts_core_audio(captured, monkeypatch):
+    """Both privileged actions ride inside the single authorization."""
+    written = {}
+    real_write = svc.Path.write_text
+
+    def _capture(self, text, *a, **k):
+        if self.name == "preflight.sh":
+            written["script"] = text
+        return real_write(self, text, *a, **k)
+    monkeypatch.setattr(svc.Path, "write_text", _capture)
+
+    svc.run_preflight(svc.get_manifest("meeting-notes"))
+    script = written.get("script", "")
+    assert "/usr/sbin/installer -pkg" in script
+    assert "BlackHole" in script
+    assert "killall coreaudiod" in script
+
+
+def test_an_optional_privileged_step_cannot_abort_the_driver_install(captured, monkeypatch):
+    """A failed Core Audio restart is cosmetic; an aborted driver install is not.
+    With `set -e` and no guard, the first would kill the second."""
+    written = {}
+    real_write = svc.Path.write_text
+
+    def _capture(self, text, *a, **k):
+        if self.name == "preflight.sh":
+            written["script"] = text
+        return real_write(self, text, *a, **k)
+    monkeypatch.setattr(svc.Path, "write_text", _capture)
+
+    svc.run_preflight(svc.get_manifest("meeting-notes"))
+    line = next(l for l in written["script"].splitlines() if "killall" in l)
+    assert line.endswith("|| true")
+
+
+def test_the_pkg_is_downloaded_as_the_user_before_any_prompt(captured):
+    """brew verifies its own checksum on fetch, and a download needs no
+    privilege — so the elevated step is only ever `installer`."""
+    svc.run_preflight(svc.get_manifest("meeting-notes"))
+    flat = [" ".join(c) for c in captured]
+    fetch = next(i for i, c in enumerate(flat) if "fetch --cask" in c)
+    prompt = next(i for i, c in enumerate(flat) if "administrator privileges" in c)
+    assert fetch < prompt, "the pkg must be downloaded before the password prompt"
+
+
+def test_password_free_work_happens_before_the_prompt(captured):
+    """If the user cancels, they are left with a partly prepared Mac rather than
+    nothing — and re-running picks up where it stopped."""
+    svc.run_preflight(svc.get_manifest("meeting-notes"))
+    flat = [" ".join(c) for c in captured]
+    installs = [i for i, c in enumerate(flat) if "brew install" in c]
+    prompt = next(i for i, c in enumerate(flat) if "administrator privileges" in c)
+    assert installs and max(installs) < prompt
+
+
+def test_cancelling_the_prompt_is_reported_as_cancelled_not_failed(monkeypatch, captured):
+    inner = svc.subprocess.run            # the fixture's mock; keep its behaviour
+
+    def _run(args, **kw):
+        result = inner(args, **kw)
+        if any("osascript" in str(a) for a in args):
+            return type("P", (), {"returncode": 1, "stdout": "",
+                                  "stderr": "execution error: User canceled. (-128)"})()
+        return result
+    monkeypatch.setattr(svc.subprocess, "run", _run)
+
+    result = svc.run_preflight(svc.get_manifest("meeting-notes"))
+    assert result["ok"] is False
+    assert result["cancelled"] is True
+    assert "nothing was installed" in result["error"].lower()
+
+
+def test_the_temporary_privileged_script_is_cleaned_up(captured, monkeypatch):
+    removed = []
+    monkeypatch.setattr(svc.shutil, "rmtree", lambda d, **k: removed.append(d))
+    svc.run_preflight(svc.get_manifest("meeting-notes"))
+    assert removed, "the root-executed script was left on disk"
+
+
+def test_success_is_judged_on_outcome_not_exit_code(monkeypatch, captured):
+    """osascript returning 0 does not mean the driver landed."""
+    monkeypatch.setattr(svc, "_audio_devices", lambda: [])       # still absent
+    result = svc.run_preflight(svc.get_manifest("meeting-notes"))
+    assert result["ok"] is False
+    assert "still missing" in result["error"].lower()
+
+
+def test_a_machine_without_homebrew_is_told_so(monkeypatch):
+    monkeypatch.setattr(svc, "_which", lambda b: None)
+    result = svc.run_preflight(svc.get_manifest("meeting-notes"))
+    assert result["ok"] is False and "brew.sh" in result["error"]

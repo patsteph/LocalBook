@@ -126,5 +126,37 @@
         "The '.10s' in the filename tells SwiftBar to refresh every 10 seconds, which is how the icon notices a recording started from anywhere else."
       ]
     }
-  ]
+  ],
+  "preflight": {
+    "label": "Prepare your Mac",
+    "summary": "Installs the audio pieces first, so the installer itself has nothing left to ask for.",
+    "formulae": [
+      {
+        "name": "ffmpeg",
+        "binary": "ffmpeg",
+        "why": "records and converts the audio"
+      },
+      {
+        "name": "switchaudio-osx",
+        "binary": "SwitchAudioSource",
+        "why": "switches your output to the meeting device while recording"
+      }
+    ],
+    "pkg_casks": [
+      {
+        "cask": "blackhole-2ch",
+        "label": "BlackHole audio driver",
+        "audio_device": "BlackHole 2ch",
+        "why": "lets it hear the other side of a call, not just your microphone"
+      }
+    ],
+    "admin_commands": [
+      {
+        "cmd": "/usr/bin/killall coreaudiod",
+        "optional": true,
+        "label": "restart Core Audio",
+        "why": "makes the new audio device appear without restarting your Mac"
+      }
+    ]
+  }
 }

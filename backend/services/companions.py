@@ -36,8 +36,10 @@ import logging
 import os
 import re
 import secrets
+import shlex
 import shutil
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -467,6 +469,193 @@ def disconnect(manifest: Dict[str, Any]) -> Dict[str, Any]:
         return {"ok": False, "error": str(e)}
 
 
+# ── preflight: everything privileged, in ONE authorization ──────────────────
+#
+# The goal is a single native password prompt, and LocalBook never seeing the
+# password. What makes that possible is that only a small part of the install
+# actually needs root:
+#
+#   formulae (ffmpeg, switchaudio-osx)  → user-owned brew prefix, NO password
+#   the cask's .pkg                     → downloaded as the user (brew verifies
+#                                         its own checksum), installed as root
+#   killall coreaudiod                  → root
+#
+# Homebrew refuses to run as root — `check-run-command-as-root` in brew.sh — so
+# wrapping the whole installer in an admin prompt is not an option, and neither
+# is pre-authorising sudo on brew's behalf. Splitting it this way is what lets
+# the privileged part collapse into one `do shell script … with administrator
+# privileges`, which is the OS's own dialog.
+#
+# After this runs, the companion's own installer finds everything present. Every
+# line of it that would have needed a password is written `|| true`, so it
+# shrugs and carries on — without us modifying a byte of their repository.
+
+def _brew() -> Optional[str]:
+    return _which("brew")
+
+
+def preflight_plan(manifest: Dict[str, Any]) -> Dict[str, Any]:
+    """What preparation is still outstanding, and which parts need a password."""
+    pre = manifest.get("preflight") or {}
+    if not pre:
+        return {"needed": False, "steps": []}
+
+    devices = None
+    steps: List[Dict[str, Any]] = []
+
+    for f in pre.get("formulae") or []:
+        steps.append({
+            "id": f"formula:{f['name']}", "label": f["name"], "why": f.get("why", ""),
+            "needs_admin": False, "done": bool(_which(f.get("binary") or f["name"])),
+        })
+
+    for c in pre.get("pkg_casks") or []:
+        want = c.get("audio_device")
+        if want:
+            if devices is None:
+                devices = _audio_devices()
+            done = any(want.lower() in d.lower() for d in devices)
+        else:
+            done = _cask_installed(c["cask"])
+        steps.append({
+            "id": f"cask:{c['cask']}", "label": c.get("label", c["cask"]),
+            "why": c.get("why", ""), "needs_admin": True, "done": done,
+        })
+
+    for a in pre.get("admin_commands") or []:
+        # Not idempotently checkable — it is an action, not a state. It rides
+        # along inside the same authorization, so it costs nothing extra.
+        steps.append({
+            "id": f"cmd:{a.get('label', 'command')}", "label": a.get("label", "command"),
+            "why": a.get("why", ""), "needs_admin": True, "done": False,
+            "incidental": True,
+        })
+
+    outstanding = [s for s in steps if not s["done"] and not s.get("incidental")]
+    return {
+        "needed": bool(outstanding),
+        "label": pre.get("label", "Prepare"),
+        "summary": pre.get("summary", ""),
+        "steps": steps,
+        "will_prompt": any(s["needs_admin"] for s in steps if not s["done"]),
+    }
+
+
+def _run_as_user(args: List[str], timeout: int = 900) -> subprocess.CompletedProcess:
+    """Run a command as the logged-in user. Never root — Homebrew refuses it."""
+    env = dict(os.environ)
+    env["PATH"] = f"/opt/homebrew/bin:/usr/local/bin:{env.get('PATH', '')}"
+    env["HOMEBREW_NO_AUTO_UPDATE"] = "1"       # keep it quick and predictable
+    env["NONINTERACTIVE"] = "1"                # brew must never wait on a prompt
+    return subprocess.run(args, capture_output=True, text=True, timeout=timeout, env=env)
+
+
+def run_preflight(manifest: Dict[str, Any]) -> Dict[str, Any]:
+    """Do the preparation, asking for the password exactly once.
+
+    Order matters: everything that can be done WITHOUT elevation happens first,
+    so that if the user cancels the password prompt they are left with a
+    partially prepared machine rather than nothing — and re-running picks up
+    where it stopped.
+    """
+    pre = manifest.get("preflight") or {}
+    if not pre:
+        return {"ok": True, "skipped": True, "log": []}
+
+    brew = _brew()
+    if not brew:
+        return {"ok": False,
+                "error": "Homebrew is required. Install it from https://brew.sh, then try again."}
+
+    log: List[str] = []
+
+    # ── 1. formulae — user-owned prefix, no password ────────────────────
+    for f in pre.get("formulae") or []:
+        name, binary = f["name"], (f.get("binary") or f["name"])
+        if _which(binary):
+            log.append(f"{name} already present")
+            continue
+        try:
+            proc = _run_as_user([brew, "install", name])
+        except subprocess.TimeoutExpired:
+            return {"ok": False, "error": f"Installing {name} took too long.", "log": log}
+        if not _which(binary):
+            tail = (proc.stderr or proc.stdout or "").strip()[-300:]
+            return {"ok": False, "error": f"Could not install {name}. {tail}", "log": log}
+        log.append(f"installed {name}")
+
+    # ── 2. download the .pkg as the USER; brew verifies its own checksum ─
+    pkgs: List[str] = []
+    for c in pre.get("pkg_casks") or []:
+        cask = c["cask"]
+        want = c.get("audio_device")
+        if want and any(want.lower() in d.lower() for d in _audio_devices()):
+            log.append(f"{c.get('label', cask)} already installed")
+            continue
+        try:
+            _run_as_user([brew, "fetch", "--cask", cask], timeout=600)
+            proc = _run_as_user([brew, "--cache", "--cask", cask], timeout=120)
+        except subprocess.TimeoutExpired:
+            return {"ok": False, "error": f"Downloading {cask} took too long.", "log": log}
+        path = (proc.stdout or "").strip()
+        if not path or not Path(path).is_file():
+            return {"ok": False,
+                    "error": f"Could not download {c.get('label', cask)}.", "log": log}
+        pkgs.append(path)
+        log.append(f"downloaded {c.get('label', cask)}")
+
+    admin_cmds = [a for a in (pre.get("admin_commands") or [])]
+    if not pkgs and not admin_cmds:
+        return {"ok": True, "log": log, "prompted": False}
+
+    # ── 3. ONE authorization for everything privileged ──────────────────
+    script_lines = ["#!/bin/sh", "set -e"]
+    for pkg in pkgs:
+        script_lines.append(f'/usr/sbin/installer -pkg {shlex.quote(pkg)} -target /')
+    for a in admin_cmds:
+        cmd = a.get("cmd", "")
+        # Optional steps must not abort the rest — a Core Audio restart failing
+        # is cosmetic, an aborted driver install is not.
+        script_lines.append(f"{cmd} || true" if a.get("optional") else cmd)
+
+    workdir = tempfile.mkdtemp(prefix="localbook-preflight-")   # 0700, ours alone
+    script_path = Path(workdir) / "preflight.sh"
+    try:
+        script_path.write_text("\n".join(script_lines) + "\n")
+        os.chmod(script_path, 0o700)
+        # `do shell script … with administrator privileges` is the OS's own
+        # authorization dialog. LocalBook never sees or handles the password.
+        applescript = (
+            f'do shell script "/bin/sh {shlex.quote(str(script_path))}" '
+            f'with administrator privileges'
+        )
+        proc = subprocess.run(["/usr/bin/osascript", "-e", applescript],
+                              capture_output=True, text=True, timeout=900)
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "error": "The privileged step took too long.", "log": log}
+    except Exception as e:
+        return {"ok": False, "error": f"Could not run the privileged step: {e}", "log": log}
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
+
+    if proc.returncode != 0:
+        err = (proc.stderr or "").strip()
+        if "User canceled" in err or "-128" in err:
+            return {"ok": False, "cancelled": True, "log": log,
+                    "error": "Password prompt cancelled — nothing was installed. "
+                             "The steps that needed no password are done."}
+        return {"ok": False, "log": log,
+                "error": f"The privileged step failed: {err[-300:] or 'unknown error'}"}
+
+    log.append("installed the audio driver")
+    # Outcome, not exit code — the same rule as everywhere else here.
+    remaining = [s for s in preflight_plan(manifest)["steps"]
+                 if not s["done"] and not s.get("incidental")]
+    return {"ok": not remaining, "log": log, "prompted": True,
+            "error": None if not remaining else
+                     f"Still missing: {', '.join(s['label'] for s in remaining)}"}
+
+
 # ── extras: optional add-ons a companion offers ─────────────────────────────
 #
 # Meeting Notes ships an optional SwiftBar plugin that puts a microphone icon in
@@ -693,6 +882,7 @@ def status(manifest: Dict[str, Any]) -> Dict[str, Any]:
         "can_control": bool(manifest.get("control", {}).get("start")),
         "has_checks": bool(manifest.get("verify")),
         "extras": extras_status(manifest),
+        "preflight": preflight_plan(manifest),
     }
 
 

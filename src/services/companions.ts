@@ -40,6 +40,23 @@ export interface VerifyResult {
   summary?: string;
 }
 
+export interface PreflightStep {
+  id: string;
+  label: string;
+  why: string;
+  needs_admin: boolean;
+  done: boolean;
+  incidental?: boolean;
+}
+
+export interface PreflightPlan {
+  needed: boolean;
+  label?: string;
+  summary?: string;
+  will_prompt?: boolean;
+  steps: PreflightStep[];
+}
+
 export interface CompanionExtra {
   id: string;
   name: string;
@@ -76,6 +93,7 @@ export interface Companion {
   can_control: boolean;
   has_checks?: boolean;
   extras: CompanionExtra[];
+  preflight?: PreflightPlan;
 }
 
 export interface CompanionList {
@@ -173,5 +191,13 @@ export async function installExtra(id: string, extraId: string): Promise<{ statu
 export async function removeExtra(id: string, extraId: string): Promise<{ status: Companion }> {
   return jsonOrThrow(await localFetch(`${API_BASE_URL}/companions/${id}/extras/${extraId}`, {
     method: 'DELETE',
+  }));
+}
+
+export async function runPreflight(id: string): Promise<{
+  log: string[]; prompted: boolean; status: Companion;
+}> {
+  return jsonOrThrow(await localFetch(`${API_BASE_URL}/companions/${id}/preflight`, {
+    method: 'POST',
   }));
 }
