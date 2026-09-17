@@ -3,33 +3,44 @@
   "name": "Meeting Notes",
   "author": "kvango",
   "tagline": "Record any call. Clean notes land in your notebook.",
-  "description": "Records your microphone and the far side of a call as two streams, transcribes locally with Whisper, and writes structured notes — TL;DR, decisions, action items, open questions — plus the full transcript. Nothing leaves your Mac.",
+  "description": "Records your microphone and the far side of a call as two streams, transcribes locally with Whisper, and writes structured notes \u2014 TL;DR, decisions, action items, open questions \u2014 plus the full transcript. Nothing leaves your Mac.",
   "homepage": "https://github.com/kvango/Meeting-Summarizer",
-  "icon": "🎙️",
-
+  "icon": "\ud83c\udf99\ufe0f",
   "install": {
     "kind": "shell",
-    "command": "curl -fsSL https://raw.githubusercontent.com/kvango/Meeting-Summarizer/main/install.sh | bash",
+    "source": {
+      "repo": "kvango/Meeting-Summarizer",
+      "ref": "21dc024f1a59b54e392e001c84be5601b3fad2a7",
+      "ref_date": "2026-09-16",
+      "path": "install.sh",
+      "url": "https://raw.githubusercontent.com/kvango/Meeting-Summarizer/21dc024f1a59b54e392e001c84be5601b3fad2a7/install.sh",
+      "sha256": "9880ca800b244648d3a8006ccdadf1db1a41cbbaba5cf08512c22051d6b38ae9",
+      "review_url": "https://github.com/kvango/Meeting-Summarizer/blob/21dc024f1a59b54e392e001c84be5601b3fad2a7/install.sh"
+    },
     "interactive": true,
-    "requires": ["brew"],
+    "requires": [
+      "brew"
+    ],
     "notes": [
-      "Installs the BlackHole audio driver, which needs your admin password.",
-      "Asks a few questions in the terminal, including an optional email address.",
-      "Installs llama.cpp — LocalBook will point the tool at its own engine afterwards, so nothing needs to load a second model."
+      "Asks for your password once, to install the BlackHole audio driver.",
+      "Then shows two dialogs of its own: leave the email blank \u2014 LocalBook files your notes.",
+      "Installs llama.cpp, which goes unused once LocalBook is connected as the engine."
     ]
   },
-
   "detect": {
-    "binaries": ["meeting-start", "meeting-stop"],
+    "binaries": [
+      "meeting-start",
+      "meeting-stop"
+    ],
     "support_dir": "~/Library/Application Support/MeetingNotes"
   },
-
   "produces": {
     "dir": "~/Desktop/Meeting Notes",
-    "patterns": ["*.md"],
+    "patterns": [
+      "*.md"
+    ],
     "parser": "meeting_notes"
   },
-
   "configure": {
     "file": "~/Library/Application Support/MeetingNotes/config.sh",
     "format": "sh",
@@ -39,11 +50,81 @@
       "API_KEY": "{companion_key}"
     }
   },
-
   "control": {
     "start": "meeting-start",
     "stop": "meeting-stop",
-    "state": {"pidfile": "~/Library/Application Support/MeetingNotes/recording.pid"},
+    "state": {
+      "pidfile": "~/Library/Application Support/MeetingNotes/recording.pid"
+    },
     "log": "~/Library/Application Support/MeetingNotes/last-run.log"
-  }
+  },
+  "verify": [
+    {
+      "kind": "binary",
+      "name": "meeting-start",
+      "label": "the meeting command",
+      "fix": "The installer did not finish. Run it again."
+    },
+    {
+      "kind": "binary",
+      "name": "meeting-stop",
+      "label": "the stop command",
+      "fix": "The installer did not finish. Run it again."
+    },
+    {
+      "kind": "path",
+      "path": "~/Library/Application Support/MeetingNotes/config.sh",
+      "label": "its settings file",
+      "fix": "The installer did not finish. Run it again."
+    },
+    {
+      "kind": "binary",
+      "name": "ffmpeg",
+      "label": "ffmpeg",
+      "fix": "Install it with: brew install ffmpeg"
+    },
+    {
+      "kind": "audio_device",
+      "name": "BlackHole 2ch",
+      "label": "the BlackHole audio driver",
+      "fix": "Without this it can record your microphone but not the other side of a call. Install it with: brew install blackhole-2ch \u2014 then restart your Mac."
+    },
+    {
+      "kind": "audio_device",
+      "name": "Meeting Output",
+      "label": "the Meeting Output device",
+      "fix": "Open Audio MIDI Setup, click + \u2192 Create Multi-Output Device, tick your speakers AND BlackHole 2ch, and rename it to 'Meeting Output'."
+    }
+  ],
+  "extras": [
+    {
+      "id": "menubar",
+      "name": "Menu bar control",
+      "tagline": "Start and stop recording from the macOS menu bar.",
+      "description": "Adds a microphone icon to the menu bar that turns red while recording. Uses SwiftBar, a small open-source menu bar host.",
+      "requires_cask": "swiftbar",
+      "cask_needs_admin": false,
+      "source": {
+        "path": "meeting-summarizer.10s.sh",
+        "ref": "21dc024f1a59b54e392e001c84be5601b3fad2a7",
+        "url": "https://raw.githubusercontent.com/kvango/Meeting-Summarizer/21dc024f1a59b54e392e001c84be5601b3fad2a7/meeting-summarizer.10s.sh",
+        "sha256": "5a4c01a0b7517cebf8fd1d476a8d33210f950dc81f8836dce232339d270a53db",
+        "review_url": "https://github.com/kvango/Meeting-Summarizer/blob/21dc024f1a59b54e392e001c84be5601b3fad2a7/meeting-summarizer.10s.sh"
+      },
+      "install": {
+        "kind": "plugin_file",
+        "filename": "meeting-summarizer.10s.sh",
+        "mode": 493,
+        "dir_pref": {
+          "domain": "com.ameba.SwiftBar",
+          "key": "PluginDirectory"
+        },
+        "dir_default": "~/Library/Application Support/SwiftBar/Plugins"
+      },
+      "notes": [
+        "SwiftBar is an app, not a system driver \u2014 installing it needs no password.",
+        "The '.10s' in the filename tells SwiftBar to refresh every 10 seconds, which is how the icon notices a recording started from anywhere else."
+      ]
+    }
+  ]
 }

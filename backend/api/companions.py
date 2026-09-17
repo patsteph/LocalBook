@@ -57,6 +57,29 @@ async def get_companion(companion_id: str):
     return svc.status(_manifest_or_404(companion_id))
 
 
+@router.get("/companions/{companion_id}/verify")
+async def verify(companion_id: str):
+    """Did the install actually produce a working tool?
+
+    Its exit code is not evidence. Meeting Notes swallows a failed audio-driver
+    install with `2>/dev/null || true`, and the user would not discover it until
+    the far side of their first call came back silent.
+    """
+    return svc.verify_install(_manifest_or_404(companion_id))
+
+
+@router.get("/companions/{companion_id}/install-script")
+async def install_script(companion_id: str):
+    """Download the PINNED installer and check it against the recorded hash.
+
+    Called before offering to run anything, so a mismatch stops the flow rather
+    than being discovered afterwards.
+    """
+    manifest = _manifest_or_404(companion_id)
+    result = svc.fetch_and_verify_script(manifest)
+    return {"source": svc.install_source(manifest), "verification": result}
+
+
 @router.post("/companions/{companion_id}/connect")
 async def connect(companion_id: str, req: ConnectRequest):
     """Point the tool at LocalBook's engine and watch what it writes.
@@ -127,6 +150,31 @@ async def disconnect(companion_id: str, remove_link: bool = False):
             logger.warning(f"[companions] could not unlink: {e}")
     if not result.get("ok"):
         raise HTTPException(status_code=400, detail=result.get("error", "Could not disconnect"))
+    return {"ok": True, "status": svc.status(manifest)}
+
+
+@router.post("/companions/{companion_id}/extras/{extra_id}")
+async def add_extra(companion_id: str, extra_id: str):
+    """Install one optional add-on — e.g. the menu bar control.
+
+    Needs no privilege: SwiftBar is an app cask and the plugin is a shell script
+    in a folder the user already owns. This is the one part of the flow that
+    genuinely is one click.
+    """
+    manifest = _manifest_or_404(companion_id)
+    result = svc.install_extra(manifest, extra_id)
+    if not result.get("ok"):
+        raise HTTPException(status_code=400, detail=result.get("error", "Could not install"))
+    return {"ok": True, "status": svc.status(manifest)}
+
+
+@router.delete("/companions/{companion_id}/extras/{extra_id}")
+async def drop_extra(companion_id: str, extra_id: str):
+    """Remove the add-on, leaving its host app alone — other plugins may use it."""
+    manifest = _manifest_or_404(companion_id)
+    result = svc.remove_extra(manifest, extra_id)
+    if not result.get("ok"):
+        raise HTTPException(status_code=400, detail=result.get("error", "Could not remove"))
     return {"ok": True, "status": svc.status(manifest)}
 
 

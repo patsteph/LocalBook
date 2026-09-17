@@ -15,6 +15,43 @@ export interface CompanionInstall {
   interactive?: boolean;
   requires?: string[];
   notes?: string[];
+  /** Pinned provenance — a commit, never a branch. */
+  repo?: string;
+  ref?: string;
+  short_ref?: string;
+  ref_date?: string;
+  sha256?: string;
+  review_url?: string;
+}
+
+export interface VerifyCheck {
+  ok: boolean;
+  kind: string;
+  label: string;
+  detail: string;
+  fix: string | null;
+}
+
+export interface VerifyResult {
+  checked: boolean;
+  ok: boolean;
+  checks: VerifyCheck[];
+  failed_count?: number;
+  summary?: string;
+}
+
+export interface CompanionExtra {
+  id: string;
+  name: string;
+  tagline?: string;
+  description?: string;
+  notes: string[];
+  review_url?: string;
+  installed: boolean;
+  host_installed: boolean;
+  host_cask?: string;
+  host_needs_admin: boolean;
+  target: string;
 }
 
 export interface Companion {
@@ -37,6 +74,8 @@ export interface Companion {
   using_model: string | null;
   install?: CompanionInstall;
   can_control: boolean;
+  has_checks?: boolean;
+  extras: CompanionExtra[];
 }
 
 export interface CompanionList {
@@ -112,4 +151,27 @@ export function shortModel(id: string | null): string {
   if (!id) return '';
   const tail = id.split('/').pop() || id;
   return tail.replace(/-(4bit|8bit|bf16|it)$/i, '');
+}
+
+export async function verifyCompanion(id: string): Promise<VerifyResult> {
+  return jsonOrThrow(await localFetch(`${API_BASE_URL}/companions/${id}/verify`));
+}
+
+export async function checkInstallScript(id: string): Promise<{
+  source: CompanionInstall;
+  verification: { ok: boolean; error?: string; mismatch?: boolean; bytes?: number };
+}> {
+  return jsonOrThrow(await localFetch(`${API_BASE_URL}/companions/${id}/install-script`));
+}
+
+export async function installExtra(id: string, extraId: string): Promise<{ status: Companion }> {
+  return jsonOrThrow(await localFetch(`${API_BASE_URL}/companions/${id}/extras/${extraId}`, {
+    method: 'POST',
+  }));
+}
+
+export async function removeExtra(id: string, extraId: string): Promise<{ status: Companion }> {
+  return jsonOrThrow(await localFetch(`${API_BASE_URL}/companions/${id}/extras/${extraId}`, {
+    method: 'DELETE',
+  }));
 }

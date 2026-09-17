@@ -177,6 +177,173 @@ def is_running(manifest: Dict[str, Any]) -> bool:
         return False
 
 
+# ── outcome verification ────────────────────────────────────────────────────
+#
+# An installer's exit code is not evidence that it worked. Meeting Notes writes
+# `brew install ffmpeg switchaudio-osx blackhole-2ch 2>/dev/null || true`, so a
+# failed audio-driver install exits 0 and prints nothing — and the tool then
+# records your microphone while capturing silence from the other side of every
+# call. The user would not find out until they read their first set of notes.
+#
+# So a manifest declares what should EXIST when installation worked, and we look
+# for those things. Verify the artifact, not the step.
+
+def _audio_devices() -> List[str]:
+    """Every audio device macOS currently knows about.
+
+    `system_profiler` is used rather than `SwitchAudioSource` because the latter
+    is installed BY the thing we are checking on — it would be missing in
+    exactly the failure case we care about.
+    """
+    try:
+        proc = subprocess.run(
+            ["system_profiler", "SPAudioDataType"],
+            capture_output=True, text=True, timeout=20,
+        )
+    except Exception as e:
+        logger.debug(f"[companions] audio device listing failed: {e}")
+        return []
+    names = []
+    for line in proc.stdout.splitlines():
+        stripped = line.strip()
+        # Device names sit at one indent level and end in a colon.
+        if stripped.endswith(":") and 8 <= (len(line) - len(line.lstrip())) <= 10:
+            name = stripped[:-1].strip()
+            if name and name not in ("Devices", "Audio"):
+                names.append(name)
+    return names
+
+
+def _check(check: Dict[str, Any], devices: Optional[List[str]] = None) -> Dict[str, Any]:
+    kind = check.get("kind")
+    ok = False
+    detail = ""
+
+    if kind == "binary":
+        found = _which(check.get("name", ""))
+        ok, detail = bool(found), found or ""
+    elif kind == "path":
+        p = Path(str(check.get("path", ""))).expanduser()
+        ok, detail = p.exists(), str(p)
+    elif kind == "audio_device":
+        want = (check.get("name") or "").lower()
+        names = devices if devices is not None else _audio_devices()
+        match = next((n for n in names if want in n.lower()), None)
+        ok, detail = bool(match), match or ""
+    else:
+        # An unknown check kind must not silently pass — that would be a
+        # manifest typo quietly reporting a healthy install.
+        return {"ok": False, "label": check.get("label", kind or "unknown check"),
+                "detail": f"unknown check kind '{kind}'",
+                "fix": "This companion's manifest is malformed."}
+
+    return {"ok": ok, "kind": kind, "label": check.get("label", check.get("name", "")),
+            "detail": detail, "fix": None if ok else check.get("fix")}
+
+
+def verify_install(manifest: Dict[str, Any]) -> Dict[str, Any]:
+    """Did the install actually produce a working tool?
+
+    Returns every check, not just failures, so the card can show what IS working
+    when something is missing — "recording works, it just can't hear the far
+    side" is a far more useful thing to be told than "install failed".
+    """
+    checks = manifest.get("verify") or []
+    if not checks:
+        return {"checked": False, "ok": is_installed(manifest), "checks": []}
+
+    # One `system_profiler` call, shared — it takes a couple of seconds.
+    devices = _audio_devices() if any(c.get("kind") == "audio_device" for c in checks) else []
+    results = [_check(c, devices) for c in checks]
+    failed = [r for r in results if not r["ok"]]
+    return {
+        "checked": True,
+        "ok": not failed,
+        "checks": results,
+        "failed_count": len(failed),
+        "summary": ("Everything checks out." if not failed else
+                    f"{len(failed)} of {len(results)} checks failed."),
+    }
+
+
+# ── install source: pinned, and verifiable before it runs ───────────────────
+
+def install_source(manifest: Dict[str, Any]) -> Dict[str, Any]:
+    """What would actually be executed, and where it came from.
+
+    Surfaced to the user BEFORE they agree to run it. A one-click `curl | bash`
+    from a GUI app is the classic supply-chain shape; the least we can do is
+    pin a commit, publish the hash, and link the exact revision so it can be
+    read first.
+    """
+    install = manifest.get("install") or {}
+    src = install.get("source") or {}
+    return {
+        "kind": install.get("kind"),
+        "repo": src.get("repo"),
+        "ref": src.get("ref"),
+        "short_ref": (src.get("ref") or "")[:7],
+        "ref_date": src.get("ref_date"),
+        "url": src.get("url"),
+        "sha256": src.get("sha256"),
+        "review_url": src.get("review_url"),
+        "command": install_command(manifest),
+        "requires": install.get("requires") or [],
+        "notes": install.get("notes") or [],
+        "interactive": bool(install.get("interactive")),
+    }
+
+
+def install_command(manifest: Dict[str, Any]) -> str:
+    """The command a user can run themselves.
+
+    Fetches the pinned revision, checks its hash, and only then executes. The
+    hash check is the whole point — without it, pinning a commit still trusts
+    whatever the CDN hands back.
+    """
+    install = manifest.get("install") or {}
+    src = install.get("source") or {}
+    url, digest = src.get("url"), src.get("sha256")
+    if not url:
+        return install.get("command", "")
+    if not digest:
+        return f"curl -fsSL {url} | bash"
+    return (
+        f'f=$(mktemp) && curl -fsSL "{url}" -o "$f" && '
+        f'echo "{digest}  $f" | shasum -a 256 -c - && bash "$f"; rm -f "$f"'
+    )
+
+
+def fetch_and_verify_script(manifest: Dict[str, Any]) -> Dict[str, Any]:
+    """Download the pinned installer and check it against the recorded hash.
+
+    Run before offering to execute anything. A mismatch means the pinned
+    revision no longer hashes to what this manifest was written against —
+    which is either upstream force-pushing a tag or something worse, and in
+    both cases the answer is to stop rather than to run it.
+    """
+    src = (manifest.get("install") or {}).get("source") or {}
+    url, expected = src.get("url"), src.get("sha256")
+    if not url or not expected:
+        return {"ok": False, "error": "This companion has no pinned installer to verify."}
+    try:
+        import hashlib
+        import urllib.request
+        with urllib.request.urlopen(url, timeout=30) as resp:
+            body = resp.read()
+    except Exception as e:
+        return {"ok": False, "error": f"Could not download the installer: {e}"}
+
+    actual = hashlib.sha256(body).hexdigest()
+    if actual != expected:
+        logger.warning(f"[companions] checksum mismatch for {manifest.get('id')}: "
+                       f"expected {expected[:12]}… got {actual[:12]}…")
+        return {"ok": False, "mismatch": True, "expected": expected, "actual": actual,
+                "error": "The installer does not match the version LocalBook pinned. "
+                         "It has not been run. Do not proceed until this is explained."}
+    return {"ok": True, "bytes": len(body), "sha256": actual}
+
+
 # ── configuration: we own named keys, nothing else ──────────────────────────
 
 def _substitutions() -> Dict[str, str]:
@@ -300,6 +467,157 @@ def disconnect(manifest: Dict[str, Any]) -> Dict[str, Any]:
         return {"ok": False, "error": str(e)}
 
 
+# ── extras: optional add-ons a companion offers ─────────────────────────────
+#
+# Meeting Notes ships an optional SwiftBar plugin that puts a microphone icon in
+# the menu bar and turns it red while recording. It is genuinely optional — the
+# tool works fine without it — so it is offered rather than bundled into the
+# main install, and can be removed without touching anything else.
+#
+# Modelled generically because the second companion will have its own optional
+# pieces, and "one checkbox per add-on" should not need new code each time.
+#
+# Unlike the main installer, an extra needs NO privilege: SwiftBar is an `app`
+# cask (no pkg, no admin) and the plugin is a shell script we place in a folder
+# the user already owns. This is the one part of the flow that really is
+# one click.
+
+def _extra(manifest: Dict[str, Any], extra_id: str) -> Optional[Dict[str, Any]]:
+    return next((e for e in (manifest.get("extras") or []) if e.get("id") == extra_id), None)
+
+
+def _plugin_dir(extra: Dict[str, Any]) -> Path:
+    """Where the host app expects its plugins.
+
+    SwiftBar's folder is chosen by the user on first launch and recorded in its
+    preferences, so read that first — writing to our guess when they picked
+    somewhere else would install a plugin that never loads and looks broken.
+    """
+    install = extra.get("install") or {}
+    pref = install.get("dir_pref") or {}
+    domain, key = pref.get("domain"), pref.get("key")
+    if domain and key:
+        try:
+            proc = subprocess.run(["defaults", "read", domain, key],
+                                  capture_output=True, text=True, timeout=10)
+            value = (proc.stdout or "").strip()
+            if proc.returncode == 0 and value:
+                return Path(value).expanduser()
+        except Exception as e:
+            logger.debug(f"[companions] could not read {domain}.{key}: {e}")
+    return Path(str(install.get("dir_default", "~"))).expanduser()
+
+
+def _extra_target(extra: Dict[str, Any]) -> Path:
+    install = extra.get("install") or {}
+    return _plugin_dir(extra) / str(install.get("filename", "plugin.sh"))
+
+
+def _cask_installed(cask: str) -> bool:
+    """An app cask is present if its .app is on disk — cheaper and more honest
+    than shelling out to brew, which is slow and may not even be on PATH."""
+    if not cask:
+        return True
+    name = {"swiftbar": "SwiftBar"}.get(cask, cask)
+    return any((Path(d) / f"{name}.app").is_dir()
+               for d in ("/Applications", str(Path.home() / "Applications")))
+
+
+def extras_status(manifest: Dict[str, Any]) -> List[Dict[str, Any]]:
+    out = []
+    for e in manifest.get("extras") or []:
+        target = _extra_target(e)
+        host_ok = _cask_installed(e.get("requires_cask", ""))
+        out.append({
+            "id": e.get("id"),
+            "name": e.get("name"),
+            "tagline": e.get("tagline"),
+            "description": e.get("description"),
+            "notes": e.get("notes") or [],
+            "review_url": (e.get("source") or {}).get("review_url"),
+            "installed": target.is_file(),
+            "host_installed": host_ok,
+            "host_cask": e.get("requires_cask"),
+            "host_needs_admin": bool(e.get("cask_needs_admin")),
+            "target": str(target),
+        })
+    return out
+
+
+def install_extra(manifest: Dict[str, Any], extra_id: str) -> Dict[str, Any]:
+    """Install one optional add-on: fetch the pinned file, check its hash, place it.
+
+    Same rule as the main installer — the checksum is verified BEFORE anything
+    is written, not after.
+    """
+    extra = _extra(manifest, extra_id)
+    if not extra:
+        return {"ok": False, "error": "Unknown add-on"}
+
+    cask = extra.get("requires_cask", "")
+    if cask and not _cask_installed(cask):
+        found = _which("brew")
+        if not found:
+            return {"ok": False, "error": f"Homebrew is needed to install {cask}."}
+        try:
+            proc = subprocess.run([found, "install", "--cask", cask],
+                                  capture_output=True, text=True, timeout=600)
+            if not _cask_installed(cask):
+                tail = (proc.stderr or proc.stdout or "").strip()[-300:]
+                return {"ok": False,
+                        "error": f"Could not install {cask}. {tail}"}
+        except subprocess.TimeoutExpired:
+            return {"ok": False, "error": f"Installing {cask} took too long."}
+        except Exception as e:
+            return {"ok": False, "error": f"Could not install {cask}: {e}"}
+
+    src = extra.get("source") or {}
+    url, expected = src.get("url"), src.get("sha256")
+    if not url or not expected:
+        return {"ok": False, "error": "This add-on has no pinned source."}
+    try:
+        import hashlib
+        import urllib.request
+        with urllib.request.urlopen(url, timeout=30) as resp:
+            body = resp.read()
+    except Exception as e:
+        return {"ok": False, "error": f"Could not download the add-on: {e}"}
+
+    actual = hashlib.sha256(body).hexdigest()
+    if actual != expected:
+        logger.warning(f"[companions] extra checksum mismatch for {extra_id}")
+        return {"ok": False, "mismatch": True,
+                "error": "The add-on does not match the version LocalBook pinned. "
+                         "Nothing was installed."}
+
+    target = _extra_target(extra)
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(body)
+        os.chmod(target, int((extra.get("install") or {}).get("mode", 0o755)))
+    except Exception as e:
+        return {"ok": False, "error": f"Could not write {target}: {e}"}
+
+    logger.info(f"[companions] installed add-on {extra_id} → {target}")
+    return {"ok": True, "target": str(target),
+            "host_installed": _cask_installed(cask)}
+
+
+def remove_extra(manifest: Dict[str, Any], extra_id: str) -> Dict[str, Any]:
+    """Remove the add-on. Deliberately leaves its host app alone — the user may
+    be running other SwiftBar plugins, and uninstalling SwiftBar to remove one
+    plugin would be destroying something we did not create."""
+    extra = _extra(manifest, extra_id)
+    if not extra:
+        return {"ok": False, "error": "Unknown add-on"}
+    target = _extra_target(extra)
+    try:
+        target.unlink(missing_ok=True)
+        return {"ok": True}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
 # ── control ─────────────────────────────────────────────────────────────────
 
 def run_control(manifest: Dict[str, Any], action: str) -> Dict[str, Any]:
@@ -371,8 +689,10 @@ def status(manifest: Dict[str, Any]) -> Dict[str, Any]:
         "folder_link_id": (linked_notebook or {}).get("id"),
         "config": read_config(manifest),
         "using_model": read_config(manifest).get("LLM") if connected else None,
-        "install": manifest.get("install"),
+        "install": install_source(manifest),
         "can_control": bool(manifest.get("control", {}).get("start")),
+        "has_checks": bool(manifest.get("verify")),
+        "extras": extras_status(manifest),
     }
 
 

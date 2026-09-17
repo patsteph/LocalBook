@@ -20,6 +20,21 @@ import pytest
 from services import companions as svc
 
 
+def _code_without_docstring(fn) -> str:
+    """Source of `fn` with its docstring removed.
+
+    Needed because several of these checks assert that the code does NOT call
+    something — while the docstring names that very thing to explain why. Twice
+    now a passing implementation has been failed by its own explanation.
+    """
+    import inspect
+    import ast
+    src = inspect.getsource(fn)
+    doc = ast.get_docstring(ast.parse(src.lstrip()).body[0], clean=False)
+    return src.replace(doc, "") if doc else src
+
+
+
 @pytest.fixture(autouse=True)
 def _isolated_key(tmp_path, monkeypatch):
     """The companion key lives in data_dir; keep each test's key its own."""
@@ -231,3 +246,221 @@ def test_the_manifest_dir_is_resolved_relative_to_the_package():
     import services.companions as c
     assert c._MANIFEST_DIR.is_absolute()
     assert c._MANIFEST_DIR.name == "companions"
+
+
+# ── the installer is pinned, and checked before it runs ─────────────────────
+#
+# A one-click `curl | bash` from a GUI app is the classic supply-chain shape.
+# Pinning a commit is half the answer; without a hash we still trust whatever
+# the CDN hands back for that URL.
+
+def test_the_installer_is_pinned_to_a_commit_not_a_branch():
+    for m in svc.load_manifests():
+        src = (m.get("install") or {}).get("source")
+        if not src:
+            continue
+        ref = src.get("ref", "")
+        assert len(ref) == 40 and all(c in "0123456789abcdef" for c in ref), (
+            f"{m['id']} is pinned to '{ref}' — must be a full commit SHA"
+        )
+        assert "/main/" not in (src.get("url") or ""), \
+            f"{m['id']} install URL follows a branch"
+        assert ref in (src.get("url") or ""), \
+            f"{m['id']} install URL does not reference its pinned ref"
+
+
+def test_every_pinned_installer_carries_a_checksum():
+    for m in svc.load_manifests():
+        src = (m.get("install") or {}).get("source")
+        if not src:
+            continue
+        digest = src.get("sha256", "")
+        assert len(digest) == 64, f"{m['id']} has no usable sha256"
+
+
+def test_the_install_command_verifies_before_it_executes():
+    """The order matters: download, check, THEN run. A command that pipes
+    straight to bash has already executed by the time anything is verified."""
+    cmd = svc.install_command(svc.get_manifest("meeting-notes"))
+    assert "shasum -a 256 -c" in cmd
+    assert "| bash" not in cmd, "piping to bash executes before the hash is checked"
+    assert cmd.index("shasum") < cmd.index("bash "), "the check must precede execution"
+
+
+def test_a_tampered_script_is_refused(monkeypatch):
+    """The failure that matters. If the pinned revision no longer hashes to what
+    we recorded, the answer is to stop — not to run it and hope."""
+    class _Resp:
+        def read(self): return b"#!/bin/bash\nrm -rf ~\n"
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    import urllib.request
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **k: _Resp())
+    result = svc.fetch_and_verify_script(svc.get_manifest("meeting-notes"))
+    assert result["ok"] is False
+    assert result["mismatch"] is True
+    assert "has not been run" in result["error"]
+
+
+def test_a_user_can_read_the_exact_revision_first():
+    src = svc.install_source(svc.get_manifest("meeting-notes"))
+    assert src["review_url"] and src["ref"] in src["review_url"]
+    assert src["short_ref"] and src["ref_date"]
+
+
+# ── outcome verification ────────────────────────────────────────────────────
+
+def test_checks_look_for_artifacts_not_exit_codes():
+    """`brew install … 2>/dev/null || true` exits 0 with no audio driver. The
+    tool then records your mic and captures silence from the far side of every
+    call, and nothing says so until you read the notes."""
+    m = svc.get_manifest("meeting-notes")
+    kinds = {c["kind"] for c in m["verify"]}
+    assert "audio_device" in kinds, "nothing checks that the audio driver landed"
+    assert "binary" in kinds
+
+
+def test_every_check_can_explain_itself(monkeypatch):
+    """A failed check with no remedy is just an accusation."""
+    monkeypatch.setattr(svc, "_audio_devices", lambda: [])
+    monkeypatch.setattr(svc, "_which", lambda b: None)
+    result = svc.verify_install(svc.get_manifest("meeting-notes"))
+    assert result["checked"] and not result["ok"]
+    for c in result["checks"]:
+        if not c["ok"]:
+            assert c["fix"], f"{c['label']} failed with no guidance"
+            assert c["label"], "a check with no label cannot be shown to anyone"
+
+
+def test_partial_success_is_reported_as_partial(monkeypatch):
+    """"Recording works, it just can't hear the far side" is far more useful
+    than "install failed"."""
+    monkeypatch.setattr(svc, "_which", lambda b: f"/opt/homebrew/bin/{b}")
+    monkeypatch.setattr(svc, "_audio_devices", lambda: ["Mac mini Speakers"])
+    monkeypatch.setattr(pathlib_exists_target := svc.Path, "exists", lambda self: True)
+    result = svc.verify_install(svc.get_manifest("meeting-notes"))
+    labels = {c["label"]: c["ok"] for c in result["checks"]}
+    assert labels["the meeting command"] is True
+    assert labels["the BlackHole audio driver"] is False
+    assert result["failed_count"] >= 1 and not result["ok"]
+
+
+def test_an_unknown_check_kind_fails_rather_than_passing():
+    """A manifest typo must not quietly report a healthy install."""
+    bogus = {"verify": [{"kind": "wishful_thinking", "label": "something"}]}
+    result = svc.verify_install(bogus)
+    assert result["ok"] is False
+    assert "unknown check kind" in result["checks"][0]["detail"]
+
+
+def test_audio_devices_are_read_without_the_tool_we_are_checking_for():
+    """SwitchAudioSource is installed BY the thing under test — using it would
+    be missing in exactly the failure case that matters."""
+    code = _code_without_docstring(svc._audio_devices)
+    assert "system_profiler" in code
+    assert "SwitchAudioSource" not in code
+
+
+# ── optional add-ons ────────────────────────────────────────────────────────
+#
+# Meeting Notes ships an optional SwiftBar plugin for menu-bar start/stop.
+# Modelled generically: the second companion will have its own optional pieces,
+# and "one toggle per add-on" should not need new code each time.
+
+def test_extras_are_pinned_and_checksummed_like_the_installer():
+    """An add-on is still remote code being placed on the user's machine."""
+    for m in svc.load_manifests():
+        for e in m.get("extras") or []:
+            src = e.get("source") or {}
+            assert len(src.get("sha256", "")) == 64, f"{m['id']}/{e['id']} has no checksum"
+            assert len(src.get("ref", "")) == 40, f"{m['id']}/{e['id']} is not pinned to a commit"
+            assert src["ref"] in src.get("url", ""), f"{m['id']}/{e['id']} URL ignores its pin"
+
+
+def test_the_menubar_extra_needs_no_admin_password():
+    """SwiftBar is an `app` cask, not a pkg — verified against Homebrew. That is
+    what makes this add-on genuinely one click, unlike the main installer."""
+    e = next(x for x in svc.get_manifest("meeting-notes")["extras"] if x["id"] == "menubar")
+    assert e["cask_needs_admin"] is False
+
+
+def test_the_plugin_folder_follows_the_users_choice(monkeypatch):
+    """SwiftBar's folder is picked by the user on first launch. Writing to our
+    default when they chose elsewhere installs a plugin that never loads and
+    looks broken."""
+    e = next(x for x in svc.get_manifest("meeting-notes")["extras"] if x["id"] == "menubar")
+
+    class _Proc:
+        returncode = 0
+        stdout = "/Users/someone/MyPlugins\n"
+    monkeypatch.setattr(svc.subprocess, "run", lambda *a, **k: _Proc())
+    assert str(svc._plugin_dir(e)) == "/Users/someone/MyPlugins"
+
+
+def test_the_default_folder_is_used_when_nothing_is_configured(monkeypatch):
+    e = next(x for x in svc.get_manifest("meeting-notes")["extras"] if x["id"] == "menubar")
+
+    class _Proc:
+        returncode = 1
+        stdout = ""
+    monkeypatch.setattr(svc.subprocess, "run", lambda *a, **k: _Proc())
+    assert "SwiftBar/Plugins" in str(svc._plugin_dir(e))
+
+
+def test_a_tampered_extra_is_never_written(tmp_path, monkeypatch):
+    """The checksum is checked BEFORE anything lands on disk."""
+    e_target = tmp_path / "plugins" / "meeting-summarizer.10s.sh"
+    monkeypatch.setattr(svc, "_extra_target", lambda e: e_target)
+    monkeypatch.setattr(svc, "_cask_installed", lambda c: True)
+
+    class _Resp:
+        def read(self): return b"#!/bin/bash\necho pwned\n"
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+    import urllib.request
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **k: _Resp())
+
+    result = svc.install_extra(svc.get_manifest("meeting-notes"), "menubar")
+    assert result["ok"] is False and result.get("mismatch") is True
+    assert not e_target.exists(), "a mismatched add-on was written to disk anyway"
+
+
+def test_installing_the_extra_places_an_executable(tmp_path, monkeypatch):
+    target = tmp_path / "plugins" / "meeting-summarizer.10s.sh"
+    monkeypatch.setattr(svc, "_extra_target", lambda e: target)
+    monkeypatch.setattr(svc, "_cask_installed", lambda c: True)
+
+    manifest = svc.get_manifest("meeting-notes")
+    real = next(x for x in manifest["extras"] if x["id"] == "menubar")
+    payload = b"#!/bin/bash\necho hi\n"
+    import hashlib
+    real["source"]["sha256"] = hashlib.sha256(payload).hexdigest()
+
+    class _Resp:
+        def read(self): return payload
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+    import urllib.request
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **k: _Resp())
+    monkeypatch.setattr(svc, "get_manifest", lambda i: manifest)
+
+    assert svc.install_extra(manifest, "menubar")["ok"]
+    assert target.is_file()
+    assert target.stat().st_mode & 0o111, "SwiftBar cannot run a plugin that is not executable"
+
+
+def test_removing_the_extra_leaves_its_host_app_alone(tmp_path, monkeypatch):
+    """Uninstalling SwiftBar to remove one plugin would destroy something we did
+    not create — the user may run other plugins in it."""
+    target = tmp_path / "p.sh"
+    target.write_text("x")
+    monkeypatch.setattr(svc, "_extra_target", lambda e: target)
+    assert svc.remove_extra(svc.get_manifest("meeting-notes"), "menubar")["ok"]
+    assert not target.exists()
+    code = _code_without_docstring(svc.remove_extra)
+    assert "uninstall" not in code and "--cask" not in code
+
+
+def test_an_unknown_extra_is_refused():
+    assert svc.install_extra(svc.get_manifest("meeting-notes"), "nope")["ok"] is False

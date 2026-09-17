@@ -15,6 +15,10 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
   STATE_DOT,
+  checkInstallScript,
+  installExtra,
+  removeExtra,
+  verifyCompanion,
   STATE_LABEL,
   connectCompanion,
   controlCompanion,
@@ -23,11 +27,24 @@ import {
   revokeCompanionKey,
   shortModel,
   type Companion,
+  type VerifyResult,
 } from '../../services/companions';
 
 function InstallPanel({ c, onClose }: { c: Companion; onClose: () => void }) {
   const [copied, setCopied] = useState(false);
+  const [checked, setChecked] = useState<{ ok: boolean; error?: string } | null>(null);
   const cmd = c.install?.command || '';
+
+  // Confirm the pinned script still hashes to what we recorded, BEFORE the user
+  // runs it. A mismatch means upstream moved under the pin — which is either a
+  // force-push or something worse, and either way the answer is to stop.
+  useEffect(() => {
+    let live = true;
+    void checkInstallScript(c.id)
+      .then((r) => live && setChecked({ ok: r.verification.ok, error: r.verification.error }))
+      .catch((e) => live && setChecked({ ok: false, error: e?.message }));
+    return () => { live = false; };
+  }, [c.id]);
 
   return (
     <div className="mt-3 rounded-lg border dark:border-gray-700 bg-gray-50 dark:bg-gray-800/60 p-3 space-y-2.5">
@@ -36,6 +53,28 @@ function InstallPanel({ c, onClose }: { c: Companion; onClose: () => void }) {
         admin password for the audio driver, so it can't run inside this window.
         Paste this, then come back and press Connect.
       </p>
+
+      {/* Provenance. This command downloads and runs someone else's script, so
+          the exact revision and its checksum are shown before it is run — not
+          buried in a manifest the user never sees. */}
+      {c.install?.short_ref && (
+        <div className="rounded border dark:border-gray-700 bg-white/60 dark:bg-gray-900/40 px-2.5 py-2 space-y-1">
+          <p className="text-[11px] text-gray-600 dark:text-gray-300">
+            Pinned to <span className="font-mono">{c.install.repo}@{c.install.short_ref}</span>
+            {c.install.ref_date && <> · {c.install.ref_date}</>}
+          </p>
+          <p className="text-[10px] font-mono text-gray-400 dark:text-gray-500 break-all">
+            sha256 {c.install.sha256?.slice(0, 32)}…
+          </p>
+          <p className="text-[11px] text-gray-500 dark:text-gray-400">
+            The command checks that hash before running anything.
+            {checked?.ok && <span className="text-green-600 dark:text-green-400"> Verified just now.</span>}
+            {checked && !checked.ok && (
+              <span className="text-red-600 dark:text-red-400"> {checked.error}</span>
+            )}
+          </p>
+        </div>
+      )}
 
       <div className="flex items-center gap-2">
         <code className="flex-1 px-2 py-1.5 text-[11px] rounded bg-white dark:bg-gray-900 border dark:border-gray-700 text-gray-800 dark:text-gray-200 overflow-x-auto whitespace-nowrap">
@@ -64,10 +103,10 @@ function InstallPanel({ c, onClose }: { c: Companion; onClose: () => void }) {
       )}
 
       <div className="flex items-center gap-3 pt-0.5">
-        {c.homepage && (
-          <a href={c.homepage} target="_blank" rel="noreferrer"
+        {(c.install?.review_url || c.homepage) && (
+          <a href={c.install?.review_url || c.homepage} target="_blank" rel="noreferrer"
              className="text-[11px] text-blue-600 dark:text-blue-400 hover:underline">
-            Read the source first
+            Read this exact version first
           </a>
         )}
         <button onClick={onClose}
@@ -151,12 +190,131 @@ function ConnectPanel({ c, notebooks, onDone, onCancel }: {
   );
 }
 
+/**
+ * Optional add-ons. Shown only when the tool is installed, because offering a
+ * menu-bar control for something that isn't there yet is noise.
+ */
+function Extras({ c, onChanged }: { c: Companion; onChanged: () => void }) {
+  const [busy, setBusy] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  if (!c.installed || !c.extras?.length) return null;
+
+  const toggle = async (id: string, on: boolean) => {
+    setBusy(id); setError(null);
+    try {
+      await (on ? installExtra(c.id, id) : removeExtra(c.id, id));
+      onChanged();
+    } catch (e: any) {
+      setError(e?.message || 'Failed');
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  return (
+    <div className="mt-3 space-y-2">
+      {c.extras.map((e) => (
+        <div key={e.id} className="flex items-start gap-2.5">
+          <button
+            role="switch"
+            aria-checked={e.installed}
+            disabled={busy === e.id}
+            onClick={() => toggle(e.id, !e.installed)}
+            className={`mt-0.5 w-8 h-4.5 rounded-full flex-shrink-0 transition-colors relative ${
+              e.installed ? 'bg-blue-600' : 'bg-gray-300 dark:bg-gray-600'
+            } disabled:opacity-50`}
+            style={{ height: '18px', width: '32px' }}
+          >
+            <span className={`absolute top-0.5 w-3.5 h-3.5 rounded-full bg-white transition-all ${
+              e.installed ? 'left-[15px]' : 'left-0.5'
+            }`} />
+          </button>
+          <div className="min-w-0 flex-1">
+            <p className="text-xs font-medium text-gray-800 dark:text-gray-200">
+              {e.name}
+              {busy === e.id && <span className="ml-1.5 text-gray-400">working…</span>}
+            </p>
+            <p className="text-[11px] text-gray-500 dark:text-gray-400">{e.tagline}</p>
+            {!e.installed && e.host_cask && !e.host_installed && (
+              <p className="text-[11px] text-gray-400 dark:text-gray-500">
+                Installs {e.host_cask} first — no password needed.
+              </p>
+            )}
+          </div>
+        </div>
+      ))}
+      {error && <p className="text-[11px] text-red-600 dark:text-red-400">{error}</p>}
+    </div>
+  );
+}
+
+/**
+ * Health check. Its exit code is not evidence — the installer swallows a failed
+ * audio-driver install and still exits 0, so we look for the artifacts instead.
+ * Partial results matter: "recording works, it just can't hear the far side" is
+ * far more useful than "install failed".
+ */
+function HealthPanel({ c, onClose }: { c: Companion; onClose: () => void }) {
+  const [result, setResult] = useState<VerifyResult | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let live = true;
+    void verifyCompanion(c.id)
+      .then((r) => live && setResult(r))
+      .catch((e) => live && setError(e?.message || 'Check failed'));
+    return () => { live = false; };
+  }, [c.id]);
+
+  return (
+    <div className="mt-3 rounded-lg border dark:border-gray-700 bg-gray-50 dark:bg-gray-800/60 p-3 space-y-2">
+      {!result && !error && <p className="text-xs text-gray-500">Checking…</p>}
+      {error && <p className="text-xs text-red-600 dark:text-red-400">{error}</p>}
+      {result && (
+        <>
+          <p className={`text-xs font-medium ${
+            result.ok ? 'text-green-700 dark:text-green-400' : 'text-amber-700 dark:text-amber-400'
+          }`}>
+            {result.summary}
+          </p>
+          <div className="space-y-1.5">
+            {result.checks.map((chk) => (
+              <div key={chk.label} className="text-[11px]">
+                <div className="flex items-start gap-1.5">
+                  <span className={chk.ok
+                    ? 'text-green-600 dark:text-green-400'
+                    : 'text-red-600 dark:text-red-400'}>
+                    {chk.ok ? '✓' : '✕'}
+                  </span>
+                  <span className={chk.ok
+                    ? 'text-gray-600 dark:text-gray-400'
+                    : 'text-gray-800 dark:text-gray-200'}>
+                    {chk.label}
+                  </span>
+                </div>
+                {!chk.ok && chk.fix && (
+                  <p className="ml-4 text-gray-500 dark:text-gray-400">{chk.fix}</p>
+                )}
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+      <button onClick={onClose}
+              className="text-[11px] text-gray-500 hover:text-gray-700 dark:hover:text-gray-300">
+        Close
+      </button>
+    </div>
+  );
+}
+
 function Card({ c, notebooks, onChanged }: {
   c: Companion;
   notebooks: Array<{ id: string; title: string }>;
   onChanged: () => void;
 }) {
-  const [panel, setPanel] = useState<'none' | 'install' | 'connect'>('none');
+  const [panel, setPanel] = useState<'none' | 'install' | 'connect' | 'health'>('none');
   const [menu, setMenu] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -209,6 +367,9 @@ function Card({ c, notebooks, onChanged }: {
                           onDone={() => { setPanel('none'); onChanged(); }}
                           onCancel={() => setPanel('none')} />
           )}
+          {panel === 'health' && <HealthPanel c={c} onClose={() => setPanel('none')} />}
+
+          <Extras c={c} onChanged={onChanged} />
         </div>
 
         {/* One primary action for the state you're in. Everything else in ⋯ */}
@@ -251,6 +412,12 @@ function Card({ c, notebooks, onChanged }: {
                     <button onClick={() => act(() => disconnectCompanion(c.id))}
                             className="w-full text-left px-3 py-1.5 text-xs text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800">
                       Disconnect (restore its own settings)
+                    </button>
+                  )}
+                  {c.has_checks && (
+                    <button onClick={() => { setMenu(false); setPanel('health'); }}
+                            className="w-full text-left px-3 py-1.5 text-xs text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800">
+                      Check it's working
                     </button>
                   )}
                   {c.homepage && (
