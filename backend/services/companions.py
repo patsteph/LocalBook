@@ -193,10 +193,23 @@ def is_running(manifest: Dict[str, Any]) -> bool:
 def _audio_devices() -> List[str]:
     """Every audio device macOS currently knows about.
 
-    `system_profiler` is used rather than `SwitchAudioSource` because the latter
-    is installed BY the thing we are checking on — it would be missing in
-    exactly the failure case we care about.
+    CoreAudio first: it is in-process, instant, and cannot be affected by system
+    load. `system_profiler` is the fallback — it spawns a process that takes
+    seconds and can take much longer on a busy machine, which made it a genuine
+    flake source in the test suite.
+
+    Neither path uses `SwitchAudioSource`, even though it is simpler: that tool
+    is installed BY the thing we are checking on, so it would be missing in
+    exactly the failure case this function exists to detect.
     """
+    try:
+        from services.audio_devices import list_devices
+        names = [d["name"] for d in list_devices() if d.get("name")]
+        if names:
+            return names
+    except Exception as e:
+        logger.debug(f"[companions] CoreAudio listing unavailable, falling back: {e}")
+
     try:
         proc = subprocess.run(
             ["system_profiler", "SPAudioDataType"],

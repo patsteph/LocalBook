@@ -358,8 +358,12 @@ def test_audio_devices_are_read_without_the_tool_we_are_checking_for():
     """SwitchAudioSource is installed BY the thing under test — using it would
     be missing in exactly the failure case that matters."""
     code = _code_without_docstring(svc._audio_devices)
-    assert "system_profiler" in code
     assert "SwitchAudioSource" not in code
+    # CoreAudio in-process is preferred; system_profiler remains the fallback.
+    # The subprocess was a real flake source — seconds of latency on a busy
+    # machine, inside a test suite.
+    assert "list_devices" in code
+    assert code.index("list_devices") < code.index("system_profiler")
 
 
 # ── optional add-ons ────────────────────────────────────────────────────────
