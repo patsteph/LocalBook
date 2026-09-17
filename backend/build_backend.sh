@@ -167,6 +167,9 @@ python -W ignore -m PyInstaller \
     --add-data="$SCRIPT_DIR/evaluator/registry_data:evaluator/registry_data" \
     --add-data="$SCRIPT_DIR/config.py:." \
     --hidden-import=api \
+    --hidden-import=api.openai_compat \
+    --hidden-import=api.companions \
+    --hidden-import=api.folders \
     --hidden-import=api.agent_browser \
     --hidden-import=api.audio \
     --hidden-import=api.audio_llm \
@@ -206,8 +209,14 @@ python -W ignore -m PyInstaller \
     --hidden-import=api.video \
     --hidden-import=api.writing \
     --hidden-import=services \
+    --hidden-import=services.companions \
+    --hidden-import=services.folder_watcher \
+    --hidden-import=services.meeting_notes \
+    --hidden-import=services.post_ingest \
+    --hidden-import=services.smart_folder \
     --hidden-import=services.agent_browser \
     --hidden-import=services.audio_generator \
+    --hidden-import=services.audio_devices \
     --hidden-import=services.audio_llm \
     --hidden-import=services.activity_ledger \
     --hidden-import=services.citation_verifier \
@@ -223,6 +232,8 @@ python -W ignore -m PyInstaller \
     --hidden-import=services.entity_graph \
     --hidden-import=services.event_logger \
     --hidden-import=storage.findings_store \
+    --hidden-import=storage.smart_folder_store \
+    --hidden-import=storage.folder_link_store \
     --hidden-import=services.hierarchical_chunker \
     --hidden-import=services.job_queue \
     --hidden-import=services.knowledge_graph \

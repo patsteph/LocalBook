@@ -638,3 +638,23 @@ def test_a_machine_without_homebrew_is_told_so(monkeypatch):
     monkeypatch.setattr(svc, "_which", lambda b: None)
     result = svc.run_preflight(svc.get_manifest("meeting-notes"))
     assert result["ok"] is False and "brew.sh" in result["error"]
+
+
+def test_every_module_this_feature_adds_is_declared_to_pyinstaller():
+    """Most of these are imported lazily inside functions. PyInstaller usually
+    follows that, but `companions/` was already silently left out of one build —
+    the same shape of bug that shipped image generation broken in v2.3.0 — and a
+    missing module means a feature that works in dev and is absent in the app.
+
+    Cheap insurance, checked here rather than discovered by a user.
+    """
+    from pathlib import Path
+    build = (Path(__file__).resolve().parents[1] / "build_backend.sh").read_text()
+    required = [
+        "services.companions", "services.folder_watcher", "services.meeting_notes",
+        "services.post_ingest", "services.smart_folder", "services.audio_devices",
+        "api.folders", "api.companions", "api.openai_compat",
+        "storage.folder_link_store", "storage.smart_folder_store",
+    ]
+    missing = [m for m in required if f"--hidden-import={m} " not in build]
+    assert not missing, f"not declared to PyInstaller: {missing}"

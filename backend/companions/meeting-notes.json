@@ -22,9 +22,9 @@
       "brew"
     ],
     "notes": [
-      "Asks for your password once, to install the BlackHole audio driver.",
-      "Then shows two dialogs of its own: leave the email blank \u2014 LocalBook files your notes.",
-      "Installs llama.cpp, which goes unused once LocalBook is connected as the engine."
+      "Its installer shows two dialogs of its own. Leave the email blank \u2014 LocalBook files your notes.",
+      "The second explains how to build an audio device in Audio MIDI Setup. LocalBook already made it \u2014 just click Done.",
+      "It also installs llama.cpp, which goes unused once LocalBook is connected as the engine."
     ]
   },
   "detect": {
@@ -157,6 +157,17 @@
         "label": "restart Core Audio",
         "why": "makes the new audio device appear without restarting your Mac"
       }
-    ]
+    ],
+    "audio_setup": {
+      "multi_output": {
+        "name": "Meeting Output",
+        "uid": "com.localbook.meeting-output",
+        "include": [
+          "BlackHole 2ch"
+        ],
+        "include_default_output": true,
+        "why": "so you can hear a call while it is being recorded"
+      }
+    }
   }
 }

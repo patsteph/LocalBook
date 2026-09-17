@@ -522,6 +522,18 @@ def preflight_plan(manifest: Dict[str, Any]) -> Dict[str, Any]:
             "why": c.get("why", ""), "needs_admin": True, "done": done,
         })
 
+    mo = (pre.get("audio_setup") or {}).get("multi_output")
+    if mo:
+        if devices is None:
+            devices = _audio_devices()
+        steps.append({
+            "id": f"audio:{mo['name']}", "label": mo["name"], "why": mo.get("why", ""),
+            # Creating an aggregate device is a user-level CoreAudio call, so
+            # this rides after the password prompt without needing another.
+            "needs_admin": False,
+            "done": any(mo["name"].lower() in d.lower() for d in devices),
+        })
+
     for a in pre.get("admin_commands") or []:
         # Not idempotently checkable — it is an action, not a state. It rides
         # along inside the same authorization, so it costs nothing extra.
@@ -539,6 +551,26 @@ def preflight_plan(manifest: Dict[str, Any]) -> Dict[str, Any]:
         "steps": steps,
         "will_prompt": any(s["needs_admin"] for s in steps if not s["done"]),
     }
+
+
+def _ensure_audio_devices(pre: Dict[str, Any], log: List[str]) -> Optional[Dict[str, Any]]:
+    """Build the Multi-Output Device the companion expects, if it is missing."""
+    mo = (pre.get("audio_setup") or {}).get("multi_output")
+    if not mo:
+        return None
+    try:
+        from services.audio_devices import ensure_multi_output
+    except Exception as e:
+        return {"ok": False, "error": f"CoreAudio unavailable: {e}"}
+
+    result = ensure_multi_output(
+        name=mo["name"], uid=mo["uid"],
+        include_names=mo.get("include") or [],
+        include_default_output=bool(mo.get("include_default_output", True)),
+    )
+    if result.get("ok"):
+        log.append(result.get("message", f"{mo['name']} ready"))
+    return result
 
 
 def _run_as_user(args: List[str], timeout: int = 900) -> subprocess.CompletedProcess:
@@ -648,6 +680,18 @@ def run_preflight(manifest: Dict[str, Any]) -> Dict[str, Any]:
                 "error": f"The privileged step failed: {err[-300:] or 'unknown error'}"}
 
     log.append("installed the audio driver")
+
+    # ── 4. the Multi-Output Device — no password, and last ──────────────
+    # Last because it can only be built once BlackHole exists, and the upstream
+    # installer punts on this entirely ("can't be safely scripted"), leaving the
+    # user to construct it by hand in Audio MIDI Setup. Doing it here turns that
+    # dialog into a rubber stamp.
+    audio_result = _ensure_audio_devices(pre, log)
+    if audio_result and not audio_result.get("ok"):
+        # Non-fatal: everything else installed, and the device can still be made
+        # by hand. Say so rather than failing the whole preparation.
+        logger.warning(f"[companions] audio device not created: {audio_result.get('error')}")
+
     # Outcome, not exit code — the same rule as everywhere else here.
     remaining = [s for s in preflight_plan(manifest)["steps"]
                  if not s["done"] and not s.get("incidental")]
