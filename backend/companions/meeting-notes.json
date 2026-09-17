@@ -1,0 +1,49 @@
+{
+  "id": "meeting-notes",
+  "name": "Meeting Notes",
+  "author": "kvango",
+  "tagline": "Record any call. Clean notes land in your notebook.",
+  "description": "Records your microphone and the far side of a call as two streams, transcribes locally with Whisper, and writes structured notes — TL;DR, decisions, action items, open questions — plus the full transcript. Nothing leaves your Mac.",
+  "homepage": "https://github.com/kvango/Meeting-Summarizer",
+  "icon": "🎙️",
+
+  "install": {
+    "kind": "shell",
+    "command": "curl -fsSL https://raw.githubusercontent.com/kvango/Meeting-Summarizer/main/install.sh | bash",
+    "interactive": true,
+    "requires": ["brew"],
+    "notes": [
+      "Installs the BlackHole audio driver, which needs your admin password.",
+      "Asks a few questions in the terminal, including an optional email address.",
+      "Installs llama.cpp — LocalBook will point the tool at its own engine afterwards, so nothing needs to load a second model."
+    ]
+  },
+
+  "detect": {
+    "binaries": ["meeting-start", "meeting-stop"],
+    "support_dir": "~/Library/Application Support/MeetingNotes"
+  },
+
+  "produces": {
+    "dir": "~/Desktop/Meeting Notes",
+    "patterns": ["*.md"],
+    "parser": "meeting_notes"
+  },
+
+  "configure": {
+    "file": "~/Library/Application Support/MeetingNotes/config.sh",
+    "format": "sh",
+    "keys": {
+      "BASE_URL": "{localbook_openai_base}",
+      "LLM": "{localbook_main_model}",
+      "API_KEY": "{companion_key}"
+    }
+  },
+
+  "control": {
+    "start": "meeting-start",
+    "stop": "meeting-stop",
+    "state": {"pidfile": "~/Library/Application Support/MeetingNotes/recording.pid"},
+    "log": "~/Library/Application Support/MeetingNotes/last-run.log"
+  }
+}

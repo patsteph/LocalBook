@@ -59,6 +59,13 @@ EXEMPT_PATHS = frozenset({
 # all UUID-keyed user-owned content; an attacker would need to know the
 # specific UUID to fetch anything meaningful.
 EXEMPT_PREFIXES = (
+    # OpenAI-compatible endpoint for companion tools. NOT unauthenticated —
+    # it validates a long-lived companion key (Authorization: Bearer) itself.
+    # It cannot use the app token: that rotates on every launch, and a
+    # companion holds a config file on disk, not a live session. The companion
+    # key is a strictly narrower grant (this endpoint only) and is separately
+    # revocable from Settings → Companions.
+    "/v1/",
     "/audio/download/",
     # Same reasoning as /audio/download/ — the canvas <video> element loads
     # via plain HTML5 src and can't attach the X-LocalBook-Token header.

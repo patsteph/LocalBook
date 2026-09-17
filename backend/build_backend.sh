@@ -161,6 +161,7 @@ python -W ignore -m PyInstaller \
     --add-data="$SCRIPT_DIR/scripts:scripts" \
     --add-data="$SCRIPT_DIR/static:static" \
     --add-data="$SCRIPT_DIR/templates:templates" \
+    --add-data="$SCRIPT_DIR/companions:companions" \
     --add-data="$SCRIPT_DIR/evaluator/test_content:evaluator/test_content" \
     --add-data="$SCRIPT_DIR/evaluator/test_fixtures:evaluator/test_fixtures" \
     --add-data="$SCRIPT_DIR/evaluator/registry_data:evaluator/registry_data" \

@@ -15,6 +15,7 @@ import { TemplatesSection } from './settings/TemplatesSection';
 import { VoiceProfileSection } from './settings/VoiceProfileSection';
 import { ScheduleSection } from './settings/ScheduleSection';
 import { FolderLinksPanel } from './folders/FolderLinksPanel';
+import { CompanionsSection } from './companions/CompanionsSection';
 
 class SettingsErrorBoundary extends React.Component<
   { children: React.ReactNode; fallbackLabel: string },
@@ -50,7 +51,7 @@ type SectionId =
     | 'api-keys' | 'credentials' | 'correspondent'
     | 'curator' | 'memory'
     | 'schedules'
-    | 'folders'
+    | 'folders' | 'companions'
     | 'templates' | 'updates';
 
 interface SectionDef {
@@ -90,7 +91,8 @@ const SECTION_GROUPS: { title: string; items: SectionDef[] }[] = [
     {
         title: 'Workspace',
         items: [
-            { id: 'folders',   label: 'Folders',   icon: '📁', accent: 'blue' },
+            { id: 'folders',    label: 'Folders',    icon: '📁', accent: 'blue' },
+            { id: 'companions', label: 'Companions', icon: '🧩', accent: 'purple' },
             { id: 'templates', label: 'Templates', icon: '📊', accent: 'blue' },
             { id: 'updates',   label: 'Updates',   icon: '🔄', accent: 'blue' },
         ],
@@ -163,6 +165,7 @@ export const Settings: React.FC = () => {
                     {activeSection === 'schedules' && <SettingsErrorBoundary fallbackLabel="Schedules"><ScheduleSection /></SettingsErrorBoundary>}
                     {activeSection === 'correspondent' && <SettingsErrorBoundary fallbackLabel="Correspondent"><CorrespondentSettings /></SettingsErrorBoundary>}
                     {activeSection === 'folders' && <SettingsErrorBoundary fallbackLabel="Linked Folders"><FolderLinksPanel /></SettingsErrorBoundary>}
+                    {activeSection === 'companions' && <SettingsErrorBoundary fallbackLabel="Companions"><CompanionsSection /></SettingsErrorBoundary>}
                     {activeSection === 'templates' && <TemplatesSection setError={setError} setSuccess={setSuccess} />}
                     {activeSection === 'updates' && <UpdatesSection />}
                 </div>

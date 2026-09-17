@@ -137,6 +137,20 @@ def extract_participants(text: str, filename: str) -> Tuple[List[str], str]:
     differently from "guessed from the filename", and the user deserves to
     know which one they are confirming.
     """
+    # Meeting Notes files name their participants in the action items — someone
+    # committed to something, so they were demonstrably present, and the name
+    # was written by the summariser rather than inferred by us. That outranks
+    # every heuristic below it.
+    try:
+        from services.meeting_notes import parse as _parse_notes, participants as _notes_people
+        notes = _parse_notes(text)
+        if notes:
+            people, source = _notes_people(notes)
+            if people:
+                return people[:_MAX_PARTICIPANTS], source
+    except Exception as e:
+        logger.debug(f"[smart-folder] meeting-notes participants skipped: {e}")
+
     people, _ = _from_frontmatter(text)
     if people:
         return people[:_MAX_PARTICIPANTS], "frontmatter"

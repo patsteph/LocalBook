@@ -275,12 +275,44 @@ class DocumentProcessor:
         elif file_type in ["txt", "md", "markdown", "json", "xml", "py", "js", "ts", "css", "yaml", "yml", "tex", "bib"]:
             # Text-based files (including LaTeX and BibTeX)
             try:
-                return content.decode('utf-8')
+                text = content.decode('utf-8')
             except UnicodeDecodeError:
-                return content.decode('latin-1')
+                text = content.decode('latin-1')
+            return self._reshape_known_formats(text, file_type)
         else:
             # Universal fallback: try multiple extraction strategies
             return await self._extract_with_fallback(content, filename, file_type)
+
+    @staticmethod
+    def _reshape_known_formats(text: str, file_type: str) -> str:
+        """Lead with the structure, when a format has some worth leading with.
+
+        Meeting Notes files (github.com/kvango/Meeting-Summarizer) are ~80%
+        raw transcript. What anyone asks back for — what was decided, who owes
+        what — is a few dozen lines competing with thousands of words of
+        chatter for retrieval. Restating the structured half at the top puts it
+        in its own chunks instead. Nothing is discarded; the transcript follows
+        in full.
+
+        Guarded and additive: an unrecognised document is returned untouched.
+        """
+        if file_type not in ("md", "markdown", "txt"):
+            return text
+        try:
+            from services.meeting_notes import parse, summary_markdown
+            notes = parse(text)
+            if not notes or not notes.has_structure:
+                return text
+            summary = summary_markdown(notes)
+            if not summary:
+                return text
+            print(f"[DocProcessor] Meeting Notes detected — leading with "
+                  f"{len(notes.decisions)} decision(s), "
+                  f"{len(notes.action_items)} action item(s)")
+            return f"{summary}\n\n---\n\n{text}"
+        except Exception as e:
+            logger.debug(f"[DocProcessor] meeting-notes reshape skipped: {e}")
+            return text
 
     @off_loop
     async def _extract_from_pdf(self, content: bytes, source_id: str = "", filename: str = "") -> str:
