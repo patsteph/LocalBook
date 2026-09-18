@@ -579,10 +579,13 @@ def _ensure_audio_devices(pre: Dict[str, Any], log: List[str]) -> Optional[Dict[
     except Exception as e:
         return {"ok": False, "error": f"CoreAudio unavailable: {e}"}
 
+    # Wait for the driver we just installed: the privileged step ends with
+    # `killall coreaudiod`, and the device list is not repopulated instantly.
     result = ensure_multi_output(
         name=mo["name"], uid=mo["uid"],
         include_names=mo.get("include") or [],
         include_default_output=bool(mo.get("include_default_output", True)),
+        wait_seconds=float(mo.get("wait_seconds", 25)),
     )
     if result.get("ok"):
         log.append(result.get("message", f"{mo['name']} ready"))
@@ -745,8 +748,9 @@ def run_preflight(manifest: Dict[str, Any]) -> Dict[str, Any]:
     audio_result = _ensure_audio_devices(pre, log)
     if audio_result and not audio_result.get("ok"):
         # Non-fatal: everything else installed, and the device can still be made
-        # by hand. Say so rather than failing the whole preparation.
+        # by hand. Surface it rather than burying it in the log.
         logger.warning(f"[companions] audio device not created: {audio_result.get('error')}")
+        warnings.append(audio_result.get("error") or "The audio device could not be created.")
 
     # Outcome, not exit code — the same rule as everywhere else here.
     remaining = [s for s in preflight_plan(manifest)["steps"]

@@ -128,3 +128,90 @@ def test_the_description_marks_the_device_as_stacked():
     import inspect
     src = inspect.getsource(ad.create_multi_output)
     assert "_K_STACKED: 1" in src
+
+
+# ── the race that broke a real install (2026-09-18) ─────────────────────────
+#
+# Field report: BlackHole installed correctly, and "Meeting Output" was still
+# missing. The privileged step ends with `killall coreaudiod`; the daemon takes
+# seconds to rescan plug-ins and republish. We looked for the new driver
+# immediately, found nothing to combine, and skipped building the device — then
+# a moment later the plan check saw BlackHole present, so the error named only
+# the device that depended on it.
+
+def test_waiting_returns_as_soon_as_a_device_appears(monkeypatch):
+    calls = {"n": 0}
+
+    def _find(name):
+        calls["n"] += 1
+        return {"name": name, "uid": "x"} if calls["n"] >= 3 else None
+    monkeypatch.setattr(ad, "find_device", _find)
+
+    found = ad.wait_for_device("BlackHole 2ch", timeout=5, interval=0.01)
+    assert found is not None
+    assert calls["n"] == 3, "it should stop polling the moment the device shows up"
+
+
+def test_waiting_gives_up_rather_than_hanging(monkeypatch):
+    monkeypatch.setattr(ad, "find_device", lambda name: None)
+    assert ad.wait_for_device("Never Appears", timeout=0.05, interval=0.01) is None
+
+
+def test_ensure_waits_for_a_driver_that_is_still_registering(monkeypatch):
+    """The actual fix: a driver installed seconds ago is not visible yet."""
+    seen = {"n": 0}
+    default = next(d for d in ad.list_devices() if d["is_default_output"])
+
+    def _find(name):
+        if name == "SlowDriver":
+            seen["n"] += 1
+            return {"name": "SlowDriver", "uid": "slow-uid"} if seen["n"] >= 2 else None
+        return default if name == default["name"] else None
+
+    monkeypatch.setattr(ad, "find_device", _find)
+    monkeypatch.setattr(ad, "create_multi_output",
+                        lambda **kw: {"ok": True, "device_id": 1, "members": kw["member_uids"]})
+    # find_device is patched, so the post-create existence check sees it too.
+    result = ad.ensure_multi_output(name="SlowDriver", uid="u",
+                                    include_names=["SlowDriver"], wait_seconds=2)
+    assert seen["n"] >= 2, "it gave up before the driver had a chance to register"
+
+
+def test_a_driver_that_never_appears_suggests_a_restart(monkeypatch):
+    """BlackHole's own advice. Repeating "not installed" at someone who just
+    watched it install is not help."""
+    monkeypatch.setattr(ad, "find_device", lambda name: None)
+    result = ad.ensure_multi_output(name="X", uid="u",
+                                    include_names=["Ghost"], wait_seconds=0.05)
+    assert result["ok"] is False
+    assert "restart" in result["error"].lower()
+
+
+def test_creation_is_retried_before_being_believed(monkeypatch):
+    """coreaudiod can accept the call and still be settling; one refusal right
+    after a driver install is not evidence that it cannot work."""
+    import time as _time
+    attempts = {"n": 0}
+    default = next(d for d in ad.list_devices() if d["is_default_output"])
+    created = {"yes": False}
+
+    def _find(name):
+        if name == "A Device We Are Building":
+            return {"name": name, "uid": "new"} if created["yes"] else None
+        return default if name == default["name"] else None
+
+    def _create(**kw):
+        attempts["n"] += 1
+        if attempts["n"] >= 2:
+            created["yes"] = True
+            return {"ok": True, "device_id": 7}
+        return {"ok": False, "error": "coreaudiod is still settling"}
+
+    monkeypatch.setattr(ad, "find_device", _find)
+    monkeypatch.setattr(ad, "create_multi_output", _create)
+    monkeypatch.setattr(_time, "sleep", lambda s: None)
+
+    result = ad.ensure_multi_output(name="A Device We Are Building", uid="u",
+                                    include_names=[])
+    assert result["ok"] and result["created"] is True
+    assert attempts["n"] == 2, "a single refusal was treated as final"

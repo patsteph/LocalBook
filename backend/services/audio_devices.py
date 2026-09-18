@@ -231,8 +231,32 @@ def destroy_device(device_id: int) -> bool:
     return ca.AudioHardwareDestroyAggregateDevice(int(device_id)) == 0
 
 
+def wait_for_device(name: str, timeout: float = 25.0,
+                    interval: float = 1.0) -> Optional[Dict[str, Any]]:
+    """Block until a device shows up, or give up.
+
+    A freshly installed audio driver is not visible the instant its installer
+    finishes. `killall coreaudiod` restarts the daemon, and it takes a few
+    seconds to rescan plug-ins and republish the device list. Building the
+    Multi-Output Device inside that window silently finds nothing to combine
+    (field report, 2026-09-18: BlackHole installed correctly, and the device
+    that depends on it was skipped a moment too early).
+    """
+    import time
+    deadline = time.monotonic() + timeout
+    while True:
+        found = find_device(name)
+        if found:
+            return found
+        if time.monotonic() >= deadline:
+            return None
+        time.sleep(interval)
+
+
 def ensure_multi_output(*, name: str, uid: str, include_names: List[str],
-                        include_default_output: bool = True) -> Dict[str, Any]:
+                        include_default_output: bool = True,
+                        wait_seconds: float = 0.0,
+                        attempts: int = 3) -> Dict[str, Any]:
     """Make sure the device exists, building it only if it does not.
 
     Idempotent on purpose. The user may already have built "Meeting Output" by
@@ -258,7 +282,9 @@ def ensure_multi_output(*, name: str, uid: str, include_names: List[str],
             missing.append("your current output device")
 
     for want in include_names:
-        dev = find_device(want)
+        # Wait rather than glance: a driver installed seconds ago may still be
+        # invisible while coreaudiod restarts.
+        dev = wait_for_device(want, timeout=wait_seconds) if wait_seconds else find_device(want)
         if dev and dev["uid"]:
             if dev["uid"] not in members:
                 members.append(dev["uid"])
@@ -266,12 +292,28 @@ def ensure_multi_output(*, name: str, uid: str, include_names: List[str],
             missing.append(want)
 
     if missing:
+        # A driver that never appears after a wait usually needs a reboot — which
+        # is the advice BlackHole itself gives. Say that, rather than repeating
+        # "not installed" at someone who just watched it install.
+        hint = (" It may need a restart before macOS publishes it."
+                if wait_seconds else "")
         return {"ok": False, "created": False, "missing": missing,
                 "error": f"Cannot build {name} yet — {', '.join(missing)} "
-                         f"{'is' if len(missing) == 1 else 'are'} not installed."}
+                         f"{'is' if len(missing) == 1 else 'are'} not available."
+                         f"{hint}"}
 
-    result = create_multi_output(name=name, uid=uid, member_uids=members,
-                                 master_uid=master)
+    # Retry: coreaudiod may accept the call and still be settling, and a single
+    # refusal right after a driver install is not evidence that it cannot work.
+    import time
+    result = {}
+    for attempt in range(1, max(1, attempts) + 1):
+        result = create_multi_output(name=name, uid=uid, member_uids=members,
+                                     master_uid=master)
+        if result.get("ok"):
+            break
+        if attempt < attempts:
+            logger.info(f"[audio] {name} creation attempt {attempt} failed, retrying")
+            time.sleep(1.5)
     if not result.get("ok"):
         return {"ok": False, "created": False, "error": result.get("error")}
 

@@ -44,8 +44,8 @@ import {
  * The list is shown before the prompt, with a reason beside each item. Granting
  * admin to a list of package names is not consent.
  */
-function PreflightPanel({ c, onDone, onClose }: {
-  c: Companion; onDone: () => void; onClose: () => void;
+function PreflightPanel({ c, onDone, onClose, onRefresh }: {
+  c: Companion; onDone: () => void; onClose: () => void; onRefresh: () => void;
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -62,11 +62,15 @@ function PreflightPanel({ c, onDone, onClose }: {
       const res = await runPreflight(c.id);
       setLog(res.log || []);
       setWarnings(res.warnings || []);
+      onRefresh();
       // A skipped optional step is not a failure, but it must not be silent:
       // stay on the panel so the user reads it rather than being moved along.
       if (!(res.warnings || []).length) onDone();
     } catch (e: any) {
       setError(e?.message || 'Preparation failed.');
+      // Refresh even on failure: a partial run changes what is outstanding, and
+      // a stale checklist showing everything undone hides the progress made.
+      onRefresh();
     } finally {
       setBusy(false);
     }
@@ -597,6 +601,7 @@ function Card({ c, notebooks, onChanged }: {
           {panel === 'prep' && (
             <PreflightPanel c={c}
                             onDone={() => { onChanged(); setPanel('install'); }}
+                            onRefresh={onChanged}
                             onClose={() => setPanel('none')} />
           )}
 

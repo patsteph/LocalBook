@@ -509,6 +509,10 @@ def captured(monkeypatch):
     monkeypatch.setattr(svc.subprocess, "run", _run)
     monkeypatch.setattr(svc, "_which",
                         lambda b: f"/opt/homebrew/bin/{b}" if b in present else None)
+    # The audio step waits up to 25s for a freshly installed driver to appear.
+    # These tests are about the privileged step's ordering, not CoreAudio, and
+    # a real wait here turns a 1-second file into a multi-minute one.
+    monkeypatch.setattr(svc, "_ensure_audio_devices", lambda pre, log: None)
     monkeypatch.setattr(svc, "_audio_devices", lambda: [])
     monkeypatch.setattr(svc.Path, "is_file", lambda self: True)
     return calls
