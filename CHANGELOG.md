@@ -2,7 +2,7 @@
 
 All notable changes to LocalBook will be documented in this file.
 
-## Unreleased — Linked Folders
+## Unreleased — Linked Folders + Companions
 
 **Point LocalBook at a folder and anything that lands in it becomes a source.** Built for a user
 whose audio recorder transcribes 1:1s to markdown: the recordings are now searchable, chattable,
@@ -23,6 +23,20 @@ and usable in every artifact LocalBook makes, with no step for the user after th
   topics you choose, listed in plain English with what it has actually routed, and revocable.
 - **@collector understands folders.** Ask what folders are being watched, scan one now, what is
   waiting for review, or what rules exist.
+
+- **Companions.** Local tools that work alongside LocalBook, installed and configured from
+  **Settings → Companions**. The first is [Meeting Notes](https://github.com/kvango/Meeting-Summarizer),
+  a meeting recorder that transcribes and summarises entirely on your Mac.
+
+  Connecting one points it at the model LocalBook already has loaded, so it stops running a second
+  copy of the same thing. Setting one up asks for your password **once** — LocalBook never sees it,
+  the prompt is macOS's own — and builds the audio device the tool would otherwise ask you to
+  assemble by hand. An optional menu-bar control can start and stop recording.
+
+  Installers are pinned to a specific published version and checked against a fingerprint before
+  they run, with a link to read that exact version first. LocalBook watches for newer versions and
+  offers them, with the changes one click away; nothing updates on its own. It also checks that an
+  install actually worked rather than trusting it to say so.
 
 ### Fixed
 - **Text extraction blocked the event loop.** Seventeen extractors — PDF, Office, audio, video,
