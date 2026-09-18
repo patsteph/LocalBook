@@ -50,6 +50,7 @@ function PreflightPanel({ c, onDone, onClose }: {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [log, setLog] = useState<string[]>([]);
+  const [warnings, setWarnings] = useState<string[]>([]);
   const plan = c.preflight;
   if (!plan) return null;
 
@@ -60,7 +61,10 @@ function PreflightPanel({ c, onDone, onClose }: {
     try {
       const res = await runPreflight(c.id);
       setLog(res.log || []);
-      onDone();
+      setWarnings(res.warnings || []);
+      // A skipped optional step is not a failure, but it must not be silent:
+      // stay on the panel so the user reads it rather than being moved along.
+      if (!(res.warnings || []).length) onDone();
     } catch (e: any) {
       setError(e?.message || 'Preparation failed.');
     } finally {
@@ -101,6 +105,16 @@ function PreflightPanel({ c, onDone, onClose }: {
       {log.length > 0 && (
         <p className="text-[11px] text-green-700 dark:text-green-400">{log.join(' · ')}</p>
       )}
+      {warnings.map((w) => (
+        <p key={w} className="text-[11px] text-amber-700 dark:text-amber-400">
+          ⚠ {w}
+        </p>
+      ))}
+      {warnings.length > 0 && (
+        <p className="text-[11px] text-gray-500 dark:text-gray-400">
+          Everything essential is ready — you can carry on installing.
+        </p>
+      )}
       {error && <p className="text-[11px] text-red-600 dark:text-red-400">{error}</p>}
 
       <div className="flex justify-end gap-2">
@@ -108,9 +122,12 @@ function PreflightPanel({ c, onDone, onClose }: {
                 className="px-2.5 py-1 text-xs text-gray-500 hover:text-gray-700 dark:hover:text-gray-300">
           Cancel
         </button>
-        <button onClick={go} disabled={busy || outstanding.length === 0}
+        <button onClick={warnings.length ? onDone : go}
+                disabled={busy || (!warnings.length && outstanding.length === 0)}
                 className="px-3 py-1 text-xs font-medium rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-40">
-          {busy ? 'Preparing…' : outstanding.length === 0 ? 'Nothing to do' : 'Prepare'}
+          {busy ? 'Preparing…'
+            : warnings.length ? 'Continue'
+            : outstanding.length === 0 ? 'Nothing to do' : 'Prepare'}
         </button>
       </div>
     </div>

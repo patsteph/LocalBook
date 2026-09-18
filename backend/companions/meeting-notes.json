@@ -137,12 +137,14 @@
       {
         "name": "ffmpeg",
         "binary": "ffmpeg",
-        "why": "records and converts the audio"
+        "why": "records and converts the audio",
+        "required": true
       },
       {
         "name": "switchaudio-osx",
         "binary": "SwitchAudioSource",
-        "why": "switches your output to the meeting device while recording"
+        "why": "switches your output to the meeting device while recording",
+        "required": false
       }
     ],
     "pkg_casks": [

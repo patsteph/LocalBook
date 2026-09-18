@@ -206,6 +206,10 @@ async def preflight(companion_id: str):
             detail=result.get("error", "Preparation failed"))
     return {"ok": True, "log": result.get("log", []),
             "prompted": result.get("prompted", False),
+            # Optional steps that failed. Reported rather than swallowed: the
+            # user should know their output device won't switch automatically,
+            # not discover it mid-call.
+            "warnings": result.get("warnings", []),
             "status": svc.status(manifest)}
 
 

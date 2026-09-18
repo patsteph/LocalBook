@@ -216,7 +216,7 @@ export async function removeExtra(id: string, extraId: string): Promise<{ status
 }
 
 export async function runPreflight(id: string): Promise<{
-  log: string[]; prompted: boolean; status: Companion;
+  log: string[]; prompted: boolean; warnings: string[]; status: Companion;
 }> {
   return jsonOrThrow(await localFetch(`${API_BASE_URL}/companions/${id}/preflight`, {
     method: 'POST',

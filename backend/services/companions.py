@@ -212,9 +212,10 @@ def _audio_devices() -> List[str]:
         logger.debug(f"[companions] CoreAudio listing unavailable, falling back: {e}")
 
     try:
+        from utils.subprocess_env import clean_child_env
         proc = subprocess.run(
             ["system_profiler", "SPAudioDataType"],
-            capture_output=True, text=True, timeout=20,
+            capture_output=True, text=True, timeout=20, env=clean_child_env(),
         )
     except Exception as e:
         logger.debug(f"[companions] audio device listing failed: {e}")
@@ -589,12 +590,42 @@ def _ensure_audio_devices(pre: Dict[str, Any], log: List[str]) -> Optional[Dict[
 
 
 def _run_as_user(args: List[str], timeout: int = 900) -> subprocess.CompletedProcess:
-    """Run a command as the logged-in user. Never root — Homebrew refuses it."""
-    env = dict(os.environ)
-    env["PATH"] = f"/opt/homebrew/bin:/usr/local/bin:{env.get('PATH', '')}"
-    env["HOMEBREW_NO_AUTO_UPDATE"] = "1"       # keep it quick and predictable
-    env["NONINTERACTIVE"] = "1"                # brew must never wait on a prompt
+    """Run a command as the logged-in user, in a CLEAN environment.
+
+    Never as root — Homebrew refuses that. And never with our environment: a
+    PyInstaller app leaks loader paths and TLS overrides into every child, and
+    `CURL_CA_BUNDLE` pointing at our certifi bundle stopped brew from fetching
+    bottle manifests on a network that inspects HTTPS. brew then reported that
+    no bottle existed and suggested building from source. The formula was fine;
+    what we handed it was not.
+    """
+    from utils.subprocess_env import clean_child_env
+    env = clean_child_env({
+        "HOMEBREW_NO_AUTO_UPDATE": "1",    # keep it quick and predictable
+        "NONINTERACTIVE": "1",             # brew must never wait on a prompt
+    })
     return subprocess.run(args, capture_output=True, text=True, timeout=timeout, env=env)
+
+
+def _brew_error(proc: subprocess.CompletedProcess, package: str) -> str:
+    """Turn Homebrew's output into one line a person can act on.
+
+    Its failures end in a wall of support-tier boilerplate and "do not report
+    issues", none of which helps. Surface the cause, not the footer.
+    """
+    text = ((proc.stderr or "") + "\n" + (proc.stdout or "")).strip()
+    lowered = text.lower()
+    if "no bottle available" in lowered or "build-from-source" in lowered:
+        return (f"Homebrew has no prebuilt {package} for this macOS version. "
+                f"You can install it yourself with: brew install {package}")
+    if "ssl" in lowered or "certificate" in lowered or "curl" in lowered:
+        return (f"Homebrew could not download {package} — the network blocked or "
+                f"re-signed the connection. Try: brew install {package}")
+    for line in text.splitlines():
+        line = line.strip()
+        if line.lower().startswith("error:"):
+            return line[:200]
+    return (text.splitlines() or [f"brew install {package} failed"])[0][:200]
 
 
 def run_preflight(manifest: Dict[str, Any]) -> Dict[str, Any]:
@@ -615,6 +646,7 @@ def run_preflight(manifest: Dict[str, Any]) -> Dict[str, Any]:
                 "error": "Homebrew is required. Install it from https://brew.sh, then try again."}
 
     log: List[str] = []
+    warnings: List[str] = []
 
     # ── 1. formulae — user-owned prefix, no password ────────────────────
     for f in pre.get("formulae") or []:
@@ -627,8 +659,15 @@ def run_preflight(manifest: Dict[str, Any]) -> Dict[str, Any]:
         except subprocess.TimeoutExpired:
             return {"ok": False, "error": f"Installing {name} took too long.", "log": log}
         if not _which(binary):
-            tail = (proc.stderr or proc.stdout or "").strip()[-300:]
-            return {"ok": False, "error": f"Could not install {name}. {tail}", "log": log}
+            message = _brew_error(proc, name)
+            if f.get("required", True):
+                return {"ok": False, "error": message, "log": log}
+            # Optional: note it and carry on. Aborting the whole preparation —
+            # including the audio driver — because one helper has no bottle
+            # would be a worse outcome than a partly prepared machine.
+            log.append(f"could not install {name} (optional)")
+            warnings.append(message)
+            continue
         log.append(f"installed {name}")
 
     # ── 2. download the .pkg as the USER; brew verifies its own checksum ─
@@ -653,7 +692,7 @@ def run_preflight(manifest: Dict[str, Any]) -> Dict[str, Any]:
 
     admin_cmds = [a for a in (pre.get("admin_commands") or [])]
     if not pkgs and not admin_cmds:
-        return {"ok": True, "log": log, "prompted": False}
+        return {"ok": True, "log": log, "prompted": False, "warnings": warnings}
 
     # ── 3. ONE authorization for everything privileged ──────────────────
     script_lines = ["#!/bin/sh", "set -e"]
@@ -676,8 +715,10 @@ def run_preflight(manifest: Dict[str, Any]) -> Dict[str, Any]:
             f'do shell script "/bin/sh {shlex.quote(str(script_path))}" '
             f'with administrator privileges'
         )
+        from utils.subprocess_env import clean_child_env
         proc = subprocess.run(["/usr/bin/osascript", "-e", applescript],
-                              capture_output=True, text=True, timeout=900)
+                              capture_output=True, text=True, timeout=900,
+                              env=clean_child_env())
     except subprocess.TimeoutExpired:
         return {"ok": False, "error": "The privileged step took too long.", "log": log}
     except Exception as e:
@@ -710,7 +751,7 @@ def run_preflight(manifest: Dict[str, Any]) -> Dict[str, Any]:
     # Outcome, not exit code — the same rule as everywhere else here.
     remaining = [s for s in preflight_plan(manifest)["steps"]
                  if not s["done"] and not s.get("incidental")]
-    return {"ok": not remaining, "log": log, "prompted": True,
+    return {"ok": not remaining, "log": log, "prompted": True, "warnings": warnings,
             "error": None if not remaining else
                      f"Still missing: {', '.join(s['label'] for s in remaining)}"}
 
@@ -1008,8 +1049,10 @@ def _plugin_dir(extra: Dict[str, Any]) -> Path:
     domain, key = pref.get("domain"), pref.get("key")
     if domain and key:
         try:
+            from utils.subprocess_env import clean_child_env
             proc = subprocess.run(["defaults", "read", domain, key],
-                                  capture_output=True, text=True, timeout=10)
+                                  capture_output=True, text=True, timeout=10,
+                                  env=clean_child_env())
             value = (proc.stdout or "").strip()
             if proc.returncode == 0 and value:
                 return Path(value).expanduser()
@@ -1070,12 +1113,9 @@ def install_extra(manifest: Dict[str, Any], extra_id: str) -> Dict[str, Any]:
         if not found:
             return {"ok": False, "error": f"Homebrew is needed to install {cask}."}
         try:
-            proc = subprocess.run([found, "install", "--cask", cask],
-                                  capture_output=True, text=True, timeout=600)
+            proc = _run_as_user([found, "install", "--cask", cask], timeout=600)
             if not _cask_installed(cask):
-                tail = (proc.stderr or proc.stdout or "").strip()[-300:]
-                return {"ok": False,
-                        "error": f"Could not install {cask}. {tail}"}
+                return {"ok": False, "error": _brew_error(proc, cask)}
         except subprocess.TimeoutExpired:
             return {"ok": False, "error": f"Installing {cask} took too long."}
         except Exception as e:
@@ -1140,7 +1180,7 @@ def run_control(manifest: Dict[str, Any], action: str) -> Dict[str, Any]:
     if not resolved:
         return {"ok": False, "error": f"{binary} is not installed"}
     try:
-        proc = subprocess.run([resolved], capture_output=True, text=True, timeout=30)
+        proc = _run_as_user([resolved], timeout=30)
         ok = proc.returncode == 0
         return {"ok": ok,
                 "output": (proc.stdout or proc.stderr or "").strip()[:400],
