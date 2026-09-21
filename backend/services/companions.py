@@ -326,9 +326,14 @@ def install_command(manifest: Dict[str, Any]) -> str:
         return install.get("command", "")
     if not digest:
         return f"curl -fsSL {url} | bash"
+    # NONINTERACTIVE stops Homebrew asking "proceed? [y/n]" twice mid-install;
+    # NO_AUTO_UPDATE stops it refreshing every tap and printing a page of new
+    # formulae nobody asked about. Neither changes what gets installed — they
+    # just stop a scripted install from stalling on a question.
     return (
         f'f=$(mktemp) && curl -fsSL "{url}" -o "$f" && '
-        f'echo "{digest}  $f" | shasum -a 256 -c - && bash "$f"; rm -f "$f"'
+        f'echo "{digest}  $f" | shasum -a 256 -c - && '
+        f'HOMEBREW_NO_AUTO_UPDATE=1 NONINTERACTIVE=1 bash "$f"; rm -f "$f"'
     )
 
 
@@ -515,6 +520,10 @@ def preflight_plan(manifest: Dict[str, Any]) -> Dict[str, Any]:
     pre = manifest.get("preflight") or {}
     if not pre:
         return {"needed": False, "steps": []}
+    # A companion may declare that its preparation belongs AFTER its installer —
+    # ours does, because the device it builds needs a driver the installer
+    # provides. Offering it beforehand would fail every time.
+    after_install = pre.get("when") == "after_install"
 
     devices = None
     steps: List[Dict[str, Any]] = []
@@ -562,6 +571,7 @@ def preflight_plan(manifest: Dict[str, Any]) -> Dict[str, Any]:
     outstanding = [s for s in steps if not s["done"] and not s.get("incidental")]
     return {
         "needed": bool(outstanding),
+        "after_install": after_install,
         "label": pre.get("label", "Prepare"),
         "summary": pre.get("summary", ""),
         "steps": steps,

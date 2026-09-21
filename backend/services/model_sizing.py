@@ -81,6 +81,24 @@ def _snapshot_dir(model_id: str) -> Optional[str]:
                 return os.path.dirname(p)
     except Exception:
         pass
+
+    # Probing for known filenames only finds layouts we already know about. A
+    # GGUF repo ships neither config.json nor a safetensors index — just .gguf
+    # files — so it was invisible, and an 8.6 GB download looked like nothing at
+    # all. Fall back to the cache's own directory layout, which is the same for
+    # every repo whatever it contains.
+    try:
+        from huggingface_hub.constants import HF_HUB_CACHE
+        folder = os.path.join(HF_HUB_CACHE,
+                              "models--" + model_id.replace("/", "--"), "snapshots")
+        if os.path.isdir(folder):
+            snaps = [os.path.join(folder, d) for d in os.listdir(folder)]
+            snaps = [d for d in snaps if os.path.isdir(d)]
+            if snaps:
+                # Newest wins when a repo has several revisions cached.
+                return max(snaps, key=os.path.getmtime)
+    except Exception:
+        pass
     return None
 
 
@@ -103,7 +121,11 @@ def load_config(model_id: str) -> Optional[Dict[str, Any]]:
 # Weight file formats we count. safetensors is the norm; mlx-whisper ships weights.npz;
 # `.bin` covers older torch checkpoints. `.gguf` is deliberately absent — nothing loads GGUF
 # since the llama-server sidecar was removed.
-_WEIGHT_SUFFIXES = (".safetensors", ".npz", ".bin")
+# `.gguf` added 2026-09-21: a companion tool (Meeting Notes) installs llama.cpp
+# and downloads GGUF weights into the SAME HuggingFace cache LocalBook uses. An
+# 8.6 GB repo we cannot size is invisible to presence, readiness and the model
+# browser — the exact false negative that once hid a fully-downloaded Klein.
+_WEIGHT_SUFFIXES = (".safetensors", ".npz", ".bin", ".gguf")
 
 
 def exact_weight_gb(model_id: str) -> Optional[float]:

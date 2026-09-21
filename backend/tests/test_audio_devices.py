@@ -52,10 +52,22 @@ def test_lookup_matches_exactly_before_falling_back_to_substring():
 
 # ── creating ────────────────────────────────────────────────────────────────
 
+def _wait_until_gone(name: str, timeout: float = 5.0) -> bool:
+    """The mirror of wait_for_device — removal is equally asynchronous."""
+    import time
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if ad.find_device(name) is None:
+            return True
+        time.sleep(0.2)
+    return ad.find_device(name) is None
+
+
 def _cleanup():
     dev = ad.find_device(_PROBE_NAME)
     if dev:
         ad.destroy_device(dev["id"])
+        _wait_until_gone(_PROBE_NAME)
 
 
 @pytest.fixture
@@ -66,15 +78,23 @@ def probe():
 
 
 def test_a_multi_output_device_can_be_created_and_removed(probe):
-    """The whole premise, end to end against real CoreAudio."""
+    """The whole premise, end to end against real CoreAudio.
+
+    Every check here WAITS rather than glances. coreaudiod republishes its
+    device list asynchronously, so reading it in the same breath as a mutation
+    is a race — which is the lesson production already learned the hard way,
+    and which made these tests intermittent while a driver was installing on
+    this very machine.
+    """
     default = next(d for d in ad.list_devices() if d["is_default_output"])
     result = ad.create_multi_output(
         name=_PROBE_NAME, uid=_PROBE_UID,
         member_uids=[default["uid"]], master_uid=default["uid"])
     assert result["ok"], result
-    assert ad.find_device(_PROBE_NAME) is not None, "macOS reported success but nothing appeared"
+    assert ad.wait_for_device(_PROBE_NAME, timeout=5, interval=0.2) is not None, \
+        "macOS reported success but the device never appeared"
     assert ad.destroy_device(result["device_id"]) is True
-    assert ad.find_device(_PROBE_NAME) is None
+    assert _wait_until_gone(_PROBE_NAME), "the device was still listed after removal"
 
 
 def test_creating_with_no_members_is_refused():
@@ -101,7 +121,8 @@ def test_ensure_is_idempotent(probe):
     default = next(d for d in ad.list_devices() if d["is_default_output"])
     first = ad.ensure_multi_output(name=_PROBE_NAME, uid=_PROBE_UID,
                                    include_names=[default["name"]])
-    assert first["ok"] and first["created"] is True
+    assert first["ok"] and first["created"] is True, first
+    assert ad.wait_for_device(_PROBE_NAME, timeout=5, interval=0.2) is not None
 
     second = ad.ensure_multi_output(name=_PROBE_NAME, uid=_PROBE_UID,
                                     include_names=[default["name"]])

@@ -198,3 +198,33 @@ def test_model_kind_detection_reads_the_cache_not_the_hub():
     assert "hf_hub_download" not in code
     assert me.mlx_engine._model_kind("mlx-community/gemma-4-e4b-it-4bit") == "vlm"
     assert me.mlx_engine._model_kind("mlx-community/Phi-4-mini-instruct-4bit") == "lm"
+
+
+def test_a_gguf_only_repo_is_sizeable():
+    """2026-09-21: a companion tool installed llama.cpp and downloaded 8.6 GB of
+    GGUF weights into the SAME HuggingFace cache LocalBook uses. Sizing probed
+    for `config.json` or a safetensors index, and a GGUF repo has neither — so
+    the repo was invisible to presence, readiness and the model browser, which
+    is the false negative that once hid a fully-downloaded Klein.
+
+    Both halves had to change: locating the snapshot must not depend on knowing
+    a filename, and `.gguf` must count as weights.
+    """
+    from services.model_sizing import _WEIGHT_SUFFIXES
+    assert ".gguf" in _WEIGHT_SUFFIXES
+
+
+def test_a_snapshot_is_found_without_knowing_what_is_in_it(tmp_path, monkeypatch):
+    """Probing for known filenames only finds layouts we already know about."""
+    import os
+    from huggingface_hub import constants
+    from services import model_sizing
+
+    repo = tmp_path / "models--acme--mystery" / "snapshots" / "abc123"
+    repo.mkdir(parents=True)
+    (repo / "weights.gguf").write_bytes(b"x" * 2048)
+    monkeypatch.setattr(constants, "HF_HUB_CACHE", str(tmp_path))
+    monkeypatch.setattr(model_sizing, "_CACHE", {})
+
+    found = model_sizing._snapshot_dir("acme/mystery")
+    assert found and os.path.samefile(found, repo)

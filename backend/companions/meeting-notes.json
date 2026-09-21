@@ -23,9 +23,10 @@
       "brew"
     ],
     "notes": [
-      "Its installer shows two dialogs of its own. Leave the email blank \u2014 LocalBook files your notes.",
-      "The second explains how to build an audio device in Audio MIDI Setup. LocalBook already made it \u2014 just click Done.",
-      "It also installs llama.cpp, which goes unused once LocalBook is connected as the engine."
+      "Asks for your password once, to install the BlackHole audio driver.",
+      "Leave the email blank when it asks \u2014 LocalBook files your notes.",
+      "When it explains how to build an audio device in Audio MIDI Setup, just click Done. LocalBook builds it for you afterwards.",
+      "It also installs llama.cpp and downloads a model for it (several GB). LocalBook can't skip that step, and neither is used once you press Connect."
     ]
   },
   "detect": {
@@ -131,38 +132,9 @@
     }
   ],
   "preflight": {
-    "label": "Prepare your Mac",
-    "summary": "Installs the audio pieces first, so the installer itself has nothing left to ask for.",
-    "formulae": [
-      {
-        "name": "ffmpeg",
-        "binary": "ffmpeg",
-        "why": "records and converts the audio",
-        "required": true
-      },
-      {
-        "name": "switchaudio-osx",
-        "binary": "SwitchAudioSource",
-        "why": "switches your output to the meeting device while recording",
-        "required": false
-      }
-    ],
-    "pkg_casks": [
-      {
-        "cask": "blackhole-2ch",
-        "label": "BlackHole audio driver",
-        "audio_device": "BlackHole 2ch",
-        "why": "lets it hear the other side of a call, not just your microphone"
-      }
-    ],
-    "admin_commands": [
-      {
-        "cmd": "/usr/bin/killall coreaudiod",
-        "optional": true,
-        "label": "restart Core Audio",
-        "why": "makes the new audio device appear without restarting your Mac"
-      }
-    ],
+    "label": "Finish setup",
+    "summary": "Builds the audio device the recorder needs \u2014 the one its installer asks you to make by hand. No password required.",
+    "when": "after_install",
     "audio_setup": {
       "multi_output": {
         "name": "Meeting Output",

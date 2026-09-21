@@ -89,6 +89,11 @@ function PreflightPanel({ c, onDone, onClose, onRefresh }: {
   return (
     <div className="mt-3 rounded-lg border dark:border-gray-700 bg-gray-50 dark:bg-gray-800/60 p-3 space-y-2.5">
       <p className="text-xs text-gray-600 dark:text-gray-300">{plan.summary}</p>
+      {plan.after_install && (
+        <p className="text-[11px] text-gray-500 dark:text-gray-400">
+          This is the step {c.name}'s own installer asks you to do by hand.
+        </p>
+      )}
 
       <div className="space-y-1.5">
         {plan.steps.filter((s) => !s.incidental).map((s) => (
@@ -174,7 +179,7 @@ function InstallPanel({ c, onClose }: { c: Companion; onClose: () => void }) {
       <p className="text-xs text-gray-600 dark:text-gray-300">
         {c.name} installs itself from the terminal — it needs Homebrew and your
         admin password for the audio driver, so it can't run inside this window.
-        Paste this, then come back and press Connect.
+        Paste this and let it finish; LocalBook takes over from there.
       </p>
 
       {/* Provenance. This command downloads and runs someone else's script, so
@@ -614,7 +619,10 @@ function Card({ c, notebooks, onChanged }: {
           )}
           {panel === 'prep' && (
             <PreflightPanel c={c}
-                            onDone={() => { onChanged(); setPanel('install'); }}
+                            onDone={() => {
+                              onChanged();
+                              setPanel(c.installed ? 'connect' : 'install');
+                            }}
                             onRefresh={onChanged}
                             onClose={() => setPanel('none')} />
           )}
@@ -626,17 +634,25 @@ function Card({ c, notebooks, onChanged }: {
         <div className="flex items-center gap-1 flex-shrink-0">
           {c.state === 'not_installed' && panel === 'none' && (
             <button
-              onClick={() => setPanel(c.preflight?.needed ? 'prep' : 'install')}
+              onClick={() => setPanel(c.preflight?.needed && !c.preflight.after_install
+                ? 'prep' : 'install')}
               className="px-3 py-1.5 text-xs font-medium rounded-lg bg-blue-600 text-white hover:bg-blue-700"
             >
-              {c.preflight?.needed ? 'Set up…' : 'Install…'}
+              {c.preflight?.needed && !c.preflight.after_install ? 'Set up…' : 'Install…'}
             </button>
           )}
           {c.state === 'installed' && panel === 'none' && (
-            <button onClick={() => setPanel('connect')}
-                    className="px-3 py-1.5 text-xs font-medium rounded-lg bg-blue-600 text-white hover:bg-blue-700">
-              Connect
-            </button>
+            c.preflight?.needed ? (
+              <button onClick={() => setPanel('prep')}
+                      className="px-3 py-1.5 text-xs font-medium rounded-lg bg-blue-600 text-white hover:bg-blue-700">
+                Finish setup
+              </button>
+            ) : (
+              <button onClick={() => setPanel('connect')}
+                      className="px-3 py-1.5 text-xs font-medium rounded-lg bg-blue-600 text-white hover:bg-blue-700">
+                Connect
+              </button>
+            )
           )}
           {c.state === 'recording' && c.can_control && (
             <button disabled={busy}

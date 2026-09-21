@@ -481,6 +481,42 @@ def test_an_unknown_extra_is_refused():
 # These tests never install anything — every subprocess is captured.
 
 @pytest.fixture
+def privileged_manifest():
+    """A companion that DOES need elevation.
+
+    Written here rather than borrowed from a shipped manifest: these tests are
+    about the mechanism — one prompt, correct ordering, cleanup — and must keep
+    working when a particular companion stops needing a password. meeting-notes
+    did exactly that once its installer took over the Homebrew packages.
+    """
+    return {
+        "id": "test-privileged",
+        "name": "Privileged Test Tool",
+        "preflight": {
+            "label": "Prepare",
+            "summary": "test",
+            "formulae": [
+                {"name": "ffmpeg", "binary": "ffmpeg", "why": "records audio",
+                 "required": True},
+                {"name": "switchaudio-osx", "binary": "SwitchAudioSource",
+                 "why": "switches output", "required": False},
+            ],
+            "pkg_casks": [
+                {"cask": "blackhole-2ch", "label": "BlackHole audio driver",
+                 "audio_device": "BlackHole 2ch", "why": "hears the far side"},
+            ],
+            "admin_commands": [
+                {"cmd": "/usr/bin/killall coreaudiod", "optional": True,
+                 "label": "restart Core Audio", "why": "publishes the new device"},
+            ],
+            "audio_setup": {"multi_output": {
+                "name": "Meeting Output", "uid": "com.test.mo",
+                "include": ["BlackHole 2ch"], "why": "hear while recording"}},
+        },
+    }
+
+
+@pytest.fixture
 def captured(monkeypatch):
     """Record every command instead of running it."""
     calls = []
@@ -518,8 +554,8 @@ def captured(monkeypatch):
     return calls
 
 
-def test_the_plan_separates_what_needs_a_password(captured):
-    plan = svc.preflight_plan(svc.get_manifest("meeting-notes"))
+def test_the_plan_separates_what_needs_a_password(captured, privileged_manifest):
+    plan = svc.preflight_plan(privileged_manifest)
     by_label = {s["label"]: s for s in plan["steps"]}
     assert by_label["ffmpeg"]["needs_admin"] is False
     assert by_label["switchaudio-osx"]["needs_admin"] is False
@@ -530,15 +566,17 @@ def test_the_plan_separates_what_needs_a_password(captured):
 def test_every_step_explains_why_it_is_needed():
     """A list of package names is not consent. The user is granting admin — they
     should be able to see what each piece is for."""
-    plan = svc.preflight_plan(svc.get_manifest("meeting-notes"))
-    for s in plan["steps"]:
-        assert s["why"], f"{s['label']} has no explanation"
+    for m in svc.load_manifests():
+        if not m.get("preflight"):
+            continue
+        for step in svc.preflight_plan(m)["steps"]:
+            assert step["why"], f"{m['id']}: {step['label']} has no explanation"
 
 
-def test_homebrew_is_never_run_as_root(captured):
+def test_homebrew_is_never_run_as_root(captured, privileged_manifest):
     """brew.sh has check-run-command-as-root and will refuse — and running a
     package manager as root is wrong regardless."""
-    svc.run_preflight(svc.get_manifest("meeting-notes"))
+    svc.run_preflight(privileged_manifest)
     for call in captured:
         joined = " ".join(call)
         if "brew" in joined:
@@ -547,15 +585,15 @@ def test_homebrew_is_never_run_as_root(captured):
             assert not joined.startswith("sudo")
 
 
-def test_exactly_one_password_prompt(captured):
+def test_exactly_one_password_prompt(captured, privileged_manifest):
     """The whole point. Two prompts for one install is the thing we are fixing."""
-    svc.run_preflight(svc.get_manifest("meeting-notes"))
+    svc.run_preflight(privileged_manifest)
     prompts = [c for c in captured
                if any("administrator privileges" in str(a) for a in c)]
     assert len(prompts) == 1, f"expected one authorization, got {len(prompts)}"
 
 
-def test_the_privileged_step_installs_the_pkg_and_restarts_core_audio(captured, monkeypatch):
+def test_the_privileged_step_installs_the_pkg_and_restarts_core_audio(captured, monkeypatch, privileged_manifest):
     """Both privileged actions ride inside the single authorization."""
     written = {}
     real_write = svc.Path.write_text
@@ -566,14 +604,14 @@ def test_the_privileged_step_installs_the_pkg_and_restarts_core_audio(captured, 
         return real_write(self, text, *a, **k)
     monkeypatch.setattr(svc.Path, "write_text", _capture)
 
-    svc.run_preflight(svc.get_manifest("meeting-notes"))
+    svc.run_preflight(privileged_manifest)
     script = written.get("script", "")
     assert "/usr/sbin/installer -pkg" in script
     assert "BlackHole" in script
     assert "killall coreaudiod" in script
 
 
-def test_an_optional_privileged_step_cannot_abort_the_driver_install(captured, monkeypatch):
+def test_an_optional_privileged_step_cannot_abort_the_driver_install(captured, monkeypatch, privileged_manifest):
     """A failed Core Audio restart is cosmetic; an aborted driver install is not.
     With `set -e` and no guard, the first would kill the second."""
     written = {}
@@ -585,32 +623,32 @@ def test_an_optional_privileged_step_cannot_abort_the_driver_install(captured, m
         return real_write(self, text, *a, **k)
     monkeypatch.setattr(svc.Path, "write_text", _capture)
 
-    svc.run_preflight(svc.get_manifest("meeting-notes"))
+    svc.run_preflight(privileged_manifest)
     line = next(l for l in written["script"].splitlines() if "killall" in l)
     assert line.endswith("|| true")
 
 
-def test_the_pkg_is_downloaded_as_the_user_before_any_prompt(captured):
+def test_the_pkg_is_downloaded_as_the_user_before_any_prompt(captured, privileged_manifest):
     """brew verifies its own checksum on fetch, and a download needs no
     privilege — so the elevated step is only ever `installer`."""
-    svc.run_preflight(svc.get_manifest("meeting-notes"))
+    svc.run_preflight(privileged_manifest)
     flat = [" ".join(c) for c in captured]
     fetch = next(i for i, c in enumerate(flat) if "fetch --cask" in c)
     prompt = next(i for i, c in enumerate(flat) if "administrator privileges" in c)
     assert fetch < prompt, "the pkg must be downloaded before the password prompt"
 
 
-def test_password_free_work_happens_before_the_prompt(captured):
+def test_password_free_work_happens_before_the_prompt(captured, privileged_manifest):
     """If the user cancels, they are left with a partly prepared Mac rather than
     nothing — and re-running picks up where it stopped."""
-    svc.run_preflight(svc.get_manifest("meeting-notes"))
+    svc.run_preflight(privileged_manifest)
     flat = [" ".join(c) for c in captured]
     installs = [i for i, c in enumerate(flat) if "brew install" in c]
     prompt = next(i for i, c in enumerate(flat) if "administrator privileges" in c)
     assert installs and max(installs) < prompt
 
 
-def test_cancelling_the_prompt_is_reported_as_cancelled_not_failed(monkeypatch, captured):
+def test_cancelling_the_prompt_is_reported_as_cancelled_not_failed(monkeypatch, captured, privileged_manifest):
     inner = svc.subprocess.run            # the fixture's mock; keep its behaviour
 
     def _run(args, **kw):
@@ -621,30 +659,30 @@ def test_cancelling_the_prompt_is_reported_as_cancelled_not_failed(monkeypatch, 
         return result
     monkeypatch.setattr(svc.subprocess, "run", _run)
 
-    result = svc.run_preflight(svc.get_manifest("meeting-notes"))
+    result = svc.run_preflight(privileged_manifest)
     assert result["ok"] is False
     assert result["cancelled"] is True
     assert "nothing was installed" in result["error"].lower()
 
 
-def test_the_temporary_privileged_script_is_cleaned_up(captured, monkeypatch):
+def test_the_temporary_privileged_script_is_cleaned_up(captured, monkeypatch, privileged_manifest):
     removed = []
     monkeypatch.setattr(svc.shutil, "rmtree", lambda d, **k: removed.append(d))
-    svc.run_preflight(svc.get_manifest("meeting-notes"))
+    svc.run_preflight(privileged_manifest)
     assert removed, "the root-executed script was left on disk"
 
 
-def test_success_is_judged_on_outcome_not_exit_code(monkeypatch, captured):
+def test_success_is_judged_on_outcome_not_exit_code(monkeypatch, captured, privileged_manifest):
     """osascript returning 0 does not mean the driver landed."""
     monkeypatch.setattr(svc, "_audio_devices", lambda: [])       # still absent
-    result = svc.run_preflight(svc.get_manifest("meeting-notes"))
+    result = svc.run_preflight(privileged_manifest)
     assert result["ok"] is False
     assert "still missing" in result["error"].lower()
 
 
-def test_a_machine_without_homebrew_is_told_so(monkeypatch):
+def test_a_machine_without_homebrew_is_told_so(monkeypatch, privileged_manifest):
     monkeypatch.setattr(svc, "_which", lambda b: None)
-    result = svc.run_preflight(svc.get_manifest("meeting-notes"))
+    result = svc.run_preflight(privileged_manifest)
     assert result["ok"] is False and "brew.sh" in result["error"]
 
 
@@ -933,3 +971,64 @@ def test_a_failure_returns_its_evidence_rather_than_raising():
     assert "warnings" in code and "details" in code
     assert "raise HTTPException" not in code.split("run_preflight")[-1], \
         "the preflight failure path still raises, which drops its own evidence"
+
+
+# ── not duplicating the installer's work ────────────────────────────────────
+#
+# 2026-09-21 field report: "it installed a bunch of stuff I thought was covered
+# as part of our install of the companion."
+#
+# It was. Twice. The preflight installed ffmpeg, switchaudio-osx and BlackHole;
+# then the companion's own installer ran `brew install ffmpeg switchaudio-osx
+# blackhole-2ch` with no guard and did all three again. Worse, we installed the
+# driver with `installer -pkg`, which leaves no Caskroom entry — so brew had no
+# record of it, ran the pkg a second time, and asked for a SECOND password for
+# the thing we had just promised to handle once.
+
+def test_we_do_not_pre_install_what_the_installer_installs():
+    """The division of labour: their installer owns everything Homebrew owns.
+    We own only what it cannot do."""
+    m = svc.get_manifest("meeting-notes")
+    pre = m.get("preflight") or {}
+    assert not pre.get("formulae"), (
+        "the companion's own installer runs `brew install` for these — "
+        "pre-installing them is duplicated work, not a head start")
+    assert not pre.get("pkg_casks"), (
+        "installing a cask's pkg directly leaves no Caskroom entry, so brew "
+        "reinstalls it and the user is asked for a second password")
+
+
+def test_the_only_preparation_left_is_the_one_they_cannot_do():
+    m = svc.get_manifest("meeting-notes")
+    pre = m["preflight"]
+    assert pre.get("audio_setup"), "the Multi-Output Device is the whole point"
+    assert pre.get("when") == "after_install", (
+        "it builds on a driver their installer provides, so offering it first "
+        "would fail every time")
+
+
+def test_preparation_now_needs_no_password_at_all():
+    plan = svc.preflight_plan(svc.get_manifest("meeting-notes"))
+    assert plan["will_prompt"] is False
+    assert all(not s["needs_admin"] for s in plan["steps"])
+
+
+def test_the_install_command_does_not_stall_on_a_question():
+    """Homebrew asked "proceed? [y/n]" twice mid-install, which a user pasting a
+    command into a terminal has no reason to expect — and auto-updated every tap
+    first, printing a page of unrelated new formulae."""
+    cmd = svc.install_command(svc.get_manifest("meeting-notes"))
+    assert "NONINTERACTIVE=1" in cmd
+    assert "HOMEBREW_NO_AUTO_UPDATE=1" in cmd
+    # Still verified before it runs — the quieting must not weaken the check.
+    assert cmd.index("shasum") < cmd.index("bash ")
+
+
+def test_the_notes_warn_about_what_we_cannot_prevent():
+    """Their installer downloads a model for llama.cpp that goes unused once
+    connected. We cannot skip it without editing their repository, so the least
+    we can do is say so before the user starts."""
+    notes = " ".join(svc.get_manifest("meeting-notes")["install"]["notes"]).lower()
+    assert "llama.cpp" in notes
+    assert "gb" in notes, "the size of the unused download is the part that matters"
+    assert "password once" in notes

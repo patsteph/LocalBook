@@ -51,6 +51,8 @@ export interface PreflightStep {
 
 export interface PreflightPlan {
   needed: boolean;
+  /** True when this preparation only makes sense once the tool is installed. */
+  after_install?: boolean;
   label?: string;
   summary?: string;
   will_prompt?: boolean;
