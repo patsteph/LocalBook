@@ -87,6 +87,7 @@ _P_DEFAULT_OUT = _fourcc("dOut")
 _P_UID = _fourcc("uid ")
 _P_NAME = _fourcc("lnam")
 _P_STREAMS = _fourcc("stm#")
+_INPUT = _fourcc("inpt")
 # kAudioAggregateDevicePropertyFullSubDeviceList — the UIDs an aggregate was
 # built from. This is how "is my Multi-Output Device actually right?" becomes a
 # question with an answer, rather than something the user has to take on trust
@@ -154,11 +155,13 @@ def list_devices() -> List[Dict[str, Any]]:
     for i in range(size // ctypes.sizeof(c_uint32)):
         did = int(ids[i])
         streams = _prop(did, _P_STREAMS, _OUTPUT)
+        inputs = _prop(did, _P_STREAMS, _INPUT)
         out.append({
             "id": did,
             "uid": _prop_string(did, _P_UID),
             "name": _prop_string(did, _P_NAME),
             "can_output": bool(streams and streams[1] > 0),
+            "can_input": bool(inputs and inputs[1] > 0),
             "is_default_output": did == default_out,
         })
     return out
@@ -244,6 +247,47 @@ def describe_multi_output(name: str) -> Optional[Dict[str, Any]]:
     members = device_members(dev["id"])
     return {**dev, "members": members,
             "member_names": [m["name"] for m in members]}
+
+
+# Virtual devices that CAN record but are not microphones. BlackHole is the
+# loopback that captures the far side of a call; recording "you" from it would
+# capture the other party's voice as yours and none of your own.
+_NOT_A_MICROPHONE = ("blackhole", "soundflower", "loopback", "aggregate",
+                     "multi-output", "meeting output", "existential")
+
+
+def microphones() -> List[Dict[str, Any]]:
+    """Real capture devices — a microphone, not a loopback.
+
+    A Mac mini or Studio has no built-in microphone at all, so "there is an
+    input device" is not the same question as "there is something that can hear
+    the user". Measured 2026-09-21: on such a machine the ONLY input device was
+    BlackHole, and a recorder configured against it would produce a file of the
+    far side labelled as the user.
+    """
+    out = []
+    for d in list_devices():
+        if not d.get("can_input"):
+            continue
+        name = (d.get("name") or "").strip().lower()
+        if any(v in name for v in _NOT_A_MICROPHONE):
+            continue
+        out.append(d)
+    return out
+
+
+def default_microphone() -> Optional[Dict[str, Any]]:
+    """The one to record from. None means this Mac cannot hear anything."""
+    mics = microphones()
+    if not mics:
+        return None
+    # Prefer something that reads as built-in, then whatever is first — an
+    # external interface is as good as a built-in mic, and on a desktop Mac it
+    # is the only option there is.
+    for m in mics:
+        if "built-in" in (m["name"] or "").lower() or "macbook" in (m["name"] or "").lower():
+            return m
+    return mics[0]
 
 
 def create_multi_output(*, name: str, uid: str, member_uids: List[str],

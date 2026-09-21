@@ -1203,3 +1203,50 @@ def test_the_terminal_command_still_carries_the_hash_check(monkeypatch):
     assert svc.run_installer(svc.get_manifest("meeting-notes"))["ok"]
     assert "shasum" in sent["script"]
     assert "NONINTERACTIVE=1" in sent["script"]
+
+
+# ── writing the microphone the Mac actually has ─────────────────────────────
+
+def test_the_microphone_is_a_key_we_own():
+    """The companion ships MIC_DEVICE="Microphone" and no Mac calls its input
+    that. Writing the real device name is the difference between a recording
+    and "Audio device not found"."""
+    keys = svc.get_manifest("meeting-notes")["configure"]["keys"]
+    assert keys.get("MIC_DEVICE") == "{detected_microphone}"
+
+
+def test_the_detected_microphone_resolves_to_a_real_device_name(monkeypatch):
+    import services.audio_devices as ad
+    monkeypatch.setattr(ad, "default_microphone",
+                        lambda: {"name": "MacBook Pro Microphone", "uid": "m"})
+    assert svc.desired_config(svc.get_manifest("meeting-notes"))["MIC_DEVICE"] \
+        == "MacBook Pro Microphone"
+
+
+def test_no_microphone_means_we_leave_their_setting_alone(monkeypatch):
+    """Writing MIC_DEVICE="" would replace the companion's own fallback chain
+    with a guaranteed failure. Their value beats ours when we have none."""
+    import services.audio_devices as ad
+    monkeypatch.setattr(ad, "default_microphone", lambda: None)
+    assert "MIC_DEVICE" not in svc.desired_config(svc.get_manifest("meeting-notes"))
+
+
+def test_a_missing_microphone_is_checked_for_and_explained():
+    """A recorder that cannot hear the user is exactly the "installed but
+    cannot work" case the verify block exists for — it passed every other check
+    while being unable to record a single word."""
+    checks = svc.get_manifest("meeting-notes")["verify"]
+    mic = next((c for c in checks if c["kind"] == "microphone"), None)
+    assert mic is not None, "nothing checks that this Mac can hear anything"
+    assert "microphone" in mic["fix"].lower()
+
+
+def test_the_microphone_check_distinguishes_a_loopback_from_a_mic(monkeypatch):
+    import services.audio_devices as ad
+    monkeypatch.setattr(ad, "default_microphone", lambda: None)
+    monkeypatch.setattr(ad, "list_devices", lambda: [
+        {"id": 1, "name": "BlackHole 2ch", "uid": "b", "can_input": True,
+         "can_output": True, "is_default_output": False}])
+    result = svc._check({"kind": "microphone", "label": "a microphone", "fix": "x"})
+    assert result["ok"] is False
+    assert "loopback" in result["detail"], result

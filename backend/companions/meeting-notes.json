@@ -53,7 +53,8 @@
     "keys": {
       "BASE_URL": "{localbook_openai_base}",
       "LLM": "{localbook_main_model}",
-      "API_KEY": "{companion_key}"
+      "API_KEY": "{companion_key}",
+      "MIC_DEVICE": "{detected_microphone}"
     }
   },
   "control": {
@@ -65,6 +66,11 @@
     "log": "~/Library/Application Support/MeetingNotes/last-run.log"
   },
   "verify": [
+    {
+      "kind": "microphone",
+      "label": "a microphone",
+      "fix": "This Mac has no microphone \u2014 a Mac mini or Studio has none built in. Plug in a USB mic, headset, or audio interface, then check again. Without one it can record the other side of a call but not you."
+    },
     {
       "kind": "binary",
       "name": "meeting-start",

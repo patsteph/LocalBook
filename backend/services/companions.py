@@ -242,6 +242,19 @@ def _check(check: Dict[str, Any], devices: Optional[List[str]] = None) -> Dict[s
     elif kind == "path":
         p = Path(str(check.get("path", ""))).expanduser()
         ok, detail = p.exists(), str(p)
+    elif kind == "microphone":
+        try:
+            from services.audio_devices import default_microphone, list_devices
+            mic = default_microphone()
+            ok = mic is not None
+            if ok:
+                detail = mic["name"]
+            else:
+                inputs = [d["name"] for d in list_devices() if d.get("can_input")]
+                detail = (f"only {', '.join(inputs)} — a loopback, not a microphone"
+                          if inputs else "no audio input devices at all")
+        except Exception as e:
+            ok, detail = False, f"could not check ({type(e).__name__})"
     elif kind == "audio_device":
         want = (check.get("name") or "").lower()
         names = devices if devices is not None else _audio_devices()
@@ -434,7 +447,18 @@ def fetch_and_verify_script(manifest: Dict[str, Any]) -> Dict[str, Any]:
 
 def _substitutions() -> Dict[str, str]:
     port = getattr(settings, "api_port", 8000)
+    mic = ""
+    try:
+        from services.audio_devices import default_microphone
+        found = default_microphone()
+        mic = found["name"] if found else ""
+    except Exception:
+        pass
     return {
+        # The companion ships MIC_DEVICE="Microphone", which is not what any
+        # Mac calls its input. Writing the real device name is the difference
+        # between a recording and "Audio device not found".
+        "detected_microphone": mic,
         "localbook_openai_base": f"http://127.0.0.1:{port}/v1",
         "localbook_main_model": settings.main_model or "",
         "localbook_fast_model": settings.fast_model or "",
@@ -449,9 +473,16 @@ def _render(value: str, subs: Dict[str, str]) -> str:
 
 
 def desired_config(manifest: Dict[str, Any]) -> Dict[str, str]:
+    """The keys we own, resolved. Keys that resolve to nothing are DROPPED.
+
+    Writing MIC_DEVICE="" on a Mac with no microphone would replace the
+    companion's own fallback chain with a guaranteed failure. Leaving their
+    value alone is strictly better than ours when we have nothing to offer.
+    """
     cfg = manifest.get("configure") or {}
     subs = _substitutions()
-    return {k: _render(v, subs) for k, v in (cfg.get("keys") or {}).items()}
+    rendered = {k: _render(v, subs) for k, v in (cfg.get("keys") or {}).items()}
+    return {k: v for k, v in rendered.items() if str(v).strip()}
 
 
 def read_config(manifest: Dict[str, Any]) -> Dict[str, str]:
@@ -504,6 +535,7 @@ def write_config(manifest: Dict[str, Any]) -> Dict[str, Any]:
     desired = desired_config(manifest)
     if not desired.get("API_KEY"):
         return {"ok": False, "error": "could not issue a companion key"}
+
 
     try:
         original = p.read_text()

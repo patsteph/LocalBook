@@ -290,3 +290,87 @@ def test_creation_waits_for_the_device_before_calling_it_missing():
              if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)]
     assert "wait_for_device" in calls, \
         "the post-create check reads the device list without waiting for it"
+
+
+# ── finding something that can actually hear the user ───────────────────────
+#
+# 2026-09-21 field report: recording failed with "Audio device not found" for a
+# device named `Microphone`. The companion ships MIC_DEVICE="Microphone", and
+# no Mac calls its input that — a MacBook's is "MacBook Pro Microphone". Its
+# fallback names exactly that, and did not fire.
+#
+# So LocalBook writes the real device name. Which means knowing which input is
+# a microphone and which is a loopback: BlackHole CAN record, and recording
+# "you" from it would capture the far side of the call as your own voice.
+
+def test_a_loopback_is_never_mistaken_for_a_microphone(monkeypatch):
+    monkeypatch.setattr(ad, "list_devices", lambda: [
+        {"id": 1, "name": "BlackHole 2ch", "uid": "bh", "can_input": True,
+         "can_output": True, "is_default_output": False},
+        {"id": 2, "name": "Meeting Output", "uid": "mo", "can_input": True,
+         "can_output": True, "is_default_output": True},
+    ])
+    assert ad.microphones() == []
+    assert ad.default_microphone() is None
+
+
+def test_a_real_microphone_is_found_alongside_loopbacks(monkeypatch):
+    monkeypatch.setattr(ad, "list_devices", lambda: [
+        {"id": 1, "name": "BlackHole 2ch", "uid": "bh", "can_input": True,
+         "can_output": True, "is_default_output": False},
+        {"id": 2, "name": "MacBook Pro Microphone", "uid": "mbp", "can_input": True,
+         "can_output": False, "is_default_output": False},
+    ])
+    assert [m["name"] for m in ad.microphones()] == ["MacBook Pro Microphone"]
+    assert ad.default_microphone()["name"] == "MacBook Pro Microphone"
+
+
+def test_a_built_in_microphone_is_preferred_over_others(monkeypatch):
+    monkeypatch.setattr(ad, "list_devices", lambda: [
+        {"id": 1, "name": "Scarlett Solo USB", "uid": "s", "can_input": True,
+         "can_output": False, "is_default_output": False},
+        {"id": 2, "name": "MacBook Pro Microphone", "uid": "m", "can_input": True,
+         "can_output": False, "is_default_output": False},
+    ])
+    assert ad.default_microphone()["name"] == "MacBook Pro Microphone"
+
+
+def test_an_external_interface_is_used_when_there_is_no_built_in(monkeypatch):
+    """A Mac mini or Studio has no built-in microphone; an interface is not a
+    second-best option there, it is the only one."""
+    monkeypatch.setattr(ad, "list_devices", lambda: [
+        {"id": 1, "name": "Scarlett Solo USB", "uid": "s", "can_input": True,
+         "can_output": False, "is_default_output": False},
+    ])
+    assert ad.default_microphone()["name"] == "Scarlett Solo USB"
+
+
+def test_output_only_devices_are_not_offered_as_microphones(monkeypatch):
+    monkeypatch.setattr(ad, "list_devices", lambda: [
+        {"id": 1, "name": "Mac mini Speakers", "uid": "s", "can_input": False,
+         "can_output": True, "is_default_output": True},
+    ])
+    assert ad.microphones() == []
+
+
+def test_coreaudio_names_match_what_ffmpeg_expects():
+    """The name we write into MIC_DEVICE is passed straight to ffmpeg's
+    AVFoundation input. If the two naming systems disagreed, writing a correct
+    CoreAudio name would still produce "Audio device not found".
+
+    Verified on this machine: CoreAudio "BlackHole 2ch" == AVFoundation
+    "BlackHole 2ch".
+    """
+    import shutil
+    import subprocess
+    if not shutil.which("ffmpeg"):
+        pytest.skip("ffmpeg not installed")
+    proc = subprocess.run(
+        ["ffmpeg", "-hide_banner", "-f", "avfoundation", "-list_devices", "true", "-i", ""],
+        capture_output=True, text=True, timeout=30)
+    listing = proc.stderr or ""
+    inputs = [d["name"] for d in ad.list_devices() if d.get("can_input")]
+    if not inputs:
+        pytest.skip("no audio inputs on this machine")
+    for name in inputs:
+        assert name in listing, f"CoreAudio calls it {name!r}; ffmpeg does not"
