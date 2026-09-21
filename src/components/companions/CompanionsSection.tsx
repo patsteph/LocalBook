@@ -220,6 +220,10 @@ function InstallPanel({ c, onClose }: { c: Companion; onClose: () => void }) {
         </button>
       </div>
 
+      <p className="text-[11px] text-blue-700 dark:text-blue-400">
+        Leave this open — LocalBook notices when the install finishes.
+      </p>
+
       {(c.install?.notes || []).length > 0 && (
         <ul className="space-y-1">
           {c.install!.notes!.map((n) => (
@@ -366,6 +370,25 @@ function Extras({ c, onChanged }: { c: Companion; onChanged: () => void }) {
             {!e.installed && e.host_cask && !e.host_installed && (
               <p className="text-[11px] text-gray-400 dark:text-gray-500">
                 Installs {e.host_cask} first — no password needed.
+              </p>
+            )}
+            {/* Installing the host app does not run it, and a plugin no running
+                process is watching produces nothing — which reads as a toggle
+                that did nothing. */}
+            {e.installed && e.host_installed && e.host_running === false && (
+              <p className="text-[11px] text-amber-700 dark:text-amber-400">
+                SwiftBar isn't running, so the icon won't show.{' '}
+                <button
+                  onClick={() => toggle(e.id, true)}
+                  className="underline hover:text-amber-800 dark:hover:text-amber-300"
+                >
+                  Start it
+                </button>
+              </p>
+            )}
+            {e.installed && e.host_running && (
+              <p className="text-[11px] text-gray-400 dark:text-gray-500">
+                Look for a 🎙 in the menu bar — it turns red while recording.
               </p>
             )}
           </div>
@@ -546,12 +569,27 @@ function UpdatesPanel({ c, onChanged, onClose }: {
   );
 }
 
-function Card({ c, notebooks, onChanged }: {
+function Card({ c, notebooks, onChanged, onWatch }: {
   c: Companion;
   notebooks: Array<{ id: string; title: string }>;
   onChanged: () => void;
+  onWatch: (id: string, watching: boolean) => void;
 }) {
   const [panel, setPanel] = useState<'none' | 'prep' | 'install' | 'connect' | 'health' | 'updates'>('none');
+
+  // The install runs in Terminal, outside this window. Without watching for it
+  // the card sits on "Not installed" until something else forces a reload, and
+  // a finished install looks like a stuck one.
+  useEffect(() => {
+    const watching = panel === 'install' && !c.installed;
+    onWatch(c.id, watching);
+    return () => onWatch(c.id, false);
+  }, [panel, c.installed, c.id, onWatch]);
+
+  // ...and when it lands, move on rather than leaving the command on screen.
+  useEffect(() => {
+    if (c.installed && panel === 'install') setPanel('none');
+  }, [c.installed, panel]);
   const [menu, setMenu] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -598,6 +636,20 @@ function Card({ c, notebooks, onChanged }: {
               </button>
             )}
           </div>
+
+          {/* "We built it for you" is a claim the user cannot check without
+              opening Audio MIDI Setup — the detour this feature removes. */}
+          {c.installed && c.audio?.exists && (
+            <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+              <span className={c.audio.ok
+                ? 'text-green-600 dark:text-green-400'
+                : 'text-amber-600 dark:text-amber-400'}>
+                {c.audio.ok ? '✓' : '⚠'}
+              </span>{' '}
+              {c.audio.name}: {c.audio.members.join(' + ') || 'empty'}
+              <span className="text-gray-400 dark:text-gray-500"> — {c.audio.why}</span>
+            </p>
+          )}
 
           {c.linked_notebook_title && (
             <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
@@ -730,14 +782,25 @@ export function CompanionsSection() {
 
   useEffect(() => { void load(); }, [load]);
 
-  // A recording starts and stops outside this window, so the card polls while
-  // it is open rather than showing a state that quietly goes stale.
+  // Everything interesting happens outside this window — a recording starts
+  // from the menu bar, an install finishes in Terminal — so the card polls
+  // while either could be in flight rather than showing a stale state.
+  const [watching, setWatching] = useState<Set<string>>(new Set());
+  const onWatch = useCallback((id: string, on: boolean) => {
+    setWatching((prev) => {
+      if (prev.has(id) === on) return prev;      // no needless re-render
+      const next = new Set(prev);
+      if (on) next.add(id); else next.delete(id);
+      return next;
+    });
+  }, []);
+
   useEffect(() => {
     const anyControllable = data?.companions.some((c) => c.can_control && c.installed);
-    if (!anyControllable) return;
-    const t = setInterval(() => void load(), 5000);
+    if (!anyControllable && watching.size === 0) return;
+    const t = setInterval(() => void load(), watching.size ? 3000 : 5000);
     return () => clearInterval(t);
-  }, [data, load]);
+  }, [data, load, watching]);
 
   return (
     <div className="space-y-4">
@@ -756,7 +819,8 @@ export function CompanionsSection() {
       )}
 
       {(data?.companions || []).map((c) => (
-        <Card key={c.id} c={c} notebooks={data!.notebooks} onChanged={load} />
+        <Card key={c.id} c={c} notebooks={data!.notebooks} onChanged={load}
+              onWatch={onWatch} />
       ))}
 
       {data && data.companions.length === 0 && (

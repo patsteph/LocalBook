@@ -54,6 +54,13 @@ def _frameworks():
                 c_void_p, c_void_p, c_uint32, POINTER(c_uint32), POINTER(c_void_p)]
             cf.CFPropertyListCreateWithData.restype = c_void_p
             cf.CFRelease.argtypes = [c_void_p]
+            cf.CFArrayGetCount.argtypes = [c_void_p]
+            cf.CFArrayGetCount.restype = c_long
+            cf.CFArrayGetValueAtIndex.argtypes = [c_void_p, c_long]
+            cf.CFArrayGetValueAtIndex.restype = c_void_p
+            cf.CFGetTypeID.argtypes = [c_void_p]
+            cf.CFGetTypeID.restype = c_long
+            cf.CFArrayGetTypeID.restype = c_long
             ca.AudioHardwareCreateAggregateDevice.argtypes = [c_void_p, POINTER(c_uint32)]
             ca.AudioHardwareDestroyAggregateDevice.argtypes = [c_uint32]
             _CA, _CF = ca, cf
@@ -80,6 +87,11 @@ _P_DEFAULT_OUT = _fourcc("dOut")
 _P_UID = _fourcc("uid ")
 _P_NAME = _fourcc("lnam")
 _P_STREAMS = _fourcc("stm#")
+# kAudioAggregateDevicePropertyFullSubDeviceList — the UIDs an aggregate was
+# built from. This is how "is my Multi-Output Device actually right?" becomes a
+# question with an answer, rather than something the user has to take on trust
+# or go and check in Audio MIDI Setup.
+_P_SUBDEVICES = _fourcc("grup")
 
 _UTF8 = 0x08000100
 
@@ -192,6 +204,46 @@ def _status_hint(status: int) -> str:
     except Exception:
         pass
     return "unrecognised error"
+
+
+def device_members(device_id: int) -> List[Dict[str, str]]:
+    """What an aggregate device is made of, resolved to names.
+
+    Returns [] for a plain device, or when the property is not a CFArray — the
+    type check matters: casting arbitrary bytes to a CFArrayRef and calling
+    CFArrayGetCount on it segfaults the process, which is not a failure mode a
+    status panel should be able to cause.
+    """
+    ca, cf = _frameworks()
+    if not ca or not cf:
+        return []
+    got = _prop(device_id, _P_SUBDEVICES)
+    if not got or got[1] < ctypes.sizeof(c_void_p):
+        return []
+    try:
+        ref = ctypes.cast(got[0], POINTER(c_void_p))[0]
+        if not ref or cf.CFGetTypeID(ref) != cf.CFArrayGetTypeID():
+            return []
+        by_uid = {d["uid"]: d["name"] for d in list_devices() if d["uid"]}
+        out = []
+        for i in range(cf.CFArrayGetCount(ref)):
+            uid = _cfstr(cf.CFArrayGetValueAtIndex(ref, i))
+            if uid:
+                out.append({"uid": uid, "name": by_uid.get(uid, uid)})
+        return out
+    except Exception as e:
+        logger.debug(f"[audio] could not read members of {device_id}: {e}")
+        return []
+
+
+def describe_multi_output(name: str) -> Optional[Dict[str, Any]]:
+    """The device plus what it plays to — what the user needs to confirm it works."""
+    dev = find_device(name)
+    if not dev:
+        return None
+    members = device_members(dev["id"])
+    return {**dev, "members": members,
+            "member_names": [m["name"] for m in members]}
 
 
 def create_multi_output(*, name: str, uid: str, member_uids: List[str],

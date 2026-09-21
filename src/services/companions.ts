@@ -79,6 +79,14 @@ export interface UpdateState {
   summary?: string;
 }
 
+export interface AudioSummary {
+  name: string;
+  exists: boolean;
+  members: string[];
+  ok: boolean;
+  why: string;
+}
+
 export interface CompanionExtra {
   id: string;
   name: string;
@@ -88,6 +96,7 @@ export interface CompanionExtra {
   review_url?: string;
   installed: boolean;
   host_installed: boolean;
+  host_running?: boolean;
   host_cask?: string;
   host_needs_admin: boolean;
   target: string;
@@ -117,6 +126,7 @@ export interface Companion {
   extras: CompanionExtra[];
   preflight?: PreflightPlan;
   updates?: UpdateState;
+  audio?: AudioSummary | null;
 }
 
 export interface CompanionList {

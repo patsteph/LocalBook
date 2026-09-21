@@ -1032,3 +1032,78 @@ def test_the_notes_warn_about_what_we_cannot_prevent():
     assert "llama.cpp" in notes
     assert "gb" in notes, "the size of the unused download is the part that matters"
     assert "password once" in notes
+
+
+# ── making the results visible ──────────────────────────────────────────────
+#
+# 2026-09-21: "how do I know it created the right MIDI setup, and where does the
+# menu bar appear — I toggled it and I see nothing."
+#
+# Both are the same failure: we did the work and gave the user no way to see it.
+# The audio device was correct and unverifiable; SwiftBar was installed but
+# never launched, so a plugin sat in a folder no running process was watching.
+
+def test_the_audio_device_reports_what_it_is_made_of():
+    """A Multi-Output Device is only right if it has BOTH halves: something
+    audible, and the loopback that captures the far side. One without the other
+    silently yields a call you cannot hear, or a recording with no other party —
+    and neither announces itself."""
+    summary = svc._audio_summary(svc.get_manifest("meeting-notes"))
+    assert summary is not None
+    assert "members" in summary and "ok" in summary and summary["why"]
+
+
+@pytest.mark.parametrize("members,expected_ok,expect_why", [
+    (["Mac mini Speakers", "BlackHole 2ch"], True, "same time"),
+    (["BlackHole 2ch"], False, "not hear"),
+    (["Mac mini Speakers"], False, "loopback"),
+])
+def test_a_half_built_device_is_reported_as_wrong(monkeypatch, members,
+                                                  expected_ok, expect_why):
+    monkeypatch.setattr(svc, "_audio_summary", svc._audio_summary)
+    import services.audio_devices as ad
+    monkeypatch.setattr(ad, "describe_multi_output", lambda name: {
+        "name": name, "id": 1, "uid": "u", "can_output": True,
+        "is_default_output": False, "members": [], "member_names": members,
+    })
+    summary = svc._audio_summary(svc.get_manifest("meeting-notes"))
+    assert summary["ok"] is expected_ok, summary
+    assert expect_why in summary["why"]
+
+
+def test_a_missing_device_is_reported_as_missing(monkeypatch):
+    import services.audio_devices as ad
+    monkeypatch.setattr(ad, "describe_multi_output", lambda name: None)
+    summary = svc._audio_summary(svc.get_manifest("meeting-notes"))
+    assert summary["exists"] is False and summary["ok"] is False
+
+
+def test_the_menu_bar_host_is_started_not_merely_installed():
+    """Installing an app puts it in /Applications; it does not run it."""
+    code = _code_without_docstring(svc.install_extra)
+    assert "_launch_host" in code
+
+
+def test_the_host_is_told_where_the_plugin_is_before_it_starts():
+    """SwiftBar asks for a plugin folder on first run. If the user picks a
+    different one, the plugin we placed is never loaded."""
+    code = _code_without_docstring(svc.install_extra)
+    assert code.index("_point_host_at_plugins") < code.index("_launch_host")
+
+
+def test_a_plugin_folder_the_user_already_chose_is_not_overwritten(monkeypatch):
+    calls = []
+
+    class _Proc:
+        returncode = 0
+        stdout = "/Users/someone/MyPlugins\n"
+        stderr = ""
+
+    def _run(args, **kw):
+        calls.append(list(args))
+        return _Proc()
+    monkeypatch.setattr(svc, "_run_as_user", _run)
+
+    e = next(x for x in svc.get_manifest("meeting-notes")["extras"] if x["id"] == "menubar")
+    assert svc._point_host_at_plugins(e, svc.Path("/our/guess")) is False
+    assert not any("write" in c for c in calls), "it overwrote the user's own choice"

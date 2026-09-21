@@ -1131,6 +1131,7 @@ def extras_status(manifest: Dict[str, Any]) -> List[Dict[str, Any]]:
             "review_url": (e.get("source") or {}).get("review_url"),
             "installed": target.is_file(),
             "host_installed": host_ok,
+            "host_running": host_ok and _host_running(e),
             "host_cask": e.get("requires_cask"),
             "host_needs_admin": bool(e.get("cask_needs_admin")),
             "target": str(target),
@@ -1190,8 +1191,67 @@ def install_extra(manifest: Dict[str, Any], extra_id: str) -> Dict[str, Any]:
         return {"ok": False, "error": f"Could not write {target}: {e}"}
 
     logger.info(f"[companions] installed add-on {extra_id} → {target}")
+
+    # Installing SwiftBar puts an app in /Applications; it does not run it. A
+    # plugin sitting in a folder no running process is watching produces exactly
+    # nothing in the menu bar, which reads as "the toggle did not work".
+    # Tell the host where to look BEFORE starting it. SwiftBar asks the user to
+    # choose a plugin folder on first run; if they pick a different one, the
+    # plugin we just placed is never loaded and the toggle appears to have done
+    # nothing. Only set when absent — a folder the user already chose is theirs.
+    _point_host_at_plugins(extra, target.parent)
+    launched = _launch_host(extra)
     return {"ok": True, "target": str(target),
-            "host_installed": _cask_installed(cask)}
+            "host_installed": _cask_installed(cask),
+            "host_launched": launched}
+
+
+def _point_host_at_plugins(extra: Dict[str, Any], folder: Path) -> bool:
+    """Set the host's plugin-folder preference, if it has none yet."""
+    pref = (extra.get("install") or {}).get("dir_pref") or {}
+    domain, key = pref.get("domain"), pref.get("key")
+    if not domain or not key:
+        return False
+    try:
+        existing = _run_as_user(["/usr/bin/defaults", "read", domain, key], timeout=10)
+        if existing.returncode == 0 and (existing.stdout or "").strip():
+            return False                      # already chosen — leave it alone
+        _run_as_user(["/usr/bin/defaults", "write", domain, key, str(folder)], timeout=10)
+        logger.info(f"[companions] pointed {domain} at {folder}")
+        return True
+    except Exception as e:
+        logger.debug(f"[companions] could not set {domain}.{key}: {e}")
+        return False
+
+
+def _launch_host(extra: Dict[str, Any]) -> bool:
+    """Start the add-on's host app so its icon actually appears."""
+    cask = extra.get("requires_cask", "")
+    if not cask:
+        return False
+    app = {"swiftbar": "SwiftBar"}.get(cask, cask)
+    try:
+        proc = _run_as_user(["/usr/bin/open", "-a", app], timeout=30)
+        if proc.returncode == 0:
+            logger.info(f"[companions] launched {app} for the menu-bar add-on")
+            return True
+        logger.warning(f"[companions] could not launch {app}: "
+                       f"{(proc.stderr or '').strip()[:160]}")
+    except Exception as e:
+        logger.warning(f"[companions] could not launch {app}: {e}")
+    return False
+
+
+def _host_running(extra: Dict[str, Any]) -> bool:
+    cask = extra.get("requires_cask", "")
+    if not cask:
+        return True
+    app = {"swiftbar": "SwiftBar"}.get(cask, cask)
+    try:
+        return subprocess.run(["/usr/bin/pgrep", "-x", app],
+                              capture_output=True, timeout=10).returncode == 0
+    except Exception:
+        return False
 
 
 def remove_extra(manifest: Dict[str, Any], extra_id: str) -> Dict[str, Any]:
@@ -1284,8 +1344,46 @@ def status(manifest: Dict[str, Any]) -> Dict[str, Any]:
         "can_control": bool(manifest.get("control", {}).get("start")),
         "has_checks": bool(manifest.get("verify")),
         "extras": extras_status(manifest),
+        "audio": _audio_summary(manifest),
         "preflight": preflight_plan(manifest),
         "updates": cached_updates(manifest["id"]),
+    }
+
+
+def _audio_summary(manifest: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """What the Multi-Output Device is actually made of.
+
+    "We built it for you" is a claim the user has no way to check without
+    opening Audio MIDI Setup — which is the detour this whole feature exists to
+    remove. Showing its members turns it back into something verifiable.
+    """
+    mo = ((manifest.get("preflight") or {}).get("audio_setup") or {}).get("multi_output")
+    if not mo:
+        return None
+    try:
+        from services.audio_devices import describe_multi_output
+        described = describe_multi_output(mo["name"])
+    except Exception as e:
+        logger.debug(f"[companions] audio summary unavailable: {e}")
+        return None
+    if not described:
+        return {"name": mo["name"], "exists": False, "members": [],
+                "ok": False, "why": "not created yet"}
+
+    names = described.get("member_names") or []
+    wanted = [w.strip().lower() for w in (mo.get("include") or [])]
+    # Correct means BOTH halves are present: something you can hear, and the
+    # loopback that captures the far side. One without the other silently
+    # produces a recording with no other party, or a call you cannot hear.
+    has_capture = any(any(w in n.lower() for w in wanted) for n in names)
+    has_audible = any(not any(w in n.lower() for w in wanted) for n in names)
+    return {
+        "name": described["name"], "exists": True, "members": names,
+        "ok": bool(has_capture and has_audible),
+        "why": ("plays to your speakers and to the recorder at the same time"
+                if has_capture and has_audible else
+                "missing the recorder loopback" if not has_capture else
+                "nothing audible in it — you would not hear the call"),
     }
 
 
