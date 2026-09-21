@@ -256,6 +256,13 @@ function ConnectPanel({ c, notebooks, onDone, onCancel }: {
   onDone: () => void;
   onCancel: () => void;
 }) {
+  // "smart" by default for anything whose output is about DIFFERENT people:
+  // 1:1s with Sarah and with Priya belong in different notebooks, and the notes
+  // name their participants, so each recording can be placed on its own rather
+  // than all of them landing in one pile.
+  const [mode, setMode] = useState<'smart' | 'notebook' | 'none'>(
+    c.linked_notebook_id ? 'notebook'
+      : (c.routing_default === 'notebook' ? 'notebook' : 'smart'));
   const [notebookId, setNotebookId] = useState(c.linked_notebook_id || '');
   const [backfill, setBackfill] = useState<'all' | 'new_only'>('new_only');
   const [busy, setBusy] = useState(false);
@@ -266,7 +273,8 @@ function ConnectPanel({ c, notebooks, onDone, onCancel }: {
     setError(null);
     try {
       const res = await connectCompanion(c.id, {
-        notebook_id: notebookId || null,
+        mode,
+        notebook_id: mode === 'notebook' ? (notebookId || null) : null,
         backfill,
       });
       if (res.link_error) setError(`Connected, but the folder wasn't linked: ${res.link_error}`);
@@ -285,20 +293,47 @@ function ConnectPanel({ c, notebooks, onDone, onCancel }: {
       </p>
 
       <div>
-        <label className="block text-[11px] font-medium text-gray-500 dark:text-gray-400 mb-1">
+        <label className="block text-[11px] font-medium text-gray-500 dark:text-gray-400 mb-1.5">
           Notes go to
         </label>
-        <select
-          value={notebookId}
-          onChange={(e) => setNotebookId(e.target.value)}
-          className="w-full px-2 py-1.5 text-xs rounded border dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100"
-        >
-          <option value="">Don't file them anywhere yet</option>
-          {notebooks.map((n) => <option key={n.id} value={n.id}>{n.title}</option>)}
-        </select>
+        <div className="space-y-1.5">
+          <label className="flex items-start gap-2 text-xs text-gray-700 dark:text-gray-300">
+            <input type="radio" className="mt-0.5" checked={mode === 'smart'}
+                   onChange={() => setMode('smart')} />
+            <span>
+              Wherever each one belongs
+              <span className="block text-[11px] text-gray-500 dark:text-gray-400">
+                Reads who was in the recording and suggests a notebook for it.
+                Nothing is filed without you saying so.
+              </span>
+            </span>
+          </label>
+          <label className="flex items-start gap-2 text-xs text-gray-700 dark:text-gray-300">
+            <input type="radio" className="mt-0.5" checked={mode === 'notebook'}
+                   onChange={() => setMode('notebook')} />
+            <span>
+              One notebook
+              {mode === 'notebook' && (
+                <select
+                  value={notebookId}
+                  onChange={(e) => setNotebookId(e.target.value)}
+                  className="mt-1 block w-full px-2 py-1 text-xs rounded border dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100"
+                >
+                  <option value="">Choose a notebook…</option>
+                  {notebooks.map((n) => <option key={n.id} value={n.id}>{n.title}</option>)}
+                </select>
+              )}
+            </span>
+          </label>
+          <label className="flex items-start gap-2 text-xs text-gray-700 dark:text-gray-300">
+            <input type="radio" className="mt-0.5" checked={mode === 'none'}
+                   onChange={() => setMode('none')} />
+            <span>Don't file them — just use LocalBook's engine</span>
+          </label>
+        </div>
       </div>
 
-      {notebookId && c.output_exists && (
+      {mode !== 'none' && c.output_exists && (
         <label className="flex items-start gap-2 text-[11px] text-gray-600 dark:text-gray-400">
           <input type="checkbox" className="mt-0.5" checked={backfill === 'all'}
                  onChange={(e) => setBackfill(e.target.checked ? 'all' : 'new_only')} />
@@ -312,7 +347,8 @@ function ConnectPanel({ c, notebooks, onDone, onCancel }: {
                 className="px-2.5 py-1 text-xs text-gray-500 hover:text-gray-700 dark:hover:text-gray-300">
           Cancel
         </button>
-        <button onClick={go} disabled={busy}
+        <button onClick={go}
+                disabled={busy || (mode === 'notebook' && !notebookId)}
                 className="px-3 py-1 text-xs font-medium rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-40">
           {busy ? 'Connecting…' : 'Connect'}
         </button>
@@ -651,9 +687,18 @@ function Card({ c, notebooks, onChanged, onWatch }: {
             </p>
           )}
 
-          {c.linked_notebook_title && (
+          {(c.linked_notebook_title || c.linked_is_smart) && (
             <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-              Notes → <span className="text-gray-700 dark:text-gray-300">{c.linked_notebook_title}</span>
+              Notes →{' '}
+              {c.linked_is_smart ? (
+                <span className="text-purple-600 dark:text-purple-400">
+                  filed per recording
+                </span>
+              ) : (
+                <span className="text-gray-700 dark:text-gray-300">
+                  {c.linked_notebook_title}
+                </span>
+              )}
             </p>
           )}
 

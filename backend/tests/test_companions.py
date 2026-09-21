@@ -1107,3 +1107,51 @@ def test_a_plugin_folder_the_user_already_chose_is_not_overwritten(monkeypatch):
     e = next(x for x in svc.get_manifest("meeting-notes")["extras"] if x["id"] == "menubar")
     assert svc._point_host_at_plugins(e, svc.Path("/our/guess")) is False
     assert not any("write" in c for c in calls), "it overwrote the user's own choice"
+
+
+# ── filing a recorder's output ──────────────────────────────────────────────
+#
+# A meeting recorder's notes are ABOUT DIFFERENT PEOPLE. Filing every 1:1 into
+# one notebook makes the corpus less useful the more you record, and it is the
+# case Smart Folders exist for: the notes name their participants, so each
+# recording can be placed on its own.
+
+def test_a_recorder_defaults_to_deciding_per_recording():
+    routing = (svc.get_manifest("meeting-notes")["produces"].get("routing") or {})
+    assert routing.get("default") == "smart"
+    assert routing.get("why"), "a default this consequential should say why"
+
+
+def test_connect_offers_three_distinct_modes():
+    """"No notebook" previously meant two different things — file nothing, and
+    file smartly — which is not a choice a user can express."""
+    import inspect
+    from api import companions as api
+    src = inspect.getsource(api.connect)
+    for mode in ("smart", "notebook", "none"):
+        assert f'"{mode}"' in src, f"connect does not handle mode={mode}"
+
+
+def test_smart_mode_links_the_folder_with_no_notebook():
+    """notebook_id=None IS the Smart Folder — same scanning, destination decided
+    per recording rather than fixed at connect time."""
+    import inspect
+    from api import companions as api
+    src = inspect.getsource(api.connect)
+    assert "target_notebook = req.notebook_id if mode == \"notebook\" else None" in src
+
+
+def test_choosing_one_notebook_without_naming_it_falls_back_to_smart():
+    """Better to decide per recording than to silently file nothing."""
+    import inspect
+    from api import companions as api
+    src = inspect.getsource(api.connect)
+    assert 'if mode == "notebook" and not req.notebook_id' in src
+
+
+def test_a_smart_link_is_identifiable_from_status():
+    """The card has to say "filed per recording" rather than showing a blank
+    notebook name, which reads as something having gone wrong."""
+    st = svc.status(svc.get_manifest("meeting-notes"))
+    assert "linked_is_smart" in st
+    assert st["routing_default"] == "smart"

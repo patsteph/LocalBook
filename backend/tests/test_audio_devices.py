@@ -236,3 +236,37 @@ def test_creation_is_retried_before_being_believed(monkeypatch):
                                     include_names=[])
     assert result["ok"] and result["created"] is True
     assert attempts["n"] == 2, "a single refusal was treated as final"
+
+
+def test_an_existing_aggregate_is_never_used_as_a_member():
+    """Nesting aggregate devices is not reliably supported. On a machine that
+    already has a Multi-Output Device, a fallback that ignored this could pick
+    it — and whether it did depended on device enumeration order, which made a
+    real test fail intermittently and would have failed on users' machines the
+    same way.
+    """
+    aggregates = [d for d in ad.list_devices() if ad.device_members(d["id"])]
+    if not aggregates:
+        pytest.skip("no aggregate device on this machine to test against")
+
+    default = next(d for d in ad.list_devices() if d["is_default_output"])
+    chosen = {}
+    monkey = ad.create_multi_output
+
+    def _capture(**kw):
+        chosen["members"] = kw["member_uids"]
+        return {"ok": False, "error": "captured"}
+    ad.create_multi_output = _capture
+    try:
+        # Force the fallback by naming the default output as a "virtual" member.
+        ad.ensure_multi_output(name="LocalBook Nesting Probe", uid="u",
+                               include_names=[default["name"]])
+    finally:
+        ad.create_multi_output = monkey
+
+    by_uid = {d["uid"]: d for d in ad.list_devices()}
+    for uid in chosen.get("members", []):
+        dev = by_uid.get(uid)
+        if dev:
+            assert not ad.device_members(dev["id"]), \
+                f"picked {dev['name']}, which is itself an aggregate"

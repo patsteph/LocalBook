@@ -1338,6 +1338,9 @@ def status(manifest: Dict[str, Any]) -> Dict[str, Any]:
         "output_exists": bool(out_dir and out_dir.is_dir()),
         "linked_notebook_id": (linked_notebook or {}).get("notebook_id"),
         "folder_link_id": (linked_notebook or {}).get("id"),
+        "linked_is_smart": bool(linked_notebook and linked_notebook.get("is_smart")),
+        "routing_default": ((manifest.get("produces") or {}).get("routing")
+                            or {}).get("default", "notebook"),
         "config": read_config(manifest),
         "using_model": read_config(manifest).get("LLM") if connected else None,
         "install": install_source(manifest),

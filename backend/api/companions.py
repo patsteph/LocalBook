@@ -19,8 +19,14 @@ logger = logging.getLogger(__name__)
 
 
 class ConnectRequest(BaseModel):
-    # Where its output should land. None => connect the engine only, and leave
-    # the folder unlinked; the user may prefer to file it themselves.
+    # How its output should be filed:
+    #   "smart"    — watch as a SMART folder: read who is in each recording and
+    #                suggest a notebook per file. The default for a meeting
+    #                recorder, because 1:1s with different people belong in
+    #                different notebooks and one pile serves nobody.
+    #   "notebook" — everything into the one notebook named below.
+    #   "none"     — connect the engine only; the user files things themselves.
+    mode: str = "smart"
     notebook_id: Optional[str] = None
     # "all" ingests what is already in the output folder; "new_only" baselines
     # it. Same vocabulary as linking any other folder.
@@ -104,19 +110,26 @@ async def connect(companion_id: str, req: ConnectRequest):
     produces = manifest.get("produces") or {}
     out_dir = Path(produces["dir"]).expanduser() if produces.get("dir") else None
 
-    if req.notebook_id and out_dir:
+    mode = req.mode if req.mode in ("smart", "notebook", "none") else "smart"
+    if mode == "notebook" and not req.notebook_id:
+        mode = "smart"          # nothing chosen — fall back to deciding per file
+    target_notebook = req.notebook_id if mode == "notebook" else None
+
+    if mode != "none" and out_dir:
         try:
             from storage.folder_link_store import folder_link_store, FolderLinkPathError
             # The tool creates its output folder on first run; create it now so
             # the link can be made before the user's first recording rather than
             # after it, which would silently miss that recording.
             out_dir.mkdir(parents=True, exist_ok=True)
-            existing = folder_link_store.find_by_path(str(out_dir), req.notebook_id)
+            existing = folder_link_store.find_by_path(str(out_dir), target_notebook)
             if existing:
                 linked = existing
             else:
+                # notebook_id=None IS the smart folder: same scanning, but the
+                # destination is decided per recording instead of fixed here.
                 linked = folder_link_store.create_link(
-                    path=str(out_dir), notebook_id=req.notebook_id,
+                    path=str(out_dir), notebook_id=target_notebook,
                     frequency=req.frequency,
                 )
                 if req.backfill == "new_only":
@@ -131,6 +144,7 @@ async def connect(companion_id: str, req: ConnectRequest):
 
     return {"ok": True, "config": result.get("config"),
             "folder_link_id": (linked or {}).get("id"),
+            "mode": mode,
             "link_error": link_error,
             "status": svc.status(manifest)}
 

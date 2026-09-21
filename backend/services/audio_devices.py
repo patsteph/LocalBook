@@ -365,9 +365,16 @@ def ensure_multi_output(*, name: str, uid: str, include_names: List[str],
         # real output instead. A multi-output built only from BlackHole would be
         # created successfully and play to nothing the user can hear.
         if not dev or not dev["uid"] or dev["name"].strip().lower() in virtual:
+            # Skip devices that are themselves aggregates — including the one we
+            # are about to build. Nesting aggregate devices is not reliably
+            # supported, and on a machine that already has a Multi-Output Device
+            # the fallback could otherwise pick it and fail intermittently
+            # depending on device enumeration order.
             dev = next((d for d in devices
                         if d["can_output"] and d["uid"]
-                        and d["name"].strip().lower() not in virtual), None)
+                        and d["name"].strip().lower() not in virtual
+                        and d["name"].strip().lower() != name.strip().lower()
+                        and not device_members(d["id"])), None)
         if dev and dev["uid"]:
             members.append(dev["uid"])
             master = dev["uid"]          # real hardware drives the clock

@@ -118,6 +118,9 @@ export interface Companion {
   output_exists: boolean;
   linked_notebook_id: string | null;
   linked_notebook_title?: string | null;
+  linked_is_smart?: boolean;
+  /** What this companion's output is best filed as: "smart" | "notebook". */
+  routing_default?: string;
   folder_link_id: string | null;
   using_model: string | null;
   install?: CompanionInstall;
@@ -150,10 +153,17 @@ export async function listCompanions(): Promise<CompanionList> {
   return jsonOrThrow(await localFetch(`${API_BASE_URL}/companions`));
 }
 
+export type RoutingMode = 'smart' | 'notebook' | 'none';
+
 export async function connectCompanion(
   id: string,
-  body: { notebook_id?: string | null; backfill?: 'all' | 'new_only'; frequency?: string },
-): Promise<{ link_error: string | null; status: Companion }> {
+  body: {
+    mode?: RoutingMode;
+    notebook_id?: string | null;
+    backfill?: 'all' | 'new_only';
+    frequency?: string;
+  },
+): Promise<{ link_error: string | null; mode: RoutingMode; status: Companion }> {
   return jsonOrThrow(await localFetch(`${API_BASE_URL}/companions/${id}/connect`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

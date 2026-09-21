@@ -41,7 +41,11 @@
     "patterns": [
       "*.md"
     ],
-    "parser": "meeting_notes"
+    "parser": "meeting_notes",
+    "routing": {
+      "default": "smart",
+      "why": "1:1s with different people belong in different notebooks, and the notes name their participants \u2014 so each recording can be placed on its own rather than all of them landing in one pile."
+    }
   },
   "configure": {
     "file": "~/Library/Application Support/MeetingNotes/config.sh",
