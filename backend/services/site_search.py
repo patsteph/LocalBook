@@ -692,11 +692,17 @@ class OpenAlexSearchHandler(SiteSearchHandler):
     Broader than arXiv (every discipline, not just preprints) and openly
     licensed, unlike Semantic Scholar's rate-limited free tier.
 
-    **No API key exists.** OpenAlex is free and unauthenticated; supplying an
-    email address instead puts requests in its "polite pool", which is faster
-    and more reliably served. So the setting is an email, not a secret — and
-    saying so matters, because a user hunting for an API key that does not
-    exist will not find one.
+    **Authentication (verified 2026-09-21).** OpenAlex introduced API keys in
+    February 2026. A free account gives a daily credit budget; anonymous
+    requests still work but share a pool and are the first thing throttled.
+    Credits are what make a key worth having here: a singleton lookup costs 1
+    and a *search* costs 1,000, so the free 100,000/day is roughly a hundred
+    searches — plenty for one person, and not something to spend on an
+    anonymous queue.
+
+    The key is a query parameter, `api_key`; there is no Authorization header.
+    `mailto` is separate and still useful without a key: it puts anonymous
+    requests in the "polite pool", which is served more consistently.
     """
 
     site_domain = "openalex.org"
@@ -706,12 +712,18 @@ class OpenAlexSearchHandler(SiteSearchHandler):
     _API = "https://api.openalex.org/works"
 
     @staticmethod
-    def _polite_email() -> Optional[str]:
-        """The address OpenAlex asks for. Never sent anywhere else."""
-        try:
-            return (get_api_key("openalex_email") or "").strip() or None
-        except Exception:
-            return None
+    def _credentials() -> tuple:
+        """(api_key, polite_email). Either may be absent; both are optional.
+
+        The key buys a private credit budget; the email is only a courtesy for
+        anonymous requests. Neither is sent anywhere but OpenAlex.
+        """
+        def _read(name: str) -> Optional[str]:
+            try:
+                return (get_api_key(name) or "").strip() or None
+            except Exception:
+                return None
+        return _read("openalex_api_key"), _read("openalex_email")
 
     @staticmethod
     def _deinvert_abstract(index: Optional[Dict[str, List[int]]],
@@ -758,7 +770,9 @@ class OpenAlexSearchHandler(SiteSearchHandler):
         if date_filter:
             params["filter"] = f"from_publication_date:{date_filter.strftime('%Y-%m-%d')}"
 
-        email = self._polite_email()
+        api_key, email = self._credentials()
+        if api_key:
+            params["api_key"] = api_key
         if email:
             params["mailto"] = email
         headers = {"User-Agent": f"LocalBook ({email})" if email else "LocalBook"}
@@ -767,6 +781,18 @@ class OpenAlexSearchHandler(SiteSearchHandler):
             async with httpx.AsyncClient() as client:
                 response = await client.get(self._API, params=params,
                                             headers=headers, timeout=20.0)
+            if response.status_code == 401:
+                # Say which problem it is. Quietly falling through to a web
+                # search returns plausible results from somewhere else entirely,
+                # and the user never learns their key is wrong.
+                logger.warning("[openalex] 401 — the API key was rejected. "
+                               "Check it in Settings → API Keys.")
+                return []
+            if response.status_code == 429:
+                logger.warning("[openalex] 429 — out of credits for today. "
+                               "A free key at openalex.org/settings/api raises the budget; "
+                               "searches cost 1,000 credits each.")
+                return []
             if response.status_code != 200:
                 logger.warning(f"[openalex] HTTP {response.status_code}")
                 return await BraveFallbackHandler(self.site_domain).search(

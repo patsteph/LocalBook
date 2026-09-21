@@ -27,10 +27,44 @@ def test_openalex_is_registered_as_a_searchable_site():
     assert "openalex.org" in SiteSearchService.HANDLERS
 
 
-def test_it_advertises_that_no_api_key_is_needed():
-    """OpenAlex is free and unauthenticated. Claiming otherwise sends people
-    hunting for a key that does not exist."""
-    assert OpenAlexSearchHandler.requires_api_key is False
+def test_it_works_without_a_key_but_supports_one():
+    """OpenAlex introduced API keys in February 2026 (verified against the live
+    API 2026-09-21: an invalid key returns 401, anonymous search returns 200).
+    A free account gives a private daily credit budget; anonymous requests share
+    a pool that is throttled first. So a key is optional but worth having — a
+    search costs 1,000 credits against a 100,000/day free budget."""
+    assert OpenAlexSearchHandler.requires_api_key is False     # still optional
+    import inspect
+    src = inspect.getsource(OpenAlexSearchHandler)
+    assert "openalex_api_key" in src, "no way to supply a key at all"
+
+
+def test_the_key_goes_in_the_query_parameter_openalex_expects():
+    """`api_key`, not a header — there is no Authorization/Bearer support."""
+    import inspect
+    src = inspect.getsource(OpenAlexSearchHandler.search)
+    assert 'params["api_key"] = api_key' in src
+    assert "Authorization" not in src
+
+
+def test_a_rejected_key_is_reported_rather_than_silently_replaced():
+    """Falling through to a web search returns plausible results from somewhere
+    else entirely, and the user never learns their key is wrong."""
+    import inspect
+    src = inspect.getsource(OpenAlexSearchHandler.search)
+    block = src[src.index("status_code == 401"):src.index("status_code == 429")]
+    assert "BraveFallbackHandler" not in block
+    assert "return []" in block
+
+
+def test_running_out_of_credits_says_so():
+    """A search costs 1,000 credits. Hitting the daily ceiling is a normal thing
+    to happen and needs to name its own remedy."""
+    import inspect
+    src = inspect.getsource(OpenAlexSearchHandler.search)
+    block = src[src.index("status_code == 429"):]
+    assert "credits" in block
+    assert "openalex.org/settings/api" in block
 
 
 def test_the_abstract_index_is_rebuilt_in_order():

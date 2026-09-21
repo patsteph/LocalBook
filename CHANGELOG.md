@@ -21,6 +21,11 @@ and usable in every artifact LocalBook makes, with no step for the user after th
   either your click or a rule you wrote; there is no confidence score at which a recording files
   itself. Approving offers "always route these", which writes a rule scoped to the people or
   topics you choose, listed in plain English with what it has actually routed, and revocable.
+- **OpenAlex** joins the searchable sites — ~250M scholarly works across every discipline,
+  alongside arXiv, PubMed and Semantic Scholar. It works without an account; adding a free
+  OpenAlex API key in Settings gives you your own daily budget rather than sharing an anonymous
+  pool. Results link to the open-access PDF where one exists.
+
 - **@collector understands folders.** Ask what folders are being watched, scan one now, what is
   waiting for review, or what rules exist.
 

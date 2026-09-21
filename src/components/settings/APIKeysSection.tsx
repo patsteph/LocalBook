@@ -44,15 +44,23 @@ const API_KEY_CONFIGS: APIKeyConfig[] = [
         getKeyUrl: 'https://platform.openai.com/api-keys',
     },
     {
-        // Not a secret, and deliberately described as what it is. OpenAlex is
-        // free and unauthenticated; an email puts requests in its "polite pool",
-        // which is faster and more reliably served. Calling this an API key
-        // would send people hunting for one that does not exist.
         name: 'OpenAlex',
+        key: 'openalex_api_key',
+        label: 'OpenAlex API Key',
+        description: 'Scholarly search across ~250M works. A free account gives you a '
+            + 'daily budget — enough for about 100 searches a day. Works without a key, '
+            + 'but shares an anonymous pool that is throttled first.',
+        placeholder: 'Paste your key from openalex.org/settings/api',
+        getKeyUrl: 'https://openalex.org/settings/api',
+    },
+    {
+        // Only matters WITHOUT a key: it puts anonymous requests in the polite
+        // pool. Listed after the key so nobody mistakes it for the thing to set.
+        name: 'OpenAlex (no key)',
         key: 'openalex_email',
-        label: 'OpenAlex Contact Email (optional)',
-        description: 'OpenAlex needs no API key. Adding an email joins their faster '
-            + '"polite pool" — it is sent only to OpenAlex, with each search.',
+        label: 'OpenAlex Contact Email',
+        description: 'Only needed if you have no OpenAlex key — an email puts anonymous '
+            + 'requests in their faster "polite pool". Sent only to OpenAlex.',
         placeholder: 'you@example.com',
         getKeyUrl: 'https://docs.openalex.org/how-to-use-the-api/rate-limits-and-authentication',
     },
