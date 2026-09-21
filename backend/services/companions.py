@@ -650,6 +650,7 @@ def run_preflight(manifest: Dict[str, Any]) -> Dict[str, Any]:
 
     log: List[str] = []
     warnings: List[str] = []
+    audio_result: Optional[Dict[str, Any]] = None
 
     # ── 1. formulae — user-owned prefix, no password ────────────────────
     for f in pre.get("formulae") or []:
@@ -693,9 +694,28 @@ def run_preflight(manifest: Dict[str, Any]) -> Dict[str, Any]:
         pkgs.append(path)
         log.append(f"downloaded {c.get('label', cask)}")
 
-    admin_cmds = [a for a in (pre.get("admin_commands") or [])]
+    # The incidental admin commands exist to make a NEWLY INSTALLED driver
+    # appear. With nothing installed this pass there is nothing to settle, and
+    # asking for a password to run `killall coreaudiod` against a machine that
+    # already has the driver is a prompt the user cannot possibly want.
+    admin_cmds = [a for a in (pre.get("admin_commands") or [])] if pkgs else []
+
     if not pkgs and not admin_cmds:
-        return {"ok": True, "log": log, "prompted": False, "warnings": warnings}
+        # Still finish the job: the audio device needs no privilege, and this is
+        # the exact path a machine takes when only that step remains.
+        audio_result = _ensure_audio_devices(pre, log)
+        if audio_result and not audio_result.get("ok"):
+            logger.warning(f"[companions] audio device not created: {audio_result.get('error')}")
+            warnings.append(audio_result.get("error") or "The audio device could not be created.")
+        remaining = [st for st in preflight_plan(manifest)["steps"]
+                     if not st["done"] and not st.get("incidental")]
+        error = None
+        if remaining:
+            labels = ", ".join(st["label"] for st in remaining)
+            error = (f"{warnings[0]} (still missing: {labels})" if warnings
+                     else f"Still missing: {labels}")
+        return {"ok": not remaining, "log": log, "prompted": False,
+                "warnings": warnings, "error": error, "details": audio_result or {}}
 
     # ── 3. ONE authorization for everything privileged ──────────────────
     script_lines = ["#!/bin/sh", "set -e"]
@@ -755,9 +775,16 @@ def run_preflight(manifest: Dict[str, Any]) -> Dict[str, Any]:
     # Outcome, not exit code — the same rule as everywhere else here.
     remaining = [s for s in preflight_plan(manifest)["steps"]
                  if not s["done"] and not s.get("incidental")]
+    # Lead with WHY, not WHAT. "Still missing: Meeting Output" names the symptom
+    # and drops the reason we collected two lines earlier — which is what left a
+    # real failure undiagnosable on someone else's machine (2026-09-21).
+    error = None
+    if remaining:
+        labels = ", ".join(s["label"] for s in remaining)
+        error = (f"{warnings[0]} (still missing: {labels})" if warnings
+                 else f"Still missing: {labels}")
     return {"ok": not remaining, "log": log, "prompted": True, "warnings": warnings,
-            "error": None if not remaining else
-                     f"Still missing: {', '.join(s['label'] for s in remaining)}"}
+            "error": error, "details": audio_result or {}}
 
 
 # ── updates: pinned, but not frozen ─────────────────────────────────────────

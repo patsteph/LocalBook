@@ -215,9 +215,19 @@ export async function removeExtra(id: string, extraId: string): Promise<{ status
   }));
 }
 
-export async function runPreflight(id: string): Promise<{
-  log: string[]; prompted: boolean; warnings: string[]; status: Companion;
-}> {
+export interface PreflightResult {
+  ok?: boolean;
+  error?: string;
+  cancelled?: boolean;
+  log: string[];
+  prompted: boolean;
+  warnings: string[];
+  /** CoreAudio status and what it tried to combine, when the audio step failed. */
+  details?: { status?: number; tried?: Array<{ name: string; uid?: string }> };
+  status: Companion;
+}
+
+export async function runPreflight(id: string): Promise<PreflightResult> {
   return jsonOrThrow(await localFetch(`${API_BASE_URL}/companions/${id}/preflight`, {
     method: 'POST',
   }));

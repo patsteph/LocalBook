@@ -51,6 +51,9 @@ function PreflightPanel({ c, onDone, onClose, onRefresh }: {
   const [error, setError] = useState<string | null>(null);
   const [log, setLog] = useState<string[]>([]);
   const [warnings, setWarnings] = useState<string[]>([]);
+  const [details, setDetails] = useState<{
+    status?: number; tried?: Array<{ name: string; uid?: string }>;
+  } | null>(null);
   const plan = c.preflight;
   if (!plan) return null;
 
@@ -62,7 +65,14 @@ function PreflightPanel({ c, onDone, onClose, onRefresh }: {
       const res = await runPreflight(c.id);
       setLog(res.log || []);
       setWarnings(res.warnings || []);
+      setDetails(res.details || null);
       onRefresh();
+      // The endpoint now RETURNS failures rather than throwing, so the evidence
+      // survives — which means the error lives here, not only in catch().
+      if (res.ok === false) {
+        setError(res.error || 'Preparation did not finish.');
+        return;
+      }
       // A skipped optional step is not a failure, but it must not be silent:
       // stay on the panel so the user reads it rather than being moved along.
       if (!(res.warnings || []).length) onDone();
@@ -120,6 +130,11 @@ function PreflightPanel({ c, onDone, onClose, onRefresh }: {
         </p>
       )}
       {error && <p className="text-[11px] text-red-600 dark:text-red-400">{error}</p>}
+      {details?.tried && details.tried.length > 0 && (
+        <p className="text-[11px] text-gray-500 dark:text-gray-400">
+          Tried to combine: {details.tried.map((d) => d.name).join(' + ')}
+        </p>
+      )}
 
       <div className="flex justify-end gap-2">
         <button onClick={onClose} disabled={busy}
@@ -283,7 +298,6 @@ function ConnectPanel({ c, notebooks, onDone, onCancel }: {
       )}
 
       {error && <p className="text-[11px] text-red-600 dark:text-red-400">{error}</p>}
-
       <div className="flex justify-end gap-2">
         <button onClick={onCancel} disabled={busy}
                 className="px-2.5 py-1 text-xs text-gray-500 hover:text-gray-700 dark:hover:text-gray-300">

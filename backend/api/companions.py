@@ -201,9 +201,16 @@ async def preflight(companion_id: str):
     # blocks until the user answers it.
     result = await asyncio.to_thread(svc.run_preflight, manifest)
     if not result.get("ok"):
-        raise HTTPException(
-            status_code=409 if result.get("cancelled") else 400,
-            detail=result.get("error", "Preparation failed"))
+        # Return rather than raise. An HTTPException carries only `detail`, so
+        # throwing here discarded `warnings`, `log` and `details` — everything
+        # that explained the failure — and left the user with a symptom.
+        return {"ok": False,
+                "error": result.get("error", "Preparation failed"),
+                "cancelled": result.get("cancelled", False),
+                "log": result.get("log", []),
+                "warnings": result.get("warnings", []),
+                "details": result.get("details", {}),
+                "status": svc.status(manifest)}
     return {"ok": True, "log": result.get("log", []),
             "prompted": result.get("prompted", False),
             # Optional steps that failed. Reported rather than swallowed: the

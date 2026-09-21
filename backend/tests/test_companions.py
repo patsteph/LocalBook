@@ -857,3 +857,79 @@ def test_the_background_sweep_ignores_companions_that_are_not_installed(monkeypa
     monkeypatch.setattr(svc, "check_and_cache", lambda m: checked.append(m["id"]))
     svc.check_all_for_updates()
     assert checked == []
+
+
+# ── reporting the cause, and not asking for a password we do not need ───────
+#
+# 2026-09-21 field report: three prerequisites green, and preparation failed
+# with "Still missing: Meeting Output". That named the SYMPTOM. The reason had
+# been collected two lines earlier and thrown away — the API raised an
+# HTTPException, which carries only `detail`, so `warnings`, `log` and the
+# CoreAudio status never reached anyone. The failure was undiagnosable on a
+# machine we could not inspect.
+
+@pytest.fixture
+def ready(monkeypatch):
+    """Everything installed except the audio device — the exact field state."""
+    monkeypatch.setattr(svc, "_which", lambda b: f"/opt/homebrew/bin/{b}")
+    monkeypatch.setattr(svc, "_audio_devices",
+                        lambda: ["Mac mini Speakers", "BlackHole 2ch"])
+    monkeypatch.setattr(svc.subprocess, "run",
+                        lambda *a, **k: pytest.fail("no subprocess should run"))
+
+
+def test_no_password_is_requested_when_nothing_needs_one(ready, monkeypatch):
+    """With the driver already installed, the only work left is creating an
+    audio device — a user-level CoreAudio call. Prompting for a password to run
+    `killall coreaudiod` against a machine that is already settled is a dialog
+    nobody can want, and it makes the app look like it asks for admin at random.
+    """
+    devices = ["Mac mini Speakers", "BlackHole 2ch"]
+    monkeypatch.setattr(svc, "_audio_devices", lambda: list(devices))
+
+    def _create(pre, log):
+        devices.append("Meeting Output")     # the device really appears
+        return {"ok": True, "created": True}
+    monkeypatch.setattr(svc, "_ensure_audio_devices", _create)
+
+    result = svc.run_preflight(svc.get_manifest("meeting-notes"))
+    assert result["prompted"] is False
+    assert result["ok"] is True
+
+
+def test_the_audio_device_is_still_built_on_the_no_password_path(ready, monkeypatch):
+    """Skipping the prompt must not skip the work — this is the path a machine
+    takes on its second attempt, which is exactly when the device is missing."""
+    called = {}
+
+    def _create(pre, log):
+        called["ran"] = True
+        return {"ok": True, "created": True}
+    monkeypatch.setattr(svc, "_ensure_audio_devices", _create)
+    svc.run_preflight(svc.get_manifest("meeting-notes"))
+    assert called.get("ran"), "the audio step was skipped along with the prompt"
+
+
+def test_the_error_leads_with_the_cause_not_the_symptom(ready, monkeypatch):
+    """"Still missing: Meeting Output" is true and useless. The CoreAudio status
+    is what someone can act on."""
+    monkeypatch.setattr(svc, "_ensure_audio_devices", lambda pre, log: {
+        "ok": False, "status": 560226676,
+        "error": "CoreAudio refused to create Meeting Output (status 560226676).",
+    })
+    result = svc.run_preflight(svc.get_manifest("meeting-notes"))
+    assert result["ok"] is False
+    assert "CoreAudio refused" in result["error"]
+    assert "560226676" in result["error"]
+    assert "Meeting Output" in result["error"]     # the symptom still appears
+    assert result["details"]["status"] == 560226676
+
+
+def test_a_failure_returns_its_evidence_rather_than_raising():
+    """An HTTPException carries only `detail`. Raising discarded the warnings,
+    the log and the CoreAudio status — everything that explained the failure."""
+    code = _code_without_docstring(
+        __import__("api.companions", fromlist=["preflight"]).preflight)
+    assert "warnings" in code and "details" in code
+    assert "raise HTTPException" not in code.split("run_preflight")[-1], \
+        "the preflight failure path still raises, which drops its own evidence"

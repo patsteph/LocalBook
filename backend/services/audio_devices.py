@@ -168,6 +168,32 @@ def find_device(name: str) -> Optional[Dict[str, Any]]:
     return None
 
 
+# CoreAudio status codes are four-character codes read as an int. These are the
+# ones aggregate-device creation actually returns, translated — a bare number is
+# not something a user can act on, and this runs on machines we cannot inspect.
+_STATUS_HINTS = {
+    0: "success",
+    560947818: "the device list is busy — usually means Core Audio is still restarting",
+    1852797029: "unsupported operation on this device",
+    561211770: "bad property size",
+    2003332927: "unknown property",
+    560226676: "a device in the list is not valid or has gone away",
+    1886547824: "not permitted",
+}
+
+
+def _status_hint(status: int) -> str:
+    if status in _STATUS_HINTS:
+        return _STATUS_HINTS[status]
+    try:
+        as_chars = status.to_bytes(4, "big").decode("ascii")
+        if as_chars.isprintable():
+            return f"code '{as_chars}'"
+    except Exception:
+        pass
+    return "unrecognised error"
+
+
 def create_multi_output(*, name: str, uid: str, member_uids: List[str],
                         master_uid: Optional[str] = None) -> Dict[str, Any]:
     """Create a Multi-Output Device that plays to every member at once.
@@ -208,8 +234,13 @@ def create_multi_output(*, name: str, uid: str, member_uids: List[str],
         device = c_uint32(0)
         status = ca.AudioHardwareCreateAggregateDevice(cfdict, byref(device))
         if status != 0 or not device.value:
-            return {"ok": False,
-                    "error": f"macOS refused to create the device (CoreAudio status {status})."}
+            # Carry the status code AND what we handed it. "macOS refused" alone
+            # is unactionable, and this runs on someone else's machine where the
+            # device list is the missing half of the picture.
+            return {"ok": False, "status": status, "members": list(member_uids),
+                    "error": f"CoreAudio refused to create {name} "
+                             f"(status {status}, {_status_hint(status)}) from "
+                             f"{len(member_uids)} device(s)."}
         logger.info(f"[audio] created multi-output device {name!r} "
                     f"from {len(member_uids)} device(s)")
         return {"ok": True, "device_id": int(device.value), "name": name, "uid": uid}
@@ -271,15 +302,25 @@ def ensure_multi_output(*, name: str, uid: str, include_names: List[str],
     members: List[str] = []
     master: Optional[str] = None
     missing: List[str] = []
+    virtual = {n.strip().lower() for n in include_names}
 
     if include_default_output:
         did = default_output_id()
-        dev = next((d for d in list_devices() if d["id"] == did), None)
+        devices = list_devices()
+        dev = next((d for d in devices if d["id"] == did), None)
+        # If the user's output is already the virtual device we are adding — or
+        # it reports no UID, which cannot be referenced in an aggregate — pick a
+        # real output instead. A multi-output built only from BlackHole would be
+        # created successfully and play to nothing the user can hear.
+        if not dev or not dev["uid"] or dev["name"].strip().lower() in virtual:
+            dev = next((d for d in devices
+                        if d["can_output"] and d["uid"]
+                        and d["name"].strip().lower() not in virtual), None)
         if dev and dev["uid"]:
             members.append(dev["uid"])
             master = dev["uid"]          # real hardware drives the clock
         else:
-            missing.append("your current output device")
+            missing.append("a speaker or headphone output")
 
     for want in include_names:
         # Wait rather than glance: a driver installed seconds ago may still be
@@ -290,6 +331,13 @@ def ensure_multi_output(*, name: str, uid: str, include_names: List[str],
                 members.append(dev["uid"])
         else:
             missing.append(want)
+
+    # Record what we are about to combine. Two real cases break a naive build:
+    # the default output may BE one of the devices we are adding (a user who set
+    # BlackHole as output hears nothing), and a device may report no UID at all,
+    # which cannot be referenced in an aggregate description.
+    chosen = [{"uid": u, "name": next((d["name"] for d in list_devices()
+                                       if d["uid"] == u), u)} for u in members]
 
     if missing:
         # A driver that never appears after a wait usually needs a reboot — which
@@ -315,7 +363,8 @@ def ensure_multi_output(*, name: str, uid: str, include_names: List[str],
             logger.info(f"[audio] {name} creation attempt {attempt} failed, retrying")
             time.sleep(1.5)
     if not result.get("ok"):
-        return {"ok": False, "created": False, "error": result.get("error")}
+        return {"ok": False, "created": False, "error": result.get("error"),
+                "status": result.get("status"), "tried": chosen}
 
     # Verify it actually appeared rather than trusting the status code.
     appeared = find_device(name)
