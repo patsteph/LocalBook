@@ -118,14 +118,16 @@ def test_ensure_is_idempotent(probe):
     """The user may have built 'Meeting Output' by hand following the upstream
     instructions. A second device with the same name would be worse than doing
     nothing — the recorder selects by name."""
-    default = next(d for d in ad.list_devices() if d["is_default_output"])
+    # include_names=[] keeps this about idempotency alone: naming the default
+    # output would mark it "virtual" and drag hardware selection into a test
+    # that is not about hardware selection.
     first = ad.ensure_multi_output(name=_PROBE_NAME, uid=_PROBE_UID,
-                                   include_names=[default["name"]])
+                                   include_names=[])
     assert first["ok"] and first["created"] is True, first
     assert ad.wait_for_device(_PROBE_NAME, timeout=5, interval=0.2) is not None
 
     second = ad.ensure_multi_output(name=_PROBE_NAME, uid=_PROBE_UID,
-                                    include_names=[default["name"]])
+                                    include_names=[])
     assert second["ok"] and second["created"] is False
     matches = [d for d in ad.list_devices() if d["name"] == _PROBE_NAME]
     assert len(matches) == 1, f"ended up with {len(matches)} devices of the same name"
@@ -270,3 +272,21 @@ def test_an_existing_aggregate_is_never_used_as_a_member():
         if dev:
             assert not ad.device_members(dev["id"]), \
                 f"picked {dev['name']}, which is itself an aggregate"
+
+
+def test_creation_waits_for_the_device_before_calling_it_missing():
+    """The verification after creating a device has to wait like every other
+    read of the device list.
+
+    Checking instantly reported "macOS reported success but Meeting Output did
+    not appear" on a build that had in fact worked — the worst kind of failure,
+    since it tells the user something is broken AND leaves a working device
+    behind for the next run to trip over.
+    """
+    import ast
+    import inspect
+    tree = ast.parse(inspect.getsource(ad.ensure_multi_output).lstrip())
+    calls = [n.func.id for n in ast.walk(tree)
+             if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)]
+    assert "wait_for_device" in calls, \
+        "the post-create check reads the device list without waiting for it"

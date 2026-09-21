@@ -1155,3 +1155,51 @@ def test_a_smart_link_is_identifiable_from_status():
     st = svc.status(svc.get_manifest("meeting-notes"))
     assert "linked_is_smart" in st
     assert st["routing_default"] == "smart"
+
+
+# ── one click instead of copy-and-paste ─────────────────────────────────────
+
+def test_the_installer_can_be_launched_without_copying_anything():
+    import inspect
+    from api import companions as api
+    assert "install" in [r.path.rsplit("/", 1)[-1] for r in api.router.routes]
+    assert "run_installer" in inspect.getsource(api)
+
+
+def test_the_checksum_is_verified_before_a_terminal_is_opened(monkeypatch):
+    """Never hand a terminal a command whose payload we could not verify —
+    one click makes the verification MORE important, not less."""
+    monkeypatch.setattr(svc, "fetch_and_verify_script",
+                        lambda m: {"ok": False, "error": "checksum mismatch"})
+    opened = []
+    monkeypatch.setattr(svc.subprocess, "run",
+                        lambda *a, **k: opened.append(a) or pytest.fail("opened anyway"))
+    result = svc.run_installer(svc.get_manifest("meeting-notes"))
+    assert result["ok"] is False and "mismatch" in result["error"]
+    assert opened == []
+
+
+def test_we_never_ask_for_the_password_ourselves(monkeypatch):
+    """Headless would mean SUDO_ASKPASS pointing at a dialog we draw, and the
+    password passing through a script we wrote. macOS's own prompt is
+    recognisable and hard to forge; ours would be trivially imitable."""
+    code = _code_without_docstring(svc.run_installer)
+    # The MECHANISMS of collecting a password, not the word — the banner says
+    # "it will ask for your password once", which is exactly the honesty we
+    # want and would fail a naive text search.
+    for mechanism in ("SUDO_ASKPASS", "hidden answer", "sudo -S", "askpass"):
+        assert mechanism not in code, f"{mechanism} would route the password through us"
+
+
+def test_the_terminal_command_still_carries_the_hash_check(monkeypatch):
+    sent = {}
+
+    def _run(args, **kw):
+        sent["script"] = " ".join(str(a) for a in args)
+        return type("P", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+    monkeypatch.setattr(svc, "fetch_and_verify_script", lambda m: {"ok": True})
+    monkeypatch.setattr(svc.subprocess, "run", _run)
+
+    assert svc.run_installer(svc.get_manifest("meeting-notes"))["ok"]
+    assert "shasum" in sent["script"]
+    assert "NONINTERACTIVE=1" in sent["script"]

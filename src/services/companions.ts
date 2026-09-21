@@ -268,3 +268,10 @@ export async function acceptCompanionUpdate(
     `${API_BASE_URL}/companions/${id}/accept-update/${encodeURIComponent(artifactId)}`,
     { method: 'POST' }));
 }
+
+/** Open the installer in Terminal — one click instead of copy and paste. */
+export async function runInstaller(id: string): Promise<{ status: Companion }> {
+  return jsonOrThrow(await localFetch(`${API_BASE_URL}/companions/${id}/install`, {
+    method: 'POST',
+  }));
+}

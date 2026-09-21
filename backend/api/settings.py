@@ -184,6 +184,10 @@ async def get_api_keys_status():
         "openai_api_key",
         "gemini_api_key",
         "custom_llm",
+        # OpenAlex has no API key — it is free and unauthenticated. An email
+        # puts requests in its "polite pool", which is faster and more reliably
+        # served. Stored the same way so it lives in the Keychain, not a file.
+        "openalex_email",
     ]
     try:
         configured = await _km_status(key_names)

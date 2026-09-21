@@ -197,6 +197,22 @@ async def accept_update(companion_id: str, artifact_id: str):
     return {**result, "status": svc.status(manifest)}
 
 
+@router.post("/companions/{companion_id}/install")
+async def run_installer(companion_id: str):
+    """Open the installer in Terminal — one click instead of copy and paste.
+
+    Terminal rather than headless on purpose: the installer needs root once,
+    and sudo should prompt in its own terminal rather than through a dialog we
+    draw. See services/companions.run_installer for the full reasoning.
+    """
+    import asyncio
+    manifest = _manifest_or_404(companion_id)
+    result = await asyncio.to_thread(svc.run_installer, manifest)
+    if not result.get("ok"):
+        raise HTTPException(status_code=400, detail=result.get("error", "Could not start"))
+    return {"ok": True, "status": svc.status(manifest)}
+
+
 @router.post("/companions/{companion_id}/preflight")
 async def preflight(companion_id: str):
     """Prepare the Mac, asking for the password exactly once.

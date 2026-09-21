@@ -683,6 +683,144 @@ class SemanticScholarSearchHandler(SiteSearchHandler):
 
 
 # =============================================================================
+# OpenAlex Handler
+# =============================================================================
+
+class OpenAlexSearchHandler(SiteSearchHandler):
+    """OpenAlex — an open catalogue of ~250M scholarly works.
+
+    Broader than arXiv (every discipline, not just preprints) and openly
+    licensed, unlike Semantic Scholar's rate-limited free tier.
+
+    **No API key exists.** OpenAlex is free and unauthenticated; supplying an
+    email address instead puts requests in its "polite pool", which is faster
+    and more reliably served. So the setting is an email, not a secret — and
+    saying so matters, because a user hunting for an API key that does not
+    exist will not find one.
+    """
+
+    site_domain = "openalex.org"
+    site_name = "OpenAlex"
+    requires_api_key = False
+
+    _API = "https://api.openalex.org/works"
+
+    @staticmethod
+    def _polite_email() -> Optional[str]:
+        """The address OpenAlex asks for. Never sent anywhere else."""
+        try:
+            return (get_api_key("openalex_email") or "").strip() or None
+        except Exception:
+            return None
+
+    @staticmethod
+    def _deinvert_abstract(index: Optional[Dict[str, List[int]]],
+                           max_chars: int = 400) -> str:
+        """Rebuild readable text from OpenAlex's inverted index.
+
+        Abstracts are stored as {word: [positions]} rather than a string — a
+        copyright workaround on their side. Without reconstructing it every
+        result reads "No abstract available", which is the difference between a
+        usable search result and a bare title.
+        """
+        if not isinstance(index, dict) or not index:
+            return ""
+        try:
+            positioned: List[tuple] = []
+            for word, spots in index.items():
+                for spot in spots or []:
+                    positioned.append((int(spot), word))
+            if not positioned:
+                return ""
+            positioned.sort()
+            text = " ".join(word for _, word in positioned)
+            return text[:max_chars].strip()
+        except Exception:
+            return ""
+
+    async def search(
+        self,
+        query: str,
+        time_range: TimeRange = TimeRange.ALL_TIME,
+        max_results: int = 10
+    ) -> List[SearchResult]:
+        params = {
+            "search": query,
+            "per-page": min(max(max_results, 1), 50),
+        }
+        # NO explicit sort. `sort=cited_by_count:desc` looks appealing for a
+        # research catalogue and is badly wrong: it ranks by citations across
+        # everything that matches ANY term, so "retrieval augmented generation"
+        # returned SciPy and QUANTUM ESPRESSO. OpenAlex's default relevance
+        # score already weighs citations — measured 2026-09-21, it put the RAG
+        # survey (747 cites) first and kept every result on-topic.
+        date_filter = self._get_date_filter(time_range)
+        if date_filter:
+            params["filter"] = f"from_publication_date:{date_filter.strftime('%Y-%m-%d')}"
+
+        email = self._polite_email()
+        if email:
+            params["mailto"] = email
+        headers = {"User-Agent": f"LocalBook ({email})" if email else "LocalBook"}
+
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.get(self._API, params=params,
+                                            headers=headers, timeout=20.0)
+            if response.status_code != 200:
+                logger.warning(f"[openalex] HTTP {response.status_code}")
+                return await BraveFallbackHandler(self.site_domain).search(
+                    query, time_range, max_results)
+            data = response.json()
+        except Exception as e:
+            logger.warning(f"[openalex] search failed: {e}")
+            return await BraveFallbackHandler(self.site_domain).search(
+                query, time_range, max_results)
+
+        results: List[SearchResult] = []
+        for work in (data.get("results") or [])[:max_results]:
+            authorships = work.get("authorships") or []
+            names = [((a.get("author") or {}).get("display_name") or "")
+                     for a in authorships[:3]]
+            names = [n for n in names if n]
+            author_str = ", ".join(names)
+            if len(authorships) > 3 and author_str:
+                author_str += " et al."
+
+            oa = work.get("open_access") or {}
+            primary = work.get("primary_location") or {}
+            # Prefer a link that actually reaches the text: the open-access PDF
+            # first, then the publisher's landing page, then OpenAlex itself.
+            url = (oa.get("oa_url") or primary.get("pdf_url")
+                   or primary.get("landing_page_url") or work.get("doi")
+                   or work.get("id") or "")
+
+            abstract = self._deinvert_abstract(work.get("abstract_inverted_index"))
+            venue = ((primary.get("source") or {}).get("display_name") or "")
+
+            results.append(SearchResult(
+                title=work.get("display_name") or work.get("title") or "Untitled",
+                url=url,
+                snippet=abstract or (f"{venue} · {work.get('type', 'work')}"
+                                     if venue else "No abstract available"),
+                source_site=self.site_name,
+                published_date=work.get("publication_date"),
+                author=author_str or None,
+                metadata={
+                    "year": work.get("publication_year"),
+                    "citations": work.get("cited_by_count"),
+                    "venue": venue,
+                    "type": work.get("type"),
+                    "doi": work.get("doi"),
+                    "is_open_access": bool(oa.get("is_oa")),
+                    "openalex_id": work.get("id"),
+                    "read_time": "~15 min read",
+                },
+            ))
+        return results
+
+
+# =============================================================================
 # Hacker News Handler
 # =============================================================================
 
@@ -1051,6 +1189,8 @@ class SiteSearchService:
         "en.wikipedia.org": WikipediaSearchHandler,
         "semanticscholar.org": SemanticScholarSearchHandler,
         "www.semanticscholar.org": SemanticScholarSearchHandler,
+        "openalex.org": OpenAlexSearchHandler,
+        "api.openalex.org": OpenAlexSearchHandler,
         "news.ycombinator.com": HackerNewsSearchHandler,
         "ycombinator.com": HackerNewsSearchHandler,
         "hackernews.com": HackerNewsSearchHandler,

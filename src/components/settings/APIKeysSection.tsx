@@ -44,6 +44,19 @@ const API_KEY_CONFIGS: APIKeyConfig[] = [
         getKeyUrl: 'https://platform.openai.com/api-keys',
     },
     {
+        // Not a secret, and deliberately described as what it is. OpenAlex is
+        // free and unauthenticated; an email puts requests in its "polite pool",
+        // which is faster and more reliably served. Calling this an API key
+        // would send people hunting for one that does not exist.
+        name: 'OpenAlex',
+        key: 'openalex_email',
+        label: 'OpenAlex Contact Email (optional)',
+        description: 'OpenAlex needs no API key. Adding an email joins their faster '
+            + '"polite pool" — it is sent only to OpenAlex, with each search.',
+        placeholder: 'you@example.com',
+        getKeyUrl: 'https://docs.openalex.org/how-to-use-the-api/rate-limits-and-authentication',
+    },
+    {
         name: 'Google AI',
         key: 'gemini_api_key',
         label: 'Google AI API Key',

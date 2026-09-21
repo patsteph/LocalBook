@@ -425,8 +425,14 @@ def ensure_multi_output(*, name: str, uid: str, include_names: List[str],
         return {"ok": False, "created": False, "error": result.get("error"),
                 "status": result.get("status"), "tried": chosen}
 
-    # Verify it actually appeared rather than trusting the status code.
-    appeared = find_device(name)
+    # Verify it actually appeared rather than trusting the status code — but
+    # WAIT for it. coreaudiod republishes its device list asynchronously, so a
+    # device created a millisecond ago is often not in it yet. Checking
+    # instantly reported "macOS reported success but Meeting Output did not
+    # appear" on a build that had worked perfectly, which is a worse failure
+    # than not checking at all: it tells the user something is broken and
+    # leaves a working device behind.
+    appeared = wait_for_device(name, timeout=8.0, interval=0.25)
     if not appeared:
         return {"ok": False, "created": False,
                 "error": f"macOS reported success but {name} did not appear."}

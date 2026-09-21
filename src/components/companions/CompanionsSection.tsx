@@ -19,6 +19,7 @@ import {
   checkCompanionUpdates,
   checkInstallScript,
   installExtra,
+  runInstaller,
   runPreflight,
   removeExtra,
   verifyCompanion,
@@ -160,6 +161,8 @@ function PreflightPanel({ c, onDone, onClose, onRefresh }: {
 
 function InstallPanel({ c, onClose }: { c: Companion; onClose: () => void }) {
   const [copied, setCopied] = useState(false);
+  const [running, setRunning] = useState(false);
+  const [runError, setRunError] = useState<string | null>(null);
   const [checked, setChecked] = useState<{ ok: boolean; error?: string } | null>(null);
   const cmd = c.install?.command || '';
 
@@ -179,7 +182,7 @@ function InstallPanel({ c, onClose }: { c: Companion; onClose: () => void }) {
       <p className="text-xs text-gray-600 dark:text-gray-300">
         {c.name} installs itself from the terminal — it needs Homebrew and your
         admin password for the audio driver, so it can't run inside this window.
-        Paste this and let it finish; LocalBook takes over from there.
+        One click opens it in Terminal; let it finish and LocalBook takes over.
       </p>
 
       {/* Provenance. This command downloads and runs someone else's script, so
@@ -205,20 +208,51 @@ function InstallPanel({ c, onClose }: { c: Companion; onClose: () => void }) {
       )}
 
       <div className="flex items-center gap-2">
-        <code className="flex-1 px-2 py-1.5 text-[11px] rounded bg-white dark:bg-gray-900 border dark:border-gray-700 text-gray-800 dark:text-gray-200 overflow-x-auto whitespace-nowrap">
-          {cmd}
-        </code>
         <button
           onClick={() => {
-            void navigator.clipboard.writeText(cmd);
-            setCopied(true);
-            setTimeout(() => setCopied(false), 1600);
+            setRunning(true);
+            setRunError(null);
+            void runInstaller(c.id)
+              .catch((e: any) => setRunError(e?.message || 'Could not open Terminal.'))
+              .finally(() => setRunning(false));
           }}
-          className="px-2.5 py-1.5 text-xs rounded bg-gray-900 dark:bg-gray-100 text-white dark:text-gray-900 hover:opacity-90"
+          disabled={running || checked?.ok === false}
+          className="px-3 py-1.5 text-xs font-medium rounded-lg bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-40"
         >
-          {copied ? 'Copied' : 'Copy'}
+          {running ? 'Opening Terminal…' : 'Run installer'}
         </button>
+        <span className="text-[11px] text-gray-500 dark:text-gray-400">
+          Opens in Terminal so it can ask for your password itself — LocalBook
+          never sees it.
+        </span>
       </div>
+
+      {runError && (
+        <p className="text-[11px] text-red-600 dark:text-red-400">{runError}</p>
+      )}
+
+      {/* The command stays available: some people would rather read it and run
+          it themselves than have an app open a terminal on their behalf. */}
+      <details className="group">
+        <summary className="text-[11px] text-gray-500 dark:text-gray-400 cursor-pointer hover:text-gray-700 dark:hover:text-gray-300">
+          or run it yourself
+        </summary>
+        <div className="mt-1.5 flex items-center gap-2">
+          <code className="flex-1 px-2 py-1.5 text-[11px] rounded bg-white dark:bg-gray-900 border dark:border-gray-700 text-gray-800 dark:text-gray-200 overflow-x-auto whitespace-nowrap">
+            {cmd}
+          </code>
+          <button
+            onClick={() => {
+              void navigator.clipboard.writeText(cmd);
+              setCopied(true);
+              setTimeout(() => setCopied(false), 1600);
+            }}
+            className="px-2.5 py-1.5 text-xs rounded bg-gray-900 dark:bg-gray-100 text-white dark:text-gray-900 hover:opacity-90"
+          >
+            {copied ? 'Copied' : 'Copy'}
+          </button>
+        </div>
+      </details>
 
       <p className="text-[11px] text-blue-700 dark:text-blue-400">
         Leave this open — LocalBook notices when the install finishes.

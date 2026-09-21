@@ -337,6 +337,69 @@ def install_command(manifest: Dict[str, Any]) -> str:
     )
 
 
+def run_installer(manifest: Dict[str, Any]) -> Dict[str, Any]:
+    """Start the installer in Terminal, so nobody has to copy and paste it.
+
+    **Why Terminal and not the background.** The installer needs root once, for
+    the audio driver's pkg. Running it headless means giving sudo a password
+    with no terminal to ask on — which in practice means `SUDO_ASKPASS` pointed
+    at a dialog WE draw, and the password passing through a script we wrote.
+    That is a meaningfully worse bargain than it looks:
+
+      * macOS's own authorization dialog is recognisable and hard to forge.
+        One we draw is trivially imitable, and teaching someone to type their
+        admin password into a LocalBook-shaped prompt is a habit worth not
+        creating.
+      * The install downloads several GB and takes minutes. A progress log the
+        user can watch is a feature, not a consolation — a silent spinner for
+        that long is indistinguishable from a hang, which this feature has
+        already been mistaken for once.
+
+    So: one click, Terminal opens, sudo prompts natively when it needs to, and
+    LocalBook watches for completion. The password never touches us.
+
+    The command still verifies the pinned checksum before executing.
+    """
+    command = install_command(manifest)
+    if not command:
+        return {"ok": False, "error": "This companion has no installer."}
+
+    verified = fetch_and_verify_script(manifest)
+    if not verified.get("ok"):
+        # Never hand a terminal a command whose payload we could not verify.
+        return {"ok": False, "error": verified.get("error", "Could not verify the installer.")}
+
+    name = manifest.get("name", manifest.get("id", "installer"))
+    # A banner first, so the terminal explains itself rather than appearing to
+    # be something the user's machine did on its own.
+    script = (
+        f'echo "Installing {name} for LocalBook."; '
+        f'echo "It will ask for your password once, for the audio driver."; '
+        f'echo "You can close this window when it finishes."; echo; '
+        f'{command}'
+    )
+    try:
+        # osascript rather than `open -a Terminal`: `open` with a command needs
+        # a file on disk, and a script we write and they execute is a worse
+        # thing to leave lying around than a line typed into a fresh window.
+        applescript = (
+            'tell application "Terminal"\n'
+            f'  do script {json.dumps(script)}\n'
+            '  activate\n'
+            'end tell'
+        )
+        proc = subprocess.run(["/usr/bin/osascript", "-e", applescript],
+                              capture_output=True, text=True, timeout=30)
+        if proc.returncode != 0:
+            return {"ok": False,
+                    "error": (proc.stderr or "").strip()[:200] or "Could not open Terminal."}
+    except Exception as e:
+        return {"ok": False, "error": f"Could not open Terminal: {e}"}
+
+    logger.info(f"[companions] launched the installer for {manifest.get('id')} in Terminal")
+    return {"ok": True, "command": command}
+
+
 def fetch_and_verify_script(manifest: Dict[str, Any]) -> Dict[str, Any]:
     """Download the pinned installer and check it against the recorded hash.
 
