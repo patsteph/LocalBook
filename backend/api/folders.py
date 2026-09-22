@@ -27,6 +27,8 @@ logger = logging.getLogger(__name__)
 
 class CreateLinkRequest(BaseModel):
     path: str
+    # None => inherit whatever the companion that writes here declares.
+    exclude: Optional[List[str]] = None
     notebook_id: Optional[str] = None      # None => Smart Folder
     patterns: Optional[List[str]] = None
     frequency: str = "hourly"
@@ -40,6 +42,7 @@ class CreateLinkRequest(BaseModel):
 
 class UpdateLinkRequest(BaseModel):
     patterns: Optional[List[str]] = None
+    exclude: Optional[List[str]] = None
     frequency: Optional[str] = None
     recursive: Optional[bool] = None
     enabled: Optional[bool] = None
@@ -85,11 +88,17 @@ async def list_links(notebook_id: Optional[str] = None):
 
 @router.post("/links")
 async def create_link(req: CreateLinkRequest):
+    # A folder some companion writes into carries its exclusions whoever links
+    # it. Previously only `connect` applied them, so linking the same folder by
+    # hand here ingested the duplicates the companion had declared redundant.
+    from services.companions import ignores_for_path
     try:
         link = folder_link_store.create_link(
             path=req.path, notebook_id=req.notebook_id,
             patterns=req.patterns, frequency=req.frequency,
             recursive=req.recursive, enabled=req.enabled,
+            exclude=(req.exclude if req.exclude is not None
+                     else (ignores_for_path(req.path) or None)),
         )
     except FolderLinkPathError as e:
         raise HTTPException(status_code=400, detail=str(e))

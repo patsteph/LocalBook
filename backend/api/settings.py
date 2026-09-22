@@ -75,6 +75,25 @@ async def mlx_download_start(req: MLXDownloadRequest):
     return await mlx_download_manager.start(req.model_id)
 
 
+@router.delete("/mlx/models/{model_id:path}")
+async def mlx_delete_model(model_id: str, force: bool = False):
+    """Remove a downloaded model from the local cache.
+
+    Testing a model means sometimes deciding against it, and a 16 GB checkpoint
+    that lost a bake-off should not have to be hunted down in ~/.cache by hand.
+
+    Refuses a model assigned to a role unless forced: removing it would leave
+    the app pointing at weights that no longer exist, and that failure surfaces
+    later as a broken chat rather than as a refused deletion.
+    """
+    from services.mlx_download import delete_model
+    result = await delete_model(model_id, force=force)
+    if not result.get("ok"):
+        raise HTTPException(status_code=409 if result.get("in_use_by") else 400,
+                            detail=result.get("error", "Could not remove the model"))
+    return result
+
+
 @router.get("/mlx/download-status")
 async def mlx_download_status(model_id: str):
     """Poll target for the MLX download progress bar: {status, pct, downloaded_gb, total_gb}."""

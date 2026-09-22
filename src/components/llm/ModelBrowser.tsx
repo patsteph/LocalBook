@@ -261,6 +261,9 @@ export function ModelBrowser() {
     return () => window.clearInterval(t);
   }, [anyActive]);
 
+  const [removing, setRemoving] = useState<string | null>(null);
+  const [removeError, setRemoveError] = useState<string | null>(null);
+
   const startDownload = async (m: CatalogModel) => {
     setDownloads((d) => ({ ...d, [m.model_id]: { status: 'downloading', pct: null, downloaded_gb: 0, total_gb: 0 } }));
     try {
@@ -275,6 +278,37 @@ export function ModelBrowser() {
       }
     } catch (e: any) {
       setDownloads((d) => ({ ...d, [m.model_id]: { status: 'error', pct: null, downloaded_gb: 0, total_gb: 0, error: e?.message } }));
+    }
+  };
+
+  /**
+   * Delete a downloaded model. Confirmed, because it is irreversible and can
+   * be many gigabytes — and refused outright by the backend if the model is
+   * assigned to a role, since removing it would leave the app pointing at
+   * weights that no longer exist.
+   */
+  const removeModel = async (m: CatalogModel) => {
+    const size = m.size_gb ? ` and free about ${m.size_gb} GB` : '';
+    if (!window.confirm(
+      `Remove ${m.model_id.split('/').pop()} from this Mac${size}?\n\n`
+      + 'You can download it again later.')) return;
+    setRemoving(m.model_id);
+    setRemoveError(null);
+    try {
+      const r = await localFetch(
+        `${API_BASE_URL}/settings/mlx/models/${encodeURIComponent(m.model_id)}`,
+        { method: 'DELETE' });
+      const body = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        setRemoveError(body.detail || `Could not remove it (HTTP ${r.status})`);
+        return;
+      }
+      setDetail((d) => (d && d.model_id === m.model_id ? { ...d, installed: false } : d));
+      await load();
+    } catch (e: any) {
+      setRemoveError(e?.message || 'Could not remove it.');
+    } finally {
+      setRemoving(null);
     }
   };
 
@@ -298,6 +332,17 @@ export function ModelBrowser() {
       ref={scrollRef}
       onScroll={(e) => { browseState.scrollTop = (e.target as HTMLDivElement).scrollTop; }}
     >
+      {/* A refusal names the role that is using the model, which is the whole
+          point of refusing — swallowing it would leave the button looking
+          broken rather than protective. */}
+      {removeError && (
+        <div className="px-3 py-2 rounded-lg bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 text-sm text-red-700 dark:text-red-300">
+          {removeError}
+          <button onClick={() => setRemoveError(null)}
+                  className="ml-2 underline hover:opacity-80">dismiss</button>
+        </div>
+      )}
+
       {/* Controls */}
       <div className="flex flex-wrap items-center gap-2">
         <input
@@ -436,7 +481,17 @@ export function ModelBrowser() {
                     {' · '}{ago(m.updated)}
                   </span>
                   {m.installed ? (
-                    <span className="text-emerald-600 dark:text-emerald-400 font-medium">✓ Downloaded</span>
+                    <span className="flex items-center gap-2">
+                      <span className="text-emerald-600 dark:text-emerald-400 font-medium">✓ Downloaded</span>
+                      <button
+                        onClick={() => removeModel(m)}
+                        disabled={removing === m.model_id}
+                        title={`Delete this model from your Mac${m.size_gb ? ` (frees ~${m.size_gb} GB)` : ''}`}
+                        className="text-gray-400 hover:text-red-600 dark:hover:text-red-400 disabled:opacity-40"
+                      >
+                        {removing === m.model_id ? '…' : 'Remove'}
+                      </button>
+                    </span>
                   ) : dl?.status === 'downloading' ? (
                     <span className="text-blue-600 dark:text-blue-400 tabular-nums">
                       {dl.pct != null ? `${dl.pct}%` : 'starting…'}
@@ -472,6 +527,7 @@ export function ModelBrowser() {
           loading={detailLoading}
           onClose={() => setDetail(null)}
           onDownload={() => startDownload(detail)}
+          onRemove={() => removeModel(detail)}
           download={downloads[detail.model_id]}
         />
       )}
@@ -479,9 +535,9 @@ export function ModelBrowser() {
   );
 }
 
-function ModelCard({ model, loading, onClose, onDownload, download }: {
+function ModelCard({ model, loading, onClose, onDownload, onRemove, download }: {
   model: CatalogModel; loading: boolean; onClose: () => void;
-  onDownload: () => void; download?: Download;
+  onDownload: () => void; onRemove?: () => void; download?: Download;
 }) {
   const fit = FIT_STYLE[model.fit?.verdict ?? 'unknown'];
   return (
@@ -566,7 +622,15 @@ function ModelCard({ model, loading, onClose, onDownload, download }: {
                className="text-xs text-blue-600 dark:text-blue-400 hover:underline">View on Hugging Face ↗</a>
           )}
           {model.installed ? (
-            <span className="text-sm text-emerald-600 dark:text-emerald-400 font-medium">✓ Downloaded</span>
+            <span className="flex items-center gap-3">
+              <span className="text-sm text-emerald-600 dark:text-emerald-400 font-medium">✓ Downloaded</span>
+              {onRemove && (
+                <button onClick={onRemove}
+                        className="text-sm text-gray-400 hover:text-red-600 dark:hover:text-red-400">
+                  Remove
+                </button>
+              )}
+            </span>
           ) : download?.status === 'downloading' ? (
             <span className="text-sm text-blue-600 dark:text-blue-400 tabular-nums">
               {download.pct != null ? `${download.pct}%` : 'starting…'}

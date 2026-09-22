@@ -892,6 +892,58 @@ def run_preflight(manifest: Dict[str, Any]) -> Dict[str, Any]:
             "error": error, "details": audio_result or {}}
 
 
+# ── what a companion writes that should never be ingested ───────────────────
+
+def ignores_for_path(path: str) -> List[str]:
+    """Patterns to skip for a folder some companion writes into.
+
+    Belongs to the PATH, not to how the link was made. The exclusion used to be
+    applied only by `connect`, so a user who linked the same folder by hand in
+    Settings got nothing — and the recorder's duplicate `.html` went straight
+    into their notebook (field report 2026-09-23).
+    """
+    if not path:
+        return []
+    try:
+        target = Path(path).expanduser().resolve()
+    except Exception:
+        return []
+    for manifest in load_manifests():
+        produces = manifest.get("produces") or {}
+        out = produces.get("dir")
+        ignore = produces.get("ignore") or []
+        if not out or not ignore:
+            continue
+        try:
+            if Path(out).expanduser().resolve() == target:
+                return list(ignore)
+        except Exception:
+            continue
+    return []
+
+
+def reconcile_folder_exclusions() -> int:
+    """Apply companion ignore lists to links that predate them.
+
+    Additive only: a link that already excludes something is left alone, so a
+    user who deliberately cleared the exclusion keeps their choice.
+    """
+    updated = 0
+    try:
+        from storage.folder_link_store import folder_link_store
+        for link in folder_link_store.list_links():
+            if link.get("exclude"):
+                continue                     # already set, or deliberately cleared
+            ignore = ignores_for_path(link.get("path", ""))
+            if ignore:
+                folder_link_store.update_link(link["id"], exclude=ignore)
+                logger.info(f"[companions] applied {ignore} to {link['path']}")
+                updated += 1
+    except Exception as e:
+        logger.warning(f"[companions] exclusion reconcile failed: {e}")
+    return updated
+
+
 # ── updates: pinned, but not frozen ─────────────────────────────────────────
 #
 # Pinning to a commit protects the user from a moving `curl | bash` target. It

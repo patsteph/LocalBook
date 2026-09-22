@@ -14,7 +14,7 @@ import asyncio
 import logging
 import os
 import threading
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 logger = logging.getLogger(__name__)
 
@@ -139,3 +139,103 @@ class _MLXDownloadManager:
 
 
 mlx_download_manager = _MLXDownloadManager()
+
+
+# ── removing a model ────────────────────────────────────────────────────────
+#
+# Testing a model means sometimes deciding against it, and a 16 GB checkpoint
+# that lost a bake-off should not have to be hunted down in ~/.cache by hand.
+#
+# The whole risk here is deleting something the app is standing on. Two guards,
+# and the first is not negotiable: a model assigned to a role is refused
+# outright, because removing it leaves the app pointing at weights that no
+# longer exist — and the failure would surface later, as a broken chat rather
+# than as a refused deletion.
+
+_ROLE_SETTINGS = ("main_model", "fast_model", "vision_model",
+                  "embedding_model", "image_model")
+
+
+def roles_using(model_id: str) -> List[str]:
+    """Which role slots point at this checkpoint. Empty means safe to remove."""
+    try:
+        from config import settings
+        # Read every slot explicitly. `getattr(None, "main_model", "")` returns
+        # the default rather than raising, so a broken settings object would
+        # have looked like "no role uses this" — the unsafe answer — instead of
+        # reaching the guard below.
+        assigned = {}
+        for r in _ROLE_SETTINGS:
+            assigned[r] = getattr(settings, r)      # raises if settings is absent
+        return [r.replace("_model", "") for r in _ROLE_SETTINGS
+                if (assigned[r] or "") == model_id]
+    except Exception:
+        # Cannot tell → claim it IS in use. Refusing a safe deletion costs a
+        # click; allowing an unsafe one costs the running app.
+        return ["unknown"]
+
+
+def cached_size_gb(model_id: str) -> float:
+    """Bytes this model occupies, as GiB. 0.0 when it is not cached."""
+    try:
+        from services.model_sizing import exact_weight_gb
+        return float(exact_weight_gb(model_id) or 0.0)
+    except Exception:
+        return 0.0
+
+
+async def delete_model(model_id: str, *, force: bool = False) -> Dict[str, Any]:
+    """Remove a downloaded model from the HuggingFace cache.
+
+    Unloads it from the engine first: deleting files out from under a resident
+    model leaves the process holding mappings into a file that no longer exists.
+    """
+    if not model_id:
+        return {"ok": False, "error": "No model specified."}
+
+    in_use = roles_using(model_id)
+    if in_use and not force:
+        names = ", ".join(in_use)
+        return {"ok": False, "in_use_by": in_use,
+                "error": f"{model_id} is assigned to the {names} role"
+                         f"{'s' if len(in_use) > 1 else ''}. Pick a different model "
+                         f"for {'them' if len(in_use) > 1 else 'it'} first."}
+
+    freed = cached_size_gb(model_id)
+
+    # Release it before touching the files.
+    try:
+        from services.mlx_engine import mlx_engine
+        await mlx_engine.unload(model_id)
+    except Exception as e:
+        logger.debug(f"[mlx-download] unload before delete skipped: {e}")
+
+    try:
+        from huggingface_hub import scan_cache_dir
+        cache = scan_cache_dir()
+        repo = next((r for r in cache.repos if r.repo_id == model_id), None)
+        if repo is None:
+            return {"ok": False, "error": f"{model_id} is not in the local cache."}
+        # Delete every revision of this repo — a strategy object, so the bytes
+        # are only removed once execute() runs.
+        strategy = cache.delete_revisions(*[rev.commit_hash for rev in repo.revisions])
+        freed_exact = strategy.expected_freed_size / 1024 ** 3
+        strategy.execute()
+    except Exception as e:
+        logger.warning(f"[mlx-download] delete failed for {model_id}: {e}")
+        return {"ok": False, "error": f"Could not remove {model_id}: {e}"}
+
+    # Verify it actually went, rather than trusting the call.
+    try:
+        from services.model_sizing import reset_cache
+        reset_cache()
+    except Exception:
+        pass
+    still_there = cached_size_gb(model_id) > 0
+    if still_there:
+        return {"ok": False,
+                "error": f"{model_id} still appears in the cache after removal."}
+
+    logger.info(f"[mlx-download] removed {model_id}, freed {freed_exact:.2f} GB")
+    return {"ok": True, "model_id": model_id,
+            "freed_gb": round(freed_exact or freed, 2)}

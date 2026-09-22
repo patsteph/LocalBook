@@ -748,3 +748,76 @@ def test_links_exclude_nothing_by_default(paired):
         assert link["exclude"] == []
     finally:
         folder_link_store.delete_link(link["id"])
+
+
+def test_a_hand_linked_companion_folder_still_gets_its_exclusions(tmp_path, monkeypatch):
+    """2026-09-23 field report: the Smart Folder was still sorting .html files.
+
+    The exclusion was applied only by the companion's `connect` flow, so linking
+    the SAME folder by hand in Settings produced a link with none — the
+    exclusion belonged to how the link was made rather than to what it points
+    at. It belongs to the path.
+    """
+    from services import companions as svc
+    d = tmp_path / "Meeting Notes"
+    d.mkdir()
+    fake = {"id": "t", "name": "T", "produces": {"dir": str(d), "ignore": ["*.html"]}}
+    monkeypatch.setattr(svc, "load_manifests", lambda: [fake])
+    assert svc.ignores_for_path(str(d)) == ["*.html"]
+    assert svc.ignores_for_path(str(tmp_path / "somewhere else")) == []
+
+
+def test_links_made_before_the_exclusion_existed_are_repaired(tmp_path, monkeypatch):
+    """Someone who linked the folder last week must not have to unlink and
+    start over to stop the duplicates."""
+    from services import companions as svc
+    _mk_notebook("nb-recon")
+    d = tmp_path / "Meeting Notes"
+    d.mkdir()
+    (d / "a.md").write_text("# a")
+    link = folder_link_store.create_link(path=str(d), notebook_id="nb-recon")
+    try:
+        assert link["exclude"] == []
+        monkeypatch.setattr(svc, "load_manifests",
+                            lambda: [{"id": "t", "produces": {"dir": str(d),
+                                                              "ignore": ["*.html"]}}])
+        assert svc.reconcile_folder_exclusions() == 1
+        assert folder_link_store.get_link(link["id"])["exclude"] == ["*.html"]
+    finally:
+        folder_link_store.delete_link(link["id"])
+
+
+def test_reconciling_leaves_a_deliberate_choice_alone(tmp_path, monkeypatch):
+    """A user who cleared the exclusion meant it. Additive only."""
+    from services import companions as svc
+    _mk_notebook("nb-keep")
+    d = tmp_path / "Meeting Notes"
+    d.mkdir()
+    link = folder_link_store.create_link(path=str(d), notebook_id="nb-keep",
+                                         exclude=["*.tmp"])
+    try:
+        monkeypatch.setattr(svc, "load_manifests",
+                            lambda: [{"id": "t", "produces": {"dir": str(d),
+                                                              "ignore": ["*.html"]}}])
+        assert svc.reconcile_folder_exclusions() == 0
+        assert folder_link_store.get_link(link["id"])["exclude"] == ["*.tmp"]
+    finally:
+        folder_link_store.delete_link(link["id"])
+
+
+def test_an_excluded_file_never_reaches_the_review_queue(watched, smart_analysis):
+    """A Smart Folder does something a plain link does not — it puts a CARD IN
+    FRONT OF THE USER. An excluded file appearing there is worse than one being
+    ingested quietly, because it demands a decision nobody should be asked for.
+    """
+    from storage.smart_folder_store import smart_folder_store
+    (watched / "notes.html").write_text("<html><body>dupe</body></html>")
+    lk = folder_link_store.create_link(path=str(watched), notebook_id=None,
+                                       exclude=["*.html"])
+    try:
+        _scan(lk["id"])
+        queued = {q["filename"] for q in smart_folder_store.list_pending(link_id=lk["id"])}
+        assert not any(n.endswith(".html") for n in queued), queued
+    finally:
+        smart_folder_store.forget_link(lk["id"])
+        folder_link_store.delete_link(lk["id"])

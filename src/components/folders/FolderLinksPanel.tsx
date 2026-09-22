@@ -97,20 +97,41 @@ function Row({ link, onChanged }: { link: FolderLink; onChanged: () => void }) {
           {/* An exclusion that is invisible becomes a mystery six months later
               ("why didn't my HTML get picked up?"), so it is stated and
               removable rather than silently applied. */}
-          {link.exclude?.length > 0 && (
-            <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-              Ignoring {link.exclude.join(', ')}
+          {/* Stated, and editable BOTH ways. It previously offered only
+              "include them", so a folder whose duplicates were reaching the
+              notebook had no way to stop them from here. */}
+          <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+            {link.exclude?.length > 0 ? (
+              <>
+                Ignoring {link.exclude.join(', ')}
+                <button
+                  onClick={() => act('unexclude', async () => {
+                    await updateFolderLink(link.id, { exclude: [] });
+                    onChanged();
+                  })}
+                  className="ml-1.5 underline hover:text-gray-700 dark:hover:text-gray-300"
+                >
+                  include them
+                </button>
+              </>
+            ) : (
               <button
-                onClick={() => act('unexclude', async () => {
-                  await updateFolderLink(link.id, { exclude: [] });
+                onClick={() => act('exclude', async () => {
+                  const raw = window.prompt(
+                    'Ignore which files in this folder?\n'
+                    + 'Comma-separated patterns, e.g.  *.html, *.tmp',
+                    '*.html');
+                  if (raw === null) return;
+                  const patterns = raw.split(',').map((x) => x.trim()).filter(Boolean);
+                  await updateFolderLink(link.id, { exclude: patterns });
                   onChanged();
                 })}
-                className="ml-1.5 underline hover:text-gray-700 dark:hover:text-gray-300"
+                className="underline hover:text-gray-700 dark:hover:text-gray-300"
               >
-                include them
+                ignore some files…
               </button>
-            </p>
-          )}
+            )}
+          </p>
 
           {link.last_error && (
             <p className="mt-1 text-xs text-red-600 dark:text-red-400">{link.last_error}</p>

@@ -335,6 +335,18 @@ class FolderWatcher:
 
         if not notebook_id:
             # ── Smart Folder ────────────────────────────────────────────
+            # `discover` already filtered exclusions, but a Smart Folder does
+            # something a plain link does not: it puts a CARD IN FRONT OF THE
+            # USER. An excluded file reaching that queue is worse than one
+            # being ingested quietly, so the check is repeated at the boundary
+            # where the consequence is visible.
+            if _excluded(c.name, link.get("exclude")):
+                folder_link_store.record(link_id=link_id, abs_path=c.path,
+                                         mtime=c.mtime, size=c.size,
+                                         content_hash=digest, status="skipped",
+                                         error="excluded by this folder's settings")
+                report.skipped += 1
+                return True
             # Work out who and what this is, then either apply a rule the USER
             # wrote or put a card in front of them. There is no third branch,
             # and there must never be one: confidence does not authorise.
@@ -540,6 +552,17 @@ class FolderWatcher:
         await asyncio.sleep(45)   # let startup settle
         from services.enrichment_worker import enrichment_worker
         from services.enrichment_jobs import EnrichmentJob, JobTier
+
+        # Links made before a companion declared its redundant output have no
+        # exclusions. Applying them here fixes the folder someone already
+        # linked, rather than only the next one they make.
+        try:
+            from services.companions import reconcile_folder_exclusions
+            n = reconcile_folder_exclusions()
+            if n:
+                logger.info(f"[folder-watch] applied companion exclusions to {n} link(s)")
+        except Exception as e:
+            logger.debug(f"[folder-watch] exclusion reconcile skipped: {e}")
 
         while self._running:
             try:
