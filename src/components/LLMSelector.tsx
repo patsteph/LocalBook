@@ -123,6 +123,8 @@ export const LLMSelector: React.FC<LLMSelectorProps> = ({ selectedProvider, onPr
   const [savingDefault, setSavingDefault] = useState(false);
   // Wave 9.6 — within Local, filter cards by engine so the view isn't overwhelming (#2).
   // Wave 9.6 — in-flight MLX downloads keyed by model name (#3).
+  const [removing, setRemoving] = useState<string | null>(null);
+  const [removeError, setRemoveError] = useState<string | null>(null);
   const [downloads, setDownloads] = useState<Record<string, { status: string; pct: number | null; downloaded_gb: number; total_gb: number; error?: string }>>({});
   // Wave 9.6 — background MLX downloads the backend auto-starts on all-MLX adoption (klein image /
   // arctic embeddings). These models have no pickable card, so we poll /settings/mlx/downloads and
@@ -372,6 +374,40 @@ export const LLMSelector: React.FC<LLMSelectorProps> = ({ selectedProvider, onPr
     return `${base}\nNeeds ~${f.total_needed_gb}GB${kv}${ctx} vs ${f.budget_gb}GB budget${ram}`;
   };
 
+  /**
+   * Delete a downloaded model from this Mac.
+   *
+   * Belongs HERE, in the Locker, not only in Browse: the Locker is what is on
+   * this machine, so it is where someone who has just tested a model and
+   * decided against it goes looking for the way to remove it.
+   *
+   * The backend refuses a model assigned to any role and says which — removing
+   * it would leave the app pointing at weights that no longer exist.
+   */
+  const handleRemove = async (m: OllamaModel) => {
+    const short = m.name.split('/').pop() || m.name;
+    const size = m.size_gb > 0 ? ` and free about ${m.size_gb} GB` : '';
+    if (!window.confirm(`Remove ${short} from this Mac${size}?\n\n`
+      + 'You can download it again later.')) return;
+    setRemoving(m.name);
+    setRemoveError(null);
+    try {
+      const r = await localFetch(
+        `${API_BASE_URL}/settings/mlx/models/${encodeURIComponent(m.name)}`,
+        { method: 'DELETE' });
+      const body = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        setRemoveError(body.detail || `Could not remove it (HTTP ${r.status})`);
+        return;
+      }
+      await loadModels();
+    } catch (e: any) {
+      setRemoveError(e?.message || 'Could not remove it.');
+    } finally {
+      setRemoving(null);
+    }
+  };
+
   const renderCapabilityBadges = (m: OllamaModel) => {
     const c = m.capabilities || {};
     const badges: Array<[boolean | undefined, string, string, string]> = [
@@ -468,6 +504,18 @@ export const LLMSelector: React.FC<LLMSelectorProps> = ({ selectedProvider, onPr
             </div>
           )}
         </div>
+        {isMLX && m.installed !== false && !isDownloading && (
+          <button
+            onClick={() => handleRemove(m)}
+            disabled={removing === m.name || isActive}
+            title={isActive
+              ? 'This model is in use for this role. Switch the role to something else first.'
+              : `Delete this model from your Mac${m.size_gb > 0 ? ` (frees ~${m.size_gb} GB)` : ''}`}
+            className="shrink-0 px-2 py-1.5 rounded-lg text-xs text-gray-400 hover:text-red-600 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 disabled:opacity-30 disabled:hover:text-gray-400 disabled:hover:bg-transparent"
+          >
+            {removing === m.name ? '…' : 'Remove'}
+          </button>
+        )}
         <button
           onClick={() => !isActive && !isDownloading && handleUse(m, role)}
           disabled={isActive || isSwitching || isDownloading}
@@ -546,6 +594,17 @@ export const LLMSelector: React.FC<LLMSelectorProps> = ({ selectedProvider, onPr
   return (
     <div className="p-4 space-y-4">
       {/* Local/Cloud toggle intentionally hidden — no cloud provider is in use. */}
+
+      {/* A refused removal names the role still using the model, which is the
+          entire point of refusing. Swallowing it would make the button look
+          broken rather than protective. */}
+      {removeError && (
+        <div className="px-3 py-2 rounded-lg bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 text-sm text-red-700 dark:text-red-300">
+          {removeError}
+          <button onClick={() => setRemoveError(null)}
+                  className="ml-2 underline hover:opacity-80">dismiss</button>
+        </div>
+      )}
 
       {/* Background MLX downloads (klein image / arctic embeddings). These have no pickable
           card, so their progress is surfaced here. Excludes anything already shown as a

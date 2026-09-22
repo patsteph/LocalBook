@@ -70,3 +70,32 @@ def test_removal_is_verified_not_assumed():
     import inspect
     src = inspect.getsource(mlx_download.delete_model)
     assert "still appears in the cache" in src
+
+
+def test_removal_is_offered_where_installed_models_live():
+    """2026-09-23: the button went into the model BROWSER, which lists what is
+    on Hugging Face. The Locker is what is on THIS MAC — and so it is where
+    someone who has just tested a model and decided against it looks for the
+    way to remove it. Browse was the wrong surface for the request."""
+    from pathlib import Path
+    locker = (Path(__file__).resolve().parents[2]
+              / "src" / "components" / "LLMSelector.tsx").read_text()
+    assert "handleRemove" in locker
+    assert "settings/mlx/models/" in locker
+
+
+def test_the_locker_identifies_models_the_way_the_endpoint_expects():
+    """The Locker keys rows by `m.name`. If that were a display name rather
+    than the repo id, every delete would 404."""
+    from pathlib import Path
+    api = (Path(__file__).resolve().parents[1] / "api" / "settings.py").read_text()
+    assert '"name": _mid' in api, "the Locker card no longer carries the repo id as `name`"
+
+
+def test_an_active_model_cannot_be_removed_from_the_locker_ui():
+    """Belt and braces with the backend refusal: the button is disabled for the
+    active model, so the common case never becomes an error message."""
+    from pathlib import Path
+    locker = (Path(__file__).resolve().parents[2]
+              / "src" / "components" / "LLMSelector.tsx").read_text()
+    assert "disabled={removing === m.name || isActive}" in locker
