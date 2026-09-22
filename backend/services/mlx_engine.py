@@ -244,6 +244,35 @@ _MLX_REP_PENALTY = 1.15
 _MLX_REP_CONTEXT = 64
 
 
+def _kv_kwargs() -> Dict[str, Any]:
+    """KV-cache quantization arguments for mlx-lm / mlx-vlm.
+
+    The KV cache is the only part of inference that grows with conversation
+    length — weights are fixed — so this is what buys headroom at long context.
+    Storing it at 8 bits instead of fp16 roughly halves it.
+
+    `quantized_kv_start` is what makes this safe to have on: below that many
+    tokens the cache stays untouched fp16, so ordinary short exchanges produce
+    exactly what they did before, and quantization begins only where the memory
+    actually matters.
+
+    Never raises: a build of mlx-lm without these parameters just gets none.
+    """
+    try:
+        from config import settings
+        bits = getattr(settings, "mlx_kv_bits", None)
+        if not bits:
+            return {}
+        return {
+            "kv_bits": int(bits),
+            "kv_group_size": int(getattr(settings, "mlx_kv_group_size", 64)),
+            "quantized_kv_start": int(getattr(settings, "mlx_quantized_kv_start", 4096)),
+        }
+    except Exception as e:
+        logger.debug(f"[mlx-engine] KV quantization kwargs unavailable: {e}")
+        return {}
+
+
 def _decode_kwargs(engine: str, temperature: Optional[float], grammar_lps) -> Dict[str, Any]:
     """{sampler, logits_processors} for stream_generate: proper sampling + repetition penalty,
     composed with any grammar processor (rep-penalty first, then the grammar mask). Never raises."""
@@ -438,6 +467,7 @@ def _lm_generate_sync(model, tokenizer, prompt_str, *, max_tokens, temperature, 
     from mlx_lm import stream_generate  # lazy
     kwargs: Dict[str, Any] = {"max_tokens": max_tokens}
     kwargs.update(_decode_kwargs("lm", temperature, logits_processors))
+    kwargs.update(_kv_kwargs())
     _model_label, _deadline_limit = label, _deadline_for(max_tokens)
     text = ""
     ptoks = gtoks = 0
@@ -468,6 +498,7 @@ def _vlm_generate_sync(model, processor, config, prompt_str, *, max_tokens, stop
     formatted = apply_chat_template(processor, config, prompt_str, num_images=0)
     vkwargs: Dict[str, Any] = {"image": [], "max_tokens": max_tokens}
     vkwargs.update(_decode_kwargs("vlm", temperature, logits_processors))
+    vkwargs.update(_kv_kwargs())
     _model_label, _deadline_limit = label, _deadline_for(max_tokens)
     text = ""
     ptoks = gtoks = 0
@@ -1114,7 +1145,7 @@ class MLXEngine:
                     # Was GREEDY (no sampler / no repetition penalty) — the loop-trigger that garbled
                     # long chat answers. Apply the same decoding config as the non-streaming path.
                     gen = _sg(mobj, processor, formatted, image=[], max_tokens=num_predict,
-                              **_decode_kwargs("vlm", temperature, None))
+                              **_decode_kwargs("vlm", temperature, None), **_kv_kwargs())
                 else:
                     mobj, tok = pair
                     from mlx_lm import stream_generate as _sg
@@ -1125,7 +1156,7 @@ class MLXEngine:
                     except Exception:
                         prompt_str = _combine(system, prompt)
                     gen = _sg(mobj, tok, prompt_str, max_tokens=num_predict,
-                              **_decode_kwargs("lm", temperature, None))
+                              **_decode_kwargs("lm", temperature, None), **_kv_kwargs())
                 acc = ""
                 ptoks = gtoks = 0
                 since_check = 0

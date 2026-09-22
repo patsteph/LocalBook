@@ -1,5 +1,6 @@
 """Application configuration"""
 import sys
+from typing import Optional
 from pathlib import Path
 from pydantic_settings import BaseSettings
 
@@ -155,6 +156,23 @@ class Settings(BaseSettings):
     # no-op and the /curator/engagement capture endpoint returns
     # {ok: True, suppressed: True} without persisting. Curator Phase 2a.
     engagement_tracking_enabled: bool = True
+
+    # ── Quantized KV cache (2026-09-22) ──────────────────────────────
+    # mlx-lm can store the KV cache at 4 or 8 bits instead of fp16. The cache is
+    # the only part of inference that grows with conversation length, so this is
+    # what buys headroom at long context — weights are fixed, KV is not.
+    #
+    # 8 bits, not 4: halving the cache is the uncontroversial win, while 4-bit
+    # has measurable quality effects on some tasks. Run the Evaluator before
+    # changing it — that is what it is for.
+    #
+    # `quantized_kv_start` is why this is safe to default ON. Below that many
+    # tokens the cache is untouched fp16, so ordinary short exchanges are
+    # bit-identical to before; quantization begins only where the memory
+    # actually matters. Set mlx_kv_bits to None to disable entirely.
+    mlx_kv_bits: Optional[int] = 8
+    mlx_kv_group_size: int = 64
+    mlx_quantized_kv_start: int = 4096
 
     # ── Linked Folders (2026-09-16) ──────────────────────────────────
     # How often the watcher loop wakes. This is NOT the scan cadence: each

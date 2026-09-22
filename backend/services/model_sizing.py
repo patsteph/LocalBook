@@ -255,15 +255,47 @@ def kv_geometry(cfg: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     }
 
 
-def kv_cache_gb(cfg: Dict[str, Any], context_tokens: int, bytes_per_elem: int = 2) -> Optional[float]:
+def kv_bytes_per_element(kv_bits: Optional[int] = None,
+                         group_size: int = 64) -> float:
+    """Bytes per cached K/V element.
+
+    fp16 is 2. A quantized cache costs `bits/8` plus a scale and a bias (fp16
+    each) per group — the same accounting as quantized weights, because it is
+    the same quantization. At 8 bits / group 64 that is 1.0625 bytes, an 1.88×
+    saving rather than the 2× a naive reading suggests.
+    """
+    if not kv_bits:
+        return 2.0
+    return kv_bits / 8 + 2 * 2 / max(int(group_size or 64), 1)
+
+
+def configured_kv_bits() -> Optional[int]:
+    """What the engine is actually set to use. None means an fp16 cache."""
+    try:
+        from config import settings
+        bits = getattr(settings, "mlx_kv_bits", None)
+        return int(bits) if bits else None
+    except Exception:
+        return None
+
+
+def kv_cache_gb(cfg: Dict[str, Any], context_tokens: int,
+                bytes_per_elem: Optional[float] = None, *,
+                kv_bits: Optional[int] = None,
+                group_size: int = 64) -> Optional[float]:
     """KV cache in GiB at a given context, from real geometry.
 
     per layer per token = 2 (K and V) × kv_heads × head_dim × bytes_per_elem
     Sliding layers are capped at their window; only full-attention layers scale with context.
+
+    `bytes_per_elem` still works for callers that pass it directly; otherwise it
+    is derived from `kv_bits`, defaulting to fp16.
     """
     g = kv_geometry(cfg)
     if not g or context_tokens <= 0:
         return None
+    if bytes_per_elem is None:
+        bytes_per_elem = kv_bytes_per_element(kv_bits, group_size)
     per_layer_token = 2 * g["kv_heads"] * g["head_dim"] * bytes_per_elem
     full_tokens = context_tokens * g["full_layers"]
     win = g["sliding_window"] or context_tokens
@@ -280,7 +312,11 @@ def fit(model_id: str, context_tokens: int = 0, *, activation_factor: float = 1.
     """
     cfg = load_config(model_id)
     weight = exact_weight_gb(model_id)
-    kv = kv_cache_gb(cfg, context_tokens) if (cfg and context_tokens) else None
+    # Size against what the engine is CONFIGURED to do. Reporting an fp16 cache
+    # while the engine quantizes it overstates the requirement and rejects
+    # models that would run — the same class of error as the weight overestimate.
+    bits = configured_kv_bits()
+    kv = kv_cache_gb(cfg, context_tokens, kv_bits=bits) if (cfg and context_tokens) else None
     bud = budget_gb()
 
     out: Dict[str, Any] = {
@@ -291,6 +327,7 @@ def fit(model_id: str, context_tokens: int = 0, *, activation_factor: float = 1.
         "budget_gb": bud,
         "working_set_gb": round(working_set_gb(), 2),
         "geometry": kv_geometry(cfg) if cfg else None,
+        "kv_bits": bits,
         "exact": weight is not None,
     }
     if weight is None:

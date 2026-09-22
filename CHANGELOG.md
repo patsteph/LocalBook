@@ -48,6 +48,17 @@ and usable in every artifact LocalBook makes, with no step for the user after th
   offers them, with the changes one click away; nothing updates on its own. It also checks that an
   install actually worked rather than trusting it to say so.
 
+- **Model sizes are now right.** A 4-bit 30B model was reported as needing 105 GB and marked
+  "won't fit" on machines that run it comfortably — quantized weights were being measured as
+  though they were full precision, so every compressed model looked 4–7× larger than it is.
+  Sizes now match the actual download to the byte, 4-bit and 8-bit versions are told apart, and
+  Mixture-of-Experts models are labelled as such with a note that all their experts stay in
+  memory even though only a few are used per word.
+
+- **Longer conversations use about half the memory.** The cache that grows as you chat is now
+  stored more compactly past a few thousand words, which is where it starts to matter. Short
+  exchanges are unchanged, and the setting can be turned off.
+
 ### Fixed
 - **Text extraction blocked the event loop.** Seventeen extractors — PDF, Office, audio, video,
   OCR — were written as asynchronous but ran synchronously, freezing the whole backend while they
