@@ -244,17 +244,59 @@ _MLX_REP_PENALTY = 1.15
 _MLX_REP_CONTEXT = 64
 
 
-def _kv_kwargs() -> Dict[str, Any]:
+_ROTATING_CACHE_CACHE: Dict[str, bool] = {}
+
+
+def _uses_rotating_cache(model_id: str) -> bool:
+    """Does this model keep a ROTATING KV cache?
+
+    mlx-lm raises `RotatingKVCache Quantization NYI` when asked to quantize one,
+    and the caller sees an empty response — not a degraded answer, nothing at
+    all. Models with sliding-window attention use a rotating cache, and gemma
+    (our main and vision model) is one: 35 of its 42 layers slide over a 512
+    window. phi has no sliding window and quantizes fine.
+
+    Measured 2026-09-22: with quantization forced on, gemma returned empty for
+    every request while phi answered normally.
+    """
+    if not model_id:
+        return True                    # unknown model → assume the unsafe case
+    hit = _ROTATING_CACHE_CACHE.get(model_id)
+    if hit is not None:
+        return hit
+    rotating = True
+    try:
+        from services.model_sizing import kv_geometry, load_config
+        cfg = load_config(model_id)
+        g = kv_geometry(cfg) if cfg else None
+        if g:
+            # kv_geometry already resolves the awkward cases: a declared window
+            # that equals or exceeds max_position_embeddings is not a window.
+            rotating = bool(g.get("sliding_layers"))
+        # No geometry means we could not read the config. Stay at True: the
+        # failure mode for guessing wrong is an EMPTY ANSWER, so the safe
+        # assumption is the one that merely forgoes a memory saving.
+    except Exception as e:
+        logger.debug(f"[mlx-engine] cache-kind probe failed for {model_id}: {e}")
+    _ROTATING_CACHE_CACHE[model_id] = rotating
+    return rotating
+
+
+def _kv_kwargs(model_id: str = "") -> Dict[str, Any]:
     """KV-cache quantization arguments for mlx-lm / mlx-vlm.
 
     The KV cache is the only part of inference that grows with conversation
     length — weights are fixed — so this is what buys headroom at long context.
     Storing it at 8 bits instead of fp16 roughly halves it.
 
-    `quantized_kv_start` is what makes this safe to have on: below that many
-    tokens the cache stays untouched fp16, so ordinary short exchanges produce
-    exactly what they did before, and quantization begins only where the memory
-    actually matters.
+    **Skipped entirely for models with a rotating cache**, where mlx-lm raises
+    rather than falling back. That is most of the benefit gone for chat, since
+    gemma is the main model — but an empty answer is not a trade worth making,
+    and the alternative is a failure that only appears once a conversation gets
+    long.
+
+    `quantized_kv_start` means that below that many tokens the cache is
+    untouched fp16, so short exchanges are bit-identical to before.
 
     Never raises: a build of mlx-lm without these parameters just gets none.
     """
@@ -262,6 +304,8 @@ def _kv_kwargs() -> Dict[str, Any]:
         from config import settings
         bits = getattr(settings, "mlx_kv_bits", None)
         if not bits:
+            return {}
+        if _uses_rotating_cache(model_id):
             return {}
         return {
             "kv_bits": int(bits),
@@ -467,7 +511,7 @@ def _lm_generate_sync(model, tokenizer, prompt_str, *, max_tokens, temperature, 
     from mlx_lm import stream_generate  # lazy
     kwargs: Dict[str, Any] = {"max_tokens": max_tokens}
     kwargs.update(_decode_kwargs("lm", temperature, logits_processors))
-    kwargs.update(_kv_kwargs())
+    kwargs.update(_kv_kwargs(label))
     _model_label, _deadline_limit = label, _deadline_for(max_tokens)
     text = ""
     ptoks = gtoks = 0
@@ -498,7 +542,7 @@ def _vlm_generate_sync(model, processor, config, prompt_str, *, max_tokens, stop
     formatted = apply_chat_template(processor, config, prompt_str, num_images=0)
     vkwargs: Dict[str, Any] = {"image": [], "max_tokens": max_tokens}
     vkwargs.update(_decode_kwargs("vlm", temperature, logits_processors))
-    vkwargs.update(_kv_kwargs())
+    vkwargs.update(_kv_kwargs(label))
     _model_label, _deadline_limit = label, _deadline_for(max_tokens)
     text = ""
     ptoks = gtoks = 0
@@ -1145,7 +1189,7 @@ class MLXEngine:
                     # Was GREEDY (no sampler / no repetition penalty) — the loop-trigger that garbled
                     # long chat answers. Apply the same decoding config as the non-streaming path.
                     gen = _sg(mobj, processor, formatted, image=[], max_tokens=num_predict,
-                              **_decode_kwargs("vlm", temperature, None), **_kv_kwargs())
+                              **_decode_kwargs("vlm", temperature, None), **_kv_kwargs(model))
                 else:
                     mobj, tok = pair
                     from mlx_lm import stream_generate as _sg
@@ -1156,7 +1200,7 @@ class MLXEngine:
                     except Exception:
                         prompt_str = _combine(system, prompt)
                     gen = _sg(mobj, tok, prompt_str, max_tokens=num_predict,
-                              **_decode_kwargs("lm", temperature, None), **_kv_kwargs())
+                              **_decode_kwargs("lm", temperature, None), **_kv_kwargs(model))
                 acc = ""
                 ptoks = gtoks = 0
                 since_check = 0

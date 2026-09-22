@@ -55,9 +55,10 @@ and usable in every artifact LocalBook makes, with no step for the user after th
   Mixture-of-Experts models are labelled as such with a note that all their experts stay in
   memory even though only a few are used per word.
 
-- **Longer conversations use about half the memory.** The cache that grows as you chat is now
-  stored more compactly past a few thousand words, which is where it starts to matter. Short
-  exchanges are unchanged, and the setting can be turned off.
+- **Longer conversations use less memory where the model allows it.** The cache that grows as you
+  chat is stored more compactly past a few thousand words. This applies to models that can support
+  it — the default chat model cannot, and asking it to would have produced no answer at all, so it
+  is left alone.
 
 ### Fixed
 - **Text extraction blocked the event loop.** Seventeen extractors — PDF, Office, audio, video,
