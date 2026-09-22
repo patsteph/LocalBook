@@ -655,3 +655,96 @@ def test_the_treatment_receives_a_real_id_and_the_text(link, fake_ingest, treatm
     assert treatment, "nothing was finalised"
     for call in treatment:
         assert call["source_id"], "finalize_source was handed a null source id"
+
+
+# ── excluding a tool's own duplicate output ─────────────────────────────────
+#
+# 2026-09-22 field report: the meeting recorder writes each set of notes TWICE —
+# markdown, and a styled HTML page that opens in the browser — so both landed
+# in the notebook. A document indexed twice is worse than indexed once: it
+# competes with its own duplicate for retrieval, and a citation could land on
+# either copy.
+#
+# HTML is still ingested everywhere else. This is about a folder some tool
+# writes into, not about the format.
+
+@pytest.fixture
+def paired(tmp_path):
+    """A folder shaped like the recorder's output: X.md beside X.html."""
+    d = tmp_path / "meeting notes"
+    d.mkdir()
+    for stem in ("2026-09-21 sync", "2026-09-22 1-1"):
+        (d / f"{stem}.md").write_text(f"# {stem}\n\nDecisions were made.")
+        (d / f"{stem}.html").write_text(f"<html><body><h1>{stem}</h1></body></html>")
+    return d
+
+
+def test_excluded_files_are_never_even_candidates(paired):
+    _mk_notebook("nb-excl")
+    link = folder_link_store.create_link(
+        path=str(paired), notebook_id="nb-excl", exclude=["*.html"])
+    try:
+        names = {c.name for c in folder_watcher.discover(link)}
+        assert names == {"2026-09-21 sync.md", "2026-09-22 1-1.md"}
+    finally:
+        folder_link_store.delete_link(link["id"])
+
+
+def test_without_an_exclusion_both_copies_are_taken(paired):
+    """The behaviour being fixed — kept as a test so the exclusion is provably
+    the thing doing the work, not a coincidence of the fixture."""
+    _mk_notebook("nb-both")
+    link = folder_link_store.create_link(path=str(paired), notebook_id="nb-both")
+    try:
+        assert len(folder_watcher.discover(link)) == 4
+    finally:
+        folder_link_store.delete_link(link["id"])
+
+
+def test_an_exclusion_beats_an_inclusion(paired):
+    """*.html appears in the default patterns — the exclusion has to win, or
+    declaring one would do nothing."""
+    _mk_notebook("nb-beat")
+    link = folder_link_store.create_link(
+        path=str(paired), notebook_id="nb-beat",
+        patterns=["*.md", "*.html"], exclude=["*.html"])
+    try:
+        assert all(c.name.endswith(".md") for c in folder_watcher.discover(link))
+    finally:
+        folder_link_store.delete_link(link["id"])
+
+
+def test_exclusions_ignore_case(paired):
+    (paired / "LOUD.HTML").write_text("<html></html>")
+    _mk_notebook("nb-case")
+    link = folder_link_store.create_link(
+        path=str(paired), notebook_id="nb-case", exclude=["*.html"])
+    try:
+        assert "LOUD.HTML" not in {c.name for c in folder_watcher.discover(link)}
+    finally:
+        folder_link_store.delete_link(link["id"])
+
+
+def test_an_exclusion_can_be_added_to_an_existing_link(paired):
+    """Anyone who linked before the exclusion existed must not have to unlink
+    and start over to stop the duplicates."""
+    _mk_notebook("nb-later")
+    link = folder_link_store.create_link(path=str(paired), notebook_id="nb-later")
+    try:
+        assert len(folder_watcher.discover(link)) == 4
+        updated = folder_link_store.update_link(link["id"], exclude=["*.html"])
+        assert updated["exclude"] == ["*.html"]
+        assert len(folder_watcher.discover(updated)) == 2
+    finally:
+        folder_link_store.delete_link(link["id"])
+
+
+def test_links_exclude_nothing_by_default(paired):
+    """HTML from anywhere else — uploads, browser captures, a folder of saved
+    pages someone linked deliberately — is unaffected."""
+    _mk_notebook("nb-default")
+    link = folder_link_store.create_link(path=str(paired), notebook_id="nb-default")
+    try:
+        assert link["exclude"] == []
+    finally:
+        folder_link_store.delete_link(link["id"])

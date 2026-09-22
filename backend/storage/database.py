@@ -688,6 +688,7 @@ class Database:
                 notebook_id    TEXT,
                 path           TEXT NOT NULL,
                 patterns       TEXT NOT NULL DEFAULT '[]',
+                exclude        TEXT NOT NULL DEFAULT '[]',
                 frequency      TEXT NOT NULL DEFAULT 'hourly',
                 enabled        INTEGER NOT NULL DEFAULT 1,
                 recursive      INTEGER NOT NULL DEFAULT 0,
@@ -727,6 +728,14 @@ class Database:
             CREATE INDEX IF NOT EXISTS idx_folder_seen_hash
             ON folder_seen(content_hash)
         """)
+
+        # exclude patterns, added 2026-09-22. ALTER runs every launch and is
+        # expected to fail once the column exists — the same idempotent pattern
+        # used for the notebooks and articles columns above.
+        try:
+            cursor.execute("ALTER TABLE folder_links ADD COLUMN exclude TEXT NOT NULL DEFAULT '[]'")
+        except Exception:
+            pass
 
         # -- routing_rules (Smart Folders, 2026-09-16) --
         # An EXPLICIT, user-authored authorisation to file matching recordings

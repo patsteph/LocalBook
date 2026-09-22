@@ -24,6 +24,8 @@ export interface FolderLink {
   path: string;
   display_path: string;
   patterns: string[];
+  /** Filenames never ingested from this folder, whatever the patterns allow. */
+  exclude: string[];
   frequency: string;
   enabled: boolean;
   recursive: boolean;
@@ -121,7 +123,7 @@ export async function createFolderLink(body: {
 
 export async function updateFolderLink(
   id: string,
-  body: Partial<Pick<FolderLink, 'patterns' | 'frequency' | 'recursive' | 'enabled' | 'notebook_id'>>,
+  body: Partial<Pick<FolderLink, 'patterns' | 'exclude' | 'frequency' | 'recursive' | 'enabled' | 'notebook_id'>>,
 ): Promise<FolderLink> {
   return jsonOrThrow(await localFetch(`${API_BASE_URL}/folders/links/${id}`, {
     method: 'PATCH',

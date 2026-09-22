@@ -26,6 +26,11 @@ and usable in every artifact LocalBook makes, with no step for the user after th
   OpenAlex API key in Settings gives you your own daily budget rather than sharing an anonymous
   pool. Results link to the open-access PDF where one exists.
 
+- Linked folders can **ignore filename patterns**. A tool that saves its output twice — say
+  markdown plus a styled page for the browser — no longer files both, which would otherwise put
+  the same document in your notebook twice. HTML from anywhere else is unaffected, and the
+  exclusion is shown on the folder with a one-click way to undo it.
+
 - **@collector understands folders.** Ask what folders are being watched, scan one now, what is
   waiting for review, or what rules exist.
 

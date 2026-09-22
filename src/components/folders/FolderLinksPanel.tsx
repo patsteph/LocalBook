@@ -94,6 +94,24 @@ function Row({ link, onChanged }: { link: FolderLink; onChanged: () => void }) {
               This folder is no longer on disk. It may be on an unmounted drive.
             </p>
           )}
+          {/* An exclusion that is invisible becomes a mystery six months later
+              ("why didn't my HTML get picked up?"), so it is stated and
+              removable rather than silently applied. */}
+          {link.exclude?.length > 0 && (
+            <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+              Ignoring {link.exclude.join(', ')}
+              <button
+                onClick={() => act('unexclude', async () => {
+                  await updateFolderLink(link.id, { exclude: [] });
+                  onChanged();
+                })}
+                className="ml-1.5 underline hover:text-gray-700 dark:hover:text-gray-300"
+              >
+                include them
+              </button>
+            </p>
+          )}
+
           {link.last_error && (
             <p className="mt-1 text-xs text-red-600 dark:text-red-400">{link.last_error}</p>
           )}

@@ -1250,3 +1250,30 @@ def test_the_microphone_check_distinguishes_a_loopback_from_a_mic(monkeypatch):
     result = svc._check({"kind": "microphone", "label": "a microphone", "fix": "x"})
     assert result["ok"] is False
     assert "loopback" in result["detail"], result
+
+
+# ── a companion declaring its own redundant output ──────────────────────────
+
+def test_the_recorder_declares_the_copy_it_writes_twice():
+    """It saves each set of notes as markdown AND as a styled page. The
+    companion knows that; declaring it means no user has to discover the
+    duplicate for themselves."""
+    produces = svc.get_manifest("meeting-notes")["produces"]
+    assert "*.html" in (produces.get("ignore") or [])
+    assert produces.get("ignore_why"), "a silent exclusion is a mystery later"
+
+
+def test_connecting_passes_the_declaration_to_the_link():
+    import inspect
+    from api import companions as api
+    src = inspect.getsource(api.connect)
+    assert 'exclude=(produces.get("ignore") or None)' in src
+
+
+def test_reconnecting_applies_a_declaration_added_later():
+    """Anyone who connected before the exclusion existed would otherwise have
+    to unlink and start over to stop the duplicates."""
+    import inspect
+    from api import companions as api
+    src = inspect.getsource(api.connect)
+    assert "update_link(existing[\"id\"], exclude=ignore)" in src

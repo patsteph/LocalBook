@@ -105,6 +105,14 @@ class FolderLinkStore:
             d["patterns"] = json.loads(d.get("patterns") or "[]") or list(DEFAULT_PATTERNS)
         except Exception:
             d["patterns"] = list(DEFAULT_PATTERNS)
+        # Exclusions beat inclusions. A tool that writes the same notes twice —
+        # once as markdown, once as a styled page — would otherwise put both in
+        # the corpus, and a document indexed twice is worse than one indexed
+        # once: it crowds retrieval with its own duplicate.
+        try:
+            d["exclude"] = json.loads(d.get("exclude") or "[]") or []
+        except Exception:
+            d["exclude"] = []
         d["enabled"] = bool(d.get("enabled"))
         d["recursive"] = bool(d.get("recursive"))
         d["is_smart"] = d.get("notebook_id") is None
@@ -144,6 +152,7 @@ class FolderLinkStore:
         path: str,
         notebook_id: Optional[str] = None,
         patterns: Optional[List[str]] = None,
+        exclude: Optional[List[str]] = None,
         frequency: str = "hourly",
         recursive: bool = False,
         enabled: bool = True,
@@ -158,10 +167,12 @@ class FolderLinkStore:
         conn = self._db()
         conn.execute(
             """INSERT INTO folder_links
-               (id, notebook_id, path, patterns, frequency, enabled, recursive, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+               (id, notebook_id, path, patterns, exclude, frequency, enabled,
+                recursive, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (link_id, notebook_id, resolved,
              json.dumps(patterns or list(DEFAULT_PATTERNS)),
+             json.dumps(exclude or []),
              frequency, 1 if enabled else 0, 1 if recursive else 0,
              datetime.utcnow().isoformat()),
         )
@@ -169,14 +180,15 @@ class FolderLinkStore:
         logger.info(f"[folder-links] linked {resolved} → {notebook_id or 'SMART'} ({frequency})")
         return self.get_link(link_id)
 
-    _UPDATABLE = {"patterns", "frequency", "enabled", "recursive", "notebook_id"}
+    _UPDATABLE = {"patterns", "exclude", "frequency", "enabled", "recursive",
+                  "notebook_id"}
 
     def update_link(self, link_id: str, **fields) -> Optional[Dict[str, Any]]:
         sets, vals = [], []
         for k, v in fields.items():
             if k not in self._UPDATABLE or v is None:
                 continue
-            if k == "patterns":
+            if k in ("patterns", "exclude"):
                 v = json.dumps(list(v))
             elif k in ("enabled", "recursive"):
                 v = 1 if v else 0

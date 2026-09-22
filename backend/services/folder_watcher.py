@@ -98,7 +98,22 @@ def _matches(name: str, patterns: List[str]) -> bool:
     return any(fnmatch.fnmatch(lowered, p.lower()) for p in patterns)
 
 
-def _iter_files(root: Path, patterns: List[str], recursive: bool):
+def _excluded(name: str, exclude: Optional[List[str]]) -> bool:
+    """Exclusions beat inclusions, always.
+
+    A tool that writes its output twice — markdown for machines, a styled page
+    for people — would otherwise put both in the corpus. The same document
+    indexed twice is worse than indexed once: it competes with its own
+    duplicate for retrieval, and a citation could land on either.
+    """
+    if not exclude:
+        return False
+    lowered = name.lower()
+    return any(fnmatch.fnmatch(lowered, p.lower()) for p in exclude)
+
+
+def _iter_files(root: Path, patterns: List[str], recursive: bool,
+                exclude: Optional[List[str]] = None):
     """Yield (Path, stat) for matching, readable, non-hidden regular files.
 
     Hidden files and dot-directories are skipped: `.DS_Store`, editor swap
@@ -118,7 +133,7 @@ def _iter_files(root: Path, patterns: List[str], recursive: bool):
         for fn in filenames:
             if fn.startswith("."):
                 continue
-            if not _matches(fn, patterns):
+            if not _matches(fn, patterns) or _excluded(fn, exclude):
                 continue
             fp = Path(dirpath) / fn
             try:
@@ -156,7 +171,8 @@ class FolderWatcher:
         max_bytes = int(getattr(settings, "folder_link_max_file_mb", 25)) * 1024 * 1024
 
         out: List[Candidate] = []
-        for fp, st in _iter_files(root, patterns, bool(link.get("recursive"))):
+        for fp, st in _iter_files(root, patterns, bool(link.get("recursive")),
+                                  link.get("exclude")):
             abs_path = str(fp)
             prior = ledger.get(abs_path)
             # TIER 1 — the fast skip. Unchanged since we last ingested it.

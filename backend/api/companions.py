@@ -124,13 +124,24 @@ async def connect(companion_id: str, req: ConnectRequest):
             out_dir.mkdir(parents=True, exist_ok=True)
             existing = folder_link_store.find_by_path(str(out_dir), target_notebook)
             if existing:
-                linked = existing
+                # Reconnecting applies what the companion has since declared.
+                # Without this, anyone who linked before the exclusion existed
+                # would have to unlink and start over to stop the duplicates.
+                ignore = produces.get("ignore") or []
+                if ignore and set(existing.get("exclude") or []) != set(ignore):
+                    linked = folder_link_store.update_link(existing["id"], exclude=ignore)
+                    logger.info(f"[companions] applied {ignore} to the existing link")
+                else:
+                    linked = existing
             else:
                 # notebook_id=None IS the smart folder: same scanning, but the
                 # destination is decided per recording instead of fixed here.
                 linked = folder_link_store.create_link(
                     path=str(out_dir), notebook_id=target_notebook,
                     frequency=req.frequency,
+                    # The companion declares what it writes redundantly, so the
+                    # duplicate never reaches the corpus in the first place.
+                    exclude=(produces.get("ignore") or None),
                 )
                 if req.backfill == "new_only":
                     from services.folder_watcher import folder_watcher

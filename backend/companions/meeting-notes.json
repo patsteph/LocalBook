@@ -45,7 +45,12 @@
     "routing": {
       "default": "smart",
       "why": "1:1s with different people belong in different notebooks, and the notes name their participants \u2014 so each recording can be placed on its own rather than all of them landing in one pile."
-    }
+    },
+    "ignore": [
+      "*.html",
+      "*.htm"
+    ],
+    "ignore_why": "It saves each set of notes twice: markdown, and a styled page that opens in your browser. Only the markdown is filed \u2014 the same notes indexed twice would compete with themselves in search."
   },
   "configure": {
     "file": "~/Library/Application Support/MeetingNotes/config.sh",
