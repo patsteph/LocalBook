@@ -1,28 +1,35 @@
-"""Model sizing — exact weights, real KV geometry, hardware-derived budget.
+"""How much memory a model needs, and whether it fits this Mac.
 
-Replaces the guesswork in `evaluator/ram_fit.py`, which was wrong in three independent ways
-(all verified 2026-08-19, two of them found independently by two research agents):
+Three quantities, and only the first two are ever large:
 
-1. **Weights were estimated** from a filename-derived param count × a GGUF bytes-per-weight
-   table. MLX quantization labels do not match those keys, so estimates were off by −16 %
-   (gemma) to +99 % (phi) — and **both arctic builds estimated 0.0 GB, which `ram_fit` treats
-   as `fits: True`**. The guardrail was not conservative; it was *disabled*.
-2. **KV cache used a √-scaled anchor heuristic**, off by ~5× for gemma. It ignored the two
-   things that actually determine KV size: how many layers use FULL attention (gemma caps 35
-   of its 42 layers at a 512-token sliding window) and the kv-head geometry.
-3. **The budget was 60 % of total RAM**, ignoring what the GPU can actually address.
+  weights      — every parameter that must be resident. For a QUANTIZED MLX
+                 checkpoint this is NOT parameters × dtype width: MLX packs
+                 weights into U32 words and HuggingFace reports the logical
+                 parameter count against that dtype, so the naive product
+                 overstates a 4-bit model by ~7×. The real cost is
+                 `bits/8 + 2×2/group_size` bytes per parameter — weights plus a
+                 scale and a bias per group. Verified to 0.0% against the file
+                 sizes of six checkpoints (`tests/test_model_sizing_math.py`).
 
-The fixes are all *reads*, not better guesses:
-  · weights → `model.safetensors.index.json` `metadata.total_size` (exact, offline, O(1))
-  · KV      → layer types + kv-heads + head_dim from the config we already download
-  · budget  → Apple's own `max_recommended_working_set_size`
+                 For a Mixture-of-Experts model this is EVERY expert. "30B with
+                 3B active" describes the compute, not the footprint: under
+                 stock mlx-lm all experts are resident. Expert streaming exists
+                 in third-party forks, not in the engine LocalBook runs.
 
-⚠️ Measured consequence worth keeping in mind: **phi-4-mini costs ~8× gemma-4-e4b per token of
-KV** (no effective sliding window, 8 kv-heads vs 2). The "fast" model is the expensive one at
-long context — the opposite of the assumption the old estimator encoded.
+  KV cache     — 2 (K and V) × layers × kv_heads × head_dim × tokens × bytes.
+                 Must use kv_heads, not attention heads: Qwen3-30B-A3B has 32
+                 attention heads and 4 KV heads, an eightfold difference.
+                 Sliding-window layers are capped at their window. Judged at
+                 the DEPLOYED context, never the native one.
+
+  activations  — scratch during a forward pass. Small, and covered by the ~1.2×
+                 allowance HF accelerate and EleutherAI both use.
+
+The budget is Apple's own `max_recommended_working_set_size` minus a NAMED
+reserve for what LocalBook keeps resident anyway. It is deliberately not a
+fraction of a fraction: stacking margins is how a 48 GB Mac came to be budgeted
+26.6 GB against the 35.5 GB Apple says is addressable.
 """
-from __future__ import annotations
-
 import json
 import logging
 import os
@@ -64,10 +71,31 @@ def working_set_gb() -> float:
     return val
 
 
-def budget_gb(fraction: float = WORKING_SET_FRACTION) -> float:
-    """The memory we are willing to commit to weights + KV on this machine."""
+# What LocalBook itself keeps resident regardless of the chat model: the
+# embedding model (~1.1 GB for arctic-embed-l) plus app and framework overhead.
+# Stated as a number rather than folded into a fraction — a reserve you can name
+# is one you can argue with, and "× 0.75" was neither.
+RESIDENT_RESERVE_GB = 2.5
+
+
+def budget_gb(fraction: Optional[float] = None) -> float:
+    """How much memory a chat model may have on this machine.
+
+    Apple's `max_recommended_working_set_size` is ALREADY the safe ceiling for
+    GPU-addressable memory — roughly 74% of RAM. Taking a further 25% off it, as
+    this did, applies caution twice and made the answer needlessly pessimistic:
+    a 48 GB Mac was budgeted 26.6 GB when Apple says 35.5 GB is addressable.
+
+    So: working set minus a NAMED reserve for what we keep resident anyway.
+
+    `fraction` is accepted for callers that want the old proportional behaviour.
+    """
     ws = working_set_gb()
-    return round(ws * fraction, 2) if ws > 0 else 0.0
+    if ws <= 0:
+        return 0.0
+    if fraction is not None:
+        return round(ws * fraction, 2)
+    return round(max(ws - RESIDENT_RESERVE_GB, ws * 0.5), 2)
 
 
 # ── model files ─────────────────────────────────────────────────────────────────
@@ -277,7 +305,10 @@ def fit(model_id: str, context_tokens: int = 0, *, activation_factor: float = 1.
     out["headroom_gb"] = round(bud - need, 3)
     if bud <= 0:
         out.update({"fits": None, "recommendation": "unknown", "reason": "no working-set reading"})
-    elif need <= bud * 0.8:
+    elif need <= bud * 0.9:
+        # 0.9, matching model_catalog.fit_for. KV is already counted EXACTLY
+        # here and activations are already covered by activation_factor, so a
+        # further 20% would be a third margin on the same number.
         out.update({"fits": True, "recommendation": "ok"})
     elif need <= bud:
         out.update({"fits": True, "recommendation": "tight"})

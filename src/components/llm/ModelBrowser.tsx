@@ -80,6 +80,9 @@ interface CatalogModel {
   pipeline_tag: string;
   size_gb: number | null;
   size_is_estimate: boolean;
+  quant_bits: number | null;
+  /** Present only for Mixture-of-Experts checkpoints. */
+  moe: { experts: number; active_per_token: number | null } | null;
   capabilities: Caps;
   roles: string[];
   origin: Origin;
@@ -409,8 +412,23 @@ export function ModelBrowser() {
                   <span>
                     {m.size_gb != null ? `${m.size_gb} GB` : 'size unknown'}
                     {m.size_gb != null && m.size_is_estimate && (
-                      <span title="Computed from the checkpoint's published dtype breakdown; weights only.">
+                      <span title="Computed from the checkpoint's published parameter and quantization metadata; weights only, excluding KV cache and activations.">
                         {' '}est.
+                      </span>
+                    )}
+                    {m.quant_bits ? ` · ${m.quant_bits}-bit` : ''}
+                    {/* "30B with 3B active" reads like a 3B footprint. Under
+                        stock mlx-lm every expert is resident — only the compute
+                        is sparse — so the size beside it is the real one. */}
+                    {m.moe && (
+                      <span
+                        className="text-purple-600 dark:text-purple-400"
+                        title={`Mixture of Experts: ${m.moe.experts} experts`
+                          + (m.moe.active_per_token
+                            ? `, ${m.moe.active_per_token} used per token. All of them stay in memory — only the computation is sparse, so it runs like a small model and takes the space of a large one.`
+                            : '. All experts stay in memory.')}
+                      >
+                        {' · MoE'}
                       </span>
                     )}
                     {' · '}↓{compact(m.downloads)}{' · '}♥{compact(m.likes)}
@@ -493,7 +511,16 @@ function ModelCard({ model, loading, onClose, onDownload, download }: {
                 ? `${model.origin.lineage.flag} ${model.origin.lineage.vendor}`
                 : 'not established'}
             />
-            <Stat label="Size" value={model.size_gb != null ? `${model.size_gb} GB` : 'unknown'} />
+            <Stat label="Size" value={model.size_gb != null
+              ? `${model.size_gb} GB${model.quant_bits ? ` (${model.quant_bits}-bit)` : ''}`
+              : 'unknown'} />
+            {model.moe && (
+              <Stat
+                label="Experts"
+                value={`${model.moe.experts}`
+                  + (model.moe.active_per_token ? ` · ${model.moe.active_per_token} per token` : '')}
+              />
+            )}
             <Stat label="Downloads" value={compact(model.downloads)} />
             <Stat label="Likes" value={compact(model.likes)} />
             <Stat label="Updated" value={ago(model.updated)} />

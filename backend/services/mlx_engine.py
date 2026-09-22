@@ -792,8 +792,11 @@ class MLXEngine:
 
         Derived from Apple's own per-device `max_recommended_working_set_size`, not a constant
         and not a fraction of total RAM — on this 16 GB M4 the working set is 11.84 GiB, so
-        "60 % of RAM" and "75 % of the working set" are different numbers and only the latter
-        tracks what the GPU can address on any given machine.
+        "60 % of RAM" and any fraction of the working set are different numbers, and only the
+        latter tracks what the GPU can address on any given machine.
+
+        Since 2026-09-22 the budget is that working set minus a NAMED reserve for what stays
+        resident anyway (the embedding model, app overhead) rather than an unexplained 75%.
         """
         try:
             from services.model_sizing import budget_gb

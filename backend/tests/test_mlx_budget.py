@@ -48,10 +48,21 @@ def test_resident_cost_is_exact_not_estimated():
     assert abs(cost - expected) < 0.01
 
 
-def test_budget_comes_from_the_working_set():
+def test_budget_comes_from_the_working_set_minus_a_named_reserve():
+    """Apple's `max_recommended_working_set_size` is ALREADY the safe ceiling —
+    roughly 74% of RAM. Taking a further 25% off it (which this asserted until
+    2026-09-22) applied caution twice and budgeted a 48 GB Mac 26.6 GB against
+    the 35.5 GB Apple says is addressable.
+
+    The reserve is now what LocalBook keeps resident regardless of the chat
+    model — the embedding model plus app overhead — stated as a number that can
+    be argued with rather than folded into an unexplained fraction.
+    """
+    ws = ms.working_set_gb()
     b = mlx_engine._budget_gb()
     assert b > 0
-    assert abs(b - ms.working_set_gb() * 0.75) < 0.01
+    assert abs(b - (ws - ms.RESIDENT_RESERVE_GB)) < 0.01 or b == round(ws * 0.5, 2)
+    assert b > ws * 0.5, "the budget should not be half the addressable memory"
 
 
 def test_no_eviction_when_the_incoming_model_fits():
