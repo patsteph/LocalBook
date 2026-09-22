@@ -33,7 +33,8 @@ def _q(question="What is retrieval augmented generation?",
         evidence_quote=evidence)
 
 
-async def _score(questions, *, requested=3, content=None, elapsed_hint=None):
+async def _score(questions, *, requested=3, content=None, attempts=1,
+                 wanted_types=None):
     """Drive the real runner with a stubbed quiz generator."""
     from evaluator.test_runners import structured_json as sj
     import services.structured_llm as slm
@@ -50,13 +51,15 @@ async def _score(questions, *, requested=3, content=None, elapsed_hint=None):
 
     class _LLM:
         async def generate_quiz(self, **kw):
-            return types.SimpleNamespace(questions=list(questions))
+            return types.SimpleNamespace(questions=list(questions), attempts=attempts)
 
     orig_store, orig_llm = ss.source_store, slm.structured_llm
     ss.source_store, slm.structured_llm = _Store(), _LLM()
     try:
-        res = await sj.run("nb", {"quiz_generation": {"num_questions": requested}},
-                           "combo", "hw")
+        cfg = {"num_questions": requested}
+        if wanted_types is not None:
+            cfg["question_types"] = wanted_types
+        res = await sj.run("nb", {"quiz_generation": cfg}, "combo", "hw")
         return res[0]
     finally:
         ss.source_store, slm.structured_llm = orig_store, orig_llm
@@ -78,9 +81,12 @@ def test_speed_never_contributes_to_the_score():
     that mixes in latency cannot be read as either."""
     r = asyncio.run(_score([_q(), _q(), _q()]))
     assert "speed_score_unweighted" in r.sub_scores
-    weighted = sum(r.sub_scores[k] for k in
-                   ("count", "validity", "consistency", "grounding")) / 4
-    assert abs(r.overall_score - weighted) <= 1
+    w = {"count": 0.15, "validity": 0.20, "consistency": 0.20, "grounding": 0.15,
+         "distractors": 0.10, "type_mix": 0.10, "reliability": 0.10}
+    parts = [(r.sub_scores[k], wt) for k, wt in w.items()
+             if r.sub_scores.get(k) is not None]
+    expected = sum(v * wt for v, wt in parts) / sum(wt for _, wt in parts)
+    assert abs(r.overall_score - expected) <= 1
 
 
 # ── what it measures instead ────────────────────────────────────────────────
@@ -139,8 +145,93 @@ def test_a_verbatim_evidence_quote_counts_as_grounded():
 
 def test_a_failing_run_names_its_weakest_dimension():
     """"It scored 40" is not actionable; "consistency at 0" is."""
-    bad = _q(answer="Not an option", options=["A", "B"],
+    bad = _q(answer="Not an option", options=["A", "A"],
              question="Capital of Portugal?", explanation="")
-    r = asyncio.run(_score([bad], requested=3))
-    assert r.passed is False
+    r = asyncio.run(_score([bad], requested=6, attempts=3))
+    assert r.passed is False, r.sub_scores
     assert r.failure_reason and "weakest dimension" in r.failure_reason
+
+
+def test_a_dimension_with_nothing_to_judge_is_excluded_not_awarded():
+    """Free marks for a measurement that did not happen is what let a total
+    failure score 15 for being fast. A deck with no multiple-choice questions
+    must not collect full distractor marks it never earned."""
+    fib = _q(qtype="fill_in_the_blank", options=None,
+             evidence="Documents are embedded into vectors")
+    r = asyncio.run(_score([fib] * 3))
+    assert r.sub_scores["distractors"] is None
+    assert r.sub_scores["type_mix"] is None
+
+
+# ── sharpening: dimensions a HEALTHY model can still lose points on ─────────
+#
+# After the rework the category scored a flat 100 for a working model, which
+# detects breakage and cannot rank two models that both work — the same ceiling
+# documented for nine other categories. These three measure things a competent
+# model does better than a merely adequate one.
+
+def test_needing_retries_costs_marks():
+    """structured_llm retries up to three times. A model that needs three tries
+    to emit valid structure is worse at structured output than one that gets it
+    first time, and that difference was only ever a log line."""
+    first = asyncio.run(_score([_q()] * 3, attempts=1))
+    second = asyncio.run(_score([_q()] * 3, attempts=2))
+    third = asyncio.run(_score([_q()] * 3, attempts=3))
+    assert first.sub_scores["reliability"] == 100
+    assert second.sub_scores["reliability"] == 60
+    assert third.sub_scores["reliability"] == 25
+    assert first.overall_score > second.overall_score > third.overall_score
+
+
+def test_collapsing_a_deck_into_one_type_costs_marks():
+    """The generator's own comments note models collapse to a single easy type.
+    Nothing measured it, and it is exactly what separates two valid outputs."""
+    wanted = ["multiple_choice", "true_false", "fill_in_the_blank"]
+    varied = [_q(qtype="multiple_choice"),
+              _q(qtype="true_false", answer="True", options=["True", "False"]),
+              _q(qtype="fill_in_the_blank", options=None)]
+    collapsed = [_q(qtype="multiple_choice")] * 3
+    assert asyncio.run(_score(varied, wanted_types=wanted)).sub_scores["type_mix"] == 100
+    assert asyncio.run(_score(collapsed, wanted_types=wanted)).sub_scores["type_mix"] == 33
+
+
+def test_duplicate_options_are_caught():
+    dupes = _q(options=["A database", "A database", "A GPU"])
+    assert asyncio.run(_score([dupes] * 3)).sub_scores["distractors"] < 100
+
+
+def test_a_systematically_longest_correct_answer_is_penalised():
+    """The oldest giveaway in multiple-choice writing. One long answer is fair;
+    every single one is a model padding the right option."""
+    tell = _q(answer="Combining retrieval with generation over a vector index",
+              options=["Combining retrieval with generation over a vector index", "A DB", "A GPU"])
+    fair = _q(answer="A GPU", options=["Combining retrieval with generation", "A DB", "A GPU"])
+    assert asyncio.run(_score([tell] * 4)).sub_scores["distractors"] < \
+        asyncio.run(_score([fair] * 4)).sub_scores["distractors"]
+
+
+def test_one_long_answer_among_several_is_not_punished():
+    """The penalty must be statistical, not per-question — a correct answer is
+    sometimes legitimately the longest."""
+    tell = _q(answer="Combining retrieval with generation over a vector index",
+              options=["Combining retrieval with generation over a vector index", "A DB", "A GPU"])
+    fair = _q(answer="A GPU", options=["Combining retrieval with generation", "A DB", "A GPU"])
+    assert asyncio.run(_score([tell] + [fair] * 3)).sub_scores["distractors"] == 100
+
+
+def test_the_category_can_now_separate_two_working_models():
+    """The point of the exercise. Both produce valid, consistent, grounded
+    output; one is better at it."""
+    wanted = ["multiple_choice", "true_false"]
+    strong = asyncio.run(_score(
+        [_q(qtype="multiple_choice", evidence="Documents are embedded into vectors"),
+         _q(qtype="true_false", answer="True", options=["True", "False"],
+            evidence="retrieved by similarity"),
+         _q(qtype="multiple_choice", evidence="Documents are embedded into vectors")],
+        wanted_types=wanted, attempts=1))
+    adequate = asyncio.run(_score(
+        [_q(qtype="multiple_choice"), _q(qtype="multiple_choice"),
+         _q(qtype="multiple_choice")],
+        wanted_types=wanted, attempts=2))
+    assert strong.overall_score > adequate.overall_score
+    assert strong.passed and adequate.passed, "both should still be healthy, just ranked"

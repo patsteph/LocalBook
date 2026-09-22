@@ -39,11 +39,13 @@ async def run(notebook_id: str, config: dict, combo_name: str, hw_fingerprint: s
 
         num_questions = quiz_config.get("num_questions", 3)
         difficulty = quiz_config.get("difficulty", "medium")
+        wanted_types = [t.lower() for t in (quiz_config.get("question_types") or [])]
 
         quiz_output = await structured_llm.generate_quiz(
             content=content,
             num_questions=num_questions,
             difficulty=difficulty,
+            question_types=list(wanted_types) or None,
         )
 
         elapsed = (time.time() - start) * 1000
@@ -131,6 +133,51 @@ async def run(notebook_id: str, config: dict, combo_name: str, hw_fingerprint: s
                 grounded += 1
         grounding_score = int(grounded / len(questions) * 100)
 
+        # ── 5. Distractors: are the wrong options actually wrong-but-plausible? ──
+        # Two objective tells that separate a competent quiz from a passable one:
+        # duplicated or empty options, and a correct answer that is SYSTEMATICALLY
+        # the longest — the oldest giveaway in multiple-choice writing. One long
+        # answer is fair; five out of six is a model padding the right one.
+        mc = [q for q in questions
+              if (getattr(q, "question_type", "") or "multiple_choice").lower() == "multiple_choice"
+              and len(list(getattr(q, "options", None) or [])) >= 2]
+        if mc:
+            clean = 0
+            longest_is_answer = 0
+            for q in mc:
+                opts = [str(o).strip() for o in (getattr(q, "options", None) or [])]
+                distinct = len({o.lower() for o in opts if o}) == len([o for o in opts if o])
+                if distinct and all(opts):
+                    clean += 1
+                ans = (getattr(q, "answer", "") or "").strip()
+                if opts and ans and len(ans) >= max(len(o) for o in opts):
+                    longest_is_answer += 1
+            clean_pct = clean / len(mc) * 100
+            giveaway = longest_is_answer / len(mc)
+            # Tolerate up to half; penalise the systematic case.
+            giveaway_penalty = max(0.0, (giveaway - 0.5) * 2) * 40
+            distractor_score = int(max(0.0, clean_pct - giveaway_penalty))
+        else:
+            distractor_score = None     # no multiple-choice questions to judge
+
+        # ── 6. Type mix: did it honour the variety asked for? ───────────────
+        # The generator's own comments note that models collapse a deck into a
+        # single easy type. Nothing measured it, and it is exactly the kind of
+        # instruction-following that separates two otherwise-valid outputs.
+        if wanted_types:
+            got = {(getattr(q, "question_type", "") or "").lower() for q in questions}
+            mix_score = int(len(got & set(wanted_types)) / len(wanted_types) * 100)
+        else:
+            mix_score = None            # no mix was requested
+
+        # ── 7. First attempt: reliability, not just capability ─────────────
+        # structured_llm retries up to three times. A model that needs three
+        # tries to emit valid structure is measurably worse at structured output
+        # than one that gets it first time, and until now that difference was
+        # only a log line. Full marks first time, then a steep drop.
+        attempts = int(getattr(quiz_output, "attempts", 1) or 1)
+        reliability_score = {1: 100, 2: 60}.get(attempts, 25)
+
         # Speed is REPORTED, never scored. Mixing it into a capability score is
         # what let a total failure outscore a slow success; throughput has its
         # own measurement in the run's performance profile.
@@ -139,10 +186,23 @@ async def run(notebook_id: str, config: dict, combo_name: str, hw_fingerprint: s
         result.accuracy_score = consistency_score
         result.completeness_score = validity_score
         result.format_score = count_score
-        result.overall_score = int(
-            count_score * 0.25 + validity_score * 0.25
-            + consistency_score * 0.25 + grounding_score * 0.25
-        )
+        # Weighted so the four correctness dimensions still dominate, while the
+        # three sharpeners — which a healthy model CAN lose points on — decide
+        # between models that would otherwise all sit at 100.
+        # A dimension with nothing to judge is EXCLUDED and its weight
+        # redistributed — never awarded 100. Handing out free marks for a
+        # measurement that did not happen is exactly what let a total failure
+        # score 15 for being fast, and one garbage question would otherwise
+        # collect full marks for distractors and type mix it never had.
+        weighted = [
+            (count_score, 0.15), (validity_score, 0.20),
+            (consistency_score, 0.20), (grounding_score, 0.15),
+            (distractor_score, 0.10), (mix_score, 0.10),
+            (reliability_score, 0.10),
+        ]
+        measured = [(v, w) for v, w in weighted if v is not None]
+        total_weight = sum(w for _, w in measured) or 1.0
+        result.overall_score = int(sum(v * w for v, w in measured) / total_weight)
         result.passed = result.overall_score >= 60
         result.sub_scores = {
             "questions": len(questions),
@@ -151,19 +211,29 @@ async def run(notebook_id: str, config: dict, combo_name: str, hw_fingerprint: s
             "validity": validity_score,
             "consistency": consistency_score,
             "grounding": grounding_score,
+            "distractors": distractor_score,
+            "type_mix": mix_score,
+            "reliability": reliability_score,
+            "attempts": attempts,
+            "types_seen": sorted({(getattr(q, "question_type", "") or "?").lower()
+                                  for q in questions}),
             "elapsed_ms": round(elapsed),
             "speed_score_unweighted": speed_score,
         }
         if not result.passed:
-            weakest = min(("count", count_score), ("validity", validity_score),
-                          ("consistency", consistency_score), ("grounding", grounding_score),
-                          key=lambda kv: kv[1])
+            named = [("count", count_score), ("validity", validity_score),
+                     ("consistency", consistency_score), ("grounding", grounding_score),
+                     ("distractors", distractor_score), ("type_mix", mix_score),
+                     ("reliability", reliability_score)]
+            weakest = min((kv for kv in named if kv[1] is not None),
+                          key=lambda kv: kv[1], default=("nothing measurable", 0))
             result.failure_reason = f"weakest dimension: {weakest[0]} at {weakest[1]}"
 
         print(f"[EVAL-JSON] Score={result.overall_score} "
-              f"(count={count_score} valid={validity_score} "
-              f"consistent={consistency_score} grounded={grounding_score}), "
-              f"{len(questions)} questions, {elapsed:.0f}ms")
+              f"(count={count_score} valid={validity_score} consistent={consistency_score} "
+              f"grounded={grounding_score} distract={distractor_score if distractor_score is not None else '-'} "
+              f"mix={mix_score if mix_score is not None else '-'} "
+              f"attempt{attempts}), {len(questions)}/{num_questions} questions, {elapsed:.0f}ms")
 
     except Exception as e:
         result.passed = False

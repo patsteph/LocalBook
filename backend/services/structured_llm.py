@@ -74,6 +74,12 @@ class QuizOutput(BaseModel):
     questions: List[QuizQuestion] = Field(default_factory=list, description="List of quiz questions")
     topic: str = Field(default="", description="The main topic of the quiz")
     source_summary: str = Field(default="", description="Brief summary of source material used")
+    # How many generation attempts this took. Default 1 so nothing that builds a
+    # QuizOutput by hand has to care. A model that needs three tries to produce
+    # valid structure is measurably worse at structured output than one that
+    # gets it first time — and until now that difference was only ever a log
+    # line, invisible to any measurement.
+    attempts: int = Field(default=1, description="Generation attempts used (1 = first try)")
 
 
 # MLX grammar schema for quiz generation (Ollama ignores it). Deliberately PERMISSIVE:
@@ -592,6 +598,7 @@ Return ONLY a JSON object like this:
                             best_quiz = quiz
                         # Accept immediately if we got at least 70%
                         if len(quiz.questions) >= num_questions * 0.7:
+                            quiz.attempts = attempt + 1
                             return quiz
                         logger.warning(f"[Quiz] Only got {len(quiz.questions)}/{num_questions}, will retry")
                     else:
@@ -606,8 +613,11 @@ Return ONLY a JSON object like this:
         # Fallback: return the best attempt we had, even if below threshold
         if best_quiz and best_quiz.questions:
             logger.info(f"[Quiz] Returning best attempt with {len(best_quiz.questions)} questions (threshold not met)")
+            best_quiz.attempts = self.max_retries
             return best_quiz
-        return QuizOutput(questions=[], topic="Quiz generation failed", source_summary="All retries exhausted")
+        return QuizOutput(questions=[], topic="Quiz generation failed",
+                          source_summary="All retries exhausted",
+                          attempts=self.max_retries)
 
     # ── Meta-phrase scrubber ────────────────────────────────────────────────
     # Some models still leak references to "the source / text / passage / article"
