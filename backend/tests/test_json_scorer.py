@@ -192,7 +192,38 @@ def test_collapsing_a_deck_into_one_type_costs_marks():
               _q(qtype="fill_in_the_blank", options=None)]
     collapsed = [_q(qtype="multiple_choice")] * 3
     assert asyncio.run(_score(varied, wanted_types=wanted)).sub_scores["type_mix"] == 100
-    assert asyncio.run(_score(collapsed, wanted_types=wanted)).sub_scores["type_mix"] == 33
+    # All three are IN the requested set, so compliance is perfect; only a third
+    # of the variety was used.
+    assert asyncio.run(_score(collapsed, wanted_types=wanted)).sub_scores["type_mix"] == 66
+
+
+def test_substituting_an_unrequested_type_is_penalised():
+    """Measured on gemma 2026-09-22: asked for multiple_choice / true_false /
+    fill_in_the_blank, it produced short_answer instead of true_false. Covering
+    two of three is only half the story — the substitution is its own failure."""
+    wanted = ["multiple_choice", "true_false", "fill_in_the_blank"]
+    substituted = [_q(qtype="multiple_choice"),
+                   _q(qtype="fill_in_the_blank", options=None),
+                   _q(qtype="short_answer", options=None)]
+    r = asyncio.run(_score(substituted, wanted_types=wanted))
+    assert r.sub_scores["type_coverage"] == 66        # used 2 of 3 requested
+    assert r.sub_scores["type_compliance"] == 66      # 2 of 3 questions in-set
+    assert r.sub_scores["unrequested_types"] == ["short_answer"]
+    assert r.sub_scores["type_mix"] == 66
+
+
+def test_the_penalty_scales_with_how_many_questions_went_off_list():
+    """Five off-list questions is a worse violation than one, and a type-level
+    set comparison cannot tell those apart."""
+    wanted = ["multiple_choice", "true_false"]
+    ok = _q(qtype="multiple_choice")
+    off = _q(qtype="short_answer", options=None)
+    tf = _q(qtype="true_false", answer="True", options=["True", "False"])
+    mild = asyncio.run(_score([ok, tf, ok, ok, ok, off], wanted_types=wanted))
+    severe = asyncio.run(_score([ok, tf, off, off, off, off], wanted_types=wanted))
+    assert mild.sub_scores["type_coverage"] == severe.sub_scores["type_coverage"] == 100
+    assert mild.sub_scores["type_compliance"] > severe.sub_scores["type_compliance"]
+    assert mild.sub_scores["type_mix"] > severe.sub_scores["type_mix"]
 
 
 def test_duplicate_options_are_caught():

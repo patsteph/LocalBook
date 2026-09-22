@@ -164,11 +164,28 @@ async def run(notebook_id: str, config: dict, combo_name: str, hw_fingerprint: s
         # The generator's own comments note that models collapse a deck into a
         # single easy type. Nothing measured it, and it is exactly the kind of
         # instruction-following that separates two otherwise-valid outputs.
+        # Two distinct ways to ignore the instruction, and they need measuring
+        # separately because a model can do one without the other:
+        #
+        #   coverage   — did it USE the variety asked for? (missing true_false)
+        #   compliance — did it STAY WITHIN it? (substituting short_answer)
+        #
+        # Compliance is counted per QUESTION, not per type: five off-list
+        # questions is a worse violation than one, and a type-level set
+        # comparison cannot tell those apart.
         if wanted_types:
-            got = {(getattr(q, "question_type", "") or "").lower() for q in questions}
-            mix_score = int(len(got & set(wanted_types)) / len(wanted_types) * 100)
+            wanted_set = set(wanted_types)
+            types_per_q = [(getattr(q, "question_type", "") or "").lower() for q in questions]
+            got = set(types_per_q)
+            coverage = len(got & wanted_set) / len(wanted_set) * 100
+            in_set = sum(1 for t in types_per_q if t in wanted_set)
+            compliance = in_set / len(types_per_q) * 100
+            mix_score = int((coverage + compliance) / 2)
+            unrequested = sorted(got - wanted_set)
         else:
             mix_score = None            # no mix was requested
+            coverage = compliance = None
+            unrequested = []
 
         # ── 7. First attempt: reliability, not just capability ─────────────
         # structured_llm retries up to three times. A model that needs three
@@ -213,6 +230,9 @@ async def run(notebook_id: str, config: dict, combo_name: str, hw_fingerprint: s
             "grounding": grounding_score,
             "distractors": distractor_score,
             "type_mix": mix_score,
+            "type_coverage": None if coverage is None else int(coverage),
+            "type_compliance": None if compliance is None else int(compliance),
+            "unrequested_types": unrequested,
             "reliability": reliability_score,
             "attempts": attempts,
             "types_seen": sorted({(getattr(q, "question_type", "") or "?").lower()
@@ -232,7 +252,8 @@ async def run(notebook_id: str, config: dict, combo_name: str, hw_fingerprint: s
         print(f"[EVAL-JSON] Score={result.overall_score} "
               f"(count={count_score} valid={validity_score} consistent={consistency_score} "
               f"grounded={grounding_score} distract={distractor_score if distractor_score is not None else '-'} "
-              f"mix={mix_score if mix_score is not None else '-'} "
+              f"mix={mix_score if mix_score is not None else '-'}"
+              f"{'(+' + ','.join(unrequested) + ')' if unrequested else ''} "
               f"attempt{attempts}), {len(questions)}/{num_questions} questions, {elapsed:.0f}ms")
 
     except Exception as e:
