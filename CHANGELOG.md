@@ -2,7 +2,7 @@
 
 All notable changes to LocalBook will be documented in this file.
 
-## Unreleased — Linked Folders + Companions
+## v2.4.0 — Linked Folders, Companions, and honest model sizing
 
 **Point LocalBook at a folder and anything that lands in it becomes a source.** Built for a user
 whose audio recorder transcribes 1:1s to markdown: the recordings are now searchable, chattable,
@@ -59,6 +59,19 @@ and usable in every artifact LocalBook makes, with no step for the user after th
   chat is stored more compactly past a few thousand words. This applies to models that can support
   it — the default chat model cannot, and asking it to would have produced no answer at all, so it
   is left alone.
+
+### Fixed
+- **Models are no longer reported as far bigger than they are.** A compressed 30B model was
+  measured as needing over 100 GB and marked "won't fit" on machines that run it comfortably —
+  compressed weights were being sized as though uncompressed. Sizes now match the actual download,
+  and the browser tells apart the 4-bit and 8-bit versions of the same model, which previously
+  looked identical.
+
+- **Image generation, which never worked in v2.3.0.** Two libraries FLUX Klein needs at runtime
+  were missing from the build, so a downloaded image model produced nothing.
+
+- **Removing a downloaded model.** Models you have tested and decided against can be deleted from
+  LLM Studio. A model in use by a role is refused rather than removed out from under the app.
 
 ### Fixed
 - **Text extraction blocked the event loop.** Seventeen extractors — PDF, Office, audio, video,
