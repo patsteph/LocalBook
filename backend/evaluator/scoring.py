@@ -26,7 +26,13 @@ from utils.json_repair import robust_json_parse
 #       filled with a constant (faithfulness was a flat 60); field_edges weighted + mapped;
 #       capture_modes / refinement / translation / voice_modifier weighted; the pure-function
 #       `confidence` runner moved out of the evaluator into the pytest suite.
-SCORING_VERSION = 2
+# 3 (2026-09-22): structured_json stopped scoring speed and started scoring
+# whether the output is USABLE — a total failure previously earned 15 points for
+# failing quickly, which nearly hid a real breakage. Also: TTFT now reports None
+# when unmeasured rather than 0.0. Scores before and after are not the same
+# quantity, and `scoring_changed()` suppresses the regression gate across the
+# boundary rather than reporting a phantom drop.
+SCORING_VERSION = 3
 import logging
 logger = logging.getLogger(__name__)
 

@@ -487,15 +487,18 @@ class ComboEvalSummary:
 
     # Performance profile
     avg_tokens_per_sec: float = 0.0
-    avg_ttft_ms: float = 0.0
+    # None means NOT MEASURED — distinct from 0.0, which would claim instant.
+    avg_ttft_ms: Optional[float] = None
     total_run_time_seconds: float = 0.0
     # Distribution + sample count (2026-08-19). The means above were computed from the Streaming
     # phase alone — one query — so they could not support a regression judgement.
     perf_samples: int = 0
+    # Where the throughput figures came from: "runners" | "meter" | "none".
+    perf_source: str = "none"
     tps_p50: float = 0.0
     tps_p05: float = 0.0
-    ttft_p50: float = 0.0
-    ttft_p95: float = 0.0
+    ttft_p50: Optional[float] = None
+    ttft_p95: Optional[float] = None
 
     # Verdict
     warnings: list = field(default_factory=list)
@@ -550,6 +553,7 @@ class ComboEvalSummary:
             "overall_grade": self.overall_grade,
             "avg_tokens_per_sec": round(self.avg_tokens_per_sec, 1),
             "perf_samples": self.perf_samples,
+            "perf_source": self.perf_source,
             # These were added to the dataclass but not to to_dict, so the first real A/B run
             # persisted neither — the memory trace and the fallback count were computed,
             # logged, and then dropped on the floor at serialisation.
@@ -560,7 +564,8 @@ class ComboEvalSummary:
             "engine_fallback_detail": self.engine_fallback_detail,
             "tps_p50": self.tps_p50, "tps_p05": self.tps_p05,
             "ttft_p50": self.ttft_p50, "ttft_p95": self.ttft_p95,
-            "avg_ttft_ms": round(self.avg_ttft_ms, 1),
+            "avg_ttft_ms": (round(self.avg_ttft_ms, 1)
+                            if self.avg_ttft_ms is not None else None),
             "total_run_time_seconds": round(self.total_run_time_seconds, 1),
             "warnings": self.warnings,
             "providers_used": self.providers_used,

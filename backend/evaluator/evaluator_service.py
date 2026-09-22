@@ -824,14 +824,27 @@ async def _run_evaluation(tier: str = "full") -> ComboEvalSummary:
         summary.avg_tokens_per_sec = (
             _meter_tps if _meter_tps > 0 else (sum(_tps) / len(_tps) if _tps else 0)
         )
-        summary.avg_ttft_ms = sum(_ttft) / len(_ttft) if _ttft else 0
+        summary.avg_ttft_ms = (sum(_ttft) / len(_ttft)) if _ttft else None
         # Distribution, not just a mean: a p95 TTFT regression is what a user notices, and a
         # sample count is what tells a reader whether the mean means anything.
-        summary.perf_samples = len(_tps)
-        summary.tps_p50 = _pctl(_tps, 50)
-        summary.tps_p05 = _pctl(_tps, 5)          # the slow tail
-        summary.ttft_p50 = _pctl(_ttft, 50)
-        summary.ttft_p95 = _pctl(_ttft, 95)
+        #
+        # The METER is preferred for throughput percentiles too, not only the mean. Reading
+        # them from the per-runner list alone reported "tps_p50 0.0" on a smoke run that had
+        # measured 41 generations at a p50 of 40.7 — the runners in that tier simply do not
+        # set `tokens_per_second`, and an empty list percentiles to zero. A zero that means
+        # "nobody recorded this" is indistinguishable from one that means "it was that slow",
+        # which is the exact confusion this evaluator exists to remove.
+        _meter = summary.throughput or {}
+        _meter_n = int(_meter.get("generations") or 0)
+        summary.perf_samples = len(_tps) or _meter_n
+        summary.tps_p50 = _pctl(_tps, 50) or float(_meter.get("tps_p50") or 0.0)
+        summary.tps_p05 = _pctl(_tps, 5) or float(_meter.get("tps_p05") or 0.0)
+        # Time-to-first-token has no meter equivalent — only runners that stream measure it,
+        # and none of them are in the smoke tier. Report None rather than 0.0: "not measured"
+        # and "instant" are different claims.
+        summary.ttft_p50 = _pctl(_ttft, 50) if _ttft else None
+        summary.ttft_p95 = _pctl(_ttft, 95) if _ttft else None
+        summary.perf_source = ("runners" if _tps else ("meter" if _meter_n else "none"))
         summary.total_run_time_seconds = time.time() - run_start
 
         # Collect warnings
