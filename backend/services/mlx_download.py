@@ -225,12 +225,21 @@ async def delete_model(model_id: str, *, force: bool = False) -> Dict[str, Any]:
         logger.warning(f"[mlx-download] delete failed for {model_id}: {e}")
         return {"ok": False, "error": f"Could not remove {model_id}: {e}"}
 
-    # Verify it actually went, rather than trusting the call.
-    try:
-        from services.model_sizing import reset_cache
-        reset_cache()
-    except Exception:
-        pass
+    # Invalidate EVERY cache that remembers this model, not just one.
+    #
+    # `model_sizing` caches per-model weight size; `model_presence` separately
+    # caches the whole cache enumeration for 30s. Clearing only the first left
+    # the Locker listing a model that no longer existed: the first click
+    # deleted it and appeared to do nothing, the second returned "not in the
+    # local cache", and closing the window was the only way to see the truth.
+    for module, fn in (("services.model_sizing", "reset_cache"),
+                       ("services.model_presence", "reset_cache"),
+                       ("api.settings", "invalidate_models_cache")):
+        try:
+            import importlib
+            getattr(importlib.import_module(module), fn)()
+        except Exception as e:
+            logger.debug(f"[mlx-download] could not reset {module}: {e}")
     still_there = cached_size_gb(model_id) > 0
     if still_there:
         return {"ok": False,

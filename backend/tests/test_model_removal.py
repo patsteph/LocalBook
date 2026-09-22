@@ -99,3 +99,56 @@ def test_an_active_model_cannot_be_removed_from_the_locker_ui():
     locker = (Path(__file__).resolve().parents[2]
               / "src" / "components" / "LLMSelector.tsx").read_text()
     assert "disabled={removing === m.name || isActive}" in locker
+
+
+# ── the refresh (2026-09-23) ────────────────────────────────────────────────
+#
+# "I click remove, nothing happens. I click again and it says not found in
+# cache. I close the window and reopen and it's gone."
+#
+# The delete worked every time. THREE separate caches remember what is
+# installed, and only one was being cleared, so the refreshed list still
+# contained a model that no longer existed:
+#
+#   api.settings._ollama_models_cache  — the whole endpoint response, 30s
+#   model_presence._CACHE["enum"]      — the cache-directory scan, 30s
+#   model_sizing._CACHE["w::<id>"]     — per-model weight size
+#
+# The second click then hit a real "not in the local cache", which read as a
+# different bug entirely.
+
+def test_deleting_clears_every_cache_that_remembers_the_model():
+    import inspect
+    from services.mlx_download import delete_model
+    src = inspect.getsource(delete_model)
+    for module in ("services.model_sizing", "services.model_presence", "api.settings"):
+        assert module in src, f"{module} still holds a stale view after a delete"
+
+
+def test_the_endpoint_cache_can_actually_be_invalidated():
+    """It was a module-level dict with no way to clear it — the only remedy was
+    waiting out the TTL, which is exactly what "close and reopen" was doing."""
+    from api import settings as api_settings
+    api_settings._ollama_models_cache["ts"] = 12345
+    api_settings._ollama_models_cache["data"] = {"models": ["stale"]}
+    api_settings.invalidate_models_cache()
+    assert api_settings._ollama_models_cache["ts"] is None
+    assert api_settings._ollama_models_cache["data"] is None
+
+
+def test_presence_and_sizing_caches_clear_together():
+    from services import model_presence, model_sizing
+    model_presence.enumerate_cached(force=True)
+    model_sizing._CACHE["w::probe"] = 1.0
+    model_presence.reset_cache()
+    model_sizing.reset_cache()
+    assert not model_presence._CACHE and not model_sizing._CACHE
+
+
+def test_the_row_disappears_without_waiting_for_the_round_trip():
+    """A second of "nothing happened" is what made the first click look broken
+    and invited a second one."""
+    from pathlib import Path
+    locker = (Path(__file__).resolve().parents[2]
+              / "src" / "components" / "LLMSelector.tsx").read_text()
+    assert "setModels((prev) => prev.filter((x) => x.name !== m.name));" in locker

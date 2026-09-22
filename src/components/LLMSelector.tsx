@@ -400,6 +400,10 @@ export const LLMSelector: React.FC<LLMSelectorProps> = ({ selectedProvider, onPr
         setRemoveError(body.detail || `Could not remove it (HTTP ${r.status})`);
         return;
       }
+      // Drop the row now. The reload below is the authority, but the backend
+      // memoises this list, and a second of "nothing happened" is what made
+      // the first click look broken and invited a second one.
+      setModels((prev) => prev.filter((x) => x.name !== m.name));
       await loadModels();
     } catch (e: any) {
       setRemoveError(e?.message || 'Could not remove it.');

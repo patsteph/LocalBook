@@ -21,6 +21,19 @@ router = APIRouter()
 
 # Module-level cache for /ollama/models with a lock for thread safety
 _ollama_models_cache: dict = {"ts": None, "data": None}
+
+
+def invalidate_models_cache() -> None:
+    """Forget the memoised model list.
+
+    Three separate caches remember what is installed — this one, model_sizing's
+    per-model weight size, and model_presence's cache-directory enumeration. A
+    delete has to clear all three: clearing fewer left the Locker listing a
+    model that no longer existed, so the first click appeared to do nothing and
+    the second returned "not in the local cache".
+    """
+    _ollama_models_cache["ts"] = None
+    _ollama_models_cache["data"] = None
 _ollama_models_lock = threading.Lock()
 
 
