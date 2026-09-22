@@ -25,7 +25,38 @@ Chat with your documents using AI — completely offline and private. Upload PDF
 
 ---
 
-## 🎉 What's New in v2.3.0
+## 🎉 What's New in v2.4.0
+
+**Point LocalBook at a folder and anything that lands in it becomes a source.** Built for a user
+whose audio recorder writes meeting notes to disk: the recordings are now searchable, chattable,
+and usable in everything else LocalBook makes, with no step after the recording ends.
+
+### Added
+- **Linked folders.** Watch a directory per notebook, hourly to weekly. The same file is never
+  ingested twice — a renamed or moved file is recognised by its contents. LocalBook only ever
+  **reads** a linked folder; it never moves, renames, edits or deletes anything in it.
+- **Smart folders.** Recordings are analysed — who is in them, what they are about — and a
+  notebook is *suggested*, never chosen for you. Nothing is filed without your click or a rule
+  you wrote, and approving offers "always route these" to create one.
+- **Companions.** Local tools that work alongside LocalBook, set up from Settings. The first is
+  [Meeting Notes](https://github.com/kvango/Meeting-Summarizer), a meeting recorder that runs
+  entirely on your Mac. Connecting one points it at the model LocalBook already has loaded, so it
+  stops running a second copy of the same thing.
+- **OpenAlex** joins the searchable sites — ~250M scholarly works across every discipline.
+
+### Fixed
+- **Models are no longer reported as far bigger than they are.** A compressed 30B model was
+  measured as needing over 100 GB and marked "won't fit" on machines that run it comfortably.
+  Sizes now match the actual download.
+- **Image generation, which never worked in v2.3.0** — two libraries FLUX Klein needs at runtime
+  were missing from the build.
+- **Downloaded models can be removed** from LLM Studio when you decide against one.
+
+Full notes, including everything from v2.3.0, are in [CHANGELOG.md](CHANGELOG.md).
+
+---
+
+## What arrived in v2.3.0
 **LocalBook no longer uses Ollama.** One in-process MLX engine now serves every role — chat,
 vision, image generation, and embeddings — so there is no second inference server to install,
 start, or keep in sync. Models are managed inside the app.
