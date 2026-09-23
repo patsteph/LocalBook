@@ -21,6 +21,13 @@ from config import settings
 import logging
 logger = logging.getLogger(__name__)
 
+# PCA picks the RANDOMIZED SVD solver at these shapes, and with random_state=None
+# it seeds from global numpy state — so two rebuilds of the same notebook produced
+# different topics. Measured on identical input: 4, then 6, then 4 topics across
+# three runs. Fixing the seed makes a rebuild reproducible, which is also what
+# makes any future change to clustering measurable rather than guesswork.
+_PCA_RANDOM_STATE = 42
+
 
 @dataclass
 class Topic:
@@ -122,7 +129,7 @@ class TopicModelingService:
                 print("[TopicModel] Creating new model...")
                 # Configure for incremental learning
                 # PCA replaces UMAP — much lighter (no numba/llvmlite deps)
-                umap_model = PCA(n_components=5)
+                umap_model = PCA(n_components=5, random_state=_PCA_RANDOM_STATE)
                 
                 hdbscan_model = HDBSCAN(
                     min_cluster_size=3,
@@ -313,6 +320,66 @@ class TopicModelingService:
         """Mark that a rebuild is in progress for a notebook."""
         self._rebuild_in_progress.add(notebook_id)
     
+    async def _assign_to_existing_topics(
+        self,
+        texts: List[str],
+        embeddings: Optional[np.ndarray] = None,
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """Assign new documents to already-discovered topics by cosine similarity.
+
+        Deliberately NOT ``BERTopic.transform()``. That method branches on the
+        TYPE of ``hdbscan_model`` (``_bertopic.py`` ~line 611):
+
+          * a model loaded from disk carries a ``BaseCluster`` and takes a cosine
+            path — which works;
+          * a model still in memory from ``fit_all()`` carries the real clusterer
+            and falls through to ``self.hdbscan_model.predict(...)``.
+
+        We build ``sklearn.cluster.HDBSCAN``, which has no ``predict`` method at
+        all — only the standalone ``hdbscan`` package does, and BERTopic's
+        ``is_supported_hdbscan()`` accepts only that one or cuML. So every
+        incremental add BETWEEN A REBUILD AND THE NEXT RESTART raised
+        ``AttributeError: 'HDBSCAN' object has no attribute 'predict'`` and the
+        source silently received no topics. Deterministic, not intermittent:
+        loaded ⇒ fine, refit ⇒ broken.
+
+        The fix removes the second path instead of repairing it. This is the same
+        cosine assignment BERTopic itself uses for a loaded model, so both cases
+        now behave identically rather than diverging on an implementation detail
+        of whichever clusterer happens to be attached. It also skips the PCA
+        transform that the full pipeline would run, which we do not need in order
+        to compare a document against a topic centroid.
+
+        Returns ``(topic_ids, probabilities)`` in BERTopic's own convention,
+        including its ``-1`` outlier offset.
+        """
+        topic_embeddings = getattr(self._model, "topic_embeddings_", None)
+        if topic_embeddings is None or len(topic_embeddings) == 0:
+            # Fitted but with no topic centroids to compare against. Report it
+            # rather than guessing — this was the condition the old bare except
+            # turned into a silent "no topics".
+            raise RuntimeError(
+                "topic model is fitted but has no topic_embeddings_ to assign against"
+            )
+
+        if embeddings is None:
+            # Lazy, at the call site: the embedding stack is heavy and this
+            # module is imported on paths that never embed anything.
+            from services import rag_embeddings
+
+            embeddings = await rag_embeddings.encode_async(texts)
+        embeddings = np.asarray(embeddings, dtype=np.float32)
+
+        from sklearn.metrics.pairwise import cosine_similarity
+
+        sim = cosine_similarity(embeddings, np.asarray(topic_embeddings, dtype=np.float32))
+        # BERTopic stores the -1 outlier topic first when one exists, as a ZERO
+        # row; sklearn leaves zero rows at similarity 0, so a document similar to
+        # nothing correctly lands on the outlier rather than on a random topic.
+        topics = np.argmax(sim, axis=1) - self._model._outliers
+        probs = np.max(sim, axis=1)
+        return topics, probs
+
     async def add_documents(
         self,
         texts: List[str],
@@ -366,7 +433,7 @@ class TopicModelingService:
                 else:
                     # Incremental update
                     print(f"[TopicModel] Incremental update with {len(texts)} documents")
-                    topics, probs = self._model.transform(texts, embeddings=embeddings)
+                    topics, probs = await self._assign_to_existing_topics(texts, embeddings)
                 
                 # Process results
                 new_topic_ids = set()
@@ -411,10 +478,23 @@ class TopicModelingService:
                     "status": "processed"
                 }
                 
+            except (AttributeError, TypeError) as e:
+                # A missing attribute or a type mismatch here is OUR bug in the
+                # BERTopic integration, not a data condition. This exact class of
+                # failure — `'HDBSCAN' object has no attribute 'predict'` — read
+                # as routine degradation for months while every source added
+                # after a rebuild silently received no topics. Name it.
+                logger.error(
+                    f"[TopicModel] integration fault while adding documents "
+                    f"(source={source_id}): {type(e).__name__}: {e}",
+                    exc_info=True,
+                )
+                return {"topics": [], "documents": 0, "error": str(e)}
             except Exception as e:
-                print(f"[TopicModel] Error adding documents: {e}")
-                import traceback
-                traceback.print_exc()
+                logger.warning(
+                    f"[TopicModel] could not add documents (source={source_id}): {e}",
+                    exc_info=True,
+                )
                 return {"topics": [], "documents": 0, "error": str(e)}
     
     async def _update_topics_metadata(self, topic_ids: set, source_id: str, notebook_id: str):
@@ -756,7 +836,7 @@ Theme name:"""
                 # PCA(5) loses 99.5% of variance → HDBSCAN sees a blob → 1-3 mega-clusters.
                 # PCA(50) preserves ~80-90% of variance → meaningful cluster boundaries.
                 n_pca = min(50, len(texts) - 1)  # Can't exceed n_samples - 1
-                umap_model = PCA(n_components=n_pca)
+                umap_model = PCA(n_components=n_pca, random_state=_PCA_RANDOM_STATE)
                 
                 # Configure HDBSCAN for clustering (sklearn built-in)
                 # 'leaf' selection produces more granular clusters (8-20 themes)
@@ -1110,7 +1190,7 @@ Theme name:"""
                 from sklearn.feature_extraction.text import CountVectorizer, ENGLISH_STOP_WORDS
                 
                 n_pca = min(50, len(texts) - 1)
-                umap_model = PCA(n_components=n_pca)
+                umap_model = PCA(n_components=n_pca, random_state=_PCA_RANDOM_STATE)
                 hdbscan_model = HDBSCAN(
                     min_cluster_size=15, min_samples=5,
                     metric='euclidean', cluster_selection_method='leaf'
