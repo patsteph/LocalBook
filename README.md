@@ -26,34 +26,82 @@ Chat with your documents using AI — completely offline and private. Upload PDF
 ---
 
 ## 🎉 What's New in v2.4.0
-
 **Point LocalBook at a folder and anything that lands in it becomes a source.** Built for a user
-whose audio recorder writes meeting notes to disk: the recordings are now searchable, chattable,
-and usable in everything else LocalBook makes, with no step after the recording ends.
-
+whose audio recorder transcribes 1:1s to markdown: the recordings are now searchable, chattable,
+and usable in every artifact LocalBook makes, with no step for the user after the recording ends.
 ### Added
-- **Linked folders.** Watch a directory per notebook, hourly to weekly. The same file is never
-  ingested twice — a renamed or moved file is recognised by its contents. LocalBook only ever
+- **Linked folders.** Watch a directory per notebook, with a scan cadence from hourly to weekly.
+  The same file is never ingested twice — an unchanged file is skipped on a stat without being
+  opened, and a content hash catches one that was renamed or moved between watched folders.
+  Linking asks what to do with the files already there, showing the count. LocalBook only ever
   **reads** a linked folder; it never moves, renames, edits or deletes anything in it.
-- **Smart folders.** Recordings are analysed — who is in them, what they are about — and a
-  notebook is *suggested*, never chosen for you. Nothing is filed without your click or a rule
-  you wrote, and approving offers "always route these" to create one.
-- **Companions.** Local tools that work alongside LocalBook, set up from Settings. The first is
-  [Meeting Notes](https://github.com/kvango/Meeting-Summarizer), a meeting recorder that runs
-  entirely on your Mac. Connecting one points it at the model LocalBook already has loaded, so it
-  stops running a second copy of the same thing.
-- **OpenAlex** joins the searchable sites — ~250M scholarly works across every discipline.
-
+- Three ways in: at notebook creation, from a notebook's right-click menu, and **Settings →
+  Folders**, which lists every linked folder with what it has added and when it was last checked.
+- **Smart folders.** A folder with no notebook. Recordings are analysed — who is in them, what
+  they are about — and a destination is *suggested*, never applied. Nothing is filed without
+  either your click or a rule you wrote; there is no confidence score at which a recording files
+  itself. Approving offers "always route these", which writes a rule scoped to the people or
+  topics you choose, listed in plain English with what it has actually routed, and revocable.
+- **OpenAlex** joins the searchable sites — ~250M scholarly works across every discipline,
+  alongside arXiv, PubMed and Semantic Scholar. It works without an account; adding a free
+  OpenAlex API key in Settings gives you your own daily budget rather than sharing an anonymous
+  pool. Results link to the open-access PDF where one exists.
+- Linked folders can **ignore filename patterns**. A tool that saves its output twice — say
+  markdown plus a styled page for the browser — no longer files both, which would otherwise put
+  the same document in your notebook twice. HTML from anywhere else is unaffected, and the
+  exclusion is shown on the folder with a one-click way to undo it.
+- **@collector understands folders.** Ask what folders are being watched, scan one now, what is
+  waiting for review, or what rules exist.
+- **Companions.** Local tools that work alongside LocalBook, installed and configured from
+  **Settings → Companions**. The first is [Meeting Notes](https://github.com/kvango/Meeting-Summarizer),
+  a meeting recorder that transcribes and summarises entirely on your Mac.
+  Connecting one points it at the model LocalBook already has loaded, so it stops running a second
+  copy of the same thing. Setting one up asks for your password **once** — LocalBook never sees it,
+  the prompt is macOS's own — and builds the audio device the tool would otherwise ask you to
+  assemble by hand. An optional menu-bar control can start and stop recording.
+  Installers are pinned to a specific published version and checked against a fingerprint before
+  they run, with a link to read that exact version first. LocalBook watches for newer versions and
+  offers them, with the changes one click away; nothing updates on its own. It also checks that an
+  install actually worked rather than trusting it to say so.
+- **Model sizes are now right.** A 4-bit 30B model was reported as needing 105 GB and marked
+  "won't fit" on machines that run it comfortably — quantized weights were being measured as
+  though they were full precision, so every compressed model looked 4–7× larger than it is.
+  Sizes now match the actual download to the byte, 4-bit and 8-bit versions are told apart, and
+  Mixture-of-Experts models are labelled as such with a note that all their experts stay in
+  memory even though only a few are used per word.
+- **Longer conversations use less memory where the model allows it.** The cache that grows as you
+  chat is stored more compactly past a few thousand words. This applies to models that can support
+  it — the default chat model cannot, and asking it to would have produced no answer at all, so it
+  is left alone.
 ### Fixed
 - **Models are no longer reported as far bigger than they are.** A compressed 30B model was
-  measured as needing over 100 GB and marked "won't fit" on machines that run it comfortably.
-  Sizes now match the actual download.
-- **Image generation, which never worked in v2.3.0** — two libraries FLUX Klein needs at runtime
-  were missing from the build.
-- **Downloaded models can be removed** from LLM Studio when you decide against one.
+  measured as needing over 100 GB and marked "won't fit" on machines that run it comfortably —
+  compressed weights were being sized as though uncompressed. Sizes now match the actual download,
+  and the browser tells apart the 4-bit and 8-bit versions of the same model, which previously
+  looked identical.
+- **Image generation, which never worked in v2.3.0.** Two libraries FLUX Klein needs at runtime
+  were missing from the build, so a downloaded image model produced nothing.
+- **Reading text out of images and scanned pages.** The module that does it had two faults that
+  would each have broken it outright: one made the file unparseable, and the other left a call
+  with no matching import. Both were introduced by the same edit and neither was visible to the
+  test suite, because the file is only loaded when it is first used. Every module in the backend
+  is now checked for this on every test run.
+- **Removing a downloaded model.** Models you have tested and decided against can be deleted from
+  LLM Studio. A model in use by a role is refused rather than removed out from under the app.
+### Fixed
+- **Text extraction blocked the event loop.** Seventeen extractors — PDF, Office, audio, video,
+  OCR — were written as asynchronous but ran synchronously, freezing the whole backend while they
+  worked. Researching a topic that returned PDFs could make the app stop responding. They now run
+  off the loop, which also stops large PDF uploads from stalling the interface.
+- **A frozen backend could survive its own watchdog.** Health monitoring only counted consecutive
+  failures, so a process answering intermittently was never restarted; it now also tracks
+  sustained degradation over five minutes. A leftover backend holding the port could also make
+  the next launch exit silently — startup now verifies the port is free and reports the process
+  holding it.
+- Post-ingest work — tagging, timeline extraction, image reading — is now applied from one place,
+  so content arriving by any route gets the same treatment.
 
-Full notes, including everything from v2.3.0, are in [CHANGELOG.md](CHANGELOG.md).
-
+---
 ---
 
 ## What arrived in v2.3.0
