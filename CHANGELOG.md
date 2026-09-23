@@ -70,6 +70,12 @@ and usable in every artifact LocalBook makes, with no step for the user after th
 - **Image generation, which never worked in v2.3.0.** Two libraries FLUX Klein needs at runtime
   were missing from the build, so a downloaded image model produced nothing.
 
+- **Reading text out of images and scanned pages.** The module that does it had two faults that
+  would each have broken it outright: one made the file unparseable, and the other left a call
+  with no matching import. Both were introduced by the same edit and neither was visible to the
+  test suite, because the file is only loaded when it is first used. Every module in the backend
+  is now checked for this on every test run.
+
 - **Removing a downloaded model.** Models you have tested and decided against can be deleted from
   LLM Studio. A model in use by a role is refused rather than removed out from under the app.
 
