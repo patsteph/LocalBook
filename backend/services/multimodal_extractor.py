@@ -302,8 +302,7 @@ Focus on information that would be useful for answering questions about this doc
         try:
             # Use the universal vision dispatcher — handles both /api/generate
             # (Granite/LLaVA) and /api/chat (Gemma4/Llama3.2) automatically
-            from services.llm_runtime import llm_runtime
-from services.llm_service import generate_with_vision, PRIORITY_BACKGROUND
+            from services.llm_service import generate_with_vision, PRIORITY_BACKGROUND
             # Image description is ENRICHMENT (the doc is already searchable on
             # its text) and the gemma vision call shares the single gemma lane
             # with the user's chat query, which can't preempt an in-flight call
@@ -432,7 +431,11 @@ from services.llm_service import generate_with_vision, PRIORITY_BACKGROUND
             except Exception as _e:
                 logger.warning(f"[multimodal] free_for_pipeline skipped: {_e}")
 
-            from services.llm_runtime import llm_runtime
+            # The vision seam, same as describe_image above. This method called
+            # `generate_with_vision` with NO import for it — the original edit
+            # swapped the call in both methods but added the import to only one,
+            # so every page-render OCR raised NameError.
+            from services.llm_service import generate_with_vision
             api_style = self._get_vision_api_style()
 
             for page_idx in range(total_pages):

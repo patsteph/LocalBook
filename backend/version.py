@@ -21,7 +21,7 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-_FALLBACK = "2.3.0"
+_FALLBACK = "2.4.0"
 DATA_SCHEMA_VERSION = "0.6.5"
 
 
