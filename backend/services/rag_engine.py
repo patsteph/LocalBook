@@ -1176,12 +1176,17 @@ Question: {question}{temporal_note}
 
 Answer the question, citing sources inline as [N]. Do not list references at the end."""
 
-        # Two-tier model routing:
-        # - System 1 (phi4-mini): Factual queries - fast, reliable
-        # - System 2 (olmo-3:7b-instruct): Synthesis/complex queries - thorough, good reasoning
+        # Two-tier model routing (models come from config, not from these names):
+        # - System 1 (settings.fast_model): Factual queries - fast, reliable
+        # - System 2 (settings.main_model): Synthesis/complex queries - thorough, good reasoning
         use_fast_model = (query_type == 'factual') and not deep_think
         
-        model_choice = "phi4-mini (fast)" if use_fast_model else "olmo-3:7b-instruct (main)"
+        # Name the model actually configured for the lane. This line hardcoded
+        # "olmo-3:7b-instruct" long after olmo stopped being the main model, so it
+        # printed one model on the line directly above the stream log naming gemma.
+        model_choice = (
+            f"{settings.fast_model} (fast)" if use_fast_model else f"{settings.main_model} (main)"
+        )
         print(f"[RAG STREAM] Query type: {query_type}, using {model_choice}")
         
         # Status 4: Generating answer

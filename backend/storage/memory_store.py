@@ -13,6 +13,7 @@ Namespace Isolation:
 """
 import asyncio
 import json
+import re
 import sqlite3
 from datetime import datetime, timedelta
 from enum import Enum
@@ -36,6 +37,10 @@ from models.memory import (
 )
 from config import settings
 from utils.json_io import atomic_write_json
+
+# Max terms in one FTS5 MATCH expression. Keeps a pathological query from
+# hitting SQLite's expression-depth limit.
+_FTS_MAX_TERMS = 32
 import logging
 logger = logging.getLogger(__name__)
 
@@ -357,16 +362,33 @@ class MemoryStore:
     
     @staticmethod
     def _sanitize_fts_query(query: str) -> str:
-        """Sanitize a query string for FTS5 MATCH to avoid parse errors.
-        Strips FTS5 special syntax characters and boolean operators."""
-        import re
-        # Remove FTS5 special characters: " * ( ) : ^ { } 
-        sanitized = re.sub(r'["\*\(\)\:\^\{\}\[\]]', ' ', query)
-        # Remove standalone boolean operators that FTS5 interprets
-        sanitized = re.sub(r'\b(AND|OR|NOT|NEAR)\b', ' ', sanitized)
-        # Collapse whitespace
-        sanitized = re.sub(r'\s+', ' ', sanitized).strip()
-        return sanitized
+        """Build a safe FTS5 MATCH expression from arbitrary user text.
+
+        ALLOWLIST, not denylist. The previous version stripped a fixed set of
+        special characters, so every character it did not anticipate reached the
+        parser — `?` and `,` among them. Since nearly every user question ends in
+        a question mark, `fts5: syntax error` was the normal case and memory
+        keyword search silently returned nothing, degrading hybrid recall to
+        vector-only with no visible failure. A denylist cannot win this; only
+        emitting characters FTS5 can parse can.
+
+        Each token is quoted, making it a literal — which also disarms AND / OR /
+        NOT / NEAR without needing to strip them, so a memory that genuinely says
+        "NEAR" is searchable.
+
+        Terms are OR-ed. FTS5 defaults to AND, under which a natural question
+        requires EVERY word present: measured 0 hits for all three of the
+        evaluator's questions even once they parsed. BM25 is built for OR — IDF
+        drives stopwords to ~zero weight and the relevant rows still sort top
+        (measured on a 303-row corpus: the three relevant rows scored -11.0,
+        -9.8 and -5.3 against -1.1 for stopword-only noise).
+        """
+        tokens = re.findall(r"\w+", query)
+        if not tokens or sum(len(tok) for tok in tokens) < 2:
+            return ""
+        # Bound the expression: FTS5 has an expression-depth limit, and a
+        # pathologically long query is never a useful keyword search anyway.
+        return " OR ".join(f'"{tok}"' for tok in tokens[:_FTS_MAX_TERMS])
     
     def _bm25_search(
         self,
@@ -382,7 +404,7 @@ class MemoryStore:
         try:
             # Sanitize query for FTS5 safety
             safe_query = self._sanitize_fts_query(query)
-            if not safe_query or len(safe_query) < 2:
+            if not safe_query:
                 return {}
             
             conn = self._get_recall_connection()
@@ -423,9 +445,21 @@ class MemoryStore:
                 return {r: 1.0 for r in raw_scores}
             return {mid: score / max_score for mid, score in raw_scores.items()}
             
+        except sqlite3.OperationalError as e:
+            # A syntax error here is OUR bug, not bad user input: _sanitize_fts_query
+            # is an allowlist, so nothing it emits should be unparseable. Say so
+            # loudly — this exact failure ran silently for months because it read
+            # as routine degradation.
+            if "syntax error" in str(e).lower():
+                logger.error(
+                    f"[MemoryStore] BM25 built an unparseable FTS5 expression from "
+                    f"{query!r} — this is a sanitizer bug, not bad input: {e}"
+                )
+            else:
+                logger.warning(f"[MemoryStore] BM25 search unavailable: {e}")
+            return {}
         except Exception as e:
-            # FTS query can fail on malformed input — graceful degradation
-            print(f"[MemoryStore] BM25 search error: {e}")
+            logger.warning(f"[MemoryStore] BM25 search failed: {e}")
             return {}
     
     def _backfill_fts_from_archival(self) -> None:
