@@ -487,7 +487,33 @@ async def lifespan(app: FastAPI):
     except Exception as _e:
         logger.warning(f"[main] curator event bus start failed (non-fatal): {_e}")
 
+    # LB-2: the MCP app mounted at /mcp carries its OWN lifespan, and that is
+    # what starts its session manager. Mounting without running it gives a
+    # server that accepts a connection and then fails at runtime. Entered here
+    # and exited on the way out, around the same yield as everything else.
+    #
+    # NOTE this is fastmcp 2.x, where `http_app()` returns a Starlette app with
+    # a lifespan. The older low-level SDK's `session_manager.run()` does not
+    # exist on this version.
+    _mcp_lifespan = None
+    try:
+        from services.mcp_server import lifespan_context as _mcp_lifespan_context
+        _mcp_lifespan = _mcp_lifespan_context(app)
+        await _mcp_lifespan.__aenter__()
+        logger.info("[main] MCP server ready at /mcp")
+    except Exception as _e:
+        # Non-fatal: LocalBook itself must still start. A companion that cannot
+        # reach /mcp gets a clear failure; the user's app does not.
+        _mcp_lifespan = None
+        logger.error(f"[main] MCP server failed to start (non-fatal): {_e}")
+
     yield
+
+    if _mcp_lifespan is not None:
+        try:
+            await _mcp_lifespan.__aexit__(None, None, None)
+        except Exception as _e:
+            logger.warning(f"[main] MCP shutdown: {_e}")
     
     # Wait for startup task to complete if still running
     if _startup_task and not _startup_task.done():
@@ -664,6 +690,14 @@ app.include_router(companions_api.router, tags=["companions"])
 # instead of loading a second copy of the same model. Auth is the companion
 # key, checked inside the router (see utils/auth_middleware EXEMPT_PREFIXES).
 app.include_router(openai_compat.router, prefix="/v1", tags=["openai-compat"])
+# LB-2: MCP for agent companions (Jocasta). Loopback-only, and gated on a
+# companion key carrying scope `mcp` — both enforced in the ASGI middleware
+# inside services/mcp_server.py, not here. Its lifespan is entered above.
+try:
+    from services.mcp_server import get_app as _mcp_app
+    app.mount("/mcp", _mcp_app())
+except Exception as _e:
+    logger.error(f"[main] could not mount /mcp (non-fatal): {_e}")
 app.include_router(memory.router, tags=["memory"])
 app.include_router(graph.router, tags=["knowledge-graph"])
 app.include_router(constellation_ws.router, tags=["constellation"])

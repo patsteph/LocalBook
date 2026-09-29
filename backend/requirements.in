@@ -19,6 +19,7 @@ langgraph>=0.2.0  # Allow 0.x or 1.x - basic graph functionality
 # Security/Encryption
 cryptography>=42.0.0  # For credential locker encryption + K-1 keyvault (X25519/HKDF/AES-GCM)
 mnemonic>=0.21  # BIP-39 recovery phrase for K-1 key custody (24 words -> X25519 recovery key)
+fastmcp>=2.14.0  # LB-2: MCP server at /mcp for agent companions (pulls the `mcp` SDK)
 pyobjc-framework-LocalAuthentication>=10.0; sys_platform == "darwin"  # Touch ID / biometric auth for Keychain
 
 # Document processing

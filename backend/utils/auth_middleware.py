@@ -66,6 +66,12 @@ EXEMPT_PREFIXES = (
     # key is a strictly narrower grant (this endpoint only) and is separately
     # revocable from Settings → Companions.
     "/v1/",
+    # MCP for agent companions. NOT unauthenticated — services/mcp_server.py
+    # gates it on loopback plus a companion key carrying scope `mcp`, checked
+    # in its own ASGI middleware. Same reasoning as /v1/: a companion holds a
+    # config file, not a live session, so it cannot carry the per-launch app
+    # token. The grant is narrower (scope `mcp` only) and separately revocable.
+    "/mcp",
     "/audio/download/",
     # Same reasoning as /audio/download/ — the canvas <video> element loads
     # via plain HTML5 src and can't attach the X-LocalBook-Token header.

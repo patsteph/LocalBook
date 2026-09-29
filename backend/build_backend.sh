@@ -270,6 +270,10 @@ python -W ignore -m PyInstaller \
     --hidden-import=services.stuck_source_recovery \
     --hidden-import=services.keychain_manager \
     --hidden-import=services.keyvault \
+    --hidden-import=services.mcp_server \
+    --hidden-import=services.companion_keys \
+    --hidden-import=services.companion_audit \
+    --hidden-import=utils.url_guard \
     --hidden-import=services.shallow_scrape_remediation \
     --hidden-import=services.svg_templates \
     --hidden-import=services.template_scorer \
@@ -338,6 +342,8 @@ python -W ignore -m PyInstaller \
     --collect-all=evaluator \
     --collect-all=kokoro_mlx \
     --collect-all=mnemonic \
+    --collect-all=fastmcp \
+    --collect-all=mcp \
     --collect-all=trafilatura \
     --collect-all=justext \
     --collect-all=mlx \
