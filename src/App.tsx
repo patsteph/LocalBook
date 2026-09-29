@@ -27,6 +27,7 @@ import { emitEvent, onEvent } from './lib/events';
 import { prewarmMermaid } from './components/shared/MermaidRenderer';
 import { useSystemHealth, STATUS_COLORS } from './hooks/useSystemHealth';
 import { noteService } from './services/noteService';
+import { refreshScopeFor } from './services/liveRefresh';
 
 function App() {
   const [selectedNotebookId, setSelectedNotebookId] = useState<string | null>(null);
@@ -384,11 +385,35 @@ function App() {
       .catch(() => {});
   }, [selectedNotebookId]);
 
+  // A folder scan, a collector run or a batch of link expansions can fire dozens of
+  // source_updated events in a second, and each notebook-list refresh is two API calls
+  // (notebooks + sections). Coalesce them into one refetch per burst.
+  const notebooksRefreshTimer = useRef<number | null>(null);
+  const scheduleNotebooksRefresh = useCallback(() => {
+    if (notebooksRefreshTimer.current !== null) return;
+    notebooksRefreshTimer.current = window.setTimeout(() => {
+      notebooksRefreshTimer.current = null;
+      setRefreshNotebooks(prev => prev + 1);
+    }, 400);
+  }, []);
+  useEffect(() => () => {
+    if (notebooksRefreshTimer.current !== null) window.clearTimeout(notebooksRefreshTimer.current);
+  }, []);
+
   // WebSocket for background task notifications (source processing failures).
   // S3/C5: shares the ONE app-wide constellation socket.
   useConstellationWS(
     useCallback((message: any) => {
-      if (message.type === 'source_updated' && message.data?.notebook_id === selectedNotebookId) {
+      // `refreshScopeFor` owns the distinction that was wrong here: the notebook LIST is
+      // invalidated by a source landing in ANY notebook (it shows a count for each one),
+      // while only the selected notebook's panels care about whose event it was. Before
+      // this, both were gated on the selected notebook — and the counter that refreshes
+      // the badges was bumped from inside `SourcesList`, which unmounts with its drawer.
+      // Result: badges moved only on a UI reload.
+      const scope = refreshScopeFor(message, selectedNotebookId);
+      if (scope.notebooks) scheduleNotebooksRefresh();
+
+      if (message.type === 'source_updated' && scope.selectedNotebook) {
         setRefreshSources(prev => prev + 1);
         if (message.data.status === 'completed') {
           addToast({
@@ -407,7 +432,11 @@ function App() {
         }
       } else if (message.type === 'canvas_item_created' && message.item) {
         const item = message.item;
-        if (item.metadata?.notebookId === selectedNotebookId || !item.metadata?.notebookId) {
+        // `selectedNotebookId &&` preserves the old behaviour exactly: this subscription
+        // used to be disabled outright while nothing was selected, and a scan carrying no
+        // notebookId would otherwise now land on an empty canvas.
+        if (selectedNotebookId &&
+            (item.metadata?.notebookId === selectedNotebookId || !item.metadata?.notebookId)) {
           setCanvasItems(prev => {
             if (prev.some(i => i.id === item.id)) return prev;
             return [...prev, {
@@ -424,8 +453,13 @@ function App() {
           });
         }
       }
-    }, [selectedNotebookId, addToast]),
-    !!selectedNotebookId,
+    }, [selectedNotebookId, addToast, scheduleNotebooksRefresh]),
+    // Subscribed unconditionally. It used to be `!!selectedNotebookId`, which meant that
+    // with nothing selected the app heard nothing at all — and the collector, the folder
+    // watcher and an extension capture into any notebook all still add sources in that
+    // state, leaving every badge stale. The socket is a module-level singleton shared with
+    // the other panels, so an extra subscriber costs nothing.
+    true,
   );
 
   useEffect(() => {

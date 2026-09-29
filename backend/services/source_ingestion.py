@@ -19,6 +19,21 @@ from services.rag_engine import rag_engine
 from services.content_date_extractor import extract_content_date
 from services.event_logger import log_document_captured
 
+
+async def _notify_clients(notebook_id: str, source_id: str, status: str, title: str,
+                          chunks: int = 0, error: str = "") -> None:
+    """Push a source_updated frame; never raise. Imported lazily to keep this service
+    free of an api-layer import at module scope."""
+    try:
+        from api.constellation_ws import notify_source_updated
+        payload = {"notebook_id": notebook_id, "source_id": source_id,
+                   "status": status, "title": title, "chunks": chunks}
+        if error:
+            payload["error"] = error[:100]
+        await notify_source_updated(payload)
+    except Exception as e:
+        logger.debug(f"[source-ingestion] notify failed: {type(e).__name__}: {e}")
+
 logger = logging.getLogger(__name__)
 
 
@@ -109,7 +124,14 @@ async def create_and_ingest_source(
             "status": "failed",
             "error": str(e)[:200],
         })
+        await _notify_clients(notebook_id, sid, "failed", filename, error=str(e))
         raise
+
+    # 3b. Tell the UI. This helper is documented as the workflow every ingestion path
+    # should use, and it was the one step it did not carry: a source created through it
+    # appeared only after a reload, because the notebook-list source-count badge and the
+    # source list both refresh off this event. Non-fatal by construction.
+    await _notify_clients(notebook_id, sid, "completed", filename, chunks=chunks)
 
     # 4. Auto-tag the source (non-fatal)
     try:
