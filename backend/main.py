@@ -754,6 +754,9 @@ app.include_router(companions_api.router, tags=["companions"])
 # the old machine-derived key is a DOWNGRADE in durability — see api/keyvault.py.
 from api import keyvault as keyvault_api
 app.include_router(keyvault_api.router, tags=["keyvault"])
+# LB-10: backup + verify. The destination is always outside the data dir.
+from api import backup as backup_api
+app.include_router(backup_api.router, tags=["backup"])
 # OpenAI-compatible surface so companion tools can use LocalBook's engine
 # instead of loading a second copy of the same model. Auth is the companion
 # key, checked inside the router (see utils/auth_middleware EXEMPT_PREFIXES).
