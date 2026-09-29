@@ -5,16 +5,15 @@
   "description": "Your research companion - capture, summarize, and explore web content with LocalBook",
   "scripts": {
     "dev": "plasmo dev --no-open",
+    "prebuild": "node scripts/sync-version.mjs",
     "clean": "rm -rf build .plasmo",
     "build": "rm -rf build/LocalBook-Extension && plasmo build && mv build/chrome-mv3-prod build/LocalBook-Extension",
     "package": "plasmo package"
   },
   "dependencies": {
-    "@types/turndown": "^5.0.6",
     "plasmo": "0.90.5",
     "react": "18.2.0",
-    "react-dom": "18.2.0",
-    "turndown": "^7.2.2"
+    "react-dom": "18.2.0"
   },
   "devDependencies": {
     "@types/chrome": "0.0.268",
