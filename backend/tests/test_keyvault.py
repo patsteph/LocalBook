@@ -104,13 +104,22 @@ def test_only_the_public_half_is_ever_written(vault, phrase):
     vault.wrap_for_recovery("backup")
 
     priv_raw = vault._recovery_private_key(phrase).private_bytes_raw()
+    words = phrase.split()
+    # Consecutive PAIRS, not single words. Scanning for individual words was
+    # flaky at roughly 1 run in 5: the envelope JSON contains the field name
+    # `device_id`, and `device` is itself a BIP-39 word — so the test failed on
+    # a structural key name while no secret had leaked at all. A real leak
+    # preserves word ORDER, which a pair catches and a lone common word does not.
+    pairs = [f"{a} {b}".encode() for a, b in zip(words, words[1:])]
+
     for path in (vault._keys_dir()).rglob("*"):
         if path.is_file():
             blob = path.read_bytes()
             assert priv_raw not in blob
             assert base64.b64encode(priv_raw) not in blob
-            for word in phrase.split():
-                assert word.encode() not in blob or len(word) < 4
+            assert phrase.encode() not in blob
+            for pair in pairs:
+                assert pair not in blob
 
 
 def test_wrong_phrase_is_refused(vault, phrase):
