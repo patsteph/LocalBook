@@ -607,3 +607,85 @@ async def get_voice_profile():
     profile = voice_engine.get_profile()
     return profile or {}
 
+
+
+# ── Shared GPU budget (LB-1) ────────────────────────────────────────────────
+
+class ExternalReserveRequest(BaseModel):
+    gb: float
+
+
+@router.get("/gpu-budget")
+async def get_gpu_budget():
+    """How LocalBook's memory budget is arrived at, in its parts.
+
+    Three numbers rather than one: "budget 6.7 GB" on a 48 GB Mac reads as a bug
+    until you can see that 26 of it was deliberately handed to something else.
+    """
+    from services.model_sizing import (
+        RESIDENT_RESERVE_GB, budget_gb, external_reserve_gb, working_set_gb,
+    )
+
+    return {
+        "working_set_gb": round(working_set_gb(), 2),
+        "resident_reserve_gb": RESIDENT_RESERVE_GB,
+        "external_reserve_gb": external_reserve_gb(),
+        "budget_gb": budget_gb(),
+    }
+
+
+@router.post("/gpu-budget/external-reserve")
+async def set_external_reserve(req: ExternalReserveRequest):
+    """Set how much of the GPU belongs to something other than LocalBook.
+
+    Written to the data-dir `.env`, which is the file `config.py` actually reads
+    in a bundle — `llm_locker` writes to the CWD `.env`, and a packaged app's
+    CWD is read-only, so that path silently does nothing in production.
+
+    PER-MACHINE, NEVER SYNCED (LB-12h). The mini needs 0; a Mac also running a
+    ~26 GB agent brain needs about 26. A synced value would be wrong on at least
+    one machine by construction.
+
+    Applied to the live settings object too, so it takes effect without a
+    restart — `external_reserve_gb()` is read per call for exactly this reason.
+    """
+    from pathlib import Path
+
+    from config import settings, get_data_directory
+    from services.model_sizing import working_set_gb
+
+    gb = float(req.gb)
+    if gb < 0:
+        raise HTTPException(status_code=400, detail="a reserve cannot be negative")
+
+    ws = working_set_gb()
+    if ws > 0 and gb >= ws:
+        raise HTTPException(
+            status_code=400,
+            detail=f"a reserve of {gb} GB leaves nothing for LocalBook on this "
+                   f"machine ({ws:.1f} GB addressable).",
+        )
+
+    key = "LOCALBOOK_EXTERNAL_RESERVE_GB"
+    env_path = Path(get_data_directory()) / ".env"
+    try:
+        # Read-modify-write, preserving every other line including comments.
+        # This file is the user's, and other settings live in it.
+        lines = env_path.read_text().splitlines() if env_path.exists() else []
+        out, replaced = [], False
+        for line in lines:
+            if line.strip().startswith(f"{key}="):
+                out.append(f"{key}={gb}")
+                replaced = True
+            else:
+                out.append(line)
+        if not replaced:
+            out.append(f"{key}={gb}")
+        env_path.parent.mkdir(parents=True, exist_ok=True)
+        env_path.write_text("\n".join(out) + "\n")
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"could not save the reserve: {exc}")
+
+    settings.external_reserve_gb = gb
+    logger.info(f"[gpu-budget] external reserve set to {gb} GB")
+    return await get_gpu_budget()

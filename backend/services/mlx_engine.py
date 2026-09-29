@@ -809,14 +809,37 @@ class MLXEngine:
                 limit_gb = float(_env)
                 _src = "env override"
             else:
-                from services.model_sizing import working_set_gb
+                from services.model_sizing import external_reserve_gb, working_set_gb
                 _ws = working_set_gb()
                 # 90 % of the working set: mlx-lm warns above this, and the ecosystem's
                 # posture is to refuse rather than warn (mlx-lm#883 — wired memory blocks
                 # Jetsam, so exhaustion panics the driver instead of killing the process).
-                limit_gb = round(_ws * 0.90, 2) if _ws > 0 else 12.0
-                _src = f"90% of {_ws:.2f} GiB working set" if _ws > 0 else "fallback"
+                #
+                # LB-1: minus whatever is reserved for another process on this
+                # machine. Without this the cap describes a machine LocalBook
+                # does not actually have to itself, and the agent brain and
+                # LocalBook both size themselves against the same memory.
+                _ext = external_reserve_gb()
+                limit_gb = round(max(_ws * 0.90 - _ext, 1.0), 2) if _ws > 0 else 12.0
+                _src = (f"90% of {_ws:.2f} GiB working set"
+                        + (f" less {_ext:.2f} GiB reserved for other apps" if _ext else "")
+                        ) if _ws > 0 else "fallback"
             mx.set_memory_limit(int(limit_gb * 1024 ** 3))
+
+            # LB-1: bound MLX's internal buffer cache. Unbounded it holds on to
+            # every buffer it has ever allocated, which looks exactly like
+            # LocalBook hoarding memory the moment something else wants some —
+            # and on a shared machine that is the difference between the agent
+            # brain loading and the machine swapping.
+            try:
+                from config import settings as _settings
+                _cache_gb = float(getattr(_settings, "mlx_cache_limit_gb", 2.0) or 0)
+                if _cache_gb > 0:
+                    mx.set_cache_limit(int(_cache_gb * 1024 ** 3))
+                    logger.info(f"[mlx-engine] buffer cache limit {_cache_gb} GB")
+            except Exception as _ce:
+                logger.debug(f"[mlx-engine] could not set cache limit: {_ce}")
+
             logger.info(f"[mlx-engine] memory limit {limit_gb} GB ({_src})")
         except Exception as e:
             logger.debug(f"[mlx-engine] could not set memory limit: {e}")

@@ -273,6 +273,7 @@ python -W ignore -m PyInstaller \
     --hidden-import=api.keyvault \
     --hidden-import=services.mcp_server \
     --hidden-import=services.event_feed \
+    --hidden-import=services.model_sizing \
     --hidden-import=services.companion_keys \
     --hidden-import=services.companion_audit \
     --hidden-import=utils.url_guard \

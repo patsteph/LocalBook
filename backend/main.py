@@ -782,8 +782,29 @@ async def root():
 
 @app.get("/health")
 async def health():
-    """Health check endpoint"""
-    return {"status": "healthy"}
+    """Health check endpoint.
+
+    Stays cheap and never raises: the Tauri shell polls this for readiness, and
+    it is exempt from the app token, so anything slow or throwing here shows up
+    as "LocalBook won't start".
+    """
+    out = {"status": "healthy"}
+    try:
+        from services.model_sizing import (
+            RESIDENT_RESERVE_GB, budget_gb, external_reserve_gb, working_set_gb,
+        )
+        # LB-1: what LocalBook thinks it may use, and why. Three numbers rather
+        # than one, because "budget 6.7 GB" on a 48 GB Mac is alarming until you
+        # can see that 26 of it was deliberately handed to something else.
+        out["memory"] = {
+            "working_set_gb": round(working_set_gb(), 2),
+            "resident_reserve_gb": RESIDENT_RESERVE_GB,
+            "external_reserve_gb": external_reserve_gb(),
+            "budget_gb": budget_gb(),
+        }
+    except Exception as exc:
+        out["memory"] = {"error": str(exc)}
+    return out
 
 if __name__ == "__main__":
     import uvicorn

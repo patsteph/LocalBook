@@ -2,6 +2,7 @@
 import sys
 from typing import Optional
 from pathlib import Path
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings
 
 def get_data_directory() -> Path:
@@ -173,6 +174,34 @@ class Settings(BaseSettings):
     mlx_kv_bits: Optional[int] = 8
     mlx_kv_group_size: int = 64
     mlx_quantized_kv_start: int = 4096
+
+    # ── Shared GPU budget (LB-1, 2026-09-29) ─────────────────────────
+    # How much of the GPU's working set belongs to something OTHER than
+    # LocalBook — an agent brain sharing the machine, chiefly. LocalBook
+    # subtracts this before deciding what it may load, so the other process
+    # is not competing for memory LocalBook has already committed.
+    #
+    # PER-MACHINE, NEVER SYNCED (LB-12h). The Mac mini needs 0; the MBP that
+    # also runs a ~24-28 GB agent brain needs about 26. A synced value would
+    # be wrong on at least one machine by construction.
+    #
+    # 0.0 means "LocalBook has the machine to itself", which is the honest
+    # default and exactly what was assumed before this existed.
+    # The alias keeps the LOCALBOOK_ prefix the rest of the app's env vars use,
+    # while still being settable from the data-dir .env like every other
+    # setting — a bare os.getenv here would be read at import and would ignore
+    # that file entirely.
+    external_reserve_gb: float = Field(
+        0.0,
+        validation_alias=AliasChoices(
+            "LOCALBOOK_EXTERNAL_RESERVE_GB", "external_reserve_gb"
+        ),
+    )
+
+    # MLX's internal buffer cache. Unbounded it will happily hold on to every
+    # buffer it has ever allocated, which reads as LocalBook hoarding memory
+    # the moment anything else on the machine wants some.
+    mlx_cache_limit_gb: float = 2.0
 
     # ── Linked Folders (2026-09-16) ──────────────────────────────────
     # How often the watcher loop wakes. This is NOT the scan cadence: each
