@@ -269,6 +269,7 @@ python -W ignore -m PyInstaller \
     --hidden-import=services.mlx_download \
     --hidden-import=services.stuck_source_recovery \
     --hidden-import=services.keychain_manager \
+    --hidden-import=services.keyvault \
     --hidden-import=services.shallow_scrape_remediation \
     --hidden-import=services.svg_templates \
     --hidden-import=services.template_scorer \
@@ -336,6 +337,7 @@ python -W ignore -m PyInstaller \
     --collect-all=sentence_transformers \
     --collect-all=evaluator \
     --collect-all=kokoro_mlx \
+    --collect-all=mnemonic \
     --collect-all=trafilatura \
     --collect-all=justext \
     --collect-all=mlx \
