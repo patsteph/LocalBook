@@ -425,6 +425,29 @@ def test_an_audit_failure_does_not_fail_the_call(store, monkeypatch):
     companion_audit.record(companion_id="jocasta", tool="t")  # must not raise
 
 
+def test_the_bundle_collects_fastmcps_binary_dependencies():
+    """Found the hard way, 2026-09-29: the first bundled run failed with
+    `No module named 'lupa.lua51'` and MCP did not start.
+
+    fastmcp -> pydocket -> fakeredis -> lupa, and lupa.lua51 is a compiled
+    .so submodule. PyInstaller's static analysis does not follow that, so
+    --collect-all=fastmcp alone is not enough. Everything imported fine in the
+    venv and failed only in the bundle — which is why this assertion exists
+    next to tests that actually import fastmcp.
+    """
+    from pathlib import Path
+
+    import fastmcp  # the functional half: it must really import
+
+    assert fastmcp.__version__
+
+    build_sh = Path(__file__).resolve().parents[1] / "build_backend.sh"
+    contents = build_sh.read_text()
+    for flag in ("--collect-all=fastmcp", "--collect-all=mcp",
+                 "--collect-all=fakeredis", "--collect-all=lupa"):
+        assert flag in contents, f"{flag} missing from build_backend.sh"
+
+
 # ── the mount, end to end ───────────────────────────────────────────────────
 #
 # Unit tests above drive the middleware and the tool functions separately. This

@@ -344,6 +344,8 @@ python -W ignore -m PyInstaller \
     --collect-all=mnemonic \
     --collect-all=fastmcp \
     --collect-all=mcp \
+    --collect-all=fakeredis \
+    --collect-all=lupa \
     --collect-all=trafilatura \
     --collect-all=justext \
     --collect-all=mlx \
