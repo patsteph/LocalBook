@@ -39,44 +39,160 @@ class CredentialLocker:
     """Service for managing encrypted site credentials."""
     
     def __init__(self):
-        self._data_dir = Path(os.path.expanduser("~/Library/Application Support/LocalBook"))
-        self._credentials_file = self._data_dir / "credentials.enc"
         self._key: Optional[bytes] = None
         self._fernet: Optional[Fernet] = None
-    
+
+    # The data dir is resolved per access rather than captured in __init__, so a
+    # test can monkeypatch settings.data_dir. This module is a singleton built at
+    # import time, and `backend/.venv` resolves settings.data_dir to the REAL
+    # production data dir — a captured path here pointed every test at the user's
+    # own credentials.
+    @property
+    def _data_dir(self) -> Path:
+        from config import settings
+        return Path(settings.data_dir)
+
+    @property
+    def _credentials_file(self) -> Path:
+        return self._data_dir / "credentials.enc"
+
+    @property
+    def _keyvault_marker(self) -> Path:
+        """Present once this install's secrets are encrypted under the keyvault key."""
+        return self._data_dir / "credentials.keyvault"
+
     def _get_machine_salt(self) -> bytes:
         """Get machine-specific salt for key derivation."""
         # Use combination of machine-specific values
         import platform
         import getpass
-        
+
         machine_info = f"{platform.node()}-{getpass.getuser()}-LocalBook-v1"
         return hashlib.sha256(machine_info.encode()).digest()
-    
+
     def _derive_key(self, master_password: Optional[str] = None) -> bytes:
-        """Derive encryption key from machine info and optional master password."""
+        """LEGACY key derivation — kept ONLY to read pre-K-1 files during migration.
+
+        This is the key K-1 exists to replace: PBKDF2 over
+        `hostname + username + "LocalBook-v1"` with the literal password
+        "LocalBook-Default-Key". Every part of that input is public, so the key is
+        not a secret at all — anyone who knows the machine name and the account
+        name can derive it. It is also fragile: renaming the Mac silently locks
+        the user out of their own IMAP passwords.
+
+        Do not call this for new writes. `_ensure_initialized` uses the keyvault
+        key; this survives so a machine that has not migrated yet can still be
+        read once, in `migrate_to_keyvault`.
+        """
         salt = self._get_machine_salt()
-        
-        # If no master password, use a default derived from machine info
-        # This provides basic protection but isn't as secure as a user password
         password = (master_password or "LocalBook-Default-Key").encode()
-        
+
         kdf = PBKDF2HMAC(
             algorithm=hashes.SHA256(),
             length=32,
             salt=salt,
             iterations=100000,
         )
-        
+
         key = base64.urlsafe_b64encode(kdf.derive(password))
         return key
-    
+
+    def _keyvault_key(self) -> bytes:
+        """The K-1 key for this device, as a Fernet key."""
+        from services import keyvault
+        return base64.urlsafe_b64encode(keyvault.get_or_create("credentials"))
+
     def _ensure_initialized(self):
-        """Ensure the encryption is initialized."""
-        if self._fernet is None:
-            self._key = self._derive_key()
-            self._fernet = Fernet(self._key)
-    
+        """Ensure the encryption is initialized, migrating off the legacy key once.
+
+        Fails closed: if the keyvault key cannot be read, this raises rather than
+        falling back to the legacy key. Falling back would re-encrypt the user's
+        credentials under the public, machine-derived key that K-1 exists to
+        remove, and it would do it silently.
+        """
+        if self._fernet is not None:
+            return
+
+        self.migrate_to_keyvault()
+        self._key = self._keyvault_key()
+        self._fernet = Fernet(self._key)
+
+    def migrate_to_keyvault(self) -> Dict[str, Any]:
+        """Re-encrypt credentials.enc and auth/*.enc under the keyvault key.
+
+        Idempotent: a marker file records that this install is already migrated.
+
+        The order matters. Everything is decrypted with the old key FIRST, while
+        it still works, then written to new files, then verified by decrypting
+        again with the new key, and only then swapped in. The originals are kept
+        as `.pre-keyvault` — a half-finished migration must never be able to
+        destroy the only copy of an IMAP password.
+        """
+        result: Dict[str, Any] = {"migrated": False, "files": [], "reason": None}
+
+        if self._keyvault_marker.exists():
+            result["reason"] = "already migrated"
+            return result
+
+        data_dir = self._data_dir
+        auth_dir = data_dir / "auth"
+        legacy_files = [p for p in (self._credentials_file,) if p.exists()]
+        legacy_files += sorted(auth_dir.glob("*.enc")) if auth_dir.exists() else []
+
+        if not legacy_files:
+            # Nothing to carry over: a fresh install. Claim the marker so the
+            # next launch goes straight to the keyvault key.
+            data_dir.mkdir(parents=True, exist_ok=True)
+            self._keyvault_marker.write_text("no legacy files at migration time\n")
+            result["reason"] = "nothing to migrate"
+            return result
+
+        old_fernet = Fernet(self._derive_key())
+        new_key = self._keyvault_key()
+        new_fernet = Fernet(new_key)
+
+        # 1. Decrypt everything up front, with the old key, before writing anything.
+        plaintexts: Dict[Path, bytes] = {}
+        for path in legacy_files:
+            try:
+                plaintexts[path] = old_fernet.decrypt(path.read_bytes())
+            except Exception as exc:
+                raise RuntimeError(
+                    f"[CREDENTIAL_LOCKER] cannot decrypt {path.name} with the legacy key "
+                    f"({exc}). Refusing to migrate — nothing has been changed. If this "
+                    f"Mac was renamed, the legacy key no longer derives; restore from a "
+                    f"backup or re-enter the credentials."
+                ) from exc
+
+        # 2. Write re-encrypted copies alongside, and verify each one reads back.
+        staged: Dict[Path, Path] = {}
+        for path, plaintext in plaintexts.items():
+            tmp = path.with_suffix(path.suffix + ".keyvault-tmp")
+            tmp.write_bytes(new_fernet.encrypt(plaintext))
+            if new_fernet.decrypt(tmp.read_bytes()) != plaintext:
+                raise RuntimeError(
+                    f"[CREDENTIAL_LOCKER] verification failed for {path.name}; "
+                    f"nothing has been swapped in"
+                )
+            staged[path] = tmp
+
+        # 3. Swap, keeping the originals.
+        for path, tmp in staged.items():
+            backup = path.with_suffix(path.suffix + ".pre-keyvault")
+            path.replace(backup)
+            tmp.replace(path)
+            result["files"].append(path.name)
+
+        self._keyvault_marker.write_text(
+            f"migrated {len(staged)} file(s); originals kept as *.pre-keyvault\n"
+        )
+        result["migrated"] = True
+        print(
+            f"[CREDENTIAL_LOCKER] migrated {len(staged)} file(s) to the keyvault key; "
+            f"originals kept as *.pre-keyvault"
+        )
+        return result
+
     def _load_credentials(self) -> Dict[str, Dict[str, Any]]:
         """Load and decrypt credentials from file."""
         self._ensure_initialized()
