@@ -372,6 +372,44 @@ def build_server():
             }
 
     @mcp.tool(annotations=read_only)
+    async def events_since(
+        cursor: Optional[str] = None,
+        kinds: Optional[List[str]] = None,
+        limit: int = 50,
+    ) -> Dict[str, Any]:
+        """What has happened in LocalBook since you last asked.
+
+        Poll this from your heartbeat. Pass back the `cursor` you were given; the
+        first call can omit it. Covers both agent activity (@curator, @collector,
+        @research) and notebook activity (sources added, chats, quizzes).
+
+        Ordering is roughly by time and is not a total order — see
+        services/event_feed. Call `event_kinds` to discover what `kinds` accepts.
+        """
+        limit = _bounded_k(limit, 50)
+        args = {"cursor": cursor, "kinds": kinds, "limit": limit}
+        async with _audited("events_since", args):
+            import asyncio as _asyncio
+
+            from services import event_feed
+
+            # SQLite reads across two databases — off the event loop, per the
+            # repo's standing rule about sync work on a hot path.
+            return await _asyncio.to_thread(
+                event_feed.events_since, cursor=cursor, kinds=kinds, limit=limit
+            )
+
+    @mcp.tool(annotations=read_only)
+    async def event_kinds() -> Dict[str, Any]:
+        """The event kinds actually present, for filtering `events_since`."""
+        async with _audited("event_kinds", {}):
+            import asyncio as _asyncio
+
+            from services import event_feed
+
+            return {"kinds": await _asyncio.to_thread(event_feed.known_kinds)}
+
+    @mcp.tool(annotations=read_only)
     async def web_search(query: str, n: int = 5) -> Dict[str, Any]:
         """Search the web. Use this only when the user's own notebooks do not have it."""
         n = _bounded_k(n, 5)
