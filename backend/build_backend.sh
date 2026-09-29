@@ -276,6 +276,7 @@ python -W ignore -m PyInstaller \
     --hidden-import=services.model_sizing \
     --hidden-import=services.migration_ledger \
     --hidden-import=services.backup_service \
+    --hidden-import=services.restore_service \
     --hidden-import=api.backup \
     --hidden-import=services.companion_keys \
     --hidden-import=services.companion_audit \

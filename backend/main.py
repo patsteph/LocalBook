@@ -31,6 +31,30 @@ if _ca:
         if not _cur or not os.path.exists(_cur):   # override a missing/broken pre-set value
             os.environ[_var] = _ca
 
+# ── LB-10: apply a staged restore BEFORE anything opens a database ──────────
+# This has to be the first real thing that happens. `storage.database.Database`
+# opens the SQLite connection on first use, and importing the API modules below
+# reaches it — so by the time the lifespan runs, the directory is already in
+# use. Swapping it then would be the torn state a restore exists to escape.
+#
+# Deliberately quiet and non-fatal when there is nothing staged: the common case
+# is every launch, forever.
+try:
+    from services.restore_service import apply_pending as _apply_pending_restore
+    _restore_result = _apply_pending_restore()
+    if _restore_result:
+        if _restore_result.get("applied"):
+            print("=" * 72)
+            print("♻️  RESTORED FROM BACKUP")
+            print(f"    archive:  {_restore_result.get('archive')}")
+            print(f"    previous data kept at: {_restore_result.get('previous_data_kept_at')}")
+            print("    Run a full re-index — the vector store is not in a backup (D19).")
+            print("=" * 72)
+        else:
+            print(f"⚠️  staged restore could not be applied: {_restore_result.get('error')}")
+except Exception as _e:
+    print(f"⚠️  restore pre-flight skipped: {_e}")
+
 # ── Rich logging: colored output + better tracebacks ──
 from utils.logging_config import setup_logging
 setup_logging()

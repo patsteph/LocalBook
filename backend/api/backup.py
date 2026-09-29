@@ -139,3 +139,94 @@ async def list_backups(destination: str):
             entry["error"] = str(exc)
         out.append(entry)
     return {"backups": out}
+
+
+# ── restore (LB-10 item 4) ──────────────────────────────────────────────────
+
+
+class RestoreRequest(BaseModel):
+    archive: str
+    phrase: Optional[str] = None
+    # Restore a damaged archive anyway. Sometimes worse-than-perfect beats
+    # nothing — but the marker records that it was forced.
+    force: bool = False
+
+
+@router.post("/restore/check")
+async def check_restore(req: RestoreRequest):
+    """Everything a restore would do, except the part that changes anything.
+
+    Opens the archive, checks every hash, opens every database and compares
+    every row count — in a temp directory. Nothing on disk is touched.
+    """
+    import asyncio
+
+    from services import restore_service
+
+    archive = Path(req.archive).expanduser()
+    if not archive.is_file():
+        raise HTTPException(status_code=404, detail=f"{archive} does not exist")
+    report = await asyncio.to_thread(restore_service.verify, archive, phrase=req.phrase)
+    return report.as_dict()
+
+
+@router.post("/restore")
+async def restore(req: RestoreRequest):
+    """Verify an archive and stage it for the next launch.
+
+    **Restoring into a running app is refused**, and not as a policy: the
+    backend has four databases open with live WALs and LanceDB holding file
+    handles. The swap happens at startup, before any of that exists.
+    """
+    import asyncio
+
+    from services import restore_service
+
+    archive = Path(req.archive).expanduser()
+    if not archive.is_file():
+        raise HTTPException(status_code=404, detail=f"{archive} does not exist")
+
+    report = await asyncio.to_thread(
+        restore_service.stage_restore, archive, phrase=req.phrase, force=req.force
+    )
+    out = report.as_dict()
+    out["detail"] = (
+        "Staged. Quit and reopen LocalBook to apply it — the swap happens before "
+        "anything opens a database. Your current data is kept, not replaced."
+        if report.staged_to
+        else "Not staged: the archive did not verify."
+    )
+    return out
+
+
+@router.get("/restore/pending")
+async def get_pending_restore():
+    from services import restore_service
+
+    return {"pending": restore_service.pending_restore()}
+
+
+@router.delete("/restore/pending")
+async def cancel_pending_restore():
+    from services import restore_service
+
+    return {"cancelled": restore_service.cancel_pending()}
+
+
+@router.get("/restore/drills")
+async def drill_history():
+    """The nightly drill record. The plan's gate is seven consecutive greens
+    before LB-11 migrates anything."""
+    from services import restore_service
+
+    return restore_service.drill_status()
+
+
+@router.post("/restore/drill")
+async def run_drill_now(destination: str):
+    """Run the drill immediately, against the newest archive in `destination`."""
+    import asyncio
+
+    from services import restore_service
+
+    return await asyncio.to_thread(restore_service.run_drill, Path(destination).expanduser())
