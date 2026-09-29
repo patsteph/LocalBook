@@ -218,6 +218,22 @@ async def _run_startup_tasks():
         print(f"[Startup] companion key migration deferred: {_e}")
 
     # ── Banner ────────────────────────────────────────────────────────────
+    # LB-10 item 7: an unfrozen process pointed at the real data dir has to say
+    # so, every time. The hazard was never doing it deliberately — it was doing
+    # it by accident and not noticing until something had been overwritten.
+    try:
+        import config as _config
+        if getattr(_config, "DEV_USING_PRODUCTION_DATA", False):
+            print("=" * 72)
+            print("⚠️  DEV BUILD IS USING THE PRODUCTION DATA DIRECTORY")
+            print(f"    {settings.data_dir}")
+            print("    Writes here affect your real notebooks, credentials and keys.")
+            print("    Unset LOCALBOOK_USE_PRODUCTION_DATA to use the dev sandbox.")
+            print("=" * 72)
+            logger.warning("[main] DEV BUILD USING PRODUCTION DATA DIR: %s", settings.data_dir)
+    except Exception:
+        pass
+
     print(f"🚀 LocalBook API starting on {settings.api_host}:{settings.api_port}")
     print(f"📁 Data directory: {settings.data_dir}")
     print(f"🔥 Models: {settings.main_model} (main), {settings.fast_model} (fast)")

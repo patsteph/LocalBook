@@ -1,23 +1,59 @@
 """Application configuration"""
+import os
 import sys
 from typing import Optional
 from pathlib import Path
 from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings
 
+PRODUCTION_DATA_DIR = Path.home() / "Library" / "Application Support" / "LocalBook"
+DEV_DATA_DIR = Path.home() / "Library" / "Application Support" / "LocalBook-dev"
+
+# Set when an unfrozen process has been pointed at the real data dir on purpose.
+# main.py reads it to show a banner: the danger is doing it by accident and not
+# noticing, so the escape hatch has to be loud.
+DEV_USING_PRODUCTION_DATA = False
+
+
 def get_data_directory() -> Path:
-    """Get the data directory - ALWAYS uses production location.
-    
-    All environments (dev, bundled) use: ~/Library/Application Support/LocalBook/
-    This ensures consistent data across development and production.
+    """Where LocalBook keeps its data.
+
+    A BUNDLED app always uses `~/Library/Application Support/LocalBook`.
+
+    An UNFROZEN process — a dev run, a script, a test, anything started from
+    `backend/.venv` — defaults to `LocalBook-dev` instead (LB-10 item 7).
+
+    This used to return the production path unconditionally, with the comment
+    "ensures consistent data across development and production". That
+    consistency is precisely the hazard: every script, REPL and stray
+    `TestClient(main.app)` ran against the user's real notebooks, credentials and
+    keys. It has bitten this project repeatedly — `save_default_combo({})` once
+    overwrote `user_preferences.json`, and on 2026-09-29 two separate ad-hoc
+    checks wrote a stray companion key and rotated `.app_token`.
+
+    The override is deliberately explicit and deliberately loud:
+
+        LOCALBOOK_DATA_DIR=/some/path            use that path
+        LOCALBOOK_USE_PRODUCTION_DATA=1          use the real data dir, with a banner
+
+    Nothing here changes behaviour for the shipped app.
     """
-    app_support = Path.home() / "Library" / "Application Support" / "LocalBook"
-    
-    # Auto-migrate from old bundle location if needed (for bundled apps)
-    if getattr(sys, 'frozen', False):
-        _migrate_old_data(app_support)
-    
-    return app_support
+    global DEV_USING_PRODUCTION_DATA
+
+    explicit = os.environ.get("LOCALBOOK_DATA_DIR", "").strip()
+    if explicit:
+        return Path(explicit).expanduser()
+
+    frozen = getattr(sys, "frozen", False)
+    if frozen:
+        _migrate_old_data(PRODUCTION_DATA_DIR)
+        return PRODUCTION_DATA_DIR
+
+    if os.environ.get("LOCALBOOK_USE_PRODUCTION_DATA", "").strip().lower() in ("1", "true", "yes"):
+        DEV_USING_PRODUCTION_DATA = True
+        return PRODUCTION_DATA_DIR
+
+    return DEV_DATA_DIR
 
 
 def _migrate_old_data(new_data_dir: Path) -> None:
