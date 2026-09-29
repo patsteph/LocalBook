@@ -204,9 +204,35 @@ def _sha256(path: Path) -> str:
 # ── staging ─────────────────────────────────────────────────────────────────
 
 
+def _copy_if_still_there(source: Path, dest: Path) -> bool:
+    """Copy a file, tolerating it vanishing underneath us.
+
+    A backup is a HOT backup (D19 removed the need for a maintenance lock), so
+    the enrichment worker, the collector, the folder watcher and audio
+    generation are all free to write while it runs. Between `rglob` listing a
+    path and `copy2` reading it, that path can be deleted or rotated — a log
+    roll, a temp file, a cache eviction — and an unguarded copy propagates
+    FileNotFoundError and fails the ENTIRE backup.
+
+    Failing a whole backup because one disposable file moved is the wrong
+    trade. Skipped files are RECORDED in the manifest rather than swallowed, so
+    a restore can see exactly what was not captured.
+    """
+    try:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, dest)
+        return True
+    except FileNotFoundError:
+        return False
+    except OSError as exc:
+        logger.warning("[backup] skipped %s: %s", source, exc)
+        return False
+
+
 def _stage(data_dir: Path, staging: Path, include_blobs: bool) -> Dict[str, object]:
     """Assemble everything to be archived and describe it."""
     row_counts: Dict[str, Dict[str, int]] = {}
+    skipped: List[str] = []
 
     for rel in SQLITE_DBS:
         source = data_dir / rel
@@ -227,12 +253,12 @@ def _stage(data_dir: Path, staging: Path, include_blobs: bool) -> Dict[str, obje
                 continue
             if str(rel) in SQLITE_DBS:
                 continue                  # already snapshotted, do not overwrite
-            dest = staging / rel
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(entry, dest)
+            if not _copy_if_still_there(entry, staging / rel):
+                skipped.append(str(rel))
 
     for entry in _top_level_files(data_dir):
-        shutil.copy2(entry, staging / entry.name)
+        if not _copy_if_still_there(entry, staging / entry.name):
+            skipped.append(entry.name)
 
     files: Dict[str, Dict[str, object]] = {}
     for entry in sorted(staging.rglob("*")):
@@ -240,7 +266,7 @@ def _stage(data_dir: Path, staging: Path, include_blobs: bool) -> Dict[str, obje
             rel = str(entry.relative_to(staging))
             files[rel] = {"sha256": _sha256(entry), "bytes": entry.stat().st_size}
 
-    return {"files": files, "row_counts": row_counts}
+    return {"files": files, "row_counts": row_counts, "skipped": skipped}
 
 
 def build_manifest(data_dir: Path, staged: Dict[str, object], include_blobs: bool) -> Dict:
@@ -278,6 +304,10 @@ def build_manifest(data_dir: Path, staged: Dict[str, object], include_blobs: boo
             "blobs": [] if include_blobs else list(BLOB_TREES),
         },
         "row_counts": staged["row_counts"],
+        # Files that moved or vanished between being listed and being copied.
+        # Recorded rather than swallowed: a restore has to be able to see what
+        # was not captured.
+        "skipped": staged.get("skipped", []),
         "files": staged["files"],
     }
 

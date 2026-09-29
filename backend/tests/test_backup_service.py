@@ -361,3 +361,75 @@ def test_two_backups_do_not_collide(data_dir, dest):
     a = backup_service.create_backup(dest, data_dir=data_dir)
     b = backup_service.create_backup(dest, data_dir=data_dir)
     assert a.path != b.path or a.path.exists()
+
+
+# ── running while the app is writing ────────────────────────────────────────
+
+
+def test_a_file_vanishing_mid_backup_does_not_fail_the_backup(data_dir, dest, monkeypatch):
+    """A hot backup runs while the enrichment worker, collector, folder watcher
+    and audio generation are all free to write. Between rglob listing a path and
+    copy2 reading it, that path can be rotated or evicted — and an unguarded
+    copy propagated FileNotFoundError and failed the ENTIRE backup.
+
+    Failing a whole backup because one disposable file moved is the wrong trade.
+    """
+    real_copy = backup_service.shutil.copy2
+    victim = data_dir / "notebooks" / "nb1.json"
+
+    def flaky(src, dst, *a, **k):
+        if Path(src) == victim:
+            raise FileNotFoundError(src)
+        return real_copy(src, dst, *a, **k)
+
+    monkeypatch.setattr(backup_service.shutil, "copy2", flaky)
+
+    result = backup_service.create_backup(dest, data_dir=data_dir)
+
+    assert result.path.is_file()
+    assert "localbook.db" in result.manifest["files"]
+
+
+def test_a_vanished_file_is_recorded_not_swallowed(data_dir, dest, monkeypatch):
+    """A restore has to be able to see what was not captured."""
+    real_copy = backup_service.shutil.copy2
+    victim = data_dir / "notebooks" / "nb1.json"
+
+    def flaky(src, dst, *a, **k):
+        if Path(src) == victim:
+            raise FileNotFoundError(src)
+        return real_copy(src, dst, *a, **k)
+
+    monkeypatch.setattr(backup_service.shutil, "copy2", flaky)
+    result = backup_service.create_backup(dest, data_dir=data_dir)
+
+    assert "notebooks/nb1.json" in result.manifest["skipped"]
+    assert "notebooks/nb1.json" not in result.manifest["files"]
+
+
+def test_a_clean_backup_records_nothing_as_skipped(data_dir, dest):
+    assert backup_service.create_backup(dest, data_dir=data_dir).manifest["skipped"] == []
+
+
+def test_a_skipped_file_does_not_make_the_drill_red(data_dir, dest, monkeypatch):
+    """The manifest lists what it actually captured, so verification stays
+    consistent — a skipped file must not look like a corrupt one."""
+    from services import restore_service
+
+    real_copy = backup_service.shutil.copy2
+    # A flag, NOT monkeypatch.undo(): undo() unwinds EVERY patch this test's
+    # fixtures made, including the throwaway keychain service name — so the
+    # unseal then read a different key and failed with InvalidTag. Second time
+    # this exact trap has bitten in this codebase.
+    breaking = {"on": True}
+
+    def flaky(src, dst, *a, **k):
+        if breaking["on"] and Path(src).name == "nb1.json":
+            raise FileNotFoundError(src)
+        return real_copy(src, dst, *a, **k)
+
+    monkeypatch.setattr(backup_service.shutil, "copy2", flaky)
+    result = backup_service.create_backup(dest, data_dir=data_dir)
+    breaking["on"] = False
+
+    assert restore_service.verify(result.path).ok is True
