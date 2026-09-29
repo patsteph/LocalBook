@@ -117,6 +117,14 @@ class CredentialLocker:
         self._key = self._keyvault_key()
         self._fernet = Fernet(self._key)
 
+        # Once per process, and self-limiting: it only removes anything when the
+        # migration is verified AND a recovery copy exists. Never fatal — a
+        # cleanup that cannot run is a leftover file, not a broken locker.
+        try:
+            self.cleanup_legacy_backups()
+        except Exception as exc:
+            print(f"[CREDENTIAL_LOCKER] legacy backup cleanup skipped: {exc}")
+
     def migrate_to_keyvault(self) -> Dict[str, Any]:
         """Re-encrypt credentials.enc and auth/*.enc under the keyvault key.
 
@@ -225,6 +233,80 @@ class CredentialLocker:
             print(f"[CREDENTIAL_LOCKER] Failed to save credentials: {e}")
             raise
     
+    def cleanup_legacy_backups(self) -> Dict[str, Any]:
+        """Delete the `*.pre-keyvault` originals, once it is safe to.
+
+        Those files are encrypted with the OLD key — `PBKDF2(hostname + username,
+        "LocalBook-Default-Key")` — every input of which is public. Anyone who can
+        read the disk can derive it. So leaving them behind undoes K-1 for exactly
+        the data K-1 was protecting: a LinkedIn session blob sitting in what is
+        effectively plaintext.
+
+        They are still kept until ALL of these hold, because until then they are
+        the only way back:
+          1. the migration completed (the marker exists);
+          2. the live file decrypts under the keyvault key — proving the migrated
+             copy is actually good, not just present;
+          3. a recovery key is configured AND the credentials key is wrapped, so
+             a wiped Keychain is survivable without them.
+
+        Condition 3 is the one that matters. Deleting the fallback before a
+        recovery path exists would swap a confidentiality problem for a
+        data-loss one.
+        """
+        result: Dict[str, Any] = {"deleted": [], "kept": [], "reason": None}
+
+        backups = sorted(self._data_dir.rglob("*.pre-keyvault"))
+        if not backups:
+            result["reason"] = "nothing to clean up"
+            return result
+
+        if not self._keyvault_marker.exists():
+            result["reason"] = "migration has not completed"
+            result["kept"] = [p.name for p in backups]
+            return result
+
+        try:
+            from services import keyvault
+
+            if not keyvault.has_recovery_key() or not keyvault.wrapped_path("credentials").exists():
+                result["reason"] = (
+                    "no recovery copy of the credentials key yet — these are the only "
+                    "way back if the Keychain is wiped, so they stay"
+                )
+                result["kept"] = [p.name for p in backups]
+                return result
+        except Exception as exc:
+            result["reason"] = f"could not confirm recovery is configured: {exc}"
+            result["kept"] = [p.name for p in backups]
+            return result
+
+        fernet = Fernet(self._keyvault_key())
+        for backup in backups:
+            live = backup.with_suffix("")          # strip `.pre-keyvault`
+            try:
+                if not live.exists():
+                    result["kept"].append(backup.name)
+                    continue
+                fernet.decrypt(live.read_bytes())  # prove the migrated copy is good
+            except Exception as exc:
+                # This module prints rather than logs; matching it.
+                print(
+                    f"[CREDENTIAL_LOCKER] keeping {backup.name} — "
+                    f"{live.name} does not decrypt ({exc})"
+                )
+                result["kept"].append(backup.name)
+                continue
+            backup.unlink()
+            result["deleted"].append(backup.name)
+
+        if result["deleted"]:
+            print(
+                f"[CREDENTIAL_LOCKER] removed {len(result['deleted'])} legacy backup(s); "
+                f"they were encrypted with the old machine-derived key"
+            )
+        return result
+
     async def add_credential(
         self,
         site_domain: str,

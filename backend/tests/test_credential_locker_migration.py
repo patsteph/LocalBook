@@ -224,3 +224,97 @@ def test_the_legacy_key_is_still_the_public_value_it_always_was(locker):
         .derive(b"LocalBook-Default-Key")
     )
     assert locker._derive_key() == expected
+
+
+# ── cleaning up the legacy backups ──────────────────────────────────────────
+#
+# The `.pre-keyvault` originals are encrypted with the OLD key, every input of
+# which is public. Leaving them behind undoes K-1 for exactly the data K-1 was
+# protecting. But they are the only way back until a recovery copy exists, so
+# the gating is what these tests are really about.
+
+
+def _set_up_recovery(locker, monkeypatch):
+    from services import keyvault
+
+    phrase = keyvault.generate_recovery_phrase()
+    keyvault.set_recovery_key(phrase)
+    keyvault.wrap_all()
+    return phrase
+
+
+def test_backups_are_kept_while_there_is_no_recovery_copy(locker):
+    """The one that matters: never delete the fallback before a way back exists."""
+    _write_legacy(locker, IMAP_ENTRY)
+    locker.migrate_to_keyvault()
+
+    result = locker.cleanup_legacy_backups()
+
+    assert result["deleted"] == []
+    assert "credentials.enc.pre-keyvault" in result["kept"]
+    assert "recovery" in result["reason"]
+    assert locker._credentials_file.with_suffix(".enc.pre-keyvault").exists()
+
+
+def test_backups_are_removed_once_recovery_is_configured(locker, monkeypatch):
+    _write_legacy(locker, IMAP_ENTRY)
+    locker.migrate_to_keyvault()
+    _set_up_recovery(locker, monkeypatch)
+
+    result = locker.cleanup_legacy_backups()
+
+    assert "credentials.enc.pre-keyvault" in result["deleted"]
+    assert not locker._credentials_file.with_suffix(".enc.pre-keyvault").exists()
+    # ...and the live file is untouched and still readable.
+    new = Fernet(locker._keyvault_key())
+    assert json.loads(new.decrypt(locker._credentials_file.read_bytes())) == IMAP_ENTRY
+
+
+def test_a_backup_is_kept_when_its_live_file_does_not_decrypt(locker, monkeypatch):
+    """Proving the migrated copy is GOOD, not merely present, before dropping
+    the only other copy."""
+    _write_legacy(locker, IMAP_ENTRY)
+    locker.migrate_to_keyvault()
+    _set_up_recovery(locker, monkeypatch)
+
+    locker._credentials_file.write_bytes(b"corrupted since migration")
+    result = locker.cleanup_legacy_backups()
+
+    assert result["deleted"] == []
+    assert "credentials.enc.pre-keyvault" in result["kept"]
+    assert locker._credentials_file.with_suffix(".enc.pre-keyvault").exists()
+
+
+def test_cleanup_before_migration_does_nothing(locker):
+    result = locker.cleanup_legacy_backups()
+    assert result["deleted"] == []
+    assert result["reason"] == "nothing to clean up"
+
+
+def test_cleanup_is_idempotent(locker, monkeypatch):
+    _write_legacy(locker, IMAP_ENTRY)
+    locker.migrate_to_keyvault()
+    _set_up_recovery(locker, monkeypatch)
+
+    assert locker.cleanup_legacy_backups()["deleted"]
+    second = locker.cleanup_legacy_backups()
+    assert second["deleted"] == []
+    assert second["reason"] == "nothing to clean up"
+
+
+def test_auth_backups_are_cleaned_too(locker, monkeypatch):
+    _write_legacy(locker, IMAP_ENTRY)
+    auth_dir = locker._data_dir / "auth"
+    auth_dir.mkdir(parents=True, exist_ok=True)
+    (auth_dir / "linkedin_state.enc").write_bytes(
+        Fernet(locker._derive_key()).encrypt(b'{"cookies": []}')
+    )
+    locker.migrate_to_keyvault()
+    _set_up_recovery(locker, monkeypatch)
+
+    result = locker.cleanup_legacy_backups()
+    assert sorted(result["deleted"]) == [
+        "credentials.enc.pre-keyvault",
+        "linkedin_state.enc.pre-keyvault",
+    ]
+    assert not list(locker._data_dir.rglob("*.pre-keyvault"))
