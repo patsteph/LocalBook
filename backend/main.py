@@ -209,6 +209,25 @@ async def _run_startup_tasks():
         else:
             await asyncio.sleep(MIN_STEP_MS)
 
+    # ── Data health (LB-10 item 6) ────────────────────────────────────────
+    # Before the schema ledger, before anything writes. If the last run did not
+    # exit cleanly, every database gets an integrity_check first. Non-fatal on
+    # purpose: a corrupt database should stop the USER, not the process — if the
+    # app refuses to boot they cannot reach the restore screen, which is the one
+    # thing that would help.
+    try:
+        from services import data_health
+        _integrity = await asyncio.to_thread(data_health.startup_check)
+        if _integrity and not _integrity.get("ok"):
+            print("=" * 72)
+            print("⚠️  DATABASE INTEGRITY PROBLEMS after an unclean shutdown")
+            for _db, _why in (_integrity.get("problems") or {}).items():
+                print(f"    {_db}: {_why}")
+            print("    Restore from a backup — Settings → Data Health.")
+            print("=" * 72)
+    except Exception as _e:
+        logger.warning(f"[main] data-health startup check skipped: {_e}")
+
     # ── Data schema (LB-10) ───────────────────────────────────────────────
     # Before anything reads or writes a format. A failure here does NOT advance
     # the ledger and does not stop the app: the honest state is "running at the
@@ -673,6 +692,14 @@ async def lifespan(app: FastAPI):
     # Stop diagnostics heartbeat
     stop_heartbeat()
     
+    # LB-10 item 6: written LAST, after the WAL flush. Its ABSENCE on the next
+    # launch is what says the previous run did not get this far.
+    try:
+        from services import data_health
+        data_health.mark_clean_shutdown()
+    except Exception as _e:
+        print(f"⚠️ could not record a clean shutdown: {_e}")
+
     print("👋 LocalBook API shutdown complete")
 
 app = FastAPI(

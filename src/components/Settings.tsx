@@ -10,6 +10,7 @@ import { ProfileSection } from './settings/ProfileSection';
 import { UpdatesSection } from './settings/UpdatesSection';
 import { APIKeysSection } from './settings/APIKeysSection';
 import { RecoveryKeySection } from './settings/RecoveryKeySection';
+import { DataHealthSection } from './settings/DataHealthSection';
 import { CuratorSettings } from './CuratorSettings';
 import { CorrespondentSettings } from './CorrespondentSettings';
 import { TemplatesSection } from './settings/TemplatesSection';
@@ -49,7 +50,7 @@ class SettingsErrorBoundary extends React.Component<
 
 type SectionId =
     | 'profile' | 'voice'
-    | 'api-keys' | 'credentials' | 'correspondent' | 'recovery'
+    | 'api-keys' | 'credentials' | 'correspondent' | 'recovery' | 'data-health'
     | 'curator' | 'memory'
     | 'schedules'
     | 'folders' | 'companions'
@@ -79,6 +80,7 @@ const SECTION_GROUPS: { title: string; items: SectionDef[] }[] = [
             { id: 'api-keys',      label: 'API Keys',      icon: '🔑', accent: 'blue' },
             { id: 'credentials',   label: 'Site Logins',   icon: '🔐', accent: 'blue' },
             { id: 'recovery',      label: 'Recovery',      icon: '🔑', accent: 'amber' },
+            { id: 'data-health',   label: 'Data Health',   icon: '🩺', accent: 'amber' },
             { id: 'correspondent', label: 'Correspondent', icon: '📬', accent: 'amber' },
         ],
     },
@@ -159,6 +161,7 @@ export const Settings: React.FC = () => {
                     )}
 
                     {activeSection === 'recovery' && <SettingsErrorBoundary fallbackLabel="Recovery"><RecoveryKeySection /></SettingsErrorBoundary>}
+                    {activeSection === 'data-health' && <SettingsErrorBoundary fallbackLabel="Data Health"><DataHealthSection /></SettingsErrorBoundary>}
                     {activeSection === 'profile' && <ProfileSection setError={setError} setSuccess={setSuccess} />}
                     {activeSection === 'voice' && <SettingsErrorBoundary fallbackLabel="Voice Profile"><VoiceProfileSection /></SettingsErrorBoundary>}
                     {activeSection === 'api-keys' && <APIKeysSection setError={setError} setSuccess={setSuccess} />}

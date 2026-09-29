@@ -230,3 +230,45 @@ async def run_drill_now(destination: str):
     from services import restore_service
 
     return await asyncio.to_thread(restore_service.run_drill, Path(destination).expanduser())
+
+
+# ── data health (LB-10 items 6, 8, 9) ───────────────────────────────────────
+
+
+@router.get("/data-health")
+async def data_health_status():
+    """Everything the Data Health panel shows, in one call.
+
+    Each probe degrades to its own error rather than raising — a panel that
+    500s because one probe failed tells the user nothing about the other five.
+    """
+    import asyncio
+
+    from services import data_health
+
+    return await asyncio.to_thread(data_health.status)
+
+
+@router.post("/data-health/integrity-check")
+async def run_integrity_check():
+    """Check every database now. Read-only; never repairs.
+
+    Repairing automatically is the wrong instinct — SQLite's own guidance is to
+    recover from a backup, and a well-meant in-place rebuild can turn a
+    partially readable file into a confidently wrong one.
+    """
+    import asyncio
+
+    from services import data_health
+
+    return await asyncio.to_thread(data_health.check_integrity)
+
+
+@router.delete("/data-health/dead-weight")
+async def clear_dead_weight():
+    """Remove the leftovers listed in the panel. Only ever on request."""
+    import asyncio
+
+    from services import data_health
+
+    return await asyncio.to_thread(data_health.remove_dead_weight)
