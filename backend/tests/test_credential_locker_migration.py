@@ -318,3 +318,23 @@ def test_auth_backups_are_cleaned_too(locker, monkeypatch):
         "linkedin_state.enc.pre-keyvault",
     ]
     assert not list(locker._data_dir.rglob("*.pre-keyvault"))
+
+
+def test_ensure_initialized_runs_both_migration_and_cleanup(locker, monkeypatch):
+    """Both used to wait for someone to read a credential.
+
+    On a machine with no IMAP account and no saved site login, nothing ever
+    calls the locker, so on 2026-09-29 a `.pre-keyvault` backup — encrypted
+    with the public machine-derived key — was still on disk two launches after
+    every gate had started passing. `main.py` now calls `_ensure_initialized`
+    at startup; this pins that one call doing both jobs.
+    """
+    _write_legacy(locker, IMAP_ENTRY)
+    _set_up_recovery(locker, monkeypatch)
+
+    locker._ensure_initialized()
+
+    assert locker._keyvault_marker.exists()                  # migrated
+    assert not list(locker._data_dir.rglob("*.pre-keyvault"))  # and cleaned up
+    new = Fernet(locker._keyvault_key())
+    assert json.loads(new.decrypt(locker._credentials_file.read_bytes())) == IMAP_ENTRY

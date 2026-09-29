@@ -220,3 +220,17 @@ def test_an_empty_legacy_file_is_just_cleaned_up(store):
     assert companion_keys.migrate_legacy_key() is False
     assert not (store / companion_keys.LEGACY_KEY_FILE).exists()
     assert companion_keys.list_keys() == []
+
+
+def test_migration_does_not_depend_on_a_companion_calling_in(store):
+    """`verify()` triggers the migration, but `verify()` only runs when a
+    companion actually connects. On a machine with none, the legacy PLAINTEXT
+    key would sit on disk indefinitely — so `main.py` calls this directly at
+    startup, and it has to work with no other activity at all.
+    """
+    (store / companion_keys.LEGACY_KEY_FILE).write_text("lb-old-plaintext")
+
+    assert companion_keys.migrate_legacy_key() is True
+
+    assert not (store / companion_keys.LEGACY_KEY_FILE).exists()
+    assert companion_keys.list_keys()[0]["companion_id"] == companion_keys.LEGACY_COMPANION_ID

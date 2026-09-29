@@ -185,6 +185,38 @@ async def _run_startup_tasks():
         else:
             await asyncio.sleep(MIN_STEP_MS)
 
+    # ── Key custody (K-1) ─────────────────────────────────────────────────
+    # Run the credential migration and the legacy-backup cleanup HERE rather
+    # than lazily on first locker use. Both were originally triggered by
+    # `credential_locker._ensure_initialized()`, which only fires when
+    # something actually reads a credential — so on a machine with no IMAP
+    # account and no saved site login, neither ever ran. The 2026-09-29 build
+    # proved it: every cleanup gate passed and the `.pre-keyvault` file was
+    # still sitting there two launches later.
+    #
+    # That matters because those backups are encrypted with the OLD key —
+    # PBKDF2(hostname + username, a literal) — every input of which is public.
+    # Leaving them undoes K-1 for exactly the data K-1 protects, and waiting
+    # for the user to happen to open Settings is not a policy.
+    #
+    # Never fatal: a locker that cannot initialize must not stop the app.
+    try:
+        from services.credential_locker import credential_locker
+        await asyncio.to_thread(credential_locker._ensure_initialized)
+    except Exception as _e:
+        print(f"[Startup] credential key custody deferred: {_e}")
+
+    # Same shape, same reason: the legacy shared companion key is a PLAINTEXT
+    # secret on disk, and its migration used to run only inside
+    # `companion_keys.verify()` — i.e. only once a companion happened to call
+    # in. On this machine that fired by luck; on one with no companion
+    # connected it would have sat there indefinitely.
+    try:
+        from services import companion_keys
+        await asyncio.to_thread(companion_keys.migrate_legacy_key)
+    except Exception as _e:
+        print(f"[Startup] companion key migration deferred: {_e}")
+
     # ── Banner ────────────────────────────────────────────────────────────
     print(f"🚀 LocalBook API starting on {settings.api_host}:{settings.api_port}")
     print(f"📁 Data directory: {settings.data_dir}")
