@@ -234,6 +234,18 @@ class Settings(BaseSettings):
         ),
     )
 
+    # ── Backups (LB-10) ──────────────────────────────────────────────
+    # A folder OUTSIDE the data dir: iCloud Drive, an external disk, a NAS.
+    # Empty means backups are OFF — there is no sensible default, and guessing
+    # one would write the archive inside the thing it is backing up.
+    # PER-MACHINE, never synced.
+    backup_destination: str = ""
+    # Off for the nightly run: a real data dir is ~600 MB with generated audio
+    # and ~80 MB without, and 7 daily + 4 weekly is the difference between
+    # ~6 GB and ~900 MB. Audio is regenerable from its notebook. A manual
+    # backup still includes them by default.
+    backup_include_blobs_nightly: bool = False
+
     # MLX's internal buffer cache. Unbounded it will happily hold on to every
     # buffer it has ever allocated, which reads as LocalBook hoarding memory
     # the moment anything else on the machine wants some.

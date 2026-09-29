@@ -425,6 +425,11 @@ async def _run_startup_tasks():
         # Companion update checks — pinned installers must not mean frozen ones.
         from services.companion_updates import companion_update_checker
         companion_update_checker.start_background_task()
+
+        # LB-10: nightly backup + restore drill. Does nothing until a
+        # destination is set in Settings — there is no safe default.
+        from services.backup_scheduler import nightly_backup
+        nightly_backup.start()
         from services.memory_manager import memory_manager
         safe_create_task(memory_manager.start_scheduler(), name="memory-scheduler")
         print("📝 Memory consolidation manager started")

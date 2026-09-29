@@ -591,3 +591,71 @@ def verify_archive(archive: Path, *, phrase: Optional[str] = None) -> Dict[str, 
         "mismatched": mismatched,
         "manifest": manifest,
     }
+
+
+# ── retention (LB-10 item 3) ────────────────────────────────────────────────
+
+KEEP_DAILY = 7
+KEEP_WEEKLY = 4
+
+
+def prune(destination_dir: Path, *, keep_daily: int = KEEP_DAILY,
+          keep_weekly: int = KEEP_WEEKLY) -> Dict[str, object]:
+    """Keep 7 daily and 4 weekly archives; delete the rest.
+
+    Runs only AFTER a successful backup, never before. Pruning first would mean
+    a failed backup costs an old archive too — the exact moment you can least
+    afford to lose one.
+
+    An archive whose header cannot be read is KEPT, not deleted. It may be
+    corrupt, but "I could not understand this file" is not grounds for removing
+    the only copy of something; a corrupt archive is still evidence, and the
+    drill will say so.
+    """
+    destination_dir = Path(destination_dir)
+    if not destination_dir.is_dir():
+        return {"kept": [], "deleted": [], "unreadable": []}
+
+    dated: List = []
+    unreadable: List[str] = []
+    for path in destination_dir.glob(f"*{ARCHIVE_SUFFIX}"):
+        try:
+            created = read_header(path).get("created_at")
+            stamp = datetime.fromisoformat(str(created))
+        except Exception:
+            unreadable.append(path.name)
+            continue
+        dated.append((stamp, path))
+
+    dated.sort(key=lambda pair: pair[0], reverse=True)
+
+    keep: set = set()
+    for _, path in dated[:keep_daily]:
+        keep.add(path)
+
+    # One per ISO week, newest first, for the weekly tier.
+    seen_weeks: set = set()
+    for stamp, path in dated:
+        week = stamp.isocalendar()[:2]
+        if week in seen_weeks:
+            continue
+        seen_weeks.add(week)
+        keep.add(path)
+        if len(seen_weeks) >= keep_weekly + 1:
+            break
+
+    deleted: List[str] = []
+    for _, path in dated:
+        if path in keep:
+            continue
+        try:
+            path.unlink()
+            deleted.append(path.name)
+        except OSError as exc:
+            logger.warning("[backup] could not prune %s: %s", path.name, exc)
+
+    return {
+        "kept": sorted(p.name for p in keep),
+        "deleted": sorted(deleted),
+        "unreadable": sorted(unreadable),
+    }
