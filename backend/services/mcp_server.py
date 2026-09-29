@@ -244,6 +244,11 @@ def build_server():
     )
 
     read_only = {"readOnlyHint": True}
+    # Explicit, not absent. An agent deciding whether it may call something
+    # unattended should read a `False`, not infer one from a missing key.
+    # `destructiveHint: False` because a proposal adds to a review queue and
+    # changes nothing the user already has.
+    proposes = {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False}
 
     @mcp.tool(annotations=read_only)
     async def list_notebooks() -> Dict[str, Any]:
@@ -408,6 +413,128 @@ def build_server():
             from services import event_feed
 
             return {"kinds": await _asyncio.to_thread(event_feed.known_kinds)}
+
+    @mcp.tool(annotations=read_only)
+    async def curator_insights(k: int = 10) -> Dict[str, Any]:
+        """What Curator has noticed across the user's notebooks.
+
+        Patterns, connections and open questions it surfaced — the things the
+        user would see in a morning brief. Read-only: reading an insight here
+        does NOT mark it surfaced, because an agent glancing at it is not the
+        user having seen it.
+        """
+        k = _bounded_k(k, 10)
+        async with _audited("curator_insights", {"k": k}):
+            import asyncio as _asyncio
+
+            def _read():
+                from services.curator_brain import curator_brain
+
+                insights = curator_brain.get_active_insights(limit=k)
+                reflections = curator_brain.get_unsurfaced_reflections(limit=min(k, 5))
+                return {"insights": insights, "reflections": reflections}
+
+            return await _asyncio.to_thread(_read)
+
+    @mcp.tool(annotations=read_only)
+    async def approval_queue(notebook_id: str, k: int = 20) -> Dict[str, Any]:
+        """Items the Collector found and is holding for the user's approval.
+
+        Read-only on purpose. **Approving stays in the UI** — an agent may see
+        what is waiting and say something useful about it, but the decision to
+        take a source into the corpus is the user's.
+        """
+        k = _bounded_k(k, 20)
+        async with _audited("approval_queue", {"notebook_id": notebook_id, "k": k}):
+            import asyncio as _asyncio
+
+            def _read():
+                from agents.collector import get_collector
+
+                collector = get_collector(notebook_id)
+                pending = collector.get_pending_approvals()
+                return {
+                    "pending": pending[:k],
+                    "total": len(pending),
+                    "truncated": len(pending) > k,
+                    "expiring_soon": len(collector.get_expiring_soon(days=3)),
+                }
+
+            return await _asyncio.to_thread(_read)
+
+    @mcp.tool(annotations=read_only)
+    async def todays_digest(notebook_id: Optional[str] = None) -> Dict[str, Any]:
+        """Curator's running summary of a notebook — or of every notebook."""
+        async with _audited("todays_digest", {"notebook_id": notebook_id}):
+            import asyncio as _asyncio
+
+            def _read():
+                from services.curator_brain import curator_brain
+
+                if notebook_id:
+                    digest = curator_brain.get_digest(notebook_id)
+                    return {"digest": digest} if digest else {
+                        "error": f"no digest for notebook {notebook_id} yet"
+                    }
+                return {"digests": curator_brain.get_all_digests()}
+
+            return await _asyncio.to_thread(_read)
+
+    @mcp.tool(annotations=proposes)
+    async def propose_note(
+        notebook_id: str,
+        title: str,
+        body: str,
+        source: str = "",
+    ) -> Dict[str, Any]:
+        """Propose something for a notebook. It is QUEUED, never added directly.
+
+        The only write tool, and it is deliberately not a write: the proposal
+        lands in the Collector's approval queue and goes through Curator
+        pre-triage exactly as a discovered article would. The user approves it
+        in the app. An agent cannot put anything into the corpus on its own,
+        and Curator can reject a proposal outright.
+
+        Returns the triage outcome: `queued`, `stored` (auto-approve was on),
+        `skipped` (a duplicate) or `rejected` (Curator declined it).
+        """
+        if not (title or "").strip() or not (body or "").strip():
+            return {"error": "a proposal needs both a title and a body"}
+
+        args = {"notebook_id": notebook_id, "title": title, "source": source}
+        async with _audited("propose_note", args) as timer:
+            from services import companion_audit
+
+            identity = current_caller()
+            companion_id = getattr(identity, "companion_id", "unknown")
+
+            from agents.collector import get_collector
+            from agents.collector._models import CollectedItem
+
+            item = CollectedItem(
+                title=title.strip(),
+                content=body,
+                preview=body[:300],
+                # Attributed to the companion, not laundered as a web find.
+                # Whoever reviews this queue needs to know an agent proposed it.
+                source_name=source.strip() or f"proposed by {companion_id}",
+                source_type="manual",
+            )
+            outcome = await get_collector(notebook_id)._add_to_approval_queue(item)
+
+            if outcome == "rejected":
+                timer.outcome = companion_audit.OUTCOME_DENIED
+                timer.detail = "curator pre-triage rejected the proposal"
+            return {
+                "outcome": outcome,
+                "item_id": item.id,
+                "detail": {
+                    "queued": "waiting for the user to approve it in LocalBook",
+                    "stored": "auto-approve was on, so it went straight in",
+                    "skipped": "already known or a duplicate",
+                    "rejected": "Curator declined it",
+                }.get(outcome, outcome),
+            }
 
     @mcp.tool(annotations=read_only)
     async def web_search(query: str, n: int = 5) -> Dict[str, Any]:

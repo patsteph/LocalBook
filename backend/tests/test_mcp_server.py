@@ -62,12 +62,30 @@ def test_the_v1_tools_are_registered(tools):
     } <= set(tools)
 
 
-def test_every_tool_declares_itself_read_only(tools):
-    """Writes are proposals (LB-2). Nothing in v1 mutates, and an agent has to
-    be able to tell without trying."""
+# The only tool that is not read-only. Kept as a constant so adding a second
+# write tool has to be a deliberate edit here, not a silent test pass.
+WRITE_TOOLS = {"propose_note"}
+
+
+def test_every_tool_declares_read_only_explicitly(tools):
+    """An agent deciding whether it may call something unattended should read a
+    `False`, not infer one from a missing annotation."""
     for name, tool in tools.items():
         assert tool.annotations is not None, name
-        assert tool.annotations.readOnlyHint is True, name
+        expected = name not in WRITE_TOOLS
+        assert tool.annotations.readOnlyHint is expected, name
+
+
+def test_propose_note_is_the_only_write_tool(tools):
+    """Writes are proposals (LB-2). If this list grows, it should hurt."""
+    writes = {n for n, t in tools.items()
+              if t.annotations and t.annotations.readOnlyHint is False}
+    assert writes == WRITE_TOOLS
+
+
+def test_proposing_is_not_marked_destructive(tools):
+    """It adds to a review queue; it changes nothing the user already has."""
+    assert tools["propose_note"].annotations.destructiveHint is False
 
 
 # ── auth: loopback, key, scope ──────────────────────────────────────────────
@@ -446,6 +464,183 @@ def test_the_bundle_collects_fastmcps_binary_dependencies():
     for flag in ("--collect-all=fastmcp", "--collect-all=mcp",
                  "--collect-all=fakeredis", "--collect-all=lupa"):
         assert flag in contents, f"{flag} missing from build_backend.sh"
+
+
+# ── curator / queue / digest ────────────────────────────────────────────────
+
+
+def test_curator_insights_does_not_mark_anything_surfaced(store, caller, tools, monkeypatch):
+    """An agent glancing at an insight is not the user having seen it. If this
+    ever starts marking, the morning brief quietly stops showing things."""
+    calls = []
+
+    class FakeBrain:
+        def get_active_insights(self, limit):
+            calls.append(("insights", limit))
+            return [{"id": 1, "text": "you keep returning to X"}]
+
+        def get_unsurfaced_reflections(self, limit):
+            return [{"id": 9, "text": "a question worth asking"}]
+
+        def mark_insight_surfaced(self, insight_id):
+            calls.append(("MARKED", insight_id))
+
+    monkeypatch.setattr("services.curator_brain.curator_brain", FakeBrain())
+    out = _call(tools, "curator_insights", k=5)
+
+    assert out["insights"][0]["text"] == "you keep returning to X"
+    assert out["reflections"][0]["id"] == 9
+    assert not any(c[0] == "MARKED" for c in calls)
+
+
+def test_curator_insights_is_bounded(store, caller, tools, monkeypatch):
+    seen = {}
+
+    class FakeBrain:
+        def get_active_insights(self, limit):
+            seen["limit"] = limit
+            return []
+
+        def get_unsurfaced_reflections(self, limit):
+            return []
+
+    monkeypatch.setattr("services.curator_brain.curator_brain", FakeBrain())
+    _call(tools, "curator_insights", k=99_999)
+    assert seen["limit"] == mcp_server.MAX_K
+
+
+def test_approval_queue_is_read_only_and_bounded(store, caller, tools, monkeypatch):
+    """Approving stays in the UI — taking a source into the corpus is the
+    user's decision, not an agent's."""
+    class FakeCollector:
+        def get_pending_approvals(self):
+            return [{"id": f"i{i}"} for i in range(30)]
+
+        def get_expiring_soon(self, days):
+            return [{"id": "i0"}]
+
+    monkeypatch.setattr("agents.collector.get_collector", lambda nb: FakeCollector())
+    out = _call(tools, "approval_queue", notebook_id="nb1", k=5)
+
+    assert len(out["pending"]) == 5
+    assert out["total"] == 30
+    assert out["truncated"] is True
+    assert out["expiring_soon"] == 1
+    assert not hasattr(FakeCollector, "approve")
+
+
+def test_todays_digest_for_one_notebook_and_for_all(store, caller, tools, monkeypatch):
+    class FakeBrain:
+        def get_digest(self, notebook_id):
+            return {"notebook_id": notebook_id, "summary": "s"} if notebook_id == "nb1" else None
+
+        def get_all_digests(self):
+            return [{"notebook_id": "nb1"}, {"notebook_id": "nb2"}]
+
+    monkeypatch.setattr("services.curator_brain.curator_brain", FakeBrain())
+    assert _call(tools, "todays_digest", notebook_id="nb1")["digest"]["summary"] == "s"
+    assert "error" in _call(tools, "todays_digest", notebook_id="missing")
+    assert len(_call(tools, "todays_digest")["digests"]) == 2
+
+
+# ── propose_note: the one write path ────────────────────────────────────────
+
+
+class _RecordingCollector:
+    def __init__(self, outcome="queued"):
+        self.outcome = outcome
+        self.items = []
+
+    async def _add_to_approval_queue(self, item):
+        self.items.append(item)
+        return self.outcome
+
+
+def test_a_proposal_is_queued_never_added_directly(store, caller, tools, monkeypatch):
+    """The whole contract: an agent cannot put anything into the corpus."""
+    collector = _RecordingCollector("queued")
+    monkeypatch.setattr("agents.collector.get_collector", lambda nb: collector)
+
+    out = _call(tools, "propose_note", notebook_id="nb1",
+                title="A thought", body="the body of it")
+
+    assert out["outcome"] == "queued"
+    assert "waiting for the user" in out["detail"]
+    assert len(collector.items) == 1
+
+
+def test_a_proposal_goes_through_the_same_queue_as_a_discovered_article(
+    store, caller, tools, monkeypatch
+):
+    """It must not bypass Curator pre-triage — `_add_to_approval_queue` is
+    where that happens, so the proposal has to enter there."""
+    collector = _RecordingCollector()
+    monkeypatch.setattr("agents.collector.get_collector", lambda nb: collector)
+    _call(tools, "propose_note", notebook_id="nb1", title="T", body="B")
+    assert collector.items, "the proposal skipped the approval queue entirely"
+
+
+def test_a_proposal_is_attributed_to_the_companion(store, caller, tools, monkeypatch):
+    """Whoever reviews the queue needs to know an agent proposed it, rather
+    than it being laundered in as a web find."""
+    collector = _RecordingCollector()
+    monkeypatch.setattr("agents.collector.get_collector", lambda nb: collector)
+
+    _call(tools, "propose_note", notebook_id="nb1", title="T", body="B")
+
+    assert "jocasta" in collector.items[0].source_name
+    assert collector.items[0].source_type == "manual"
+
+
+def test_an_explicit_source_is_kept(store, caller, tools, monkeypatch):
+    collector = _RecordingCollector()
+    monkeypatch.setattr("agents.collector.get_collector", lambda nb: collector)
+    _call(tools, "propose_note", notebook_id="nb1", title="T", body="B",
+          source="from the Tuesday call")
+    assert collector.items[0].source_name == "from the Tuesday call"
+
+
+def test_a_curator_rejection_is_reported_and_audited_as_denied(
+    store, caller, tools, monkeypatch
+):
+    rows = []
+    monkeypatch.setattr(companion_audit, "record", lambda **kw: rows.append(kw))
+    monkeypatch.setattr("agents.collector.get_collector",
+                        lambda nb: _RecordingCollector("rejected"))
+
+    out = _call(tools, "propose_note", notebook_id="nb1", title="T", body="B")
+
+    assert out["outcome"] == "rejected"
+    assert "Curator declined" in out["detail"]
+    assert rows[-1]["outcome"] == companion_audit.OUTCOME_DENIED
+
+
+def test_an_empty_proposal_is_refused_before_reaching_the_queue(
+    store, caller, tools, monkeypatch
+):
+    collector = _RecordingCollector()
+    monkeypatch.setattr("agents.collector.get_collector", lambda nb: collector)
+
+    assert "error" in _call(tools, "propose_note", notebook_id="nb1", title="", body="B")
+    assert "error" in _call(tools, "propose_note", notebook_id="nb1", title="T", body="   ")
+    assert collector.items == []
+
+
+def test_the_proposal_body_is_not_stored_in_the_audit_log(
+    store, caller, tools, monkeypatch
+):
+    """A proposal can carry anything the agent read. Only the argument NAMES
+    and a hash go in the log."""
+    companion_audit.purge()
+    monkeypatch.setattr("agents.collector.get_collector", lambda nb: _RecordingCollector())
+
+    secret = "the confidential thing from the meeting"
+    _call(tools, "propose_note", notebook_id="nb1", title="T", body=secret)
+
+    rows = companion_audit.recent("jocasta")
+    assert secret not in json.dumps(rows[0], default=str)
+    assert "body" not in (rows[0]["args_preview"] or "")
+    companion_audit.purge()
 
 
 # ── the mount, end to end ───────────────────────────────────────────────────
