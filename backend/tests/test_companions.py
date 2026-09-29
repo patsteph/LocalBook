@@ -70,40 +70,94 @@ def test_the_meeting_notes_manifest_points_at_our_engine():
 def test_placeholders_resolve_to_real_values():
     from config import settings
     m = svc.get_manifest("meeting-notes")
-    desired = svc.desired_config(m)
+    desired = svc.desired_config(m, companion_key="lb-example")
     assert desired["BASE_URL"].endswith("/v1")
     assert str(settings.api_port) in desired["BASE_URL"]
     assert desired["LLM"] == settings.main_model
-    assert desired["API_KEY"].startswith("lb-")
+    assert desired["API_KEY"] == "lb-example"
+
+
+def test_rendering_config_does_not_issue_a_key():
+    """LB-0: keys are hashed at rest, so producing one means minting a new one —
+    and `is_connected` renders config on every status poll. If this ever starts
+    issuing, a connected companion's key rotates out from under it every few
+    seconds."""
+    from services import companion_keys
+
+    m = svc.get_manifest("meeting-notes")
+    desired = svc.desired_config(m)
+    assert "API_KEY" not in desired      # empty values are dropped
+    assert companion_keys.list_keys() == []
+    assert svc.is_connected(m) in (True, False)   # still answerable
+    assert companion_keys.list_keys() == []
 
 
 # ── the companion key ───────────────────────────────────────────────────────
 
-def test_the_key_is_stable_across_reads():
-    """Unlike the app token, which rotates every launch — a companion holds a
-    config file on disk, so a rotating secret would break it on every restart."""
-    a = svc.get_companion_key()
-    b = svc.get_companion_key()
-    assert a and a == b
+def test_a_key_keeps_working_until_it_is_rotated():
+    """A companion holds a config file on disk, so the key it was given has to
+    keep verifying. Reissuing is an explicit rotation, not a side effect."""
+    key = svc.issue_companion_key("meeting-notes", ["llm"])
+    assert svc.verify_companion_key(key).companion_id == "meeting-notes"
+    assert svc.verify_companion_key(key).companion_id == "meeting-notes"
+
+    rotated = svc.issue_companion_key("meeting-notes", ["llm"])
+    assert rotated != key
+    assert svc.verify_companion_key(rotated) is not None
+    assert svc.verify_companion_key(key) is None
 
 
-def test_the_key_file_is_not_world_readable(tmp_path):
-    svc.get_companion_key()
-    mode = (tmp_path / "companion_key").stat().st_mode & 0o777
-    assert mode == 0o600, f"companion key is {oct(mode)}"
+def test_the_key_store_is_not_world_readable(tmp_path):
+    from services import companion_keys
+
+    svc.issue_companion_key("meeting-notes", ["llm"])
+    mode = (tmp_path / companion_keys.STORE_FILE).stat().st_mode & 0o777
+    assert mode == 0o600, f"companion key store is {oct(mode)}"
+
+
+def test_no_plaintext_key_is_ever_written_to_disk(tmp_path):
+    from services import companion_keys
+
+    key = svc.issue_companion_key("meeting-notes", ["llm"])
+    blob = (tmp_path / companion_keys.STORE_FILE).read_text()
+    assert key not in blob
+    assert "key_hash" in blob
 
 
 def test_only_the_real_key_verifies():
-    key = svc.get_companion_key()
-    assert svc.verify_companion_key(key) is True
-    assert svc.verify_companion_key("lb-wrong") is False
-    assert svc.verify_companion_key("") is False
+    key = svc.issue_companion_key("meeting-notes", ["llm"])
+    assert svc.verify_companion_key(key) is not None
+    assert svc.verify_companion_key("lb-wrong") is None
+    assert svc.verify_companion_key("") is None
 
 
-def test_revoking_cuts_everything_off_at_once():
-    svc.get_companion_key()
+def test_a_key_carries_only_the_scopes_it_was_issued():
+    key = svc.issue_companion_key("meeting-notes", ["llm"])
+    identity = svc.verify_companion_key(key)
+    assert identity.has("llm") is True
+    assert identity.has("mcp") is False
+    assert identity.has("memory") is False
+
+
+def test_revoking_one_companion_leaves_the_other_working():
+    """The thing the single shared key could not do."""
+    recorder = svc.issue_companion_key("meeting-notes", ["llm"])
+    jocasta = svc.issue_companion_key("jocasta", ["llm", "mcp"])
+
+    svc.revoke_companion_key("jocasta")
+
+    assert svc.verify_companion_key(jocasta) is None
+    assert svc.verify_companion_key(recorder).companion_id == "meeting-notes"
+
+
+def test_revoking_everything_still_cuts_everything_off_at_once():
+    svc.issue_companion_key("meeting-notes", ["llm"])
+    svc.issue_companion_key("jocasta", ["mcp"])
     svc.revoke_companion_key()
-    assert svc.verify_companion_key("anything") is False
+    assert svc.verify_companion_key("anything") is None
+
+    from services import companion_keys
+    assert companion_keys.list_keys() == []
 
 
 # ── editing a file we do not own ────────────────────────────────────────────

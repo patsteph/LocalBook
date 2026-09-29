@@ -49,6 +49,11 @@ def _sdk(client, key):
     return OpenAI(base_url="http://testserver/v1", api_key=key, http_client=client)
 
 
+
+def _issue_key(scopes=("llm",)):
+    """LB-0: keys are per-companion and scoped now. The recorder holds `llm`."""
+    return svc.issue_companion_key("meeting-notes", list(scopes))
+
 # ── auth ────────────────────────────────────────────────────────────────────
 
 def test_the_endpoint_is_not_open(client):
@@ -58,7 +63,7 @@ def test_the_endpoint_is_not_open(client):
 
 
 def test_a_wrong_key_is_rejected(client):
-    svc.get_companion_key()
+    _issue_key()
     r = client.post("/v1/chat/completions",
                     headers={"Authorization": "Bearer lb-not-the-key"},
                     json={"messages": [{"role": "user", "content": "hi"}]})
@@ -72,7 +77,7 @@ def test_the_401_explains_where_to_get_a_key(client):
 
 
 def test_a_revoked_key_stops_working(client):
-    key = svc.get_companion_key()
+    key = _issue_key()
     h = {"Authorization": f"Bearer {key}"}
     assert client.get("/v1/models", headers=h).status_code == 200
     svc.revoke_companion_key()
@@ -83,7 +88,7 @@ def test_a_revoked_key_stops_working(client):
 
 def test_the_openai_sdk_gets_a_completion_it_can_read(client):
     """Exactly the call Meeting Notes makes."""
-    key = svc.get_companion_key()
+    key = _issue_key()
     sdk = _sdk(client, key)
     resp = sdk.chat.completions.create(
         model="gemma4:e4b",
@@ -100,7 +105,7 @@ def test_the_openai_sdk_gets_a_completion_it_can_read(client):
 def test_the_system_and_user_messages_reach_the_seam_intact(client):
     """His system prompt dictates the exact section headings. Losing or
     reordering it produces notes our own parser can no longer read."""
-    sdk = _sdk(client, svc.get_companion_key())
+    sdk = _sdk(client, _issue_key())
     sdk.chat.completions.create(
         model="x", messages=[
             {"role": "system", "content": "SYSTEM-MARKER"},
@@ -113,7 +118,7 @@ def test_the_system_and_user_messages_reach_the_seam_intact(client):
 def test_the_voice_modifier_is_off_for_companions(client):
     """LocalBook's tone preamble would fight a format-sensitive system prompt
     and corrupt the section structure the notes depend on."""
-    sdk = _sdk(client, svc.get_companion_key())
+    sdk = _sdk(client, _issue_key())
     sdk.chat.completions.create(model="x", messages=[{"role": "user", "content": "hi"}])
     assert client.fake.seen["voice_modifier"] is False
 
@@ -122,7 +127,7 @@ def test_an_unknown_model_name_is_served_rather_than_refused(client):
     """A companion's config may still name a model from whatever server it used
     before. Refusing would be pedantry; the response says what actually ran."""
     from config import settings
-    sdk = _sdk(client, svc.get_companion_key())
+    sdk = _sdk(client, _issue_key())
     resp = sdk.chat.completions.create(
         model="llama3:70b-from-some-other-server",
         messages=[{"role": "user", "content": "hi"}])
@@ -132,20 +137,20 @@ def test_an_unknown_model_name_is_served_rather_than_refused(client):
 def test_max_tokens_defaults_high_enough_for_meeting_notes(client):
     """Five sections do not fit in the seam's 500-token default, and a silently
     truncated summary reads as a broken tool."""
-    sdk = _sdk(client, svc.get_companion_key())
+    sdk = _sdk(client, _issue_key())
     sdk.chat.completions.create(model="x", messages=[{"role": "user", "content": "hi"}])
     assert client.fake.seen["num_predict"] >= 2000
 
 
 def test_models_lists_the_real_configured_checkpoints(client):
     from config import settings
-    sdk = _sdk(client, svc.get_companion_key())
+    sdk = _sdk(client, _issue_key())
     ids = [m.id for m in sdk.models.list().data]
     assert settings.main_model in ids
 
 
 def test_streaming_yields_sdk_readable_chunks(client):
-    sdk = _sdk(client, svc.get_companion_key())
+    sdk = _sdk(client, _issue_key())
     chunks = list(sdk.chat.completions.create(
         model="x", stream=True,
         messages=[{"role": "user", "content": "hi"}]))
@@ -159,7 +164,7 @@ def test_streaming_yields_sdk_readable_chunks(client):
 def test_unsupported_features_are_refused_not_ignored(client):
     """Silently dropping a tool definition returns something that looks fine
     and is wrong. The caller deserves to know."""
-    key = svc.get_companion_key()
+    key = _issue_key()
     r = client.post("/v1/chat/completions",
                     headers={"Authorization": f"Bearer {key}"},
                     json={"messages": [{"role": "user", "content": "hi"}],
@@ -176,7 +181,7 @@ def test_an_empty_generation_is_an_error_not_an_empty_answer(client, monkeypatch
     import services.llm_service as ls
     monkeypatch.setattr(ls, "generate_text", _empty)
 
-    key = svc.get_companion_key()
+    key = _issue_key()
     r = client.post("/v1/chat/completions",
                     headers={"Authorization": f"Bearer {key}"},
                     json={"messages": [{"role": "user", "content": "hi"}]})

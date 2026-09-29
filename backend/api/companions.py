@@ -302,3 +302,21 @@ async def revoke_key():
     """Cut off every connected companion at once. They can be reconnected."""
     svc.revoke_companion_key()
     return {"ok": True}
+
+
+@router.get("/companions/keys")
+async def list_keys():
+    """Who holds a key, what it may do, and when it was last used.
+
+    Never returns a key: they are hashed at rest and shown once, at issue.
+    """
+    from services import companion_keys
+    return {"keys": companion_keys.list_keys(), "scopes": list(companion_keys.SCOPES)}
+
+
+@router.post("/companions/{companion_id}/key/revoke")
+async def revoke_one_key(companion_id: str):
+    """Revoke a single companion, leaving every other one connected — the thing
+    the old shared key could not do."""
+    from services import companion_keys
+    return {"ok": companion_keys.revoke(companion_id)}
