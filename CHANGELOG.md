@@ -2,6 +2,26 @@
 
 All notable changes to LocalBook will be documented in this file.
 
+## Unreleased
+
+### Fixed
+- **The extension reported the wrong version.** Every release since v2.1.1 shipped an extension
+  that said `2.1.1`, because the release script's version bump was wrapped in a test that had
+  already been made false by hand-editing the root manifest first. The bump is now unconditional
+  and asserted, and the extension re-derives its version at build time.
+- **Capturing a page is now instant.** A long article could take minutes: the capture endpoint ran
+  three model calls and the whole indexing pass before it answered. It now confirms as soon as the
+  page is extracted and saved, and fills in chunks, tags and a summary behind the response — the
+  way adding a page from the app already worked. A long page can also no longer be saved
+  half-extracted.
+- **An interrupted capture now really does land.** The background sweep that re-finishes a source
+  left mid-processing had never been able to do so — it read a store the app stopped writing to in
+  January, wrote status with the wrong arguments, and compared timestamps in two different
+  time bases, so nothing was ever old enough to count as stuck.
+- **Source counts update as sources arrive.** A capture into a notebook you are not looking at now
+  ticks its count up within a second, with the Sources drawer open or closed, and with no notebook
+  selected at all.
+
 ## v2.4.0 — Linked Folders, Companions, and honest model sizing
 
 **Point LocalBook at a folder, and anything that lands in it becomes a source.** Built for a user
