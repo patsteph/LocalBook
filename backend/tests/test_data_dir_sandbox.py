@@ -15,7 +15,6 @@ and left it holding a 2-topic test notebook where it had held 59, and on
 The shipped app is unaffected: frozen builds still use the production path.
 """
 
-import importlib
 import sys
 from pathlib import Path
 
@@ -105,9 +104,18 @@ def test_a_falsey_opt_in_does_not_count(env, value):
     assert config.DEV_USING_PRODUCTION_DATA is False
 
 
-def test_the_opt_in_flag_starts_false(env):
-    """A banner that is on by default is a banner nobody reads."""
-    importlib.reload(config)
+def test_the_opt_in_flag_is_not_set_by_an_ordinary_resolution(env):
+    """A banner that is on by default is a banner nobody reads.
+
+    Deliberately NOT `importlib.reload(config)`: reloading rebinds
+    `config.settings` to a brand-new object while every module that did
+    `from config import settings` keeps the old one, so later tests monkeypatch
+    a different object than the code reads. That polluted five unrelated tests
+    in test_folder_links and test_mlx_idle_eviction, which passed alone and
+    failed in a full run — the classic shape.
+    """
+    env.setattr(sys, "frozen", False, raising=False)
+    config.get_data_directory()
     assert config.DEV_USING_PRODUCTION_DATA is False
 
 
