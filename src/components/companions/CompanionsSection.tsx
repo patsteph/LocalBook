@@ -13,6 +13,7 @@
  * cannot finish would be worse than handing over a command to paste.
  */
 import { useCallback, useEffect, useState } from 'react';
+import { AgentKeysPanel } from './AgentKeysPanel';
 import {
   STATE_DOT,
   acceptCompanionUpdate,
@@ -905,6 +906,13 @@ export function CompanionsSection() {
       {data && data.companions.length === 0 && (
         <p className="text-sm text-gray-500 dark:text-gray-400">No companions available.</p>
       )}
+
+      {/* Agents are a different shape from the tools above: no installer, no
+          config file to rewrite, so the only way one can hold a key is to be
+          handed one. Its own component — this file is already ~900 lines. */}
+      <div className="mt-8 border-t border-gray-200 pt-6 dark:border-gray-700">
+        <AgentKeysPanel />
+      </div>
     </div>
   );
 }

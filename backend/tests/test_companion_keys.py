@@ -234,3 +234,67 @@ def test_migration_does_not_depend_on_a_companion_calling_in(store):
 
     assert not (store / companion_keys.LEGACY_KEY_FILE).exists()
     assert companion_keys.list_keys()[0]["companion_id"] == companion_keys.LEGACY_COMPANION_ID
+
+
+# ── route ordering ──────────────────────────────────────────────────────────
+
+
+def test_literal_key_routes_are_not_swallowed_by_the_id_parameter(store):
+    """`/companions/keys` shipped DEAD in 515ef47.
+
+    Starlette matches in definition order, and `/companions/{companion_id}` was
+    defined first — so `/companions/keys` resolved as companion_id="keys" and
+    answered 404 "Unknown companion". Nothing called it yet, so nothing
+    surfaced it. This pins the ordering rather than the comment.
+    """
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from api import companions as companions_api
+
+    app = FastAPI()
+    app.include_router(companions_api.router)
+    client = TestClient(app)
+
+    assert client.get("/companions/keys").status_code == 200
+    assert client.get("/companions/calls").status_code == 200
+    # ...and the parameterised route still resolves a real companion.
+    assert client.get("/companions/meeting-notes").status_code == 200
+
+
+def test_issuing_a_key_through_the_api_returns_it_once(store):
+    """Jocasta is an agent, not an installed tool with a manifest — there is no
+    config file for /connect to rewrite, so this endpoint is the only way it can
+    ever hold a key."""
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from api import companions as companions_api
+
+    app = FastAPI()
+    app.include_router(companions_api.router)
+    client = TestClient(app)
+
+    r = client.post("/companions/keys/issue",
+                    json={"companion_id": "jocasta", "scopes": ["mcp", "events"]})
+    assert r.status_code == 200
+    key = r.json()["key"]
+    assert companion_keys.verify(key).companion_id == "jocasta"
+
+    # It is not readable back from anywhere.
+    listed = client.get("/companions/keys").json()["keys"]
+    assert key not in json.dumps(listed)
+
+
+def test_issuing_with_a_bad_scope_is_a_400(store):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from api import companions as companions_api
+
+    app = FastAPI()
+    app.include_router(companions_api.router)
+    assert TestClient(app).post(
+        "/companions/keys/issue",
+        json={"companion_id": "jocasta", "scopes": ["nonsense"]},
+    ).status_code == 400

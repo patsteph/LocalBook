@@ -7,7 +7,7 @@ of LocalBook: point it at our engine, watch the folder it writes into, and
 """
 import logging
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
@@ -56,6 +56,76 @@ async def list_companions():
     return {"companions": items,
             "notebooks": [{"id": k, "title": v} for k, v in
                           sorted(titles.items(), key=lambda kv: kv[1].lower())]}
+
+
+# ── literal paths BEFORE /companions/{companion_id} ─────────────────────────
+#
+# Starlette matches in definition order, so `/companions/{companion_id}` will
+# happily swallow `/companions/keys` as companion_id="keys" and answer 404
+# "Unknown companion". That is exactly what happened: `/companions/keys` was
+# added below the parameterised route and was dead from the day it shipped —
+# nothing called it yet, so nothing surfaced it. Keep these above.
+
+class IssueKeyRequest(BaseModel):
+    companion_id: str
+    scopes: Optional[List[str]] = None
+
+
+@router.post("/companions/keys/issue")
+async def issue_key(req: IssueKeyRequest):
+    """Mint a key for a companion and return it ONCE.
+
+    Needed as its own endpoint because an agent like Jocasta is not an
+    installed tool with a manifest — there is no config file for `/connect` to
+    rewrite, so the only way it can ever hold a key is to be handed one here.
+
+    Reissuing rotates. The plaintext is in this response and nowhere else;
+    the store keeps only a salted hash.
+    """
+    from services import companion_keys
+
+    try:
+        key = companion_keys.issue(req.companion_id, req.scopes)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {
+        "companion_id": req.companion_id,
+        "key": key,
+        "scopes": req.scopes or list(companion_keys.LEGACY_SCOPES),
+        "shown_once": True,
+    }
+
+
+@router.get("/companions/calls")
+async def list_calls(companion_id: Optional[str] = None, limit: int = 100):
+    """The audit log: what companions have actually called.
+
+    Arguments are hashed, never stored — `args_preview` is the argument NAMES
+    only. See services/companion_audit for why.
+    """
+    from services import companion_audit
+
+    return {"calls": companion_audit.recent(companion_id, limit)}
+
+
+@router.delete("/companions/calls")
+async def purge_calls(companion_id: Optional[str] = None):
+    """Purge the audit log, for one companion or all of them."""
+    from services import companion_audit
+
+    return {"purged": companion_audit.purge(companion_id)}
+
+
+@router.get("/companions/keys")
+async def list_keys():
+    """Who holds a key, what it may do, and when it was last used.
+
+    Never returns a key: they are hashed at rest and shown once, at issue.
+    """
+    from services import companion_keys
+    return {"keys": companion_keys.list_keys(), "scopes": list(companion_keys.SCOPES)}
+
+
 
 
 @router.get("/companions/{companion_id}")
@@ -302,16 +372,6 @@ async def revoke_key():
     """Cut off every connected companion at once. They can be reconnected."""
     svc.revoke_companion_key()
     return {"ok": True}
-
-
-@router.get("/companions/keys")
-async def list_keys():
-    """Who holds a key, what it may do, and when it was last used.
-
-    Never returns a key: they are hashed at rest and shown once, at issue.
-    """
-    from services import companion_keys
-    return {"keys": companion_keys.list_keys(), "scopes": list(companion_keys.SCOPES)}
 
 
 @router.post("/companions/{companion_id}/key/revoke")
