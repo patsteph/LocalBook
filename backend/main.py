@@ -185,6 +185,22 @@ async def _run_startup_tasks():
         else:
             await asyncio.sleep(MIN_STEP_MS)
 
+    # ── Data schema (LB-10) ───────────────────────────────────────────────
+    # Before anything reads or writes a format. A failure here does NOT advance
+    # the ledger and does not stop the app: the honest state is "running at the
+    # version the data actually reached", which /health and Data Health report,
+    # rather than a half-migrated store the app pretends is current.
+    try:
+        from services import migration_ledger
+        _mig = await asyncio.to_thread(migration_ledger.run_pending)
+        if _mig.get("ran"):
+            print(f"[Startup] applied migrations: {', '.join(_mig['ran'])}")
+        if _mig.get("failed"):
+            print(f"[Startup] ⚠️  migration {_mig['failed']} FAILED: {_mig['error']}")
+            logger.error("[main] migration %s failed: %s", _mig["failed"], _mig["error"])
+    except Exception as _e:
+        logger.error(f"[main] migration ledger could not run (non-fatal): {_e}")
+
     # ── Key custody (K-1) ─────────────────────────────────────────────────
     # Run the credential migration and the legacy-backup cleanup HERE rather
     # than lazily on first locker use. Both were originally triggered by
@@ -820,6 +836,16 @@ async def health():
         }
     except Exception as exc:
         out["memory"] = {"error": str(exc)}
+    try:
+        from services import migration_ledger
+        # The head is what two LB-12 peers compare before syncing: the one that
+        # is behind pauses rather than applying records it cannot interpret.
+        out["schema"] = {
+            "version": migration_ledger.schema_version(),
+            "ledger_head": migration_ledger.head(),
+        }
+    except Exception as exc:
+        out["schema"] = {"error": str(exc)}
     return out
 
 if __name__ == "__main__":
