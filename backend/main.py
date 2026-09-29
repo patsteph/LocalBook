@@ -686,6 +686,10 @@ app.include_router(export.router, prefix="/export", tags=["export"])
 app.include_router(reindex.router, prefix="/reindex", tags=["reindex"])
 app.include_router(folders_api.router, prefix="/folders", tags=["linked-folders"])
 app.include_router(companions_api.router, tags=["companions"])
+# K-1: recovery-phrase setup and key recovery. Without this the move off
+# the old machine-derived key is a DOWNGRADE in durability — see api/keyvault.py.
+from api import keyvault as keyvault_api
+app.include_router(keyvault_api.router, tags=["keyvault"])
 # OpenAI-compatible surface so companion tools can use LocalBook's engine
 # instead of loading a second copy of the same model. Auth is the companion
 # key, checked inside the router (see utils/auth_middleware EXEMPT_PREFIXES).

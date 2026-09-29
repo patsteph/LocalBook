@@ -470,11 +470,58 @@ def restore_from_phrase(phrase: str, purpose: str, *, device: Optional[str] = No
     return key
 
 
+def wrap_all() -> Dict[str, object]:
+    """Wrap every key this device already holds, for the recovery key on file.
+
+    Run right after a recovery key is configured. Keys created BEFORE setup have
+    no wrapped copy, so without this backfill they stay unrecoverable forever
+    while the UI happily reports "recovery configured" — which is worse than no
+    recovery at all, because it is a false assurance.
+    """
+    if not has_recovery_key():
+        raise KeyVaultError("no recovery key is configured")
+
+    wrapped: list = []
+    skipped: Dict[str, str] = {}
+    for purpose in PURPOSES:
+        try:
+            if _keychain_read(purpose) is None:
+                skipped[purpose] = "no key on this device"
+                continue
+            wrap_for_recovery(purpose)
+            wrapped.append(purpose)
+        except KeyVaultError as exc:
+            skipped[purpose] = str(exc)
+    return {"wrapped": wrapped, "skipped": skipped}
+
+
+def unprotected_purposes() -> list:
+    """Keys that exist on this device but have NO wrapped copy.
+
+    Anything in this list is lost for good if the Keychain is wiped. Data Health
+    reads it; it is the honest answer to "am I actually covered?".
+    """
+    out = []
+    for purpose in PURPOSES:
+        try:
+            if _keychain_read(purpose) is not None and not wrapped_path(purpose).exists():
+                out.append(purpose)
+        except KeyVaultError:
+            continue
+    return out
+
+
 def status() -> Dict[str, object]:
     """A non-secret summary, for Data Health and the settings screen."""
+    unprotected = unprotected_purposes()
     out: Dict[str, object] = {
         "device_id": device_id(),
         "recovery_key_configured": has_recovery_key(),
+        # The honest headline. "Recovery configured" alone is not the same as
+        # "every key is recoverable" — a key created before setup has no
+        # wrapped copy until wrap_all() runs.
+        "unprotected_purposes": unprotected,
+        "fully_protected": has_recovery_key() and not unprotected,
         "purposes": {},
     }
     for purpose in PURPOSES:

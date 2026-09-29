@@ -270,6 +270,7 @@ python -W ignore -m PyInstaller \
     --hidden-import=services.stuck_source_recovery \
     --hidden-import=services.keychain_manager \
     --hidden-import=services.keyvault \
+    --hidden-import=api.keyvault \
     --hidden-import=services.mcp_server \
     --hidden-import=services.companion_keys \
     --hidden-import=services.companion_audit \
