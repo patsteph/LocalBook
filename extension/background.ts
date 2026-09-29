@@ -185,20 +185,38 @@ async function captureSelection(text: string, url: string, title: string, notebo
   }
 }
 
+// Injected into the page, so it must be SELF-CONTAINED — no closure references.
+// Same rule as the content script and the side panel: prefer the article element, and
+// if its markup somehow exceeds the cap send NO html rather than a truncated document
+// (the backend picks whichever extraction is longer, so half a page must not win).
+function extractArticleInPage(maxHtml: number, selectors: string[]) {
+  let el: HTMLElement | null = null
+  for (const sel of selectors) {
+    const found = document.querySelector(sel) as HTMLElement | null
+    if (found && (found.textContent || "").trim().length > 200) { el = found; break }
+  }
+  el = el || document.body
+  if (!el) return { content: "", html: "", title: document.title }
+  const html = el.outerHTML
+  return {
+    content: (el.innerText || el.textContent || "").trim(),
+    html: html.length > maxHtml ? "" : html,
+    title: document.title
+  }
+}
+
+const MAX_HTML_CHARS = 2_000_000
+const ARTICLE_SELECTORS = ["article", "main", '[role="main"]', ".post-content",
+  ".article-body", ".entry-content", "#content"]
+
 async function capturePage(tab: chrome.tabs.Tab, notebookId: string) {
   try {
-    // Execute script to get page content
-    // Cap HTML size to prevent OOM in service worker (~500KB max)
-    const MAX_HTML_CHARS = 500_000
     const results = await chrome.scripting.executeScript({
       target: { tabId: tab.id! },
-      func: (maxChars: number) => ({
-        content: document.body.innerText || "",
-        html: document.documentElement.outerHTML.substring(0, maxChars)
-      }),
-      args: [MAX_HTML_CHARS]
+      func: extractArticleInPage,
+      args: [MAX_HTML_CHARS, ARTICLE_SELECTORS]
     })
-    
+
     const pageData = results[0]?.result
     if (!pageData) throw new Error("Could not get page content")
     
@@ -374,8 +392,6 @@ async function handleScrapeRequest(requestId: string, url: string) {
     await sleep(2500)
 
     // Extract content via content script message
-    // Cap HTML to 500KB to avoid blowing up service worker memory
-    const MAX_HTML = 500_000
     let content = ""
     let title = ""
     let html = ""
@@ -385,19 +401,15 @@ async function handleScrapeRequest(requestId: string, url: string) {
       if (response?.content) {
         content = response.content
         title = response.metadata?.title || ""
-        html = (response.html || "").substring(0, MAX_HTML)
+        html = response.html || ""
       }
     } catch {
       // Content script not injected — try scripting API fallback
       try {
         const results = await chrome.scripting.executeScript({
           target: { tabId: tab.id },
-          func: (maxHtml: number) => ({
-            content: document.body.innerText || "",
-            html: document.documentElement.outerHTML.substring(0, maxHtml),
-            title: document.title
-          }),
-          args: [MAX_HTML]
+          func: extractArticleInPage,
+          args: [MAX_HTML_CHARS, ARTICLE_SELECTORS]
         })
         const result = results[0]?.result
         if (result) {

@@ -109,6 +109,9 @@ function SidePanel() {
   useEffect(() => { selectedNotebookRef.current = selectedNotebook }, [selectedNotebook])
   const pageInfoRef = useRef(pageInfo)
   useEffect(() => { pageInfoRef.current = pageInfo }, [pageInfo])
+  // The source whose post-capture enrichment we are currently polling. A second capture
+  // reassigns it, and the older poll sees the mismatch and stops writing to the panel.
+  const pollingSourceRef = useRef<string | null>(null)
 
   // Initialize — register listeners and clean them up on unmount
   useEffect(() => {
@@ -219,6 +222,13 @@ function SidePanel() {
     const info = await getCurrentPageInfo()
     if (info) {
       if (pageInfoRef.current?.cleanUrl !== info.cleanUrl) {
+        // Stop following page A's capture the moment the panel is showing page B.
+        // The capture itself is unaffected — it runs in the BACKEND and finishes
+        // regardless — but its status must not keep writing into a panel that has moved
+        // on. Without this, the poll reintroduces exactly the leak the 2026-07-24 fix
+        // below was for. Cleared for BOTH branches: a page with a restored session
+        // shows its own scrape result, which page A's poll would otherwise overwrite.
+        pollingSourceRef.current = null
         const restored = await restoreSessionState(info.cleanUrl)
         if (restored) {
           if (restored.summaryResult) setSummaryResult(restored.summaryResult)
@@ -420,6 +430,57 @@ function SidePanel() {
     }
   }
 
+  /** Watch a capture's background enrichment and fill in the panel as it lands.
+   *
+   * Two stages arrive separately: the RAG ingest sets `completed` with a chunk count,
+   * then the curator scoring / summary add the topics. So this keeps polling briefly
+   * past `completed` for the topics, rather than stopping at the first success.
+   */
+  async function followCaptureProgress(
+    notebookId: string,
+    sourceId: string,
+    wordCount: number,
+    readingTime: number
+  ) {
+    const INTERVAL_MS = 2000
+    const CEILING_MS = 120_000
+    const started = Date.now()
+    pollingSourceRef.current = sourceId
+
+    while (Date.now() - started < CEILING_MS) {
+      await new Promise(r => setTimeout(r, INTERVAL_MS))
+      // A newer capture took over, or the user moved on — stop writing to the panel.
+      if (pollingSourceRef.current !== sourceId) return
+      try {
+        const res = await tokenFetch(
+          `${API_BASE}/browser/capture-status/${notebookId}/${sourceId}`)
+        if (!res.ok) return
+        const st = await res.json()
+        if (pollingSourceRef.current !== sourceId) return
+
+        if (st.status === "failed") {
+          setScrapeResult(
+            `⚠ Saved, but indexing failed\n${st.error || "unknown error"}\n` +
+            `The page is stored but not searchable yet.`)
+          showMessage("Indexing failed — see the source in the app", "error")
+          return
+        }
+        if (st.status === "completed") {
+          const topics: string[] = (st.topics?.length ? st.topics : st.key_concepts) || []
+          const topicLine = topics.length ? `\nTopics: ${topics.slice(0, 3).join(", ")}` : ""
+          setScrapeResult(
+            `✓ Saved to notebook\n${wordCount} words • ${readingTime} min read • ` +
+            `${st.chunks} chunk${st.chunks === 1 ? "" : "s"}${topicLine}`)
+          // Topics ride in one update later than the chunk count. Give them a while,
+          // then stop — the source is complete either way.
+          if (topics.length || Date.now() - started > CEILING_MS / 2) return
+        }
+      } catch {
+        return  // backend went away; the source still completes on its own
+      }
+    }
+  }
+
   async function handleScrape() {
     if (!pageInfo || !selectedNotebook) return
     setLoading(true)
@@ -427,14 +488,17 @@ function SidePanel() {
     setScrapeResult(null)
 
     try {
-      // Dedup check: see if this URL is already in the notebook
+      // Dedup check. This used to GET /sources/{notebook} and search the result here —
+      // and that endpoint returns every source with its FULL TEXT, so every scrape began
+      // by downloading the entire notebook to test one URL. /browser/exists answers the
+      // same question with one row.
       try {
-        const checkRes = await tokenFetch(`${API_BASE}/sources/${selectedNotebook}`)
+        const q = new URLSearchParams({ notebook_id: selectedNotebook, url: pageInfo.cleanUrl })
+        const checkRes = await tokenFetch(`${API_BASE}/browser/exists?${q.toString()}`)
         if (checkRes.ok) {
-          const sources = await checkRes.json()
-          const existing = sources.find((s: any) => s.url === pageInfo.cleanUrl || s.url === pageInfo.url)
-          if (existing) {
-            setScrapeResult(`⚠ Already in notebook\n"${existing.title || existing.filename}" was captured previously.`)
+          const hit = await checkRes.json()
+          if (hit.exists) {
+            setScrapeResult(`⚠ Already in notebook\n"${hit.title || "This page"}" was captured previously.`)
             showMessage("This page is already in your notebook", "info")
             setLoading(false)
             return
@@ -475,13 +539,25 @@ function SidePanel() {
         const curatorInfo = data.key_concepts?.length
           ? `\nTopics: ${data.key_concepts.slice(0, 3).join(", ")}`
           : ""
-        setScrapeResult(`✓ Saved to notebook\n${data.word_count} words • ${data.reading_time_minutes} min read${curatorInfo}`)
+        const stillWorking = data.status === "processing"
+        setScrapeResult(
+          `✓ Saved to notebook\n${data.word_count} words • ${data.reading_time_minutes} min read` +
+          (stillWorking ? `\nIndexing…` : curatorInfo)
+        )
         // Hold onto the source_id so the post-capture SuggestedLinks
         // panel can submit a batch /sources/{nb}/{src}/expand-links call.
         if (data.source_id) setCapturedSourceId(data.source_id)
         showMessage("Page captured!", "success")
         handleFetchNotebooks()
         trackAction("scrape")
+        // The capture now answers as soon as the source is stored; the ingest, the
+        // curator scoring, the tags and the summary land behind it. Follow them so the
+        // panel still ends up showing chunks + topics — without holding an HTTP
+        // request open for minutes, which is what it used to do.
+        if (stillWorking && data.source_id) {
+          void followCaptureProgress(selectedNotebook, data.source_id, data.word_count,
+            data.reading_time_minutes)
+        }
       } else {
         const errorMsg = data.error || "Capture failed"
         setScrapeResult(`✗ Capture failed\n${errorMsg}`)

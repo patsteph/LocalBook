@@ -90,17 +90,30 @@ function IndexPopup() {
       // Get page content from content script
       const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
       
-      const MAX_HTML_CHARS = 500_000  // 500KB cap to prevent OOM
+      // Same extraction rule as the content script and the side panel: prefer the
+      // ARTICLE element (its markup is a fraction of the document's, so the cap stops
+      // binding on long pages), and if it still exceeds the cap send no html at all
+      // rather than a truncated document — the backend keeps whichever extraction is
+      // longer, so half a page must never win against the full text.
+      const MAX_HTML_CHARS = 2_000_000
       const results = await chrome.scripting.executeScript({
         target: { tabId: tab.id! },
-        func: (maxChars: number) => {
-          // Get text content
-          const content = document.body.innerText || ""
-          // Get HTML for metadata extraction (capped)
-          const html = document.documentElement.outerHTML.substring(0, maxChars)
-          return { content, html }
+        func: (maxHtml: number, selectors: string[]) => {
+          let el: HTMLElement | null = null
+          for (const sel of selectors) {
+            const found = document.querySelector(sel) as HTMLElement | null
+            if (found && (found.textContent || "").trim().length > 200) { el = found; break }
+          }
+          el = el || document.body
+          if (!el) return { content: "", html: "" }
+          const html = el.outerHTML
+          return {
+            content: (el.innerText || el.textContent || "").trim(),
+            html: html.length > maxHtml ? "" : html
+          }
         },
-        args: [MAX_HTML_CHARS]
+        args: [MAX_HTML_CHARS, ["article", "main", '[role="main"]', ".post-content",
+          ".article-body", ".entry-content", "#content"]]
       })
 
       const pageData = results[0]?.result

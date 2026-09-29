@@ -33,7 +33,8 @@ export async function getPageContent(): Promise<PageContent | null> {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
     if (!tab?.id) return null
 
-    // Try content script first (Turndown markdown extraction)
+    // Try the content script first — it picks the article element, so both its text
+    // and its HTML describe the same region of the page.
     try {
       const response = await chrome.tabs.sendMessage(tab.id, { action: "getPageContent" })
       if (response?.content) {
@@ -47,15 +48,29 @@ export async function getPageContent(): Promise<PageContent | null> {
       // Content script not injected on this page — fall back to scripting API
     }
 
-    // Fallback: basic extraction via scripting API (cap HTML to 500KB)
-    const MAX_HTML = 500_000
+    // Fallback: basic extraction via the scripting API. Same rule as the content
+    // script — prefer the article element, and on the rare page whose markup exceeds
+    // the cap send NO html rather than a truncated document, because the backend
+    // compares the two extractions by length and half a page must not win.
+    const MAX_HTML = 2_000_000
     const results = await chrome.scripting.executeScript({
       target: { tabId: tab.id },
-      func: (maxChars: number) => ({
-        content: document.body.innerText,
-        html: document.documentElement.outerHTML.substring(0, maxChars)
-      }),
-      args: [MAX_HTML]
+      func: (maxChars: number, selectors: string[]) => {
+        let el: HTMLElement | null = null
+        for (const sel of selectors) {
+          const found = document.querySelector(sel) as HTMLElement | null
+          if (found && (found.textContent || "").trim().length > 200) { el = found; break }
+        }
+        el = el || document.body
+        if (!el) return { content: "", html: "" }
+        const html = el.outerHTML
+        return {
+          content: (el.innerText || el.textContent || "").trim(),
+          html: html.length > maxChars ? "" : html
+        }
+      },
+      args: [MAX_HTML, ["article", "main", '[role="main"]', ".post-content",
+        ".article-body", ".entry-content", "#content"]]
     })
     return results[0]?.result || null
   } catch (e) {

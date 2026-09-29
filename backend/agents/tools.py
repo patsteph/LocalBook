@@ -269,18 +269,38 @@ async def capture_page_tool(
     }
 
 
-async def _summarize_page_impl(content: str, url: str) -> dict:
+# How much of a page the summariser reads, and how much room it gets to answer.
+#
+# The budget used to be implicit and WRONG: the prompt below asks for 5-8 bullets plus
+# 2-3 paragraphs plus 5-10 concepts — roughly 700 tokens of JSON — while the default
+# `num_predict` on the generate seam is 500. Every summary of a substantial page was
+# therefore truncated mid-JSON by construction, which is the reason the elaborate
+# repair chain under `_extract_summary_json` (including a regex salvage) exists at all.
+# Sized to the ask now. The input budget is a parameter rather than an inline slice,
+# per the no-hardcoded-truncation rule.
+_SUMMARY_MAX_CHARS = 12000
+_SUMMARY_NUM_PREDICT = 1200
+
+
+async def _summarize_page_impl(
+    content: str,
+    url: str,
+    max_chars: int = _SUMMARY_MAX_CHARS,
+    num_predict: int = _SUMMARY_NUM_PREDICT,
+) -> dict:
     """Implementation of page summarization - can be called directly.
-    
+
     Args:
         content: Page text content
         url: Page URL for context
-        
+        max_chars: How much of `content` to send (explicit budget, not an inline slice)
+        num_predict: Generation cap — must fit the structure the prompt asks for
+
     Returns:
         Dictionary with summary, key points, and key concepts
     """
     from services.rag_engine import rag_engine
-    
+
     # Calculate content length to scale summary depth
     word_count = len(content.split())
     
@@ -311,9 +331,9 @@ Output ONLY valid JSON (no markdown, no extra text):
     "key_concepts": ["concept1", "concept2", ...]
 }"""
     
-    user_prompt = f"This content has approximately {word_count} words. Create a comprehensive summary:\n\n{content[:12000]}"
-    
-    response = await rag_engine._call_ollama(system_prompt, user_prompt)
+    user_prompt = f"This content has approximately {word_count} words. Create a comprehensive summary:\n\n{content[:max_chars]}"
+
+    response = await rag_engine._call_ollama(system_prompt, user_prompt, num_predict=num_predict)
     
     # Robust JSON extraction
     result = _extract_summary_json(response)
@@ -412,10 +432,22 @@ def _try_parse_json(text: str) -> dict | None:
 def _extract_summary_json(response: str) -> dict:
     """Extract JSON from LLM response with multiple fallback strategies."""
     import json
-    
+
     text = response.strip()
-    print(f"[DEBUG] Extracting JSON from response ({len(text)} chars), starts with: {text[:120]}...")
-    
+    logger.debug(f"[summarize] extracting JSON from {len(text)} chars")
+
+    # The shared repairer first (centralization rule: LLM JSON goes through
+    # utils/json_repair). The strategies below stay as the salvage path — they can
+    # recover a TRUNCATED object, which a parser cannot, and truncation is still
+    # possible on a page that overruns the generation budget.
+    try:
+        from utils.json_repair import robust_json_parse
+        parsed = robust_json_parse(text, expect="object", fallback=None, label="summarize_page")
+        if isinstance(parsed, dict) and (parsed.get("summary") or parsed.get("key_points")):
+            return _parse_and_validate(parsed)
+    except Exception as _e:
+        logger.debug(f"[summarize] robust_json_parse unavailable/failed: {type(_e).__name__}: {_e}")
+
     # Strategy 1: Extract content between ``` markers, then find JSON
     if "```" in text:
         parts = text.split("```")
@@ -553,16 +585,27 @@ async def extract_page_metadata_tool(
     url: str
 ) -> dict:
     """Extract metadata from HTML page.
-    
+
     Args:
         html_content: Raw HTML content
         url: Page URL
-        
+
     Returns:
         Dictionary with extracted metadata
     """
+    # The body below is pure-Python BeautifulSoup (`html.parser`) — on the few hundred
+    # KB of HTML the browser extension sends it is hundreds of milliseconds of blocking
+    # work, and it used to run straight on the event loop because `async def` says
+    # nothing about what the body does. Off-thread, per the no-sync-work-on-the-loop
+    # rule. Both callers (web capture, /browser/metadata) get the fix.
+    import asyncio
+    return await asyncio.to_thread(_extract_page_metadata_sync, html_content, url)
+
+
+def _extract_page_metadata_sync(html_content: str, url: str) -> dict:
+    """Synchronous implementation — call it only off the event loop."""
     from bs4 import BeautifulSoup
-    
+
     soup = BeautifulSoup(html_content, 'html.parser')
     
     # Title - try multiple sources in priority order

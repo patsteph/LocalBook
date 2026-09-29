@@ -88,6 +88,11 @@ class CaptureResponse(BaseModel):
     summary: Optional[str] = None
     key_concepts: List[str] = []
     error: Optional[str] = None
+    # "processing" when the source exists and is already stored but its enrichment
+    # (RAG ingest, curator scoring, tags, summary) is still running behind the
+    # response — the extension polls /browser/capture-status for the rest. Paths that
+    # still finish inline keep the default. Older extension builds ignore the field.
+    status: str = "completed"
 
 
 class NotebookInfo(BaseModel):
@@ -128,6 +133,72 @@ async def list_notebooks_for_extension():
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/exists")
+async def source_exists(notebook_id: str, url: str):
+    """Is this URL already a source in this notebook?
+
+    The extension asked this by GETting /sources/{notebook_id} and searching the
+    result client-side — and `source_store.list()` is `SELECT *` with metadata_json
+    merged in, i.e. every source's FULL TEXT, serialized over localhost, before every
+    single capture. This answers the same question with one field per source.
+
+    Matches on the URL as stored and with the trailing slash / fragment normalised, so
+    a cleaned URL still finds a source captured with the raw one.
+    """
+    from storage.source_store import source_store
+
+    def _norm(u: str) -> str:
+        return (u or "").split("#")[0].rstrip("/").lower()
+
+    target = _norm(url)
+    if not target:
+        return {"exists": False}
+    try:
+        for s in await source_store.list(notebook_id):
+            stored = s.get("url") or ""
+            if stored == url or _norm(stored) == target:
+                return {
+                    "exists": True,
+                    "source_id": s.get("id"),
+                    "title": s.get("title") or s.get("filename") or "",
+                    "status": s.get("status") or "completed",
+                }
+    except Exception as e:
+        # Never block a capture on the dedup check — the caller treats a failure as
+        # "not found" and proceeds, which is what it did when this was client-side.
+        logger.warning(f"[browser] exists check failed: {type(e).__name__}: {e}")
+    return {"exists": False}
+
+
+@router.get("/capture-status/{notebook_id}/{source_id}")
+async def capture_status(notebook_id: str, source_id: str):
+    """What has landed for a capture so far.
+
+    /browser/capture now returns as soon as the source is stored, so the extension
+    polls this to fill in the chunk count and the topics once the background
+    enrichment finishes. Deliberately narrow: no `content`, no `html`, no metadata
+    blob — this is polled, so it must stay cheap.
+    """
+    from storage.source_store import source_store
+
+    source = await source_store.get(source_id)
+    if not source or (source.get("notebook_id") or "") != notebook_id:
+        raise HTTPException(status_code=404, detail="Source not found in this notebook")
+
+    summary = source.get("summary") or ""
+    return {
+        "source_id": source_id,
+        "status": source.get("status") or "processing",
+        "title": source.get("title") or source.get("filename") or "",
+        "chunks": int(source.get("chunks") or 0),
+        "word_count": int(source.get("word_count") or 0),
+        "topics": source.get("topics") or [],
+        "key_concepts": source.get("key_concepts") or [],
+        "summary_present": bool(summary),
+        "error": source.get("error"),
+    }
 
 
 async def process_web_images_background(
@@ -176,6 +247,199 @@ async def process_web_images_background(
         print(f"[BROWSER] Background image extraction failed: {e}")
         import traceback
         traceback.print_exc()
+
+
+# How much of a capture's text the auto-tagger sees. Explicit budget rather than an
+# inline slice, per the truncation rule — tags come from the opening of a document.
+_AUTO_TAG_MAX_CHARS = 3000
+# Below this there is no realistic chance of a described-worthy image in the markup.
+_MIN_HTML_FOR_IMAGE_PASS = 1000
+
+
+def _queue_web_image_pass(
+    notebook_id: str,
+    source_id: str,
+    html_content: str,
+    base_url: str,
+    page_title: str,
+) -> None:
+    """Hand the vision pass to the Enrichment Worker rather than the event loop.
+
+    Describing every image on a page is vision-model work, and it used to ride on
+    FastAPI's BackgroundTasks — meaning it began the instant the capture responded,
+    on the request loop, whether or not the user was doing something else. It is also
+    the one genuinely deferrable half of a capture: the page's text is searchable
+    without it. DAYDREAM tier, coalesced per source, so it runs when the machine is
+    quiet and a second capture of the same source collapses into one job.
+
+    Called only AFTER the ingest has completed — the job appends to the document the
+    ingest creates, so the two must never race.
+    """
+    try:
+        from services.enrichment_jobs import EnrichmentJob, JobTier
+        from services.enrichment_worker import enrichment_worker
+
+        enrichment_worker.enqueue(EnrichmentJob(
+            key=f"web-images:{notebook_id}:{source_id}",
+            tier=JobTier.DAYDREAM,
+            label="web-images",
+            notebook_id=notebook_id,
+            # A THUNK: the worker cancels and re-runs a job, and a coroutine can only
+            # be awaited once (see services/enrichment_jobs.py).
+            factory=lambda: process_web_images_background(
+                notebook_id=notebook_id,
+                source_id=source_id,
+                html_content=html_content,
+                base_url=base_url,
+                page_title=page_title,
+            ),
+        ))
+        logger.info(f"[browser] queued image pass for {source_id} (DAYDREAM)")
+    except Exception as e:
+        logger.warning(f"[browser] could not queue image pass: {type(e).__name__}: {e}")
+
+
+async def _finish_web_capture_background(
+    notebook_id: str,
+    source_id: str,
+    content: str,
+    title: str,
+    url: str,
+    source_type: str,
+    html_content: Optional[str] = None,
+    user_weight_bonus: float = 1.5,
+    curator_source_type: Optional[str] = None,
+    summarize: bool = True,
+) -> None:
+    """Everything that used to run BEFORE /browser/capture answered the extension.
+
+    The capture request awaited three LLM calls — curator scoring, the page summary
+    (on the MAIN model, with a 12k-char prompt) and auto-tagging — plus the entire RAG
+    ingest, so scraping a long article held the connection for minutes behind a
+    spinner. `api/web.py::quick_add` has done it the other way round for a long time
+    ("returns INSTANTLY … scraping + ingestion happens in background"); this is that
+    shape applied to the extension's path, and `_process_web_source_background` in the
+    same module is the model for the failure handling.
+
+    Order is deliberate: **ingest first**, because "searchable" is what the user is
+    actually waiting for — the LLM enrichments only decorate the source afterwards.
+    Every enrichment step is independently non-fatal. The ingest is not: if it fails
+    the source is marked `failed` and the failure is pushed, because a source left
+    sitting in `processing` is the one outcome this must never produce.
+
+    Shared with selection capture, which differs only in its curator weighting (a
+    highlight is a stronger signal) and in having nothing worth summarising.
+    """
+    from storage.source_store import source_store
+    from services.rag_engine import rag_engine
+
+    # ── the part that makes the source usable ──────────────────────────────────
+    try:
+        rag_result = await rag_engine.ingest_document(
+            notebook_id=notebook_id,
+            source_id=source_id,
+            text=content,
+            filename=title,
+            source_type=source_type,
+        )
+        chunks = rag_result.get("chunks", 0) if rag_result else 0
+        await source_store.update(notebook_id, source_id, {
+            "chunks": chunks,
+            "status": "completed",
+            "content": content,
+        })
+        await notify_source_updated({
+            "notebook_id": notebook_id,
+            "source_id": source_id,
+            "status": "completed",
+            "title": title,
+            "chunks": chunks,
+        })
+        logger.info(f"[browser] ingested {title[:80]!r}: {chunks} chunks")
+    except Exception as e:
+        logger.error(f"[browser] ingest failed for {title[:80]!r}: {e}", exc_info=True)
+        try:
+            await source_store.update(notebook_id, source_id, {
+                "status": "failed",
+                "error": str(e)[:200],
+            })
+            await notify_source_updated({
+                "notebook_id": notebook_id,
+                "source_id": source_id,
+                "status": "failed",
+                "title": title,
+                "error": str(e)[:100],
+            })
+        except Exception as _e:
+            logger.debug(f"[browser] {type(_e).__name__}: {_e}")
+        return
+
+    # ── enrichment: the source is already searchable, so none of this is fatal ──
+    updates: dict = {}
+
+    try:
+        from agents.curator import curator
+        curator_scoring = await curator.score_user_item(
+            notebook_id=notebook_id,
+            title=title,
+            content=content,
+            url=url,
+            source_type=curator_source_type or source_type,
+            user_weight_bonus=user_weight_bonus,  # the user explicitly captured this
+        )
+        updates.update({
+            "curator_scoring": curator_scoring,
+            "topics": curator_scoring.get("topics", []),
+            "entities": curator_scoring.get("entities", []),
+            "importance": curator_scoring.get("importance", "medium"),
+        })
+        logger.info(
+            f"[browser] curator scored {title[:60]!r}: "
+            f"relevance={curator_scoring.get('relevance_score', 0):.2f}"
+        )
+    except Exception as e:
+        logger.warning(f"[browser] curator scoring failed (non-fatal): {type(e).__name__}: {e}")
+
+    try:
+        from services.auto_tagger import auto_tagger
+        await auto_tagger.tag_source_in_notebook(
+            notebook_id, source_id, title, content[:_AUTO_TAG_MAX_CHARS],
+        )
+    except Exception as e:
+        logger.warning(f"[browser] auto-tagging failed (non-fatal): {type(e).__name__}: {e}")
+
+    if summarize:
+        try:
+            from agents.tools import summarize_page_tool
+            summary_result = await summarize_page_tool.ainvoke({"content": content, "url": url})
+            updates["summary"] = summary_result.get("summary", "")
+            updates["key_concepts"] = summary_result.get("key_concepts", [])
+        except Exception as e:
+            logger.warning(f"[browser] summarization failed (non-fatal): {type(e).__name__}: {e}")
+
+    if updates:
+        try:
+            await source_store.update(notebook_id, source_id, updates)
+            # Second push so the extension's status poll and the app both see the
+            # topics/summary land, not just the chunk count.
+            await notify_source_updated({
+                "notebook_id": notebook_id,
+                "source_id": source_id,
+                "status": "completed",
+                "title": title,
+                "chunks": chunks,
+            })
+        except Exception as e:
+            logger.warning(f"[browser] could not store enrichment: {type(e).__name__}: {e}")
+
+    if html_content and len(html_content) > _MIN_HTML_FOR_IMAGE_PASS:
+        _queue_web_image_pass(
+            notebook_id=notebook_id,
+            source_id=source_id,
+            html_content=html_content,
+            base_url=url,
+            page_title=title,
+        )
 
 
 async def _capture_remote_document(url: str, notebook_id: str, title: str, background_tasks: BackgroundTasks) -> CaptureResponse:
@@ -412,8 +676,8 @@ async def capture_page(request: PageCaptureRequest, background_tasks: Background
     """
     try:
         from storage.source_store import source_store
-        from services.rag_engine import rag_engine
-        from agents.tools import summarize_page_tool, extract_page_metadata_tool
+        from services.rag_engine import rag_engine  # still used by the ArXiv branch below
+        from agents.tools import extract_page_metadata_tool
         import trafilatura
         import asyncio
 
@@ -526,14 +790,21 @@ async def capture_page(request: PageCaptureRequest, background_tasks: Background
                 google_export_url, request.notebook_id, request.title, background_tasks,
             )
         
-        # Try to extract content using trafilatura (same as web research panel)
-        # This is MUCH more robust than the extension's document.body.innerText
-        content = ""
+        # Extract the article text. The extension sends BOTH its own extraction and the
+        # page HTML; trafilatura on the HTML is the more robust extractor, so it wins
+        # when it yields MORE text — but only then. It used to win on any result over
+        # 100 chars, which meant a long page whose HTML had been truncated by the
+        # extension's size cap could be ingested PARTIAL while the fuller text sat
+        # unused in `request.content`. Same class of silent content loss as the
+        # chunking fault in READFIRST/done/chunking-duplication.md.
+        extension_content = request.content.strip() if request.content else ""
+        content = extension_content
+        metadata: dict = {}
+
         if request.html_content:
-            print(f"[BROWSER] Using trafilatura for robust extraction: {request.url}")
             loop = asyncio.get_event_loop()
-            
-            # Extract main content using trafilatura (runs in thread pool)
+
+            # Both of these are CPU-bound and off-thread, so they overlap.
             def extract_with_trafilatura(html):
                 return trafilatura.extract(
                     html,
@@ -542,20 +813,41 @@ async def capture_page(request: PageCaptureRequest, background_tasks: Background
                     no_fallback=False,  # Use fallback extractors if main fails
                     favor_precision=False  # Favor recall - get more content
                 )
-            
-            extracted = await loop.run_in_executor(None, extract_with_trafilatura, request.html_content)
-            
-            if extracted and len(extracted.strip()) > 100:
-                content = extracted.strip()
-                print(f"[BROWSER] Trafilatura extracted {len(content.split())} words")
-            else:
-                # Fallback to extension-provided content
-                print("[BROWSER] Trafilatura returned insufficient content, using extension content")
-                content = request.content.strip() if request.content else ""
-        else:
-            # No HTML provided, use extension content directly
-            content = request.content.strip() if request.content else ""
-        
+
+            extracted, metadata = await asyncio.gather(
+                loop.run_in_executor(None, extract_with_trafilatura, request.html_content),
+                extract_page_metadata_tool.ainvoke({
+                    "html_content": request.html_content,
+                    "url": request.url,
+                }),
+                return_exceptions=True,
+            )
+            if isinstance(extracted, BaseException):
+                logger.warning(f"[browser] trafilatura failed: {extracted}")
+                extracted = None
+            if not isinstance(metadata, dict):
+                # Covers both a raised exception (gather returns it) and a tool wrapper
+                # that serialised the result into something else — `metadata.get(...)`
+                # feeds the title and reading time below and must not be the thing that
+                # fails a capture.
+                if isinstance(metadata, BaseException):
+                    logger.warning(f"[browser] metadata extraction failed (non-critical): {metadata}")
+                metadata = {}
+
+            trafilatura_content = (extracted or "").strip()
+            if len(trafilatura_content) > len(extension_content):
+                content = trafilatura_content
+                logger.info(
+                    f"[browser] trafilatura won: {len(content.split())} words "
+                    f"(extension had {len(extension_content.split())})"
+                )
+            elif extension_content:
+                logger.info(
+                    f"[browser] keeping the extension's extraction: "
+                    f"{len(extension_content.split())} words "
+                    f"(trafilatura had {len(trafilatura_content.split())})"
+                )
+
         word_count = len(content.split()) if content else 0
         char_count = len(content) if content else 0
         
@@ -590,29 +882,6 @@ async def capture_page(request: PageCaptureRequest, background_tasks: Background
         except Exception as e:
             print(f"[BROWSER] Could not record token savings: {e}")
         
-        # Score through Curator for learning (user-provided content gets bonus weight)
-        from agents.curator import curator
-        curator_scoring = await curator.score_user_item(
-            notebook_id=request.notebook_id,
-            title=request.title,
-            content=content,
-            url=request.url,
-            source_type=resolved_source_type,
-            user_weight_bonus=1.5  # User explicitly captured this
-        )
-        print(f"[BROWSER] Curator scored: relevance={curator_scoring['relevance_score']:.2f}, topics={curator_scoring['topics']}")
-        
-        # Extract metadata if HTML provided (non-critical, continue on failure)
-        metadata = {}
-        try:
-            if request.html_content:
-                metadata = await extract_page_metadata_tool.ainvoke({
-                    "html_content": request.html_content,
-                    "url": request.url
-                })
-        except Exception as meta_err:
-            print(f"[BROWSER] Metadata extraction failed (non-critical): {meta_err}")
-        
         # Calculate reading time
         reading_time = metadata.get("reading_time_minutes", max(1, word_count // 200))
         
@@ -627,19 +896,6 @@ async def capture_page(request: PageCaptureRequest, background_tasks: Background
             if not request.title or request_lower in generic_titles or len(request_lower) < 10:
                 best_title = metadata_title
                 print(f"[BROWSER] Using metadata title: '{best_title}' (request was: '{request.title}')")
-        
-        # Summarize content and extract key concepts (non-critical, continue on failure)
-        summary = ""
-        key_concepts = []
-        try:
-            summary_result = await summarize_page_tool.ainvoke({
-                "content": content,
-                "url": request.url
-            })
-            summary = summary_result.get("summary", "")
-            key_concepts = summary_result.get("key_concepts", [])
-        except Exception as sum_err:
-            print(f"[BROWSER] Summarization failed (non-critical): {sum_err}")
         
         # Extract content_date from title + early content
         content_date = None
@@ -660,8 +916,6 @@ async def capture_page(request: PageCaptureRequest, background_tasks: Background
             "title": best_title,
             "filename": best_title,
             "content": content,
-            "summary": summary,
-            "key_concepts": key_concepts,
             "word_count": word_count,
             "char_count": char_count,
             "characters": char_count,
@@ -671,12 +925,9 @@ async def capture_page(request: PageCaptureRequest, background_tasks: Background
             "status": "processing",
             "chunks": 0,
             "created_at": datetime.now().isoformat(),
-            # Curator scoring for learning
             "user_provided": True,
-            "curator_scoring": curator_scoring,
-            "topics": curator_scoring.get("topics", []),
-            "entities": curator_scoring.get("entities", []),
-            "importance": curator_scoring.get("importance", "medium"),
+            # summary / key_concepts / curator_scoring / topics / entities /
+            # importance are filled in by _finish_web_capture_background.
             # Depth+1 expansion: persist the outgoing links the extension
             # extracted so the user can later choose which to follow.
             # Stored as a list of dicts so JSON serialisation is trivial.
@@ -695,51 +946,26 @@ async def capture_page(request: PageCaptureRequest, background_tasks: Background
             metadata=source_data
         )
         
-        # Index in RAG
-        rag_result = await rag_engine.ingest_document(
+        # Everything expensive happens AFTER the response: the RAG ingest and the three
+        # LLM calls (curator scoring, auto-tagging, the page summary) used to sit in
+        # front of it, which is why capturing a long article took minutes. Same fast
+        # path as api/web.py::quick_add. The image pass is queued from in there, once
+        # the ingest it appends to has actually completed.
+        background_tasks.add_task(
+            _finish_web_capture_background,
             notebook_id=request.notebook_id,
             source_id=source_id,
-            text=content,
-            filename=best_title,
+            content=content,
+            title=best_title,
+            url=request.url,
             source_type=resolved_source_type,
+            html_content=request.html_content,
         )
-        
-        # Update source with RAG results (same as document_processor does)
-        chunks = rag_result.get("chunks", 0) if rag_result else 0
-        await source_store.update(request.notebook_id, source_id, {
-            "chunks": chunks,
-            "status": "completed",
-            "content": content,
-        })
-        
-        # Auto-tag the source (non-fatal)
-        try:
-            from services.auto_tagger import auto_tagger
-            await auto_tagger.tag_source_in_notebook(request.notebook_id, source_id, best_title, content[:3000])
-        except Exception as tag_err:
-            print(f"[BROWSER] Auto-tagging failed (non-fatal): {tag_err}")
-        
-        # Notify frontend via WebSocket to refresh notebook counts
-        await notify_source_updated({
-            "notebook_id": request.notebook_id,
-            "source_id": source_id,
-            "status": "completed",
-            "chunks": chunks
-        })
-        
-        # v1.0.5: Trigger background image extraction for multimodal content
-        if request.html_content and len(request.html_content) > 1000:
-            background_tasks.add_task(
-                process_web_images_background,
-                notebook_id=request.notebook_id,
-                source_id=source_id,
-                html_content=request.html_content,
-                base_url=request.url,
-                page_title=best_title
-            )
-            print(f"[BROWSER] Queued background image extraction for: {best_title}")
-        
-        print(f"[BROWSER] Successfully captured: {best_title} ({chunks} chunks)")
+
+        logger.info(
+            f"[browser] captured {best_title[:80]!r} ({word_count} words) — "
+            f"enriching in background"
+        )
         try:
             log_document_captured(request.notebook_id, request.url, best_title, "web_capture")
         except Exception as _e:
@@ -750,8 +976,7 @@ async def capture_page(request: PageCaptureRequest, background_tasks: Background
             title=best_title,
             word_count=word_count,
             reading_time_minutes=reading_time,
-            summary=summary[:500] if summary else None,
-            key_concepts=key_concepts
+            status="processing",
         )
         
     except Exception as e:
@@ -768,19 +993,22 @@ async def capture_page(request: PageCaptureRequest, background_tasks: Background
 
 
 @router.post("/capture/selection", response_model=CaptureResponse)
-async def capture_selection(request: SelectionCaptureRequest):
+async def capture_selection(request: SelectionCaptureRequest, background_tasks: BackgroundTasks):
     """
     Capture selected text from a page.
-    
+
     Selections are HIGH-VALUE user signals - the user explicitly identified
     this content as important. We score through Curator with a 2.0x weight
     bonus to heavily influence future learning and discovery.
+
+    Like /browser/capture, the curator call and the ingest happen AFTER the response.
+    A selection is short, so the wait was shorter — but a context menu that spins for
+    an LLM call is still the wrong shape, and leaving one capture endpoint synchronous
+    while the other is not is how the two drift apart.
     """
     try:
         from storage.source_store import source_store
-        from services.rag_engine import rag_engine
-        from agents.curator import curator
-        
+
         source_id = str(uuid.uuid4())
         word_count = len(request.selected_text.split())
         char_count = len(request.selected_text)
@@ -795,19 +1023,8 @@ async def capture_selection(request: SelectionCaptureRequest):
         except Exception as e:
             print(f"[BROWSER] Could not record token savings: {e}")
         
-        # Score through Curator with HIGH weight - selections are explicit user interest
-        # 2.0x bonus because user took deliberate action to highlight this
-        curator_scoring = await curator.score_user_item(
-            notebook_id=request.notebook_id,
-            title=f"Selection: {request.title}",
-            content=request.selected_text,
-            url=request.url,
-            source_type="highlight",  # Mark as highlight for special treatment
-            user_weight_bonus=2.0  # Double weight for explicit selection
-        )
-        print(f"[BROWSER] Selection scored: relevance={curator_scoring['relevance_score']:.2f}, topics={curator_scoring['topics']}")
-        
-        # Create source with Curator scoring metadata
+        # Create source; Curator scores it in the background with a 2.0x weight
+        # (deliberate highlight = the strongest signal the user gives us).
         source_data = {
             "id": source_id,
             "notebook_id": request.notebook_id,
@@ -826,53 +1043,33 @@ async def capture_selection(request: SelectionCaptureRequest):
             "status": "processing",
             "chunks": 0,
             "created_at": datetime.now().isoformat(),
-            # Curator scoring for learning
             "user_provided": True,
             "is_highlight": True,
-            "curator_scoring": curator_scoring,
-            "topics": curator_scoring.get("topics", []),
-            "entities": curator_scoring.get("entities", []),
-            "importance": "high"  # Selections are always high importance
+            # Selections are always high importance; the curator's own scoring,
+            # topics and entities land from the background task.
+            "importance": "high",
         }
-        
+
         await source_store.create(
             notebook_id=request.notebook_id,
             filename=f"Selection: {request.title[:50]}",
             metadata=source_data
         )
-        
-        # Index in RAG
-        rag_result = await rag_engine.ingest_document(
+
+        background_tasks.add_task(
+            _finish_web_capture_background,
             notebook_id=request.notebook_id,
             source_id=source_id,
-            text=request.selected_text,
-            filename=f"Selection: {request.title[:50]}",
-            source_type="web"
+            content=request.selected_text,
+            title=f"Selection: {request.title[:50]}",
+            url=request.url,
+            source_type="web",
+            html_content=None,          # no page HTML on a selection → no image pass
+            user_weight_bonus=2.0,      # a deliberate highlight is the strongest signal
+            curator_source_type="highlight",
+            summarize=False,            # a highlight is already the summary
         )
-        
-        # Update source with RAG results
-        chunks = rag_result.get("chunks", 0) if rag_result else 0
-        await source_store.update(request.notebook_id, source_id, {
-            "chunks": chunks,
-            "status": "completed",
-            "content": request.selected_text,
-        })
-        
-        # Auto-tag the source (non-fatal)
-        try:
-            from services.auto_tagger import auto_tagger
-            await auto_tagger.tag_source_in_notebook(request.notebook_id, source_id, request.title, request.selected_text[:3000])
-        except Exception as tag_err:
-            print(f"[BROWSER] Auto-tagging selection failed (non-fatal): {tag_err}")
-        
-        # Notify frontend via WebSocket to refresh notebook counts
-        await notify_source_updated({
-            "notebook_id": request.notebook_id,
-            "source_id": source_id,
-            "status": "completed",
-            "chunks": chunks
-        })
-        
+
         try:
             log_document_captured(request.notebook_id, request.url, f"Selection: {request.title}", "web_selection")
         except Exception as _e:
@@ -882,9 +1079,10 @@ async def capture_selection(request: SelectionCaptureRequest):
             source_id=source_id,
             title=f"Selection from: {request.title}",
             word_count=word_count,
-            reading_time_minutes=reading_time
+            reading_time_minutes=reading_time,
+            status="processing",
         )
-        
+
     except Exception as e:
         return CaptureResponse(
             success=False,

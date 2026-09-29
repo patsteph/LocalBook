@@ -1,5 +1,4 @@
 import type { PlasmoCSConfig } from "plasmo"
-import TurndownService from "turndown"
 
 export const config: PlasmoCSConfig = {
   matches: ["<all_urls>"]
@@ -8,57 +7,49 @@ export const config: PlasmoCSConfig = {
 // Content script for page capture
 // This runs on every page and listens for messages from the popup
 
-// Reusable Turndown instance for HTML → Markdown conversion
-const turndown = new TurndownService({
-  headingStyle: "atx",
-  codeBlockStyle: "fenced",
-  bulletListMarker: "-"
-})
+// Semantic containers, best first. Shared by the text and the HTML extraction so the
+// two always describe the SAME element — they used to be chosen independently.
+const ARTICLE_SELECTORS = ["article", "main", '[role="main"]', ".post-content",
+  ".article-body", ".entry-content", "#content"]
 
-// Filter noise: remove nav, footer, ads, sidebars, cookie banners
-turndown.remove(["nav", "footer", "aside", "script", "style", "noscript",
-  "iframe", "form", "button"] as any)
-turndown.addRule("removeSvg", {
-  filter: "svg" as any,
-  replacement: () => ""
-})
-turndown.addRule("removeByClass", {
-  filter: (node: HTMLElement) => {
-    const cl = (node.className || "").toString().toLowerCase()
-    const id = (node.id || "").toLowerCase()
-    const noise = ["cookie", "banner", "popup", "modal", "sidebar", "ad-",
-      "advertisement", "newsletter", "social-share", "related-posts",
-      "comments", "footer", "nav", "menu", "breadcrumb"]
-    return noise.some(n => cl.includes(n) || id.includes(n))
-  },
-  replacement: () => ""
-})
+// Upper bound on the HTML we hand the backend. This is the ARTICLE element's markup,
+// not the whole document, so on a real page it is 5-10× smaller than what we used to
+// send and the cap effectively never binds. When it does bind we send NO html rather
+// than a truncated document: the backend prefers whichever extraction is longer, and a
+// half-page of HTML used to be able to win against the full text we already had.
+const MAX_HTML = 2_000_000
 
-// Cap HTML input to Turndown to prevent main-thread lockup on huge DOMs
-const MAX_HTML_FOR_TURNDOWN = 2_000_000  // 2MB
+// Outbound-link extraction is bounded at the LOOP, not by slicing a full list at the
+// end — every link we look at costs a `closest()` walk and a `textContent` read.
+const MAX_OUTBOUND_LINKS = 30
+const LINK_CONTEXT_CHARS = 200
 
-function extractMainContent(): string {
-  // Try semantic selectors first (like FolioLM's approach)
-  const selectors = ["article", "main", '[role="main"]', ".post-content",
-    ".article-body", ".entry-content", "#content"]
-  for (const sel of selectors) {
-    const el = document.querySelector(sel)
-    if (el && el.textContent && el.textContent.trim().length > 200) {
-      const html = el.innerHTML
-      if (html.length > MAX_HTML_FOR_TURNDOWN) {
-        return el.textContent.trim()  // Plain text fallback for huge elements
-      }
-      return turndown.turndown(html)
-    }
+function findArticleElement(): HTMLElement | null {
+  for (const sel of ARTICLE_SELECTORS) {
+    const el = document.querySelector(sel) as HTMLElement | null
+    if (el && el.textContent && el.textContent.trim().length > 200) return el
   }
-  // Fallback to body — cap to prevent lockup. Guard the null <body> (bare XML/SVG docs)
-  // so the getPageContent listener doesn't throw synchronously and drop the response.
-  if (!document.body) return ""
-  const bodyHtml = document.body.innerHTML
-  if (bodyHtml.length > MAX_HTML_FOR_TURNDOWN) {
-    return document.body.innerText || ""
-  }
-  return turndown.turndown(bodyHtml)
+  return null
+}
+
+/** Text + markup for the capture request.
+ *
+ * This used to convert the whole article to Markdown with Turndown, including a rule
+ * that ran a 15-entry substring scan over `className` and `id` for EVERY node in the
+ * document — the single most expensive thing the extension did, on the page's own main
+ * thread. The backend then re-extracted the same page with trafilatura and threw the
+ * Markdown away. So: send the text cheaply, send the markup, and let the one extractor
+ * that actually feeds the index do the work.
+ */
+function extractForCapture(): { content: string; html: string } {
+  const el = findArticleElement() || document.body
+  if (!el) return { content: "", html: "" }
+
+  // innerText (layout-aware, so it drops hidden nav/menus) with textContent as the
+  // backstop for detached or display:none containers.
+  const content = (el.innerText || el.textContent || "").trim()
+  const html = el.outerHTML
+  return { content, html: html.length > MAX_HTML ? "" : html }
 }
 
 function extractOutboundLinks(): Array<{ url: string; text: string; context: string }> {
@@ -66,37 +57,37 @@ function extractOutboundLinks(): Array<{ url: string; text: string; context: str
   const seen = new Set<string>()
   const hostname = window.location.hostname
 
-  document.querySelectorAll("a[href]").forEach((a: HTMLAnchorElement) => {
+  const anchors = document.querySelectorAll("a[href]")
+  for (let i = 0; i < anchors.length; i++) {
+    if (links.length >= MAX_OUTBOUND_LINKS) break
+    const a = anchors[i] as HTMLAnchorElement
     try {
       const href = a.href
-      if (!href.startsWith("http") || new URL(href).hostname === hostname) return
-      if (seen.has(href)) return
+      if (!href.startsWith("http") || new URL(href).hostname === hostname) continue
+      if (seen.has(href)) continue
       seen.add(href)
 
       const text = (a.textContent || "").trim()
-      if (!text || text.length < 3) return
+      if (!text || text.length < 3) continue
 
       // Grab surrounding sentence for context
       const parent = a.closest("p, li, td, div")
-      const context = (parent?.textContent || "").trim().substring(0, 200)
+      const context = (parent?.textContent || "").trim().substring(0, LINK_CONTEXT_CHARS)
 
       links.push({ url: href, text, context })
     } catch {}
-  })
-  return links.slice(0, 30)
+  }
+  return links
 }
 
 // Single unified message listener — avoids duplicate listener registration
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   switch (request.action) {
     case "getPageContent": {
-      const markdown = extractMainContent()
-      // Cap HTML to 500KB — full outerHTML can be huge
-      const MAX_HTML = 500_000
-      const html = document.documentElement.outerHTML.substring(0, MAX_HTML)
+      const { content, html } = extractForCapture()
       const metadata = extractMetadata()
       const outboundLinks = extractOutboundLinks()
-      sendResponse({ content: markdown, html, metadata, outboundLinks })
+      sendResponse({ content, html, metadata, outboundLinks })
       return true
     }
 
@@ -132,7 +123,7 @@ function extractMetadata() {
     const el = document.querySelector(`meta[name="${name}"], meta[property="${name}"]`)
     return el?.getAttribute("content") || ""
   }
-  
+
   return {
     title: document.title,
     description: getMeta("description") || getMeta("og:description"),
