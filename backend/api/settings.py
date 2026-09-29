@@ -615,6 +615,79 @@ class ExternalReserveRequest(BaseModel):
     gb: float
 
 
+class BackupDestinationRequest(BaseModel):
+    path: str
+
+
+def _write_env(key: str, value: str) -> None:
+    """Persist one setting to the data-dir `.env`, preserving everything else.
+
+    The data-dir `.env` and NOT the CWD one: `config.py` reads the former in a
+    bundle, and a packaged app's CWD is read-only, so writing there silently
+    does nothing in production.
+    """
+    from pathlib import Path
+
+    from config import get_data_directory
+
+    env_path = Path(get_data_directory()) / ".env"
+    lines = env_path.read_text().splitlines() if env_path.exists() else []
+    out, replaced = [], False
+    for line in lines:
+        if line.strip().startswith(f"{key}="):
+            out.append(f"{key}={value}")
+            replaced = True
+        else:
+            out.append(line)
+    if not replaced:
+        out.append(f"{key}={value}")
+    env_path.parent.mkdir(parents=True, exist_ok=True)
+    env_path.write_text("\n".join(out) + "\n")
+
+
+@router.post("/backup-destination")
+async def set_backup_destination(req: BackupDestinationRequest):
+    """Remember where backups go.
+
+    This was the bug behind "nothing is configured" while a 551 MB archive sat
+    in the folder: the UI passed a destination with each backup request but
+    never SAVED it, so `configured_destination()` — which the panel, the
+    nightly job and the drill all key off — stayed empty.
+
+    Per-machine, never synced: the three Macs back up to different places.
+    """
+    from pathlib import Path
+
+    from config import settings
+
+    raw = (req.path or "").strip()
+    if raw:
+        folder = Path(raw).expanduser()
+        if not folder.is_dir():
+            raise HTTPException(
+                status_code=400,
+                detail=f"{folder} is not a folder. Choose one that exists, outside "
+                       f"LocalBook's own data.",
+            )
+        data_dir = Path(settings.data_dir).expanduser().resolve()
+        if folder.resolve() == data_dir or data_dir in folder.resolve().parents:
+            raise HTTPException(
+                status_code=400,
+                detail="Backups must go outside LocalBook's data folder — an archive "
+                       "stored inside what it backs up is not a backup.",
+            )
+        raw = str(folder)
+
+    try:
+        _write_env("LOCALBOOK_BACKUP_DESTINATION", raw)
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"could not save: {exc}")
+
+    settings.backup_destination = raw
+    logger.info(f"[backup] destination set to {raw or '(none)'}")
+    return {"ok": True, "destination": raw}
+
+
 @router.get("/gpu-budget")
 async def get_gpu_budget():
     """How LocalBook's memory budget is arrived at, in its parts.

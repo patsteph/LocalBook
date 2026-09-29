@@ -188,7 +188,11 @@ def test_an_unproven_backup_is_flagged(data_dir, tmp_path, monkeypatch):
     assert any("drill" in w.lower() for w in st["overall"]["warnings"])
 
 
-def test_the_drill_streak_is_reported_out_of_seven(data_dir, tmp_path, monkeypatch):
+def test_the_drill_record_is_reported_without_a_countdown(data_dir, tmp_path, monkeypatch):
+    """Was `test_the_drill_streak_is_reported_out_of_seven`. The 7-night gate was
+    dropped on 2026-09-29, so the panel no longer nags toward it — but the
+    underlying streak is still COMPUTED, because it is genuine information and
+    something may want it later."""
     from config import settings
     from services import backup_service, restore_service
 
@@ -199,9 +203,11 @@ def test_the_drill_streak_is_reported_out_of_seven(data_dir, tmp_path, monkeypat
     restore_service.run_drill(dest, data_dir=data_dir)
 
     st = data_health.status(data_dir)
+    assert st["drills"]["runs"] == 1
     assert st["drills"]["consecutive_green"] == 1
-    assert st["drills"]["gate_met"] is False
-    assert any("1 of 7" in w for w in st["overall"]["warnings"])
+    assert not any("of 7" in w for w in st["overall"]["warnings"])
+    # A passing drill is not something to warn about at all.
+    assert not any("drill" in w.lower() for w in st["overall"]["warnings"])
 
 
 def test_a_key_with_no_recovery_copy_is_a_problem(data_dir, tmp_path, monkeypatch):
@@ -248,12 +254,20 @@ def test_the_summary_survives_a_broken_probe(data_dir, monkeypatch):
     assert "backup" in st and "drills" in st
 
 
-def test_the_codec_is_reported_truthfully(data_dir, monkeypatch):
-    """ffmpeg comes from Homebrew, so it is simply absent on a machine that
-    never had Homebrew — the work Mac, for instance."""
+def test_a_genuinely_missing_codec_is_reported(data_dir, monkeypatch):
+    """ffmpeg comes from Homebrew, so it is genuinely absent on a machine that
+    never had Homebrew — the work Mac, for instance.
+
+    Both probes have to fail for that verdict: `which` AND the known install
+    locations. Checking only `which` reported it missing on a machine that
+    plainly had it, because a Finder-launched app has no Homebrew on its PATH.
+    """
     import shutil as _shutil
+    from pathlib import Path as _Path
 
     monkeypatch.setattr(_shutil, "which", lambda name: None)
+    monkeypatch.setattr(_Path, "exists", lambda self: False)
+
     st = data_health.status(data_dir)
     assert st["codec"]["ok"] is False
     assert any("codec" in w.lower() for w in st["overall"]["warnings"])
@@ -308,3 +322,89 @@ def test_a_fully_healthy_install_says_so(data_dir, tmp_path, monkeypatch):
     assert st["overall"]["problems"] == []
     assert st["overall"]["warnings"] == []
     assert st["overall"]["state"] == "healthy"
+
+
+# ── the reporting bugs found in the built app, 2026-09-29 ───────────────────
+
+
+def test_the_codec_is_found_even_when_it_is_not_on_PATH(data_dir, monkeypatch):
+    """A Finder-launched .app inherits a minimal PATH with no Homebrew in it, so
+    `shutil.which` alone reported ffmpeg missing on a machine that plainly has
+    it at /opt/homebrew/bin/ffmpeg."""
+    import shutil as _shutil
+    from pathlib import Path as _Path
+
+    monkeypatch.setattr(_shutil, "which", lambda name: None)
+    monkeypatch.setattr(
+        _Path, "exists",
+        lambda self: str(self) == "/opt/homebrew/bin/ffmpeg",
+    )
+
+    codec = data_health._codec()
+
+    assert codec["ok"] is True
+    assert codec["ffmpeg"] == "/opt/homebrew/bin/ffmpeg"
+    assert codec["on_path"] is False
+
+
+def test_the_panel_no_longer_counts_toward_seven_nights(data_dir, tmp_path, monkeypatch):
+    """That gate was dropped on 2026-09-29 after being argued through. A panel
+    still counting toward it would keep nagging about something nobody is
+    waiting for."""
+    from config import settings
+    from services import backup_service, restore_service
+
+    dest = tmp_path / "backups"
+    dest.mkdir()
+    monkeypatch.setattr(settings, "backup_destination", str(dest))
+    backup_service.create_backup(dest, data_dir=data_dir)
+    restore_service.run_drill(dest, data_dir=data_dir)
+
+    st = data_health.status(data_dir)
+    everything = " ".join(st["overall"]["problems"] + st["overall"]["warnings"])
+
+    assert "of 7" not in everything
+    assert "nights" not in everything
+
+
+def test_a_failing_drill_is_a_problem_not_a_countdown(data_dir, tmp_path, monkeypatch):
+    from config import settings
+    from services import backup_service, restore_service
+
+    dest = tmp_path / "backups"
+    dest.mkdir()
+    monkeypatch.setattr(settings, "backup_destination", str(dest))
+    archive = backup_service.create_backup(dest, data_dir=data_dir).path
+    raw = archive.read_bytes()
+    archive.write_bytes(raw[: len(raw) // 2])
+    restore_service.run_drill(dest, data_dir=data_dir)
+
+    st = data_health.status(data_dir)
+    assert any("FAILED" in p for p in st["overall"]["problems"])
+
+
+def test_an_undrilled_backup_warns_only_once_a_backup_exists(data_dir, tmp_path, monkeypatch):
+    """Nagging "backups are unproven" before any backup exists buries the real
+    message, which is that there are no backups."""
+    from config import settings
+
+    dest = tmp_path / "backups"
+    dest.mkdir()
+    monkeypatch.setattr(settings, "backup_destination", str(dest))
+
+    st = data_health.status(data_dir)
+    assert not any("test-restored" in w for w in st["overall"]["warnings"])
+    assert any("no backup has been taken" in p for p in st["overall"]["problems"])
+
+
+def test_the_key_warning_names_what_is_unprotected_and_where_to_fix_it(data_dir, tmp_path, monkeypatch):
+    from config import settings
+
+    dest = tmp_path / "backups"
+    dest.mkdir()
+    monkeypatch.setattr(settings, "backup_destination", str(dest))
+    keyvault.get_or_create("credentials")
+
+    problems = " ".join(data_health.status(data_dir)["overall"]["problems"])
+    assert "credentials" in problems
+    assert "Settings → Recovery" in problems

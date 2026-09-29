@@ -242,15 +242,33 @@ def _last_backup(data_dir: Optional[Path] = None) -> Dict[str, object]:
     return out
 
 
+# Where Homebrew actually puts things. A GUI app launched from Finder inherits
+# a minimal PATH (`/usr/bin:/bin:/usr/sbin:/sbin`) with no Homebrew in it, so
+# `shutil.which` alone reported ffmpeg missing on a machine that plainly has it
+# at /opt/homebrew/bin/ffmpeg. Checking PATH *and* the known locations is the
+# difference between a truthful panel and a scary wrong one.
+_CODEC_LOCATIONS = (
+    "/opt/homebrew/bin/ffmpeg",     # Apple Silicon Homebrew
+    "/usr/local/bin/ffmpeg",        # Intel Homebrew
+    "/opt/local/bin/ffmpeg",        # MacPorts
+    "/usr/bin/ffmpeg",
+)
+
+
 def _codec() -> Dict[str, object]:
     """Whether the audio codec is actually present.
 
-    `ffmpeg` comes from Homebrew today (`build.sh:68`), which means it is simply
+    `ffmpeg` comes from Homebrew today (`build.sh:68`), so it is genuinely
     absent on a machine that never had Homebrew — the work Mac, for instance.
-    LB-3 bundles one; until then this reports the truth rather than assuming.
+    LB-3 bundles one; until then this reports the truth.
     """
-    path = shutil.which("ffmpeg")
-    return {"ffmpeg": path, "ok": bool(path)}
+    found = shutil.which("ffmpeg")
+    if not found:
+        for candidate in _CODEC_LOCATIONS:
+            if Path(candidate).exists():
+                found = candidate
+                break
+    return {"ffmpeg": found, "ok": bool(found), "on_path": bool(shutil.which("ffmpeg"))}
 
 
 def status(data_dir: Optional[Path] = None) -> Dict[str, object]:
@@ -350,17 +368,28 @@ def _overall(parts: Dict[str, object]) -> Dict[str, object]:
 
     drills = parts.get("drills") or {}
     if isinstance(drills, dict):
+        # No "N of 7". That gate was dropped on 2026-09-29: there was no code
+        # reason for it on a local destination with slow growth, and the one
+        # genuinely time-dependent bug it would have caught was found and fixed
+        # directly. What still matters is binary — has a drill ever passed, and
+        # did the last one pass?
+        last = drills.get("last") or {}
         if drills.get("runs", 0) == 0:
-            warnings.append("No restore drill has run yet, so backups are unproven.")
-        elif not drills.get("gate_met"):
-            warnings.append(
-                f"Restore drill green {drills.get('consecutive_green', 0)} of 7 nights."
+            if (parts.get("backup") or {}).get("count"):
+                warnings.append(
+                    "Backups have never been test-restored. Run a drill to prove they work."
+                )
+        elif not last.get("ok"):
+            problems.append(
+                "The last restore drill FAILED — these backups may not restore."
             )
 
     keys = parts.get("keys") or {}
     if isinstance(keys, dict) and keys.get("fully_protected") is False:
+        missing = ", ".join(keys.get("unprotected_purposes") or []) or "a key"
         problems.append(
-            "A key on this Mac has no recovery copy — wiping the Keychain would lose it."
+            f"No recovery copy of {missing} — wiping the Keychain would lose it. "
+            f"Fix it in Settings → Recovery."
         )
 
     schema = parts.get("schema") or {}

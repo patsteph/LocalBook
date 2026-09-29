@@ -239,7 +239,12 @@ class Settings(BaseSettings):
     # Empty means backups are OFF — there is no sensible default, and guessing
     # one would write the archive inside the thing it is backing up.
     # PER-MACHINE, never synced.
-    backup_destination: str = ""
+    backup_destination: str = Field(
+        "",
+        validation_alias=AliasChoices(
+            "LOCALBOOK_BACKUP_DESTINATION", "backup_destination"
+        ),
+    )
     # Off for the nightly run: a real data dir is ~600 MB with generated audio
     # and ~80 MB without, and 7 daily + 4 weekly is the difference between
     # ~6 GB and ~900 MB. Audio is regenerable from its notebook. A manual

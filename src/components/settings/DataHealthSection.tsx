@@ -90,8 +90,23 @@ export function DataHealthSection() {
         }
     };
 
+    // Saved, not just passed along. The original only sent `destination` with
+    // each backup request and never persisted it, so the panel, the nightly job
+    // and the drill all still read an empty setting — the screen said "nothing
+    // is configured" while a 551 MB archive sat in the folder.
+    const saveDestination = () =>
+        act('Saving', async () => {
+            const { data } = await api.post('/settings/backup-destination', {
+                path: destination,
+            });
+            return data.destination
+                ? `Backups will go to ${data.destination}.`
+                : 'Backup destination cleared.';
+        });
+
     const backupNow = () =>
         act('Backing up', async () => {
+            await api.post('/settings/backup-destination', { path: destination });
             const { data } = await api.post('/backup', {
                 destination,
                 include_blobs: true,
@@ -192,6 +207,13 @@ export function DataHealthSection() {
                         className="min-w-0 flex-1 rounded border border-gray-600 bg-gray-800 px-2 py-1.5 font-mono text-xs text-gray-100"
                     />
                     <button
+                        onClick={saveDestination}
+                        disabled={!!busy}
+                        className="rounded border border-gray-600 px-3 py-1.5 text-xs text-gray-200 hover:bg-gray-800 disabled:opacity-40"
+                    >
+                        {busy === 'Saving' ? 'Saving…' : 'Save'}
+                    </button>
+                    <button
                         onClick={backupNow}
                         disabled={!!busy || !destination.trim()}
                         className="rounded bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-500 disabled:opacity-40"
@@ -227,9 +249,9 @@ export function DataHealthSection() {
                     </button>
                 </div>
                 <p className="mt-1 text-xs text-gray-500">
-                    Each night LocalBook opens the newest backup, checks every file against its
-                    recorded hash and every database against its row counts — without touching your
-                    live data. A backup nobody has restored is a hypothesis.
+                    A drill opens the newest backup, checks every file against its recorded hash and
+                    every database against its row counts — without touching your live data. A
+                    backup nobody has restored is a hypothesis.
                 </p>
                 <div className="mt-3">
                     <Row label="Last drill">
@@ -239,11 +261,7 @@ export function DataHealthSection() {
                                 : <span className="text-red-300">failed</span>}</>
                             : 'never'}
                     </Row>
-                    <Row label="Consecutive green nights">
-                        <span className={health.drills?.gate_met ? 'text-emerald-300' : 'text-amber-300'}>
-                            {health.drills?.consecutive_green ?? 0} of 7
-                        </span>
-                    </Row>
+                    <Row label="Drills run">{health.drills?.runs ?? 0}</Row>
                 </div>
                 {health.drills?.last && !health.drills.last.ok && (
                     <ul className="mt-2 list-disc space-y-0.5 pl-5 text-xs text-red-300">
