@@ -7,7 +7,7 @@ v1.1.0: Added 10-minute threshold for auto-recovery
 """
 
 import asyncio
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Dict, Optional
 import lancedb
 
@@ -42,12 +42,23 @@ class StuckSourceRecovery:
         }
         
         try:
-            sources_data = source_store._load_data()
-            now = datetime.now()
-            threshold = now - timedelta(minutes=STUCK_THRESHOLD_MINUTES)
-            
-            for source_id, source in sources_data.get("sources", {}).items():
+            # Read through the store's PUBLIC api, not `_load_data()`. That helper is the
+            # JSON backend, and `settings.use_sqlite` has defaulted to True for a long
+            # time — so this swept a `sources.json` that the app had stopped writing
+            # (January, on the dev machine) and found nothing, ever. The net under an
+            # interrupted capture was not weak, it was disconnected. Found 2026-09-25,
+            # when /browser/capture started reporting success before the ingest ran and
+            # made this sweep the thing that guarantees the capture still lands.
+            grouped = await source_store.list_all()
+            # Timezone-aware, because the stored timestamps are UTC (see below).
+            threshold = datetime.now(timezone.utc) - timedelta(minutes=STUCK_THRESHOLD_MINUTES)
+
+            all_sources = [s for sources in grouped.values() for s in sources]
+            for source in all_sources:
                 if source.get("status") != "processing":
+                    continue
+                source_id = source.get("id")
+                if not source_id:
                     continue
                 
                 # Check if stuck (created more than threshold ago)
@@ -58,11 +69,17 @@ class StuckSourceRecovery:
                 else:
                     try:
                         created_dt = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
-                        # Make naive for comparison
-                        if created_dt.tzinfo:
-                            created_dt = created_dt.replace(tzinfo=None)
+                        if created_dt.tzinfo is None:
+                            # `source_store.create` writes `datetime.utcnow().isoformat()`
+                            # — naive UTC — and overwrites whatever the caller passed. The
+                            # old code stripped tzinfo and compared against a naive LOCAL
+                            # `now()`, so on a UTC-5 machine every source looked five hours
+                            # in the FUTURE and NOTHING was ever old enough to be stuck.
+                            # Third of three independent faults that each, alone, disabled
+                            # this sweep entirely.
+                            created_dt = created_dt.replace(tzinfo=timezone.utc)
                         is_stuck = created_dt < threshold
-                    except:
+                    except Exception:
                         is_stuck = True
                 
                 if not is_stuck:
@@ -102,9 +119,31 @@ class StuckSourceRecovery:
         
         return result
     
+    @staticmethod
+    async def _notify(notebook_id: str, source_id: str, status: str, title: str,
+                      chunks: int = 0, error: Optional[str] = None) -> None:
+        """Push the outcome so the UI learns about it without a reload.
+
+        A recovery that no surface hears about is half a recovery: the source becomes
+        searchable, but the notebook's source-count badge and its source list keep showing
+        the pre-recovery state until the window is reloaded. Never raises — a socket
+        problem must not turn a successful recovery into a failed one.
+        """
+        try:
+            from api.constellation_ws import notify_source_updated
+            payload = {
+                "notebook_id": notebook_id, "source_id": source_id,
+                "status": status, "title": title, "chunks": chunks,
+            }
+            if error:
+                payload["error"] = error[:100]
+            await notify_source_updated(payload)
+        except Exception as e:
+            print(f"[StuckRecovery] Could not notify clients: {type(e).__name__}: {e}")
+
     async def _recover_source(self, source_id: str, source: Dict) -> Dict:
         """Attempt to recover a single stuck source.
-        
+
         Strategy:
         1. If has content and 0 chunks -> re-ingest
         2. If has content and chunks exist in LanceDB -> mark completed
@@ -112,48 +151,53 @@ class StuckSourceRecovery:
         """
         try:
             content = source.get("content", "")
-            source.get("chunks", 0)
             notebook_id = source.get("notebook_id")
             title = source.get("title") or source.get("filename", "Unknown")
-            
+
             if not notebook_id:
                 return {"success": False, "error": "No notebook_id"}
-            
+
             # Check if chunks already exist in LanceDB
             chunks_in_db = await self._count_chunks_in_db(notebook_id, source_id)
-            
+
             if chunks_in_db > 0:
                 # Chunks exist, just update status
-                source_store.update(source_id, {
+                await source_store.update(notebook_id, source_id, {
                     "status": "completed",
                     "chunks": chunks_in_db
                 })
+                await self._notify(notebook_id, source_id, "completed", title, chunks_in_db)
                 return {"success": True, "action": "marked_completed", "chunks": chunks_in_db}
-            
+
             if not content:
                 # No content to ingest, mark as failed
-                source_store.update(source_id, {
+                await source_store.update(notebook_id, source_id, {
                     "status": "failed",
                     "error": "No content available for ingestion"
                 })
+                await self._notify(notebook_id, source_id, "failed", title,
+                                   error="No content available for ingestion")
                 return {"success": True, "action": "marked_failed_no_content"}
-            
+
             # Has content but no chunks - re-ingest
             chunks_created = await self._ingest_content(notebook_id, source_id, content, title, source)
-            
+
             if chunks_created > 0:
-                source_store.update(source_id, {
+                await source_store.update(notebook_id, source_id, {
                     "status": "completed",
                     "chunks": chunks_created
                 })
+                await self._notify(notebook_id, source_id, "completed", title, chunks_created)
                 return {"success": True, "action": "re_ingested", "chunks": chunks_created}
             else:
-                source_store.update(source_id, {
+                await source_store.update(notebook_id, source_id, {
                     "status": "failed",
                     "error": "Ingestion produced 0 chunks"
                 })
+                await self._notify(notebook_id, source_id, "failed", title,
+                                   error="Ingestion produced 0 chunks")
                 return {"success": True, "action": "marked_failed_no_chunks"}
-                
+
         except Exception as e:
             return {"success": False, "error": str(e)}
     
@@ -179,56 +223,49 @@ class StuckSourceRecovery:
             return 0
     
     async def _ingest_content(
-        self, 
-        notebook_id: str, 
-        source_id: str, 
-        content: str, 
+        self,
+        notebook_id: str,
+        source_id: str,
+        content: str,
         title: str,
         source: Dict
     ) -> int:
-        """Ingest content into LanceDB."""
+        """Re-ingest through the CANONICAL path.
+
+        This used to hand-roll the whole thing: `_chunk_text_smart`, `encode_async`, then
+        `table.add()` with rows of `{vector, text, source_id, chunk_index, filename}`. Two
+        problems with that. It skipped everything the real ingest does — `parent_text` for
+        parent-context expansion above all, which v0.60 added and which a row built here
+        simply did not have — so a recovered source was indexed WORSE than a normally
+        ingested one, silently and permanently. And it bailed out when the notebook had no
+        table yet, which is precisely the case where a first capture was interrupted.
+
+        One implementation, one place to fix (the centralization rule). Any partial chunks
+        are cleared first so a retry cannot double-index.
+        """
         try:
             from services.rag_engine import rag_engine
-            
-            db = lancedb.connect(str(self._data_dir / "lancedb"))
-            table_name = f"notebook_{notebook_id}"
-            
-            if table_name not in db.table_names():
-                # No table exists, can't add
-                return 0
-            
-            table = db.open_table(table_name)
-            
-            # Determine source type
-            source_type = source.get("format", "web")
+
+            source_type = source.get("format") or source.get("type") or "web"
             if source_type in ["pdf", "docx", "pptx"]:
                 source_type = "document"
-            
-            # Chunk the content
-            chunks = rag_engine._chunk_text_smart(content, source_type, title)
-            
-            if not chunks:
-                return 0
-            
-            # Generate embeddings (async batched — was a sync embed on the loop)
-            embeddings = await rag_engine.encode_async(chunks)
-            
-            # Prepare rows
-            rows = []
-            for i, (chunk, emb) in enumerate(zip(chunks, embeddings)):
-                rows.append({
-                    "vector": emb.tolist(),
-                    "text": chunk,
-                    "source_id": source_id,
-                    "chunk_index": i,
-                    "filename": title,
-                })
-            
-            # Add to table
-            table.add(rows)
-            
-            return len(chunks)
-            
+
+            # A crash can leave a handful of chunks behind. Clearing first makes the
+            # re-ingest idempotent rather than additive.
+            try:
+                await rag_engine.delete_source(notebook_id, source_id)
+            except Exception as _e:
+                print(f"[StuckRecovery] Could not clear partial chunks: {_e}")
+
+            result = await rag_engine.ingest_document(
+                notebook_id=notebook_id,
+                source_id=source_id,
+                text=content,
+                filename=title,
+                source_type=source_type,
+            )
+            return int((result or {}).get("chunks", 0))
+
         except Exception as e:
             print(f"[StuckRecovery] Ingestion error: {e}")
             return 0
@@ -251,6 +288,24 @@ class StuckSourceRecovery:
             self._task = None
         print("[StuckRecovery] Stopped background task")
     
+    async def _run_check(self):
+        try:
+            await self.check_and_recover()
+        except Exception as e:
+            print(f"[StuckRecovery] Background check error: {e}")
+
+    def _enqueue_check(self, tier) -> None:
+        """Enqueue the sweep on the worker — never run it inline (S1/C7)."""
+        from services.enrichment_worker import enrichment_worker
+        from services.enrichment_jobs import EnrichmentJob
+
+        enrichment_worker.enqueue(EnrichmentJob(
+            key="stuck-source-recovery",
+            tier=tier,
+            factory=self._run_check,
+            label="stuck-source-recovery",
+        ))
+
     async def _background_loop(self):
         """Cadence poll — enqueues the actual check on the enrichment worker.
 
@@ -260,16 +315,20 @@ class StuckSourceRecovery:
         through the presence-gated worker (tier=DEEP, coalesced by key), so recovery
         work can never collide with foreground use. Completes the one-traffic-cop goal.
         """
+        from services.enrichment_jobs import JobTier
+
         await asyncio.sleep(30)  # Wait 30s after startup
 
-        from services.enrichment_worker import enrichment_worker
-        from services.enrichment_jobs import EnrichmentJob, JobTier
-
-        async def _run_check():
-            try:
-                await self.check_and_recover()
-            except Exception as e:
-                print(f"[StuckRecovery] Background check error: {e}")
+        # One pass shortly after startup, at DAYDREAM rather than DEEP. A source still
+        # marked `processing` when this process starts CANNOT have a task running for it —
+        # whatever owned it died with the previous process — so startup is the least
+        # ambiguous recovery signal there is. It is also the exact case a user hits when
+        # the watchdog restarts the backend mid-capture, and since 2026-09-25
+        # /browser/capture reports success BEFORE the ingest runs, that user has already
+        # been told the page was captured. DEEP needs ~120s of continuous idle, which
+        # someone actively browsing and capturing may not hand over for a long time;
+        # DAYDREAM needs ~20s. The periodic sweep below stays DEEP.
+        self._enqueue_check(JobTier.DAYDREAM)
 
         while self._running:
             # Rung C (Schedule Viewer): re-read the sweep cadence + enabled flag
@@ -277,12 +336,7 @@ class StuckSourceRecovery:
             # next cycle without a restart. Never raises → falls back to the const.
             from services.schedule_store import schedule_store
             if schedule_store.is_enabled("stuck-source-recovery"):
-                enrichment_worker.enqueue(EnrichmentJob(
-                    key="stuck-source-recovery",
-                    tier=JobTier.DEEP,
-                    factory=_run_check,
-                    label="stuck-source-recovery",
-                ))
+                self._enqueue_check(JobTier.DEEP)
             # Wait for next check (worker coalesces by key, so a slow drain
             # can't stack duplicate jobs).
             await asyncio.sleep(
