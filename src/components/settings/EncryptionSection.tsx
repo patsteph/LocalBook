@@ -54,7 +54,12 @@ const JOB_FAILED: Record<string, string> = {
     export: 'The export did not complete. Your encrypted data has not been touched.',
 };
 
-type Props = { onNavigate?: (section: 'recovery' | 'data-health') => void };
+type Props = {
+    onNavigate?: (section: 'recovery' | 'data-health') => void;
+    // 'finish': opened from the banner to remove the kept copy — land on the
+    // confirmation instead of making the user find it (the mini, 2026-09-30).
+    focus?: 'finish';
+};
 
 const STAGE_LABELS: Record<string, string> = {
     queued: 'Starting…',
@@ -86,7 +91,7 @@ async function relaunchApp(): Promise<boolean> {
     }
 }
 
-export function EncryptionSection({ onNavigate }: Props) {
+export function EncryptionSection({ onNavigate, focus }: Props) {
     const [state, setState] = useState<SetupState | null>(null);
     const [error, setError] = useState<string | null>(null);
     const [busy, setBusy] = useState(false);
@@ -108,6 +113,15 @@ export function EncryptionSection({ onNavigate }: Props) {
     }, []);
 
     useEffect(() => { void refresh(); }, [refresh]);
+
+    // Pre-open the confirmation once, on arrival from the banner. Deleting still
+    // takes the explicit "Yes, my notebooks are fine" click.
+    const focusApplied = useRef(false);
+    useEffect(() => {
+        if (focus !== 'finish' || focusApplied.current || !state) return;
+        focusApplied.current = true;
+        if (state.plaintext_copies.length === 1) setConfirmDelete(state.plaintext_copies[0].path);
+    }, [focus, state]);
 
     // Poll only while a job runs — the copy is minutes, not seconds.
     const running = !!state?.job?.running;

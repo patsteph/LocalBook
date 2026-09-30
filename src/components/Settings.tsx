@@ -111,7 +111,7 @@ const ACCENT_CLASSES: Record<SectionDef['accent'], string> = {
     amber:  'border-amber-600 bg-amber-50 text-amber-700 dark:bg-amber-900/20 dark:text-amber-300',
 };
 
-export const Settings: React.FC<{ initialSection?: SectionId }> = ({ initialSection }) => {
+export const Settings: React.FC<{ initialSection?: SectionId; encryptionFocus?: 'finish' }> = ({ initialSection, encryptionFocus }) => {
     const [error, setError] = useState<string | null>(null);
     const [success, setSuccess] = useState<string | null>(null);
     const [activeSection, setActiveSection] = useState<SectionId>(initialSection ?? 'api-keys');
@@ -163,7 +163,7 @@ export const Settings: React.FC<{ initialSection?: SectionId }> = ({ initialSect
                     )}
 
                     {activeSection === 'recovery' && <SettingsErrorBoundary fallbackLabel="Recovery"><RecoveryKeySection /></SettingsErrorBoundary>}
-                    {activeSection === 'encryption' && <SettingsErrorBoundary fallbackLabel="Encryption"><EncryptionSection onNavigate={setActiveSection} /></SettingsErrorBoundary>}
+                    {activeSection === 'encryption' && <SettingsErrorBoundary fallbackLabel="Encryption"><EncryptionSection onNavigate={setActiveSection} focus={encryptionFocus} /></SettingsErrorBoundary>}
                     {activeSection === 'data-health' && <SettingsErrorBoundary fallbackLabel="Data Health"><DataHealthSection /></SettingsErrorBoundary>}
                     {activeSection === 'profile' && <ProfileSection setError={setError} setSuccess={setSuccess} />}
                     {activeSection === 'voice' && <SettingsErrorBoundary fallbackLabel="Voice Profile"><VoiceProfileSection /></SettingsErrorBoundary>}

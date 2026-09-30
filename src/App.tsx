@@ -69,6 +69,7 @@ function App() {
   const [curatorBriefData, setCuratorBriefData] = useState<any>(null);
   const [showSettingsModal, setShowSettingsModal] = useState(false);
   const [settingsSection, setSettingsSection] = useState<SectionId | undefined>(undefined);
+  const [settingsFocus, setSettingsFocus] = useState<'finish' | undefined>(undefined);
   const [showLLMModal, setShowLLMModal] = useState(false);
   const [showHealthModal, setShowHealthModal] = useState(false);
   const [showEmbeddingModal, setShowEmbeddingModal] = useState(false);
@@ -1076,7 +1077,7 @@ function App() {
         )}
 
         {/* LB-11: the encryption offer — the only road into the setup flow */}
-        <EncryptionPrompt onOpen={() => { setSettingsSection('encryption'); setShowSettingsModal(true); }} />
+        <EncryptionPrompt onOpen={(focus) => { setSettingsSection('encryption'); setSettingsFocus(focus); setShowSettingsModal(true); }} />
 
         {/* Morning Brief — floats above canvas */}
         {morningBrief && (
@@ -1285,8 +1286,8 @@ function App() {
         </div>
 
         {/* Settings Modal */}
-        <Modal isOpen={showSettingsModal} onClose={() => { setShowSettingsModal(false); setSettingsSection(undefined); }} title="Settings" size="lg">
-          <Settings initialSection={settingsSection} />
+        <Modal isOpen={showSettingsModal} onClose={() => { setShowSettingsModal(false); setSettingsSection(undefined); setSettingsFocus(undefined); }} title="Settings" size="lg">
+          <Settings initialSection={settingsSection} encryptionFocus={settingsFocus} />
         </Modal>
 
         {/* LLM Studio Modal — Locker + Evaluator + History in one place */}

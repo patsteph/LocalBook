@@ -21,7 +21,7 @@ function mb(bytes: number): string {
     return bytes >= 1024 ** 3 ? `${(bytes / 1024 ** 3).toFixed(1)} GB` : `${Math.round(bytes / 1024 ** 2)} MB`;
 }
 
-export function EncryptionPrompt({ onOpen }: { onOpen: () => void }) {
+export function EncryptionPrompt({ onOpen }: { onOpen: (focus?: 'finish') => void }) {
     const [prompt, setPrompt] = useState<Prompt | null>(null);
 
     const load = useCallback(async () => {
@@ -46,7 +46,7 @@ export function EncryptionPrompt({ onOpen }: { onOpen: () => void }) {
 
     if (!prompt || !prompt.show) return null;
 
-    const open = () => { onOpen(); setPrompt(null); };
+    const open = (focus?: 'finish') => { onOpen(focus); setPrompt(null); };
     const button = 'rounded px-2.5 py-1 text-xs font-medium';
 
     if (prompt.kind === 'failed') {
@@ -57,7 +57,7 @@ export function EncryptionPrompt({ onOpen }: { onOpen: () => void }) {
                     {prompt.error}
                 </span>
                 <div className="flex shrink-0 gap-2">
-                    <button onClick={open} className={`${button} bg-amber-600 text-white hover:bg-amber-500`}>Details</button>
+                    <button onClick={() => open()} className={`${button} bg-amber-600 text-white hover:bg-amber-500`}>Details</button>
                     <button onClick={() => void respond('acknowledge_failure')} className={`${button} opacity-70 hover:opacity-100`}>OK</button>
                 </div>
             </div>
@@ -71,7 +71,7 @@ export function EncryptionPrompt({ onOpen }: { onOpen: () => void }) {
                     🔒 <strong>Your data is encrypted — one step left.</strong> The unencrypted copy from before
                     ({mb(prompt.bytes)}) is still on this Mac. Check your notebooks, then remove it.
                 </span>
-                <button onClick={open} className={`${button} shrink-0 bg-amber-600 text-white hover:bg-amber-500`}>Finish</button>
+                <button onClick={() => open('finish')} className={`${button} shrink-0 bg-amber-600 text-white hover:bg-amber-500`}>Review &amp; remove copy</button>
             </div>
         );
     }
@@ -83,7 +83,7 @@ export function EncryptionPrompt({ onOpen }: { onOpen: () => void }) {
                 lost Mac, a backup disk, or any copy that ends up somewhere it shouldn't.
             </span>
             <div className="flex shrink-0 gap-2">
-                <button onClick={open} className={`${button} bg-blue-600 text-white hover:bg-blue-500`}>Set up</button>
+                <button onClick={() => open()} className={`${button} bg-blue-600 text-white hover:bg-blue-500`}>Set up</button>
                 <button onClick={() => void respond('snooze')} className={`${button} hover:bg-blue-100 dark:hover:bg-blue-900/40`}>Not now</button>
                 <button onClick={() => void respond('dismiss')} className={`${button} opacity-60 hover:opacity-100`}>Don't ask again</button>
             </div>
