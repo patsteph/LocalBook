@@ -164,7 +164,8 @@ async def encryption_setup_state():
     """Everything the encryption setup screen needs, in one poll."""
     import asyncio
 
-    from services import encryption_migration, encryption_setup, volume_gate, volume_service
+    from services import (encryption_migration, encryption_rollback, encryption_setup,
+                          volume_gate, volume_service)
 
     check = await asyncio.to_thread(encryption_setup.preflight)
     return {
@@ -175,7 +176,61 @@ async def encryption_setup_state():
         "pending": encryption_migration.pending(),
         "last_apply": encryption_migration.last_apply(),
         "plaintext_copies": await asyncio.to_thread(encryption_migration.plaintext_copies),
+        "decrypt_pending": encryption_rollback.pending(),
+        "last_decrypt": encryption_rollback.last_apply(),
+        "leftover_image": await asyncio.to_thread(encryption_rollback.leftover_image),
     }
+
+
+# ── the escape hatch ────────────────────────────────────────────────────────
+
+
+class ExportRequest(BaseModel):
+    destination: str
+
+
+@router.post("/system/volume/export")
+async def export_decrypted(req: ExportRequest):
+    """A decrypted, verified copy in a folder of the user's choosing. Encryption
+    stays on. Background job — poll `/system/volume/setup`."""
+    from pathlib import Path
+
+    from services import encryption_setup
+
+    if not encryption_setup.start_export_job(Path(req.destination)):
+        raise HTTPException(status_code=409, detail="another volume operation is running")
+    return {"started": True}
+
+
+@router.post("/system/volume/decrypt")
+async def decrypt_volume():
+    """Stage turning encryption off. The switch happens on the next launch, and
+    the encrypted image is kept until the user deletes it."""
+    from services import encryption_setup
+
+    if not encryption_setup.start_decrypt_job():
+        raise HTTPException(status_code=409, detail="another volume operation is running")
+    return {"started": True}
+
+
+@router.delete("/system/volume/decrypt/pending")
+async def cancel_decrypt():
+    from services import encryption_rollback
+
+    return {"cancelled": encryption_rollback.cancel_pending()}
+
+
+@router.delete("/system/volume/image")
+async def discard_encrypted_image():
+    """Delete the encrypted image once encryption is off. Refused otherwise."""
+    import asyncio
+
+    from services import encryption_rollback
+
+    result = await asyncio.to_thread(encryption_rollback.discard_image)
+    if not result.get("deleted"):
+        raise HTTPException(status_code=400, detail=result.get("error", "could not delete"))
+    return result
 
 
 @router.get("/system/volume/migrate/pending")

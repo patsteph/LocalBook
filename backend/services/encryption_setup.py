@@ -84,8 +84,9 @@ _job_lock = threading.Lock()
 _job: Optional[Dict[str, object]] = None
 
 
-def start_prepare_job(*, skip_backup: bool = False) -> bool:
-    """Run `prepare` on a background thread. False if one is already running.
+def _start(kind: str, fn, **kwargs) -> bool:
+    """Run one long LB-11 operation on a background thread. False if one is
+    already running — they all touch the same volume, so only one at a time.
 
     A background job rather than a long HTTP request: holding a connection for
     minutes makes WebKit's network process give up, and the user would read a
@@ -96,15 +97,15 @@ def start_prepare_job(*, skip_backup: bool = False) -> bool:
         if _job and _job.get("running"):
             return False
         report = em.MigrationReport(stage="queued")
-        _job = {"running": True, "report": report,
+        _job = {"running": True, "kind": kind, "report": report,
                 "started_at": datetime.now(timezone.utc).isoformat()}
 
     def _run():
         global _job
         try:
-            em.prepare(skip_backup=skip_backup, report=report)
+            fn(report=report, **kwargs)
         except Exception as exc:
-            logger.exception("[encrypt] prepare crashed")
+            logger.exception("[encrypt] %s crashed", kind)
             report.errors.append(f"unexpected error: {exc}")
             report.ok = False
         finally:
@@ -112,8 +113,24 @@ def start_prepare_job(*, skip_backup: bool = False) -> bool:
                 _job = dict(_job or {}, running=False,
                             finished_at=datetime.now(timezone.utc).isoformat())
 
-    threading.Thread(target=_run, name="encrypt-prepare", daemon=True).start()
+    threading.Thread(target=_run, name=f"lb11-{kind}", daemon=True).start()
     return True
+
+
+def start_prepare_job(*, skip_backup: bool = False) -> bool:
+    return _start("encrypt", lambda **kw: em.prepare(skip_backup=skip_backup, **kw))
+
+
+def start_decrypt_job() -> bool:
+    from services import encryption_rollback
+
+    return _start("decrypt", lambda **kw: encryption_rollback.prepare(**kw))
+
+
+def start_export_job(destination_dir: Path) -> bool:
+    from services import encryption_rollback
+
+    return _start("export", lambda **kw: encryption_rollback.export(destination_dir, **kw))
 
 
 def job_status() -> Optional[Dict[str, object]]:

@@ -131,6 +131,9 @@ def _last_apply_path() -> Path:
 
 
 def _should_skip(rel: Path) -> bool:
+    # The sidecar's TMPDIR once the volume is mounted (lib.rs). Scratch only.
+    if rel.parts and rel.parts[0] == "tmp":
+        return True
     name = rel.name
     if name in SKIP_NAMES:
         return True

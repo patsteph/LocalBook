@@ -58,6 +58,20 @@ try:
 except Exception as _e:
     print(f"⚠️  encryption migration skipped: {_e}")
 
+# ── LB-11: apply a staged DEcryption (the escape hatch), same constraints ───
+try:
+    from services.encryption_rollback import apply_pending as _apply_decryption
+    _dec = _apply_decryption()
+    if _dec and _dec.get("applied"):
+        print("=" * 72)
+        print("🔓 ENCRYPTION IS OFF — the data directory is plaintext again")
+        print(f"    encrypted image kept at: {_dec.get('image_kept_at')}")
+        print("=" * 72)
+    elif _dec:
+        print(f"⚠️  decryption not applied: {_dec.get('error')}")
+except Exception as _e:
+    print(f"⚠️  decryption skipped: {_e}")
+
 # ── LB-11: decide whether we may serve at all, before ANY store opens ───────
 # Ordered before the restore pre-flight and before every `from api import ...`
 # below, because importing those reaches `storage.database`. If the encrypted

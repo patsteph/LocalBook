@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from '../../services/api';
+import { pickFolder } from '../../services/folders';
 
 /**
  * Encryption at rest — the setup flow (LB-11).
@@ -38,10 +39,19 @@ type SetupState = {
     encryption_enabled: boolean;
     mounted: boolean;
     preflight: { ready: boolean; checks: Record<string, Check>; data_bytes: number; data_dir: string };
-    job: { running: boolean; started_at: string; finished_at?: string; report: Report } | null;
+    job: { running: boolean; kind: 'encrypt' | 'decrypt' | 'export'; started_at: string; finished_at?: string; report: Report } | null;
     pending: Record<string, any> | null;
     last_apply: { applied: boolean; error?: string; at?: string; plaintext_kept_at?: string } | null;
     plaintext_copies: { path: string; name: string; bytes: number }[];
+    decrypt_pending: Record<string, any> | null;
+    last_decrypt: { applied: boolean; error?: string; at?: string } | null;
+    leftover_image: { path: string; bytes: number } | null;
+};
+
+const JOB_FAILED: Record<string, string> = {
+    encrypt: 'Encryption was not set up. Your data has not been touched.',
+    decrypt: 'Encryption was not turned off. Your encrypted data has not been touched.',
+    export: 'The export did not complete. Your encrypted data has not been touched.',
 };
 
 type Props = { onNavigate?: (section: 'recovery' | 'data-health') => void };
@@ -55,6 +65,7 @@ const STAGE_LABELS: Record<string, string> = {
     verifying: 'Verifying every database and file',
     detaching: 'Finishing up',
     staged: 'Ready',
+    exported: 'Exported',
 };
 
 function mb(bytes?: number): string {
@@ -82,6 +93,8 @@ export function EncryptionSection({ onNavigate }: Props) {
     const [understood, setUnderstood] = useState(false);
     const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
     const [note, setNote] = useState<string | null>(null);
+    const [confirmOff, setConfirmOff] = useState(false);
+    const [confirmImage, setConfirmImage] = useState(false);
     const timer = useRef<number | null>(null);
 
     const refresh = useCallback(async () => {
@@ -134,6 +147,58 @@ export function EncryptionSection({ onNavigate }: Props) {
         }
     };
 
+    const exportCopy = async () => {
+        setError(null); setNote(null);
+        const folder = await pickFolder();
+        if (!folder) return;
+        setBusy(true);
+        try {
+            await api.post('/system/volume/export', { destination: folder });
+            await refresh();
+        } catch (e: any) {
+            setError(e?.response?.data?.detail ?? 'Could not start the export.');
+        } finally {
+            setBusy(false);
+        }
+    };
+
+    const turnOff = async () => {
+        setBusy(true); setError(null);
+        try {
+            await api.post('/system/volume/decrypt');
+            setConfirmOff(false);
+            await refresh();
+        } catch (e: any) {
+            setError(e?.response?.data?.detail ?? 'Could not start.');
+        } finally {
+            setBusy(false);
+        }
+    };
+
+    const cancelDecrypt = async () => {
+        setBusy(true);
+        try {
+            await api.delete('/system/volume/decrypt/pending');
+            await refresh();
+        } finally {
+            setBusy(false);
+        }
+    };
+
+    const discardImage = async () => {
+        setBusy(true); setError(null);
+        try {
+            const { data } = await api.delete('/system/volume/image');
+            setNote(`Encrypted image deleted — ${mb(data.freed_bytes)} freed.`);
+            setConfirmImage(false);
+            await refresh();
+        } catch (e: any) {
+            setError(e?.response?.data?.detail ?? 'Could not delete the image.');
+        } finally {
+            setBusy(false);
+        }
+    };
+
     const discard = async (path: string) => {
         setBusy(true); setError(null);
         try {
@@ -161,7 +226,10 @@ export function EncryptionSection({ onNavigate }: Props) {
     const job = state.job;
     const report = job?.report;
     const jobFailed = !!job && !job.running && !!report && !report.ok;
+    const exported = job?.kind === 'export' && !job.running && report?.ok;
     const applyFailed = !!state.last_apply && !state.last_apply.applied && !encrypted && !state.pending;
+    const decryptFailed = !!state.last_decrypt && !state.last_decrypt.applied && encrypted && !state.decrypt_pending;
+    const decryptedRecently = !!state.last_decrypt?.applied && !state.encryption_enabled;
     const pct = report && report.bytes_total > 0
         ? Math.min(100, Math.round((report.bytes_copied / report.bytes_total) * 100))
         : 0;
@@ -279,9 +347,17 @@ export function EncryptionSection({ onNavigate }: Props) {
                 </section>
             )}
 
+            {exported && report && (
+                <Banner tone="green">
+                    <strong>Exported.</strong> A decrypted, verified copy is at{' '}
+                    <span className="font-mono text-xs">{report.backup_path}</span>. It is an ordinary LocalBook
+                    data folder — and it is not encrypted, so keep it somewhere safe.
+                </Banner>
+            )}
+
             {jobFailed && report && !state.pending && (
                 <Banner tone="amber">
-                    <strong>Encryption was not set up. Your data has not been touched.</strong>
+                    <strong>{JOB_FAILED[job?.kind ?? 'encrypt']}</strong>
                     <ul className="mt-1 list-disc pl-5">
                         {report.errors.map((e, i) => <li key={i}>{e}</li>)}
                         {Object.keys(report.row_count_drift ?? {}).length > 0 && (
@@ -292,6 +368,124 @@ export function EncryptionSection({ onNavigate }: Props) {
                         )}
                     </ul>
                 </Banner>
+            )}
+
+            {/* ── the escape hatch ── */}
+            {decryptFailed && (
+                <Banner tone="amber">
+                    <strong>Encryption was not turned off, and your data was not changed.</strong>{' '}
+                    {state.last_decrypt?.error}
+                </Banner>
+            )}
+
+            {state.decrypt_pending && (
+                <section className="space-y-3 rounded-lg border border-blue-500/40 bg-blue-500/5 p-4">
+                    <h3 className="text-sm font-semibold text-blue-100">Ready — restart to turn encryption off</h3>
+                    <p className="text-sm text-gray-300">
+                        A decrypted copy has been made and verified. LocalBook switches to it when it next starts, and
+                        carries over anything you do before then. The encrypted volume is kept until you delete it.
+                    </p>
+                    <div className="flex gap-2">
+                        <button
+                            onClick={() => void restart()}
+                            disabled={busy}
+                            className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-500 disabled:opacity-50"
+                        >
+                            Restart LocalBook now
+                        </button>
+                        <button
+                            onClick={() => void cancelDecrypt()}
+                            disabled={busy}
+                            className="rounded-lg border border-gray-600 px-4 py-2 text-sm text-gray-300 hover:bg-gray-800"
+                        >
+                            Keep encryption on
+                        </button>
+                    </div>
+                </section>
+            )}
+
+            {encrypted && !state.decrypt_pending && !job?.running && (
+                <section className="space-y-3 rounded-lg border border-gray-700 bg-gray-900/40 p-4">
+                    <h3 className="text-sm font-semibold text-gray-100">Getting your data back out</h3>
+                    <p className="text-sm text-gray-400">
+                        Export a decrypted copy to a folder you choose (encryption stays on), or turn encryption off
+                        entirely. Both copies are verified before anything else happens.
+                    </p>
+                    <div className="flex flex-wrap gap-2">
+                        <button
+                            onClick={() => void exportCopy()}
+                            disabled={busy}
+                            className="rounded border border-gray-600 px-3 py-1.5 text-sm text-gray-200 hover:bg-gray-800 disabled:opacity-50"
+                        >
+                            Export a decrypted copy…
+                        </button>
+                        {confirmOff ? (
+                            <>
+                                <button
+                                    onClick={() => void turnOff()}
+                                    disabled={busy}
+                                    className="rounded bg-amber-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-amber-500 disabled:opacity-50"
+                                >
+                                    Yes, turn encryption off
+                                </button>
+                                <button
+                                    onClick={() => setConfirmOff(false)}
+                                    className="rounded border border-gray-600 px-3 py-1.5 text-sm text-gray-300 hover:bg-gray-800"
+                                >
+                                    Cancel
+                                </button>
+                            </>
+                        ) : (
+                            <button
+                                onClick={() => setConfirmOff(true)}
+                                disabled={busy}
+                                className="rounded border border-gray-600 px-3 py-1.5 text-sm text-gray-200 hover:bg-gray-800 disabled:opacity-50"
+                            >
+                                Turn encryption off…
+                            </button>
+                        )}
+                    </div>
+                </section>
+            )}
+
+            {decryptedRecently && (
+                <Banner tone="green">
+                    <strong>Encryption is off.</strong> Your data is back in an ordinary folder.
+                </Banner>
+            )}
+
+            {state.leftover_image && (
+                <section className="flex items-center justify-between gap-3 rounded-lg border border-gray-700 bg-gray-900/40 p-4">
+                    <div className="min-w-0 text-sm text-gray-300">
+                        The encrypted volume from before is still on this Mac ({mb(state.leftover_image.bytes)}).
+                        Once your notebooks look right, it can go.
+                    </div>
+                    {confirmImage ? (
+                        <div className="flex shrink-0 gap-2">
+                            <button
+                                onClick={() => void discardImage()}
+                                disabled={busy}
+                                className="rounded bg-red-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-red-500 disabled:opacity-50"
+                            >
+                                Delete it
+                            </button>
+                            <button
+                                onClick={() => setConfirmImage(false)}
+                                className="rounded border border-gray-600 px-3 py-1.5 text-xs text-gray-300 hover:bg-gray-800"
+                            >
+                                Not yet
+                            </button>
+                        </div>
+                    ) : (
+                        <button
+                            onClick={() => setConfirmImage(true)}
+                            disabled={busy}
+                            className="shrink-0 rounded border border-gray-600 px-3 py-1.5 text-xs text-gray-200 hover:bg-gray-800"
+                        >
+                            Delete encrypted volume…
+                        </button>
+                    )}
+                </section>
             )}
 
             {/* ── not started ── */}
