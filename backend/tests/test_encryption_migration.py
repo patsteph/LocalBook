@@ -39,6 +39,10 @@ def env(tmp_path, monkeypatch):
     backups.mkdir()
     monkeypatch.setattr(settings, "backup_destination", str(backups))
 
+    # The migration refuses without one: the volume key would have no recovery
+    # copy. Keys dir is named after the data dir, so this lands in tmp_path.
+    keyvault.set_recovery_key(keyvault.generate_recovery_phrase())
+
     # A corpus with the shapes that matter: a live database, nested files, a WAL.
     conn = sqlite3.connect(data / "localbook.db")
     conn.execute("PRAGMA journal_mode=WAL")
@@ -411,3 +415,139 @@ def test_the_migrated_corpus_is_unreadable_without_the_key(env):
 
     assert b"irreplaceable text" not in blob
     assert b"nb1.json" not in blob
+
+
+# ── the flag lives outside the volume (measure 1's other half) ──────────────
+
+
+def test_the_encryption_flag_is_written_beside_the_data_dir_not_inside(env):
+    """Inside the volume, a failed mount would hide the flag that says a mount is
+    required — and the app would open empty."""
+    from config import encryption_flag_path
+
+    em.prepare()
+    em.apply_pending()
+
+    assert encryption_flag_path(env).is_file()
+    assert encryption_flag_path(env).parent == env.parent
+    env_file = env / ".env"
+    assert not env_file.exists() or "ENCRYPTION" not in env_file.read_text()
+
+
+def test_the_gate_sees_the_flag_while_the_volume_is_unmounted(env, monkeypatch):
+    from config import settings
+    from services import volume_gate
+
+    em.prepare()
+    em.apply_pending()
+    volume_service.detach()
+    monkeypatch.setattr(settings, "encryption_enabled", False)   # a fresh process
+
+    assert volume_gate.encryption_enabled() is True
+    assert volume_gate.evaluate().locked is True
+
+
+# ── the catch-up pass at swap time ──────────────────────────────────────────
+
+
+def test_writes_made_after_prepare_reach_the_volume(env):
+    """The app keeps running between prepare and the restart. Those writes must
+    not stay behind in the plaintext copy."""
+    em.prepare()
+
+    conn = sqlite3.connect(env / "localbook.db")
+    conn.execute("INSERT INTO sources VALUES ('late', 'written after prepare')")
+    conn.commit()
+    conn.close()
+    (env / "notebooks" / "nb2.json").write_text('{"id": "nb2"}')
+    (env / "sources.json").unlink()
+
+    result = em.apply_pending()
+    assert result["applied"] is True, result
+
+    conn = sqlite3.connect(f"file:{env / 'localbook.db'}?mode=ro", uri=True)
+    try:
+        assert conn.execute("SELECT COUNT(*) FROM sources").fetchone()[0] == 26
+    finally:
+        conn.close()
+    assert (env / "notebooks" / "nb2.json").is_file()
+    assert not (env / "sources.json").exists()
+    assert volume_service.is_mounted(env)            # the sentinel survived the sync
+
+
+def test_a_failed_catch_up_leaves_the_plaintext_in_place(env, monkeypatch):
+    em.prepare()
+    monkeypatch.setattr(em, "_verify",
+                        lambda s, t, r, only=None: r.mismatched_files.append("x"))
+
+    result = em.apply_pending()
+
+    assert result["applied"] is False
+    assert (env / "localbook.db").is_file()
+    assert not volume_service.is_mounted(env)
+    assert em.pending() is None
+    assert em.last_apply()["applied"] is False
+
+
+def test_the_swap_outcome_is_recorded_for_the_setup_screen(env):
+    em.prepare()
+    em.apply_pending()
+    last = em.last_apply()
+    assert last["applied"] is True and last["plaintext_kept_at"]
+
+
+# ── preconditions ───────────────────────────────────────────────────────────
+
+
+def test_no_recovery_phrase_means_no_migration(env, monkeypatch):
+    """Without one the volume key has no recovery copy, and a wiped Keychain
+    would cost the whole corpus."""
+    monkeypatch.setattr(keyvault, "has_recovery_key", lambda: False)
+    report = em.prepare()
+    assert report.ok is False
+    assert any("recovery phrase" in e for e in report.errors)
+    assert not volume_service.image_path().exists()
+
+
+def test_the_volume_key_has_a_recovery_copy_once_prepared(env):
+    em.prepare()
+    assert "volume" not in keyvault.unprotected_purposes()
+
+
+def test_a_staging_mount_left_by_a_quit_is_released(env):
+    """A quit mid-prepare leaves the volume attached at the staging point."""
+    volume_service.create()
+    staging = env.parent / em.STAGING_MOUNT
+    staging.mkdir()
+    em._attach_at(staging)
+
+    report = em.prepare()
+    assert report.ok is True, report.errors
+
+
+def test_progress_reports_a_total(env):
+    report = em.prepare()
+    assert report.bytes_total > 0
+
+
+def test_a_lost_flag_still_locks_when_the_data_dir_is_empty(env, monkeypatch):
+    """Losing one flag file must not reopen the empty-app hole."""
+    from config import encryption_flag_path, settings
+    from services import volume_gate
+
+    em.prepare()
+    em.apply_pending()
+    volume_service.detach()
+    encryption_flag_path(env).unlink()
+    monkeypatch.setattr(settings, "encryption_enabled", False)
+
+    assert volume_gate.evaluate().locked is True
+
+
+def test_an_abandoned_prepare_does_not_lock_a_live_plaintext_dir(env):
+    from services import volume_gate
+
+    em.prepare()
+    em.cancel_pending()
+    assert volume_service.image_path().exists()
+    assert volume_gate.evaluate().locked is False

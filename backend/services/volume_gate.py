@@ -98,9 +98,33 @@ def encryption_enabled() -> bool:
     flag would switch it on for a machine that has no volume.
     """
     try:
-        from config import settings
+        from config import encryption_flag_path, settings
 
-        return bool(getattr(settings, "encryption_enabled", False))
+        if bool(getattr(settings, "encryption_enabled", False)):
+            return True
+        # Read live, not only at import: the flag file sits outside the volume
+        # precisely so it is still visible when the volume is not.
+        if encryption_flag_path(settings.data_dir).exists():
+            return True
+        return _image_beside_empty_data_dir(Path(settings.data_dir))
+    except Exception:
+        return False
+
+
+def _image_beside_empty_data_dir(data_dir: Path) -> bool:
+    """The flag was lost, but the evidence was not.
+
+    An encrypted image next to a missing or empty data dir means "the volume is
+    not mounted", never "new install". Without this, losing one flag file would
+    reopen exactly the hole measure 1 closed. An image beside a POPULATED data
+    dir is an abandoned prepare — the plaintext is live — and stays OPEN.
+    """
+    try:
+        from services import volume_service
+
+        if not volume_service.image_path().exists():
+            return False
+        return not data_dir.is_dir() or not any(data_dir.iterdir())
     except Exception:
         return False
 

@@ -135,34 +135,47 @@ class MigrateRequest(BaseModel):
     skip_backup: bool = False
 
 
-class DiscardRequest(BaseModel):
-    path: str
-
-
 @router.post("/system/volume/migrate")
 async def migrate_to_encrypted(req: MigrateRequest):
-    """Prepare an encrypted copy of the data directory and stage the swap.
+    """Start preparing an encrypted copy of the data directory, in the background.
 
-    Long-running: it takes a backup, creates the volume, copies ~690 MB in and
-    verifies every database and every file. Nothing live is touched — the
-    plaintext directory is only read, and a failure leaves no marker, so an
-    abandoned attempt costs nothing.
+    Returns at once; poll `/system/volume/setup` for progress. It takes a backup,
+    creates the volume, copies ~690 MB in and verifies every database and every
+    file. Nothing live is touched — the plaintext directory is only read, and a
+    failure leaves no marker, so an abandoned attempt costs nothing.
     """
     import asyncio
 
-    from services import encryption_migration
+    from services import encryption_setup
 
-    report = await asyncio.to_thread(
-        encryption_migration.prepare, skip_backup=req.skip_backup
-    )
-    out = report.as_dict()
-    out["detail"] = (
-        "Prepared and verified. Quit and reopen LocalBook to switch over — your "
-        "current data is kept, not replaced."
-        if report.ok
-        else "Not staged. Your data has not been touched."
-    )
-    return out
+    check = await asyncio.to_thread(encryption_setup.preflight)
+    blockers = [name for name, c in check["checks"].items() if not c["ok"]
+                and not (req.skip_backup and name == "backup_destination")]
+    if blockers:
+        raise HTTPException(status_code=409,
+                            detail=f"not ready to encrypt: {', '.join(blockers)}")
+    if not encryption_setup.start_prepare_job(skip_backup=req.skip_backup):
+        raise HTTPException(status_code=409, detail="a migration is already running")
+    return {"started": True}
+
+
+@router.get("/system/volume/setup")
+async def encryption_setup_state():
+    """Everything the encryption setup screen needs, in one poll."""
+    import asyncio
+
+    from services import encryption_migration, encryption_setup, volume_gate, volume_service
+
+    check = await asyncio.to_thread(encryption_setup.preflight)
+    return {
+        "encryption_enabled": volume_gate.encryption_enabled(),
+        "mounted": volume_service.is_mounted(),
+        "preflight": check,
+        "job": encryption_setup.job_status(),
+        "pending": encryption_migration.pending(),
+        "last_apply": encryption_migration.last_apply(),
+        "plaintext_copies": await asyncio.to_thread(encryption_migration.plaintext_copies),
+    }
 
 
 @router.get("/system/volume/migrate/pending")
@@ -189,7 +202,7 @@ async def list_plaintext_copies():
 
 
 @router.delete("/system/volume/plaintext-copies")
-async def discard_plaintext(req: DiscardRequest):
+async def discard_plaintext(path: str):
     """Delete a kept plaintext copy. The only destructive call in LB-11.
 
     Refused unless the encrypted volume is currently mounted — deleting it while
@@ -200,7 +213,7 @@ async def discard_plaintext(req: DiscardRequest):
 
     from services import encryption_migration
 
-    result = await asyncio.to_thread(encryption_migration.discard_plaintext, req.path)
+    result = await asyncio.to_thread(encryption_migration.discard_plaintext, path)
     if not result.get("deleted"):
         raise HTTPException(status_code=400, detail=result.get("error", "could not delete"))
     return result

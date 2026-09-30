@@ -312,6 +312,23 @@ class Settings(BaseSettings):
 
 settings = Settings()
 
+
+def encryption_flag_path(data_dir: Path) -> Path:
+    """Where `encryption_enabled` is persisted: BESIDE the data dir, never inside.
+
+    It used to be written to `<data dir>/.env` — which, once encrypted, is inside
+    the volume. A failed mount then hid the very flag that says a mount is
+    required, the gate read "encryption off", and the app came up empty and
+    started writing into the mount point: the exact failure measure 1 exists to
+    prevent. The flag has to survive the volume being unavailable.
+    """
+    data_dir = Path(data_dir)
+    return data_dir.parent / f"{data_dir.name}.encryption-enabled"
+
+
+if encryption_flag_path(settings.data_dir).exists():
+    settings.encryption_enabled = True
+
 # ── LB-11 measure 1: do NOT create the data directory at import ─────────────
 # When encryption is on, `data_dir` is a MOUNT POINT. Creating it here — which
 # this did unconditionally — is precisely what made a failed mount

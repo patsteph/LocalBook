@@ -280,6 +280,22 @@ fn volume_mount_point() -> Option<PathBuf> {
     app_support_dir().map(|d| d.join("LocalBook"))
 }
 
+/// This Mac's "encryption is on" flag. Mirrors `config.encryption_flag_path` —
+/// BESIDE the data dir, so it is readable while the volume is not. An image
+/// with no flag is a prepared-but-abandoned migration, not a volume to mount:
+/// the data dir still holds the plaintext.
+fn volume_flag_path() -> Option<PathBuf> {
+    app_support_dir().map(|d| d.join("LocalBook.encryption-enabled"))
+}
+
+/// A staged migration. The swap belongs to the backend (`apply_pending`), which
+/// moves the plaintext aside first; mounting here would only be refused.
+fn volume_swap_pending() -> bool {
+    app_support_dir()
+        .map(|d| d.join("LocalBook.encryption-pending.json").is_file())
+        .unwrap_or(false)
+}
+
 /// Mounted AND ours. Never merely "the directory exists" — a failed attach
 /// leaves an ordinary empty directory behind, and treating that as mounted is
 /// the whole failure this guards against. Mirrors `volume_service.SENTINEL`.
@@ -327,6 +343,23 @@ fn ensure_volume_mounted() -> bool {
     };
     if !image.exists() {
         return true; // encryption not in use here
+    }
+    if volume_swap_pending() {
+        println!("[Volume] a migration is staged — the backend performs the swap");
+        return true;
+    }
+    // No flag AND real files at the mount point = an abandoned prepare; the
+    // plaintext is live. No flag but an EMPTY mount point is different: that is
+    // an encrypted install that lost its flag, and starting fresh there is the
+    // one unrecoverable outcome. Mount it.
+    let flag_set = volume_flag_path().map(|p| p.is_file()).unwrap_or(false);
+    let mount_point_has_files = volume_mount_point()
+        .and_then(|mp| std::fs::read_dir(mp).ok())
+        .map(|mut it| it.next().is_some())
+        .unwrap_or(false);
+    if !flag_set && mount_point_has_files {
+        println!("[Volume] an image exists but encryption is not enabled on this Mac");
+        return true;
     }
     if volume_is_mounted() {
         println!("[Volume] already mounted");

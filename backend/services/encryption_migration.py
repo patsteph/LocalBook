@@ -55,6 +55,7 @@ from typing import Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 MARKER_NAME = ".encryption-pending.json"
+LAST_APPLY_NAME = ".encryption-last-apply.json"
 PLAINTEXT_PREFIX = "LocalBook.plaintext-"
 STAGING_MOUNT = ".localbook-migrate-mnt"
 
@@ -77,6 +78,7 @@ SKIP_SUFFIXES = ("-wal", "-shm", ".keyvault-tmp", ".json.tmp")
 class MigrationReport:
     ok: bool = False
     stage: str = "not started"
+    bytes_total: int = 0
     backup_path: Optional[str] = None
     files_copied: int = 0
     bytes_copied: int = 0
@@ -93,6 +95,7 @@ class MigrationReport:
         return {
             "ok": self.ok,
             "stage": self.stage,
+            "bytes_total": self.bytes_total,
             "backup_path": self.backup_path,
             "files_copied": self.files_copied,
             "bytes_copied": self.bytes_copied,
@@ -120,6 +123,11 @@ def _marker_path() -> Path:
     # BESIDE the data dir. Inside would be swallowed by the swap it describes.
     d = _data_dir()
     return d.parent / f"{d.name}{MARKER_NAME}"
+
+
+def _last_apply_path() -> Path:
+    d = _data_dir()
+    return d.parent / f"{d.name}{LAST_APPLY_NAME}"
 
 
 def _should_skip(rel: Path) -> bool:
@@ -161,16 +169,21 @@ def _sha256(path: Path) -> str:
 
 
 def prepare(*, backup_destination: Optional[Path] = None,
-            skip_backup: bool = False) -> MigrationReport:
+            skip_backup: bool = False,
+            report: Optional[MigrationReport] = None) -> MigrationReport:
     """Build a fully populated, verified encrypted volume. Changes nothing live.
 
     Abandonable at any point at zero cost: the plaintext directory is only ever
     read, and a failure leaves no marker, so the next launch does nothing.
+
+    `report` may be passed in so a caller on another thread can watch it fill —
+    that is how the setup screen shows progress.
     """
     started = time.perf_counter()
-    report = MigrationReport(stage="starting")
+    report = report or MigrationReport()
+    report.stage = "starting"
 
-    from services import backup_service, volume_service
+    from services import backup_service, keyvault, volume_service
 
     source = _data_dir()
     if not source.is_dir():
@@ -186,6 +199,18 @@ def prepare(*, backup_destination: Optional[Path] = None,
             "a migration is already staged and waiting for a restart"
         )
         return report
+
+    # The volume key is random and lives only in the Keychain. Without a recovery
+    # phrase there is no wrapped copy of it, and a wiped Keychain would cost the
+    # whole corpus — strictly worse than not encrypting at all.
+    if not keyvault.has_recovery_key():
+        report.errors.append(
+            "set up a recovery phrase first (Settings → Recovery). Without one, "
+            "losing this Mac's Keychain would lose the encrypted data with it."
+        )
+        return report
+
+    report.bytes_total = _tree_bytes(source)
 
     # ── the backup, first and non-negotiable ────────────────────────────────
     if not skip_backup:
@@ -221,6 +246,7 @@ def prepare(*, backup_destination: Optional[Path] = None,
     # Mounted at a TEMPORARY point, never at the data dir — that still holds the
     # plaintext, and mounting over it would hide it.
     try:
+        _release_stale_staging(staging_mount)
         staging_mount.mkdir(parents=True, exist_ok=True)
         _attach_at(staging_mount)
     except Exception as exc:
@@ -229,7 +255,7 @@ def prepare(*, backup_destination: Optional[Path] = None,
 
     try:
         report.stage = "copying"
-        _copy_into(source, staging_mount, report)
+        _sync_into(source, staging_mount, report)
 
         report.stage = "verifying"
         _verify(source, staging_mount, report)
@@ -268,6 +294,18 @@ def prepare(*, backup_destination: Optional[Path] = None,
         "bytes_copied": report.bytes_copied,
     }, indent=2))
 
+    # The volume key must have its recovery copy before anything depends on it.
+    # `get_or_create` wraps on creation when a recovery key exists; this closes
+    # the case where the key predates the phrase.
+    try:
+        if "volume" in keyvault.unprotected_purposes():
+            keyvault.wrap_for_recovery("volume")
+    except Exception as exc:
+        _marker_path().unlink(missing_ok=True)
+        report.errors.append(f"could not store a recovery copy of the volume key: {exc}")
+        report.ok = False
+        return report
+
     report.ok = True
     report.staged = True
     report.restart_required = True
@@ -303,8 +341,54 @@ def _detach(mount: Path) -> None:
     raise RuntimeError(f"could not detach {mount}")
 
 
-def _copy_into(source: Path, target: Path, report: MigrationReport) -> None:
-    """Databases through the backup API, everything else as files."""
+def _tree_bytes(root: Path) -> int:
+    total = 0
+    for entry in root.rglob("*"):
+        try:
+            if entry.is_file() and not _should_skip(entry.relative_to(root)):
+                total += entry.stat().st_size
+        except OSError:
+            pass
+    for rel in SQLITE_DBS:
+        try:
+            total += (root / rel).stat().st_size
+        except OSError:
+            pass
+    return total
+
+
+def _release_stale_staging(mount: Path) -> None:
+    """A quit mid-prepare leaves the volume attached at the staging point, and a
+    second `hdiutil attach` there fails. Detach it before starting over."""
+    if os.path.ismount(mount):
+        logger.warning("[encrypt] detaching a staging mount left by an interrupted attempt")
+        _detach(mount)
+
+
+def _same_file(src: Path, dst: Path) -> bool:
+    """Size and whole-second mtime. `copy2` preserves the mtime, so an unchanged
+    file compares equal; seconds rather than ns so a filesystem that rounds
+    differently cannot make every file look changed."""
+    try:
+        a, b = src.stat(), dst.stat()
+    except OSError:
+        return False
+    return a.st_size == b.st_size and int(a.st_mtime) == int(b.st_mtime)
+
+
+def _sync_into(source: Path, target: Path, report: MigrationReport,
+               changed: Optional[set] = None) -> None:
+    """Make `target` match `source`. Databases through the backup API, the rest
+    as files — only those that differ, so a second pass costs only the delta.
+
+    `changed`, when given, collects the relative paths this pass wrote, so the
+    caller can verify exactly those.
+
+    Files present in the volume but gone from the source are removed FROM THE
+    VOLUME COPY. That is not a deletion of user data — the plaintext is the
+    source and is never touched — it is the copy following a file the user (or
+    an eviction) removed after the first pass.
+    """
     for rel in SQLITE_DBS:
         src = source / rel
         if not src.is_file():
@@ -324,14 +408,20 @@ def _copy_into(source: Path, target: Path, report: MigrationReport) -> None:
             conn_src.close()
         report.files_copied += 1
         report.bytes_copied += dst.stat().st_size
+        if changed is not None:
+            changed.add(rel)
 
+    seen = set()
     for entry in source.rglob("*"):
         if not entry.is_file():
             continue
         rel = entry.relative_to(source)
         if _should_skip(rel):
             continue
+        seen.add(str(rel))
         dst = target / rel
+        if dst.is_file() and _same_file(entry, dst):
+            continue
         try:
             dst.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(entry, dst)
@@ -345,12 +435,29 @@ def _copy_into(source: Path, target: Path, report: MigrationReport) -> None:
             continue
         report.files_copied += 1
         report.bytes_copied += dst.stat().st_size
+        if changed is not None:
+            changed.add(str(rel))
+
+    for entry in list(target.rglob("*")):
+        if not entry.is_file():
+            continue
+        rel = entry.relative_to(target)
+        if _should_skip(rel) or str(rel) in seen:
+            continue
+        try:
+            entry.unlink()
+        except OSError as exc:
+            report.errors.append(f"could not remove stale {rel} from the volume: {exc}")
 
 
-def _verify(source: Path, target: Path, report: MigrationReport) -> None:
+def _verify(source: Path, target: Path, report: MigrationReport,
+            only: Optional[set] = None) -> None:
     """Row counts AND hashes. A file that copied to the right size and hashes
     correctly can still be a database with no rows in it, and a database that
-    counts correctly can still sit beside a corrupted audio file."""
+    counts correctly can still sit beside a corrupted audio file.
+
+    `only` limits the file hashing to the paths a catch-up pass wrote; the
+    databases are always checked in full."""
     for rel in SQLITE_DBS:
         src, dst = source / rel, target / rel
         if not src.is_file():
@@ -383,6 +490,8 @@ def _verify(source: Path, target: Path, report: MigrationReport) -> None:
             continue
         rel = entry.relative_to(source)
         if _should_skip(rel) or str(rel) in report.skipped:
+            continue
+        if only is not None and str(rel) not in only:
             continue
         dst = target / rel
         if not dst.is_file():
@@ -435,6 +544,19 @@ def apply_pending() -> Optional[Dict[str, object]]:
         _marker_path().unlink(missing_ok=True)
         return {"applied": False, "error": f"the prepared volume is gone: {image}"}
 
+    # The app kept running between `prepare` and this restart — Collector runs,
+    # chats happen. Without a catch-up pass those writes would stay behind in the
+    # plaintext copy while the user carried on in a volume that never saw them.
+    catch_up = _catch_up(source)
+    if not catch_up.get("ok"):
+        _marker_path().unlink(missing_ok=True)
+        return _record_apply({
+            "applied": False,
+            "error": "could not bring the prepared volume up to date: "
+                     + "; ".join(catch_up.get("errors") or ["unknown error"]),
+            "catch_up": catch_up,
+        })
+
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     aside = source.parent / f"{PLAINTEXT_PREFIX}{stamp}"
 
@@ -458,9 +580,10 @@ def apply_pending() -> Optional[Dict[str, object]]:
                 "[encrypt] COULD NOT RESTORE THE PLAINTEXT DIRECTORY: %s. "
                 "Your data is at %s", inner, aside,
             )
-            return {"applied": False, "error": str(exc),
-                    "plaintext_at": str(aside), "needs_manual_recovery": True}
-        return {"applied": False, "error": str(exc)}
+            return _record_apply({"applied": False, "error": str(exc),
+                                  "plaintext_at": str(aside),
+                                  "needs_manual_recovery": True})
+        return _record_apply({"applied": False, "error": str(exc)})
 
     if not volume_service.is_mounted(source):
         logger.error("[encrypt] volume mounted but carries no sentinel — rolling back")
@@ -470,7 +593,7 @@ def apply_pending() -> Optional[Dict[str, object]]:
             shutil.move(str(aside), str(source))
         except Exception as inner:
             logger.critical("[encrypt] rollback failed: %s — data is at %s", inner, aside)
-        return {"applied": False, "error": "the volume carries no sentinel"}
+        return _record_apply({"applied": False, "error": "the volume carries no sentinel"})
 
     _marker_path().unlink(missing_ok=True)
     _enable_encryption_flag()
@@ -479,39 +602,91 @@ def apply_pending() -> Optional[Dict[str, object]]:
         "[encrypt] the data directory is now encrypted. The plaintext copy is "
         "kept at %s until you confirm.", aside,
     )
-    return {
+    return _record_apply({
         "applied": True,
         "plaintext_kept_at": str(aside),
         "image": str(image),
+        "caught_up_files": catch_up.get("files", 0),
         # Deliberately surfaced: the migration is not finished until the user
         # has seen their own notebooks and said so.
         "confirm_required": True,
-    }
+    })
+
+
+def _catch_up(source: Path) -> Dict[str, object]:
+    """Copy whatever changed since `prepare` into the volume, and verify it.
+
+    Runs with no backend holding the databases (this is import time), so the
+    snapshot it takes is the final one.
+    """
+    report = MigrationReport(stage="catching up")
+    staging = source.parent / STAGING_MOUNT
+    changed: set = set()
+    try:
+        _release_stale_staging(staging)
+        staging.mkdir(parents=True, exist_ok=True)
+        _attach_at(staging)
+    except Exception as exc:
+        return {"ok": False, "errors": [f"could not mount the prepared volume: {exc}"]}
+    try:
+        _sync_into(source, staging, report, changed)
+        _verify(source, staging, report, only=changed)
+    except Exception as exc:
+        report.errors.append(str(exc))
+    finally:
+        try:
+            _detach(staging)
+        except Exception as exc:
+            report.errors.append(f"could not detach: {exc}")
+        try:
+            staging.rmdir()
+        except OSError:
+            pass
+    problems = list(report.errors)
+    if report.row_count_drift:
+        problems.append(f"row counts differ in {sorted(report.row_count_drift)}")
+    if report.mismatched_files:
+        problems.append(f"{len(report.mismatched_files)} file(s) did not verify")
+    # Minus the databases, which are re-copied every time by design.
+    files = len([c for c in changed if c not in SQLITE_DBS])
+    return {"ok": not problems, "errors": problems, "files": files}
+
+
+def _record_apply(result: Dict[str, object]) -> Dict[str, object]:
+    """Keep the outcome where the setup screen can read it after the restart.
+
+    Beside the data dir, like the marker: a failed swap must be reportable when
+    there is no volume to write into.
+    """
+    try:
+        out = dict(result)
+        out["at"] = datetime.now(timezone.utc).isoformat()
+        _last_apply_path().write_text(json.dumps(out, indent=2))
+    except Exception as exc:
+        logger.error("[encrypt] could not record the swap outcome: %s", exc)
+    return result
+
+
+def last_apply() -> Optional[Dict[str, object]]:
+    try:
+        return json.loads(_last_apply_path().read_text())
+    except Exception:
+        return None
 
 
 def _enable_encryption_flag() -> None:
-    """Turn `encryption_enabled` on, per-machine, in the data-dir `.env`.
+    """Turn `encryption_enabled` on for this machine (D11: never synced).
 
-    Written only AFTER a successful swap. Setting it earlier would lock the app
-    out of a data directory that is still plaintext.
+    Written only AFTER a successful swap — earlier would lock the app out of a
+    data directory that is still plaintext. And written BESIDE the data dir, not
+    into its `.env`: that file is now inside the volume, so a failed mount would
+    hide the flag and let the app open empty (see `config.encryption_flag_path`).
     """
     try:
-        from config import get_data_directory, settings
+        from config import encryption_flag_path, settings
 
-        env_path = Path(get_data_directory()) / ".env"
-        key = "LOCALBOOK_ENCRYPTION_ENABLED"
-        lines = env_path.read_text().splitlines() if env_path.exists() else []
-        out, replaced = [], False
-        for line in lines:
-            if line.strip().startswith(f"{key}="):
-                out.append(f"{key}=true")
-                replaced = True
-            else:
-                out.append(line)
-        if not replaced:
-            out.append(f"{key}=true")
-        env_path.parent.mkdir(parents=True, exist_ok=True)
-        env_path.write_text("\n".join(out) + "\n")
+        flag = encryption_flag_path(_data_dir())
+        flag.write_text(datetime.now(timezone.utc).isoformat() + "\n")
         settings.encryption_enabled = True
     except Exception as exc:
         logger.error("[encrypt] could not persist encryption_enabled: %s", exc)
@@ -565,3 +740,4 @@ def discard_plaintext(path: str) -> Dict[str, object]:
 
     logger.warning("[encrypt] plaintext copy %s deleted by request", target.name)
     return {"deleted": True, "freed_bytes": size, "path": str(target)}
+
