@@ -140,3 +140,95 @@ def job_status() -> Optional[Dict[str, object]]:
         out = {k: v for k, v in _job.items() if k != "report"}
         out["report"] = _job["report"].as_dict()
         return out
+
+
+# ── the startup prompt ──────────────────────────────────────────────────────
+#
+# How every user — the developer first — reaches the setup screen. Never an
+# automatic migration: the recovery phrase and the backup destination need a
+# person, and D11 enables encryption one machine at a time by choice.
+#
+# State lives BESIDE the data dir, like the encryption flag: per machine, and out
+# of reach of LB-12's sync, which would otherwise let "don't ask again" on one Mac
+# silence the offer on another that has never seen it.
+
+PROMPT_NAME = ".encryption-prompt.json"
+SNOOZE_DAYS = 7
+
+
+def _prompt_path() -> Path:
+    d = em._data_dir()
+    return d.parent / f"{d.name}{PROMPT_NAME}"
+
+
+def _prompt_state() -> Dict[str, object]:
+    try:
+        import json
+
+        return json.loads(_prompt_path().read_text())
+    except Exception:
+        return {}
+
+
+def _save_prompt_state(state: Dict[str, object]) -> None:
+    import json
+
+    _prompt_path().write_text(json.dumps(state, indent=2))
+
+
+def prompt() -> Dict[str, object]:
+    """What, if anything, to show at startup. At most one thing, most urgent first."""
+    from services import volume_gate, volume_service
+
+    state = _prompt_state()
+    now = datetime.now(timezone.utc)
+    encrypted = volume_gate.encryption_enabled() and volume_service.is_mounted()
+
+    # 1. A switch the user asked for did not happen. Shown until acknowledged.
+    last = em.last_apply()
+    if last and not last.get("applied") and not encrypted \
+            and last.get("at") != state.get("failure_acknowledged"):
+        return {"show": True, "kind": "failed", "error": last.get("error"),
+                "at": last.get("at")}
+
+    # 2. Encrypted, but the old plaintext is still on disk — the protection is
+    #    not real until it goes. Not dismissible: it is the migration's last step.
+    if encrypted:
+        copies = em.plaintext_copies()
+        if copies:
+            return {"show": True, "kind": "finish",
+                    "bytes": sum(int(c.get("bytes") or 0) for c in copies)}
+        return {"show": False}
+
+    # 3. The offer. Quiet while a migration is running or staged.
+    job = job_status()
+    if em.pending() or (job and job.get("running")):
+        return {"show": False}
+    if state.get("dismissed"):
+        return {"show": False}
+    snoozed = state.get("snoozed_until")
+    if snoozed:
+        try:
+            if datetime.fromisoformat(str(snoozed)) > now:
+                return {"show": False}
+        except ValueError:
+            pass
+    return {"show": True, "kind": "offer"}
+
+
+def respond_to_prompt(action: str) -> Dict[str, object]:
+    from datetime import timedelta
+
+    state = _prompt_state()
+    now = datetime.now(timezone.utc)
+    if action == "snooze":
+        state["snoozed_until"] = (now + timedelta(days=SNOOZE_DAYS)).isoformat()
+    elif action == "dismiss":
+        state["dismissed"] = now.isoformat()
+    elif action == "acknowledge_failure":
+        last = em.last_apply() or {}
+        state["failure_acknowledged"] = last.get("at")
+    else:
+        raise ValueError(f"unknown action {action!r}")
+    _save_prompt_state(state)
+    return prompt()

@@ -16,12 +16,13 @@ import { useCanvasLayout, useDrawerState } from './hooks/useLayoutPersistence';
 import { ToastContainer, ToastMessage } from './components/shared/Toast';
 import { ErrorBoundary } from './components/shared/ErrorBoundary';
 import { Modal } from './components/shared/Modal';
-import { Settings } from './components/Settings';
+import { Settings, type SectionId } from './components/Settings';
 import { LLMStudio } from './components/llm/LLMStudio';
 import { HealthPanel } from './components/health/HealthPanel';
 import { EmbeddingSelector } from './components/EmbeddingSelector';
 import { API_BASE_URL, getLocked, localFetch, onLockedChange, type LockedDetail } from './services/api';
 import { VolumeRecovery } from './components/VolumeRecovery';
+import { EncryptionPrompt } from './components/EncryptionPrompt';
 import { useConstellationWS } from './hooks/useConstellationWS';
 import { useMorningBriefFetcher } from './hooks/useMorningBriefFetcher';
 import { emitEvent, onEvent } from './lib/events';
@@ -67,6 +68,7 @@ function App() {
   useMorningBriefFetcher({ backendReady, morningBrief, weeklyWrap, setMorningBrief, setWeeklyWrap });
   const [curatorBriefData, setCuratorBriefData] = useState<any>(null);
   const [showSettingsModal, setShowSettingsModal] = useState(false);
+  const [settingsSection, setSettingsSection] = useState<SectionId | undefined>(undefined);
   const [showLLMModal, setShowLLMModal] = useState(false);
   const [showHealthModal, setShowHealthModal] = useState(false);
   const [showEmbeddingModal, setShowEmbeddingModal] = useState(false);
@@ -1073,6 +1075,9 @@ function App() {
           </div>
         )}
 
+        {/* LB-11: the encryption offer — the only road into the setup flow */}
+        <EncryptionPrompt onOpen={() => { setSettingsSection('encryption'); setShowSettingsModal(true); }} />
+
         {/* Morning Brief — floats above canvas */}
         {morningBrief && (
           <button
@@ -1280,8 +1285,8 @@ function App() {
         </div>
 
         {/* Settings Modal */}
-        <Modal isOpen={showSettingsModal} onClose={() => setShowSettingsModal(false)} title="Settings" size="lg">
-          <Settings />
+        <Modal isOpen={showSettingsModal} onClose={() => { setShowSettingsModal(false); setSettingsSection(undefined); }} title="Settings" size="lg">
+          <Settings initialSection={settingsSection} />
         </Modal>
 
         {/* LLM Studio Modal — Locker + Evaluator + History in one place */}

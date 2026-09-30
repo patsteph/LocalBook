@@ -182,6 +182,35 @@ async def encryption_setup_state():
     }
 
 
+# ── the startup prompt ──────────────────────────────────────────────────────
+
+
+class PromptAction(BaseModel):
+    action: str        # snooze | dismiss | acknowledge_failure
+
+
+@router.get("/system/volume/prompt")
+async def encryption_prompt():
+    """What the app should offer at startup, if anything. Never migrates."""
+    import asyncio
+
+    from services import encryption_setup
+
+    return await asyncio.to_thread(encryption_setup.prompt)
+
+
+@router.post("/system/volume/prompt")
+async def respond_to_encryption_prompt(req: PromptAction):
+    import asyncio
+
+    from services import encryption_setup
+
+    try:
+        return await asyncio.to_thread(encryption_setup.respond_to_prompt, req.action)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
 # ── the escape hatch ────────────────────────────────────────────────────────
 
 

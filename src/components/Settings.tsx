@@ -49,7 +49,7 @@ class SettingsErrorBoundary extends React.Component<
   }
 }
 
-type SectionId =
+export type SectionId =
     | 'profile' | 'voice'
     | 'api-keys' | 'credentials' | 'correspondent' | 'recovery' | 'encryption' | 'data-health'
     | 'curator' | 'memory'
@@ -111,10 +111,10 @@ const ACCENT_CLASSES: Record<SectionDef['accent'], string> = {
     amber:  'border-amber-600 bg-amber-50 text-amber-700 dark:bg-amber-900/20 dark:text-amber-300',
 };
 
-export const Settings: React.FC = () => {
+export const Settings: React.FC<{ initialSection?: SectionId }> = ({ initialSection }) => {
     const [error, setError] = useState<string | null>(null);
     const [success, setSuccess] = useState<string | null>(null);
-    const [activeSection, setActiveSection] = useState<SectionId>('api-keys');
+    const [activeSection, setActiveSection] = useState<SectionId>(initialSection ?? 'api-keys');
 
     return (
         <div className="p-4 max-w-5xl mx-auto">

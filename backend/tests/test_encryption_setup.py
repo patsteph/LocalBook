@@ -85,3 +85,65 @@ def test_a_crashing_job_reports_instead_of_vanishing(env, monkeypatch):
     report = encryption_setup.job_status()["report"]
     assert report["ok"] is False
     assert any("kaboom" in e for e in report["errors"])
+
+
+# ── the startup prompt ──────────────────────────────────────────────────────
+
+
+@pytest.fixture
+def plain(env, monkeypatch):
+    from services import volume_gate, volume_service
+
+    monkeypatch.setattr(volume_gate, "encryption_enabled", lambda: False)
+    monkeypatch.setattr(volume_service, "is_mounted", lambda mp=None: False)
+    return env
+
+
+def test_the_offer_shows_on_an_unencrypted_mac(plain):
+    assert encryption_setup.prompt() == {"show": True, "kind": "offer"}
+
+
+def test_not_now_snoozes_and_dont_ask_again_dismisses(plain):
+    assert encryption_setup.respond_to_prompt("snooze")["show"] is False
+    encryption_setup._prompt_path().unlink()
+    assert encryption_setup.respond_to_prompt("dismiss")["show"] is False
+
+
+def test_a_snooze_expires(plain):
+    encryption_setup._save_prompt_state({"snoozed_until": "2000-01-01T00:00:00+00:00"})
+    assert encryption_setup.prompt()["kind"] == "offer"
+
+
+def test_the_prompt_state_lives_beside_the_data_dir_not_in_it(plain):
+    """Inside, LB-12 would sync one Mac's dismissal to the others."""
+    encryption_setup.respond_to_prompt("dismiss")
+    assert encryption_setup._prompt_path().parent == plain.parent
+
+
+def test_quiet_while_a_migration_is_staged(plain, monkeypatch):
+    monkeypatch.setattr(em, "pending", lambda: {"prepared_at": "x"})
+    assert encryption_setup.prompt()["show"] is False
+
+
+def test_a_failed_switch_is_reported_until_acknowledged(plain, monkeypatch):
+    """The user pressed Restart expecting encryption. Saying nothing is not okay."""
+    monkeypatch.setattr(em, "last_apply",
+                        lambda: {"applied": False, "error": "attach exploded", "at": "t1"})
+    encryption_setup.respond_to_prompt("dismiss")        # dismissing the OFFER…
+    p = encryption_setup.prompt()
+    assert p["kind"] == "failed" and p["error"] == "attach exploded"   # …does not hide this
+    assert encryption_setup.respond_to_prompt("acknowledge_failure")["show"] is False
+
+
+def test_finish_nags_while_the_plaintext_copy_remains(env, monkeypatch):
+    from services import volume_gate, volume_service
+
+    monkeypatch.setattr(volume_gate, "encryption_enabled", lambda: True)
+    monkeypatch.setattr(volume_service, "is_mounted", lambda mp=None: True)
+    monkeypatch.setattr(em, "plaintext_copies", lambda: [{"bytes": 100}])
+    assert encryption_setup.prompt() == {"show": True, "kind": "finish", "bytes": 100}
+    encryption_setup.respond_to_prompt("dismiss")        # cannot be dismissed away
+    assert encryption_setup.prompt()["kind"] == "finish"
+
+    monkeypatch.setattr(em, "plaintext_copies", lambda: [])
+    assert encryption_setup.prompt()["show"] is False
