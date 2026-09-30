@@ -20,7 +20,8 @@ import { Settings } from './components/Settings';
 import { LLMStudio } from './components/llm/LLMStudio';
 import { HealthPanel } from './components/health/HealthPanel';
 import { EmbeddingSelector } from './components/EmbeddingSelector';
-import { API_BASE_URL, localFetch } from './services/api';
+import { API_BASE_URL, getLocked, localFetch, onLockedChange, type LockedDetail } from './services/api';
+import { VolumeRecovery } from './components/VolumeRecovery';
 import { useConstellationWS } from './hooks/useConstellationWS';
 import { useMorningBriefFetcher } from './hooks/useMorningBriefFetcher';
 import { emitEvent, onEvent } from './lib/events';
@@ -35,6 +36,12 @@ function App() {
   const [backendReady, setBackendReady] = useState(false);
   const [backendError, setBackendError] = useState<string | null>(null);
   const [backendStatusMessage, setBackendStatusMessage] = useState<string>('Initializing backend services...');
+  // LB-11: the encrypted volume is not open. Comes from the fetch layer, where
+  // the 503 + x-localbook-locked arrives — there is no component there to own
+  // it, so the signal is a module-level subscription.
+  const [volumeLocked, setVolumeLocked] = useState<LockedDetail | null>(() => getLocked());
+  useEffect(() => onLockedChange(setVolumeLocked), []);
+
   const [startupProgress, setStartupProgress] = useState(0);
   const [startupStage, setStartupStage] = useState<string>('starting');
   const [isUpgrade, setIsUpgrade] = useState(false);
@@ -1025,6 +1032,13 @@ function App() {
         </div>
       </div>
     );
+  }
+
+  // Before the shell, before the splash, before anything that would fire more
+  // requests: if the volume is locked there is nothing to show but the way back
+  // in, and every other panel would just render its own failure.
+  if (volumeLocked) {
+    return <VolumeRecovery locked={volumeLocked} />;
   }
 
   return (
