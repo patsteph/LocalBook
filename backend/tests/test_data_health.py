@@ -16,6 +16,25 @@ import pytest
 from services import data_health, keyvault
 
 
+@pytest.fixture(autouse=True)
+def quiet_schema(monkeypatch):
+    """Pin the schema probe for every test in this file.
+
+    `data_health.status(data_dir)` takes a directory, but the schema probe reads
+    the process's OWN database connection (documented in the module). Nothing
+    here is testing migrations, so leaving it live meant every test depended on
+    whatever state the shared dev database happened to be in — passing alone and
+    failing in a full run. That cost two debugging rounds; pinned once, here.
+
+    `test_a_pending_migration_is_a_problem` overrides this deliberately.
+    """
+    from services import migration_ledger
+
+    monkeypatch.setattr(migration_ledger, "pending", lambda *a, **k: [])
+    monkeypatch.setattr(migration_ledger, "schema_version", lambda *a, **k: "0.6.5")
+    monkeypatch.setattr(migration_ledger, "head", lambda *a, **k: 1)
+
+
 @pytest.fixture
 def vault(tmp_path, monkeypatch):
     service = f"LocalBook-keyvault-test-{secrets.token_hex(6)}"
@@ -299,16 +318,6 @@ def test_a_fully_healthy_install_says_so(data_dir, tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "backup_destination", str(dest))
     monkeypatch.setattr(data_health, "_codec", lambda: {"ffmpeg": "/usr/bin/ffmpeg", "ok": True})
 
-    # The schema probe reads the process's own database, not `data_dir` (see
-    # data_health.status) — so it is pinned here rather than left to whatever
-    # the shared dev database happens to hold when this test runs. Without
-    # this the test passed alone and failed in a full run.
-    from services import migration_ledger
-
-    monkeypatch.setattr(migration_ledger, "pending", lambda *a, **k: [])
-    monkeypatch.setattr(migration_ledger, "schema_version", lambda *a, **k: "0.7.0")
-    monkeypatch.setattr(migration_ledger, "head", lambda *a, **k: 1)
-
     phrase = keyvault.generate_recovery_phrase()
     keyvault.set_recovery_key(phrase)
     keyvault.get_or_create("credentials")
@@ -408,3 +417,60 @@ def test_the_key_warning_names_what_is_unprotected_and_where_to_fix_it(data_dir,
     problems = " ".join(data_health.status(data_dir)["overall"]["problems"])
     assert "credentials" in problems
     assert "Settings → Recovery" in problems
+
+
+def test_key_severity_matches_what_losing_the_key_actually_costs(data_dir, tmp_path, monkeypatch):
+    """Over-stating trains people to ignore the panel just as surely as
+    under-stating misleads them.
+
+    `credentials` unwrapped is a genuine problem — those files become unreadable
+    forever. `backup` unwrapped is not: every archive is sealed to the recovery
+    public key independently of the device key, so the phrase still opens
+    existing backups and a new key is simply generated.
+    """
+    from config import settings
+
+    dest = tmp_path / "backups"
+    dest.mkdir()
+    monkeypatch.setattr(settings, "backup_destination", str(dest))
+
+    keyvault.get_or_create("credentials")
+    keyvault.get_or_create("backup")
+
+    st = data_health.status(data_dir)
+    problems = " ".join(st["overall"]["problems"])
+    warnings = " ".join(st["overall"]["warnings"])
+
+    assert "credentials key" in problems
+    assert "unreadable for good" in problems
+
+    assert "backup key" in warnings
+    assert "backup key" not in problems
+    assert "nothing is lost" in warnings
+
+
+def test_an_unwrapped_backup_key_alone_is_not_a_problem(data_dir, tmp_path, monkeypatch):
+    """The state the user was actually in: recovery configured, credentials
+    wrapped, only the backup key unwrapped. That must not read as "your data is
+    at risk"."""
+    from config import settings
+
+    dest = tmp_path / "backups"
+    dest.mkdir()
+    monkeypatch.setattr(settings, "backup_destination", str(dest))
+    monkeypatch.setattr(data_health, "_codec", lambda: {"ffmpeg": "/x", "ok": True})
+
+    phrase = keyvault.generate_recovery_phrase()
+    keyvault.set_recovery_key(phrase)
+    keyvault.get_or_create("credentials")     # auto-wrapped
+    keyvault._keychain_write("backup", keyvault.secrets.token_bytes(32))  # unwrapped
+
+    from services import backup_service, restore_service
+
+    backup_service.create_backup(dest, data_dir=data_dir)
+    restore_service.run_drill(dest, data_dir=data_dir)
+
+    st = data_health.status(data_dir)
+    assert st["overall"]["problems"] == []
+    assert st["overall"]["state"] == "warning"
+    assert any("backup key" in w for w in st["overall"]["warnings"])

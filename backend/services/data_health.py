@@ -346,6 +346,37 @@ def status(data_dir: Optional[Path] = None) -> Dict[str, object]:
     return out
 
 
+# What losing each key actually costs, so the panel grades honestly in BOTH
+# directions. Over-stating trains people to ignore the panel just as surely as
+# under-stating misleads them.
+#
+# `credentials` is the only genuinely critical one: it is the Fernet key for
+# credentials.enc and auth/*.enc, and losing it makes those unreadable forever.
+#
+# `backup` reads as alarming and is not. Every archive is sealed to the recovery
+# PUBLIC key independently of this device key (backup_service._write_archive),
+# so the phrase still opens existing archives and future backups simply get a
+# fresh key. Nothing is lost.
+#
+# `device_identity` is LB-12 pairing. Losing it means re-pairing this Mac.
+_KEY_CONSEQUENCE = {
+    "credentials": (
+        "problem",
+        "wiping the Keychain would make your saved logins and email accounts "
+        "unreadable for good.",
+    ),
+    "backup": (
+        "warning",
+        "your existing backups still open with the phrase, so nothing is lost — "
+        "but this Mac would generate a new key.",
+    ),
+    "device_identity": (
+        "warning",
+        "you would need to pair this Mac again.",
+    ),
+}
+
+
 def _overall(parts: Dict[str, object]) -> Dict[str, object]:
     """One line the user can act on, and the reasons behind it.
 
@@ -385,12 +416,16 @@ def _overall(parts: Dict[str, object]) -> Dict[str, object]:
             )
 
     keys = parts.get("keys") or {}
-    if isinstance(keys, dict) and keys.get("fully_protected") is False:
-        missing = ", ".join(keys.get("unprotected_purposes") or []) or "a key"
-        problems.append(
-            f"No recovery copy of {missing} — wiping the Keychain would lose it. "
-            f"Fix it in Settings → Recovery."
-        )
+    if isinstance(keys, dict):
+        for purpose in keys.get("unprotected_purposes") or []:
+            severity, why = _KEY_CONSEQUENCE.get(
+                purpose, ("problem", "wiping the Keychain would lose it")
+            )
+            line = (
+                f"No recovery copy of the {purpose} key — {why} "
+                f"Protect it in Settings → Recovery."
+            )
+            (problems if severity == "problem" else warnings).append(line)
 
     schema = parts.get("schema") or {}
     if isinstance(schema, dict) and schema.get("pending"):
