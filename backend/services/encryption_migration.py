@@ -352,11 +352,14 @@ def _tree_bytes(root: Path) -> int:
                 total += entry.stat().st_size
         except OSError:
             pass
+    # A database's live WAL is folded into the copy by the backup API, so it
+    # counts toward the total or the progress bar reaches 100% early.
     for rel in SQLITE_DBS:
-        try:
-            total += (root / rel).stat().st_size
-        except OSError:
-            pass
+        for suffix in ("", "-wal"):
+            try:
+                total += (root / f"{rel}{suffix}").stat().st_size
+            except OSError:
+                pass
     return total
 
 

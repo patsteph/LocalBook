@@ -28,6 +28,7 @@ from __future__ import annotations
 import json
 import logging
 import shutil
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Optional
@@ -58,11 +59,13 @@ def _stamp() -> str:
 def _copy_out(source: Path, dest: Path, report: em.MigrationReport) -> bool:
     """Verified copy of the volume's contents to `dest`. Removes a failed copy —
     it is a partial duplicate, and the volume still holds everything."""
+    started = time.perf_counter()
     report.bytes_total = em._tree_bytes(source)
     report.stage = "copying"
     em._sync_into(source, dest, report)
     report.stage = "verifying"
     em._verify(source, dest, report)
+    report.seconds = time.perf_counter() - started
     if report.errors or report.row_count_drift or report.mismatched_files:
         shutil.rmtree(dest, ignore_errors=True)
         return False
