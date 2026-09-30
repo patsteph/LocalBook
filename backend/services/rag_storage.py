@@ -448,6 +448,21 @@ async def append_to_document(
 
 # ─── Source Deletion ─────────────────────────────────────────────────────────────
 
+def drop_notebook_table(notebook_id: str) -> bool:
+    """Drop a deleted notebook's vector table. True if one existed.
+
+    Deleting a notebook never did this, so every notebook ever created left its
+    table behind — 74 of 79 tables in one real data dir belonged to notebooks
+    that no longer exist.
+    """
+    db = _get_db()
+    table_name = f"notebook_{notebook_id}"
+    if table_name not in db.table_names():
+        return False
+    db.drop_table(table_name)
+    return True
+
+
 async def delete_source(notebook_id: str, source_id: str) -> bool:
     """Delete all chunks for a source from LanceDB.
     
