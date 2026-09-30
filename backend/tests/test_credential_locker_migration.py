@@ -38,7 +38,7 @@ def locker(tmp_path, monkeypatch):
     finally:
         for purpose in keyvault.PURPOSES:
             real_run(
-                ["security", "delete-generic-password", "-a", purpose, "-s", service],
+                ["security", "delete-generic-password", "-a", purpose, "-s", keyvault.service_name()],
                 capture_output=True,
             )
 

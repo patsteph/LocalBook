@@ -41,7 +41,7 @@ def vault(tmp_path, monkeypatch):
     finally:
         for purpose in keyvault.PURPOSES:
             real_run(
-                ["security", "delete-generic-password", "-a", purpose, "-s", service],
+                ["security", "delete-generic-password", "-a", purpose, "-s", keyvault.service_name()],
                 capture_output=True,
             )
 
@@ -285,12 +285,34 @@ def test_a_prompting_security_call_times_out_rather_than_hanging(vault, monkeypa
     """A prompt means the permissive ACL was lost. Startup must fail fast and say
     so, not block forever on a dialog nobody is looking at."""
 
-    def hang(*args, **kwargs):
-        raise subprocess.TimeoutExpired(cmd="security", timeout=1)
+    killed = []
 
-    monkeypatch.setattr(subprocess, "run", hang)
-    with pytest.raises(KeyVaultError, match="showing a prompt"):
-        vault.get_or_create("credentials")
+    class Hung:
+        args = ["security"]
+        returncode = None
+
+        def __init__(self, *a, **k):
+            pass
+
+        def communicate(self, timeout=None):
+            raise subprocess.TimeoutExpired(cmd="security", timeout=timeout)
+
+        def kill(self):
+            killed.append(True)
+
+        terminate = kill
+
+    real_popen = subprocess.Popen
+    monkeypatch.setattr(subprocess, "Popen", Hung)
+    try:
+        with pytest.raises(KeyVaultError, match="showing a prompt"):
+            vault.get_or_create("credentials")
+    finally:
+        # The fixture's keychain cleanup runs subprocess.run, which uses Popen.
+        monkeypatch.setattr(subprocess, "Popen", real_popen)
+    # Killing `security` while its dialog is pending crashes securityd, which
+    # re-locks the login keychain for every service on the Mac (2026-09-30).
+    assert killed == []
 
 
 def test_a_truncated_key_is_refused(vault, monkeypatch):
@@ -315,7 +337,7 @@ def test_the_item_is_readable_by_an_unrelated_binary_with_no_prompt(vault):
             "-c",
             "import subprocess,sys;"
             f"r=subprocess.run(['security','find-generic-password','-a','credentials',"
-            f"'-s','{vault.SERVICE_NAME}','-w'],capture_output=True,text=True);"
+            f"'-s','{vault.service_name()}','-w'],capture_output=True,text=True);"
             "sys.stdout.write(r.stdout.strip())",
         ],
         capture_output=True,
@@ -459,3 +481,37 @@ def test_a_failed_relocation_does_not_break_key_access(tmp_path, monkeypatch):
     )
 
     assert keyvault._keys_dir() == tmp_path / "LocalBook.keys"   # must not raise
+
+
+# ── one Keychain namespace per data dir ─────────────────────────────────────
+
+
+def test_production_keeps_its_existing_service_name(monkeypatch):
+    """Renaming it would orphan every key already stored on every machine, and
+    lib.rs reads the volume key under exactly this name."""
+    from config import PRODUCTION_DATA_DIR, settings
+
+    monkeypatch.setattr(settings, "data_dir", PRODUCTION_DATA_DIR)
+    assert keyvault.service_name() == "LocalBook-keyvault"
+
+
+def test_any_other_data_dir_gets_its_own_service(tmp_path, monkeypatch):
+    """A second install must never read or write production's items — even one
+    whose data dir happens to be called `LocalBook`."""
+    from config import settings
+
+    a, b = tmp_path / "a" / "LocalBook", tmp_path / "b" / "LocalBook"
+    monkeypatch.setattr(settings, "data_dir", a)
+    name_a = keyvault.service_name()
+    assert name_a != "LocalBook-keyvault" and name_a.startswith("LocalBook-keyvault.")
+    assert keyvault.service_name() == name_a                 # stable
+    monkeypatch.setattr(settings, "data_dir", b)
+    assert keyvault.service_name() != name_a
+
+
+def test_the_rust_mount_path_reads_the_production_name():
+    """lib.rs hardcodes the service it reads the volume key from; it must match."""
+    from pathlib import Path
+
+    lib = (Path(__file__).parents[2] / "src-tauri" / "src" / "lib.rs").read_text()
+    assert '"-s", "LocalBook-keyvault"' in lib

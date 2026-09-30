@@ -59,6 +59,7 @@ Why this shells out to `security(1)` instead of calling SecItemAdd:
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import logging
 import os
@@ -82,6 +83,34 @@ logger = logging.getLogger(__name__)
 # ── constants ───────────────────────────────────────────────────────────────
 
 SERVICE_NAME = "LocalBook-keyvault"
+
+
+def service_name() -> str:
+    """The Keychain service for THIS data dir's keys.
+
+    The production data dir keeps `SERVICE_NAME` exactly — its items already
+    exist, lib.rs reads the volume key under that name, and renaming it would
+    orphan every key on every machine. Any other data dir (the dev sandbox, a
+    test, a throwaway end-to-end run) gets a name derived from its resolved
+    path. Before this, a second install on the same Mac read and WROTE the
+    production items: a test run created the real `volume` item, and a recovery
+    setup there would have wrapped production's credential key to a phrase that
+    belonged to the test. The keys dir is already named after the data dir for
+    the same reason (`_keys_dir`).
+    """
+    from config import PRODUCTION_DATA_DIR
+
+    d = _data_dir()
+    try:
+        resolved = d.resolve()
+        if resolved == PRODUCTION_DATA_DIR.resolve():
+            return SERVICE_NAME
+    except OSError:
+        resolved = d
+        if d == PRODUCTION_DATA_DIR:
+            return SERVICE_NAME
+    digest = hashlib.sha256(str(resolved).encode()).hexdigest()[:12]
+    return f"{SERVICE_NAME}.{digest}"
 PURPOSES = ("credentials", "backup", "device_identity", "volume")
 KEY_BYTES = 32
 
@@ -217,26 +246,41 @@ def _validate_purpose(purpose: str) -> None:
 
 
 def _run_security(args: list[str]) -> subprocess.CompletedProcess:
+    """Run `security`, giving up after a timeout WITHOUT killing it.
+
+    A timeout means `security` is waiting on a SecurityAgent dialog. Killing a
+    client while its dialog is pending makes `securityd` abort (observed twice on
+    2026-09-30, `/Library/Logs/DiagnosticReports/securityd-*.ips`), and every
+    restart of `securityd` forgets the login keychain was unlocked — so macOS
+    services all over the system start asking for the password. So on timeout
+    the process is left to finish when the user answers, and we raise.
+    """
     try:
-        return subprocess.run(
+        proc = subprocess.Popen(
             ["security", *args],
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=_SECURITY_TIMEOUT,
+            start_new_session=True,
         )
+    except FileNotFoundError as exc:  # pragma: no cover — macOS always has it
+        raise KeyVaultError("`security` not found; this module is macOS-only") from exc
+    try:
+        out, err = proc.communicate(timeout=_SECURITY_TIMEOUT)
     except subprocess.TimeoutExpired as exc:
+        logger.error("[keyvault] `security %s` is waiting on a macOS dialog; leaving it "
+                     "running (killing it crashes securityd)", args[0] if args else "")
         raise KeyVaultError(
             "`security` timed out, which means it is showing a prompt. The item's "
             "permissive ACL has been lost — see READFIRST/ArchitectureDocs/KEY_CUSTODY.md."
         ) from exc
-    except FileNotFoundError as exc:  # pragma: no cover — macOS always has it
-        raise KeyVaultError("`security` not found; this module is macOS-only") from exc
+    return subprocess.CompletedProcess(proc.args, proc.returncode, out, err)
 
 
 def _keychain_read(account: str) -> Optional[bytes]:
     """Return the stored key, or None if no item exists. Raises on a real error."""
     proc = _run_security(
-        ["find-generic-password", "-a", account, "-s", SERVICE_NAME, "-w"]
+        ["find-generic-password", "-a", account, "-s", service_name(), "-w"]
     )
     if proc.returncode == 0:
         raw = proc.stdout.strip()
@@ -257,15 +301,26 @@ def _keychain_read(account: str) -> Optional[bytes]:
 
 
 def _keychain_write(account: str, key: bytes) -> None:
+    # Never UPDATE an existing item: `add-generic-password -U` over an item that
+    # already exists raises a SecurityAgent confirmation dialog even with -A,
+    # and `security` blocks on it (found by the LB-11 matrix, 2026-09-30). That
+    # is exactly the recovery-screen case — restoring the phrase's key over a
+    # wrong one — where a hang reads as "recovery is broken". Delete (silent)
+    # and add fresh instead. The caller holds the key in memory throughout, so
+    # nothing is lost if this is interrupted between the two.
+    existing = _keychain_read(account)
+    if existing == key:
+        return
+    if existing is not None:
+        _keychain_delete(account)
     encoded = base64.b64encode(key).decode()
     proc = _run_security(
         [
             "add-generic-password",
             "-a", account,
-            "-s", SERVICE_NAME,
+            "-s", service_name(),
             "-w", encoded,
             "-A",   # permissive ACL: no trusted-application list (D20)
-            "-U",   # update in place if it already exists
             "-D", "LocalBook key",
             "-j", "Managed by LocalBook. Deleting this needs the recovery phrase to undo.",
         ]
@@ -278,7 +333,7 @@ def _keychain_write(account: str, key: bytes) -> None:
 
 
 def _keychain_delete(account: str) -> bool:
-    proc = _run_security(["delete-generic-password", "-a", account, "-s", SERVICE_NAME])
+    proc = _run_security(["delete-generic-password", "-a", account, "-s", service_name()])
     return proc.returncode == 0
 
 
