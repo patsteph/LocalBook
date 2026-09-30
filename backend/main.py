@@ -256,7 +256,7 @@ from storage.findings_store import init_findings_store
 init_findings_store(settings.data_dir)
 
 # NOW import API modules — stores will read the (possibly corrected) use_sqlite flag
-from api import notebooks, sources, chat, skills, audio, source_viewer, web, settings as settings_api, embeddings, timeline, export, reindex, memory, graph, constellation_ws, updates, content, exploration, quiz, visual, writing, voice, site_search, contradictions, credentials, browser, browser_transform, audio_llm, rag_health, health_portal, jobs, agent_browser, rlm, curator, collector, source_discovery, people, video, evaluator, flashcards, canvas_notes as canvas_notes_api, scan as scan_api, comparison, correspondent as correspondent_api, synthesis as synthesis_api, articles as articles_api, system as system_api, signals as signals_api, incidents as incidents_api, canvas as canvas_api, folders as folders_api, companions as companions_api, openai_compat
+from api import notebooks, sources, chat, skills, audio, source_viewer, web, settings as settings_api, embeddings, timeline, export, reindex, memory, graph, constellation_ws, updates, content, exploration, quiz, visual, writing, voice, site_search, contradictions, credentials, browser, browser_transform, audio_llm, rag_health, health_portal, jobs, agent_browser, rlm, curator, collector, source_discovery, people, video, evaluator, flashcards, canvas_notes as canvas_notes_api, scan as scan_api, comparison, correspondent as correspondent_api, synthesis as synthesis_api, articles as articles_api, system as system_api, signals as signals_api, incidents as incidents_api, canvas as canvas_api, folders as folders_api, companions as companions_api, openai_compat, openai_audio, memory_bridge as memory_bridge_api
 from api.capture import capture_router
 from api.updates import check_if_upgrade, set_startup_status, mark_startup_complete, CURRENT_VERSION
 from services.model_warmup import initial_warmup, start_warmup_task, stop_warmup_task
@@ -898,6 +898,9 @@ app.include_router(timeline.router, prefix="/timeline", tags=["timeline"])
 app.include_router(export.router, prefix="/export", tags=["export"])
 app.include_router(reindex.router, prefix="/reindex", tags=["reindex"])
 app.include_router(folders_api.router, prefix="/folders", tags=["linked-folders"])
+# LB-4 before companions + memory: Starlette matches in definition order, and a
+# later wildcard on either router must not swallow these (cf. /companions/keys).
+app.include_router(memory_bridge_api.router, tags=["memory-bridge"])
 app.include_router(companions_api.router, tags=["companions"])
 # K-1: recovery-phrase setup and key recovery. Without this the move off
 # the old machine-derived key is a DOWNGRADE in durability — see api/keyvault.py.
@@ -914,6 +917,7 @@ app.include_router(volume_api.router, tags=["volume"])
 # instead of loading a second copy of the same model. Auth is the companion
 # key, checked inside the router (see utils/auth_middleware EXEMPT_PREFIXES).
 app.include_router(openai_compat.router, prefix="/v1", tags=["openai-compat"])
+app.include_router(openai_audio.router, prefix="/v1", tags=["openai-compat"])
 # LB-2: MCP for agent companions (Jocasta). Loopback-only, and gated on a
 # companion key carrying scope `mcp` — both enforced in the ASGI middleware
 # inside services/mcp_server.py, not here. Its lifespan is entered above.
@@ -1002,6 +1006,14 @@ async def health():
         }
     except Exception as exc:
         out["schema"] = {"error": str(exc)}
+    try:
+        from services.audio_codec import codec_ok
+        # LB-3: speech needs no Homebrew. A False here on a built app means the
+        # PyAV wheel did not make it into the bundle.
+        out["codec_ok"] = codec_ok()
+    except Exception as exc:
+        out["codec_ok"] = False
+        out["codec_error"] = str(exc)
     return out
 
 if __name__ == "__main__":

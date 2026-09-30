@@ -13,7 +13,7 @@ import os
 import re
 import wave
 from pathlib import Path
-from typing import Optional, Dict, List
+from typing import Dict, Iterator, List, Optional
 import numpy as np
 import uuid
 
@@ -566,26 +566,12 @@ class AudioLLMService:
         return self._initialized and self._model is not None
     
     async def transcribe(self, audio_path: str) -> str:
-        """Transcribe audio to text using mlx-whisper (ASR).
-        
-        Args:
-            audio_path: Path to audio file
-            
-        Returns:
-            Transcribed text
-        """
-        loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(None, self._transcribe_sync, audio_path)
-    
-    def _transcribe_sync(self, audio_path: str) -> str:
-        """Synchronous transcription via mlx-whisper."""
-        import mlx_whisper
-        result = mlx_whisper.transcribe(
-            audio_path, 
-            path_or_hf_repo="mlx-community/whisper-base-mlx"
-        )
-        return result.get("text", "").strip()
-    
+        """Transcribe audio to text (ASR) via the shared speech-to-text service:
+        Parakeet v3, whisper fallback, any container (the file's suffix no longer matters)."""
+        from services.speech_to_text import transcribe
+
+        return (await transcribe(audio_path))["text"]
+
     async def text_to_speech(
         self, 
         text: str, 
@@ -692,51 +678,14 @@ class AudioLLMService:
         For long text: chunks processed individually and crossfaded.
         kokoro-mlx handles language detection internally from voice prefix.
         """
-        voice_id = resolve_voice(voice)
+        stats = {"chunks": 0, "failed": 0}
+        all_segments: List[np.ndarray] = list(self.tts_chunks(text, voice, speed, stats))
         
-        # Preprocess text: clean markdown, citations, URLs, abbreviations
-        text = self._preprocess_text_for_tts(text)
-        
-        # Chunk text for better prosody on long inputs
-        chunks = self._chunk_text_for_tts(text)
-        print(f"[AudioLLM] TTS: {len(chunks)} chunks, voice={voice_id}")
-        
-        all_segments: List[np.ndarray] = []
-        failed_chunks = 0
-        
-        for i, chunk in enumerate(chunks):
-            success = False
-            for attempt in range(2):  # Try each chunk up to 2 times
-                try:
-                    result = self._model.generate(
-                        chunk,
-                        voice=voice_id,
-                        speed=speed,
-                    )
-                    if result.audio is not None and len(result.audio) > 0:
-                        audio_np = result.audio.flatten().astype(np.float32)
-                        all_segments.append(audio_np)
-                        dur = len(audio_np) / SAMPLE_RATE
-                        retry_note = " (retry)" if attempt > 0 else ""
-                        print(f"[AudioLLM]   chunk {i+1}/{len(chunks)}: {dur:.1f}s{retry_note}")
-                        success = True
-                        break
-                    else:
-                        print(f"[AudioLLM] Warning: chunk {i+1}/{len(chunks)} returned empty audio (attempt {attempt+1})")
-                except Exception as e:
-                    if attempt == 0:
-                        print(f"[AudioLLM] Warning: chunk {i+1}/{len(chunks)} failed (attempt 1): {e} — retrying")
-                    else:
-                        print(f"[AudioLLM] ERROR: chunk {i+1}/{len(chunks)} failed after retry: {e}")
-                        print(f"[AudioLLM]   chunk text ({len(chunk)} chars): {chunk[:80]}...")
-            if not success:
-                failed_chunks += 1
-        
-        if failed_chunks > 0:
-            print(f"[AudioLLM] ⚠ TTS summary: {len(all_segments)}/{len(chunks)} chunks succeeded, {failed_chunks} failed")
+        if stats["failed"] > 0:
+            print(f"[AudioLLM] ⚠ TTS summary: {len(all_segments)}/{stats['chunks']} chunks succeeded, {stats['failed']} failed")
         
         if not all_segments:
-            raise RuntimeError(f"No audio generated from any text chunk ({len(chunks)} chunks all failed)")
+            raise RuntimeError(f"No audio generated from any text chunk ({stats['chunks']} chunks all failed)")
         
         # Crossfade segments for seamless output
         final_audio = self._crossfade_segments(all_segments)
@@ -752,6 +701,66 @@ class AudioLLMService:
         self._save_wav(output_path, final_audio, SAMPLE_RATE)
         return output_path
     
+    def tts_chunks(self, text: str, voice: str, speed: float = 1.0,
+                   stats: Optional[dict] = None,
+                   first_sentence_alone: bool = False) -> Iterator[np.ndarray]:
+        """Kokoro audio one chunk (~sentence) at a time, float32 mono at SAMPLE_RATE.
+
+        The loop `_tts_sync` has always run — same preprocessing, chunking, voices and
+        per-chunk retry — exposed so `/v1/audio/speech` can stream the first sentence
+        while the rest is still being synthesised (LB-3). `_tts_sync` consumes it
+        whole, so its output is unchanged. Blocking: run it off the event loop.
+
+        `first_sentence_alone` (streaming only): the chunker packs sentences up to
+        350 chars, so a short reply is ONE chunk and nothing can play until all of
+        it is synthesised — measured 598 ms for 125 chars vs 231 ms for one
+        sentence. Splitting just the first chunk at its first sentence gets audio
+        out after one sentence; every later chunk keeps the packing (and prosody).
+        """
+        voice_id = resolve_voice(voice)
+        
+        # Preprocess text: clean markdown, citations, URLs, abbreviations
+        text = self._preprocess_text_for_tts(text)
+        
+        # Chunk text for better prosody on long inputs
+        chunks = self._chunk_text_for_tts(text)
+        if first_sentence_alone and chunks:
+            import re
+            m = re.search(r"(?<=[.!?])\s+", chunks[0])
+            if m and chunks[0][m.end():].strip():
+                chunks = [chunks[0][:m.start()], chunks[0][m.end():]] + chunks[1:]
+        print(f"[AudioLLM] TTS: {len(chunks)} chunks, voice={voice_id}")
+        if stats is not None:
+            stats["chunks"] = len(chunks)
+        
+        for i, chunk in enumerate(chunks):
+            success = False
+            for attempt in range(2):  # Try each chunk up to 2 times
+                try:
+                    result = self._model.generate(
+                        chunk,
+                        voice=voice_id,
+                        speed=speed,
+                    )
+                    if result.audio is not None and len(result.audio) > 0:
+                        audio_np = result.audio.flatten().astype(np.float32)
+                        dur = len(audio_np) / SAMPLE_RATE
+                        retry_note = " (retry)" if attempt > 0 else ""
+                        print(f"[AudioLLM]   chunk {i+1}/{len(chunks)}: {dur:.1f}s{retry_note}")
+                        success = True
+                        yield audio_np
+                        break
+                    else:
+                        print(f"[AudioLLM] Warning: chunk {i+1}/{len(chunks)} returned empty audio (attempt {attempt+1})")
+                except Exception as e:
+                    if attempt == 0:
+                        print(f"[AudioLLM] Warning: chunk {i+1}/{len(chunks)} failed (attempt 1): {e} — retrying")
+                    else:
+                        print(f"[AudioLLM] ERROR: chunk {i+1}/{len(chunks)} failed after retry: {e}")
+                        print(f"[AudioLLM]   chunk text ({len(chunk)} chars): {chunk[:80]}...")
+            if not success and stats is not None:
+                stats["failed"] += 1
+
     @staticmethod
     def _crossfade_segments(segments: List[np.ndarray], pause_ms: int = 80, crossfade_ms: int = 30) -> np.ndarray:
         """Crossfade audio segments with natural pauses."""

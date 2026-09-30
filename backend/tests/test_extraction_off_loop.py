@@ -73,10 +73,58 @@ def test_the_pdf_path_that_froze_the_app_is_covered():
     refactor of the generic check above."""
     kinds = _extractor_bodies()
     assert kinds["_extract_from_pdf"][2], "_extract_from_pdf must stay @off_loop"
-    assert kinds["_extract_from_audio"][2], (
-        "audio transcription is minutes of CPU — on the loop it is a guaranteed "
-        "freeze, and linked folders ingest recordings"
-    )
+    # Audio (and video) transcription is minutes of CPU — on the loop it is a
+    # guaranteed freeze, and linked folders ingest recordings. Since LB-3 it is
+    # kept off the loop by speech_to_text (decode in a worker thread, Parakeet on
+    # the MLX executor), which must be AWAITED — so these extractors are the
+    # awaiting kind, and off_loop would run them on a foreign loop.
+    for name in ("_extract_from_audio", "_extract_from_video"):
+        is_async, awaits, decorated = kinds[name]
+        assert awaits and not decorated, f"{name} must await speech_to_text, not be @off_loop"
+
+
+def test_transcription_itself_never_runs_on_the_loop(monkeypatch):
+    """What keeps audio off the loop now, checked by WHERE the work runs:
+    decoding on a worker thread, Parakeet on the MLX engine's executor, and the
+    whisper fallback on a worker thread — never the loop's own thread."""
+    import asyncio
+    import threading
+
+    import numpy as np
+
+    from services import audio_codec, mlx_asr, speech_to_text
+
+    seen = {}
+
+    def decode(source, sr):
+        seen["decode"] = threading.current_thread()
+        return np.zeros(16000, dtype=np.float32)
+
+    def parakeet(engine, pcm, model_id):
+        seen["parakeet"] = threading.current_thread()
+        raise RuntimeError("force the fallback")
+
+    def whisper(pcm, model_id, language):
+        seen["whisper"] = threading.current_thread()
+        return {"text": "", "segments": []}
+
+    async def no_budget(model_id):
+        return None
+
+    from services.mlx_engine import mlx_engine
+    monkeypatch.setattr(audio_codec, "decode_pcm", decode)
+    monkeypatch.setattr(mlx_asr, "transcribe_on_thread", parakeet)
+    monkeypatch.setattr(mlx_engine, "_make_room_for", no_budget)
+    monkeypatch.setattr(speech_to_text, "_whisper_sync", whisper)
+
+    async def go():
+        seen["loop"] = threading.current_thread()
+        await speech_to_text.transcribe(b"ignored")
+
+    asyncio.run(go())
+    for step in ("decode", "parakeet", "whisper"):
+        assert seen[step] is not seen["loop"], f"{step} ran on the event loop thread"
+    assert seen["parakeet"].name.startswith("mlx-engine")
 
 
 def test_an_extractor_that_awaits_keeps_its_own_coroutine():

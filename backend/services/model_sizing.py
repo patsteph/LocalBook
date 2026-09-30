@@ -237,7 +237,10 @@ def exact_weight_gb(model_id: str) -> Optional[float]:
                     val = round(tot / GB, 3)
             except Exception:
                 val = None
-    _CACHE[key] = val
+    # Never cache "absent": a model sized before its first download (the budget check runs
+    # just ahead of the load) would stay invisible to the budget for the whole process.
+    if val is not None:
+        _CACHE[key] = val
     return val
 
 

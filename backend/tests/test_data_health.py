@@ -274,22 +274,37 @@ def test_the_summary_survives_a_broken_probe(data_dir, monkeypatch):
 
 
 def test_a_genuinely_missing_codec_is_reported(data_dir, monkeypatch):
-    """ffmpeg comes from Homebrew, so it is genuinely absent on a machine that
-    never had Homebrew — the work Mac, for instance.
+    """Since LB-3 the speech codec is PyAV, shipped in the app — "missing" now
+    means that wheel failed to load, which is what a bad bundle looks like."""
+    from services import audio_codec
 
-    Both probes have to fail for that verdict: `which` AND the known install
-    locations. Checking only `which` reported it missing on a machine that
-    plainly had it, because a Finder-launched app has no Homebrew on its PATH.
-    """
-    import shutil as _shutil
-    from pathlib import Path as _Path
-
-    monkeypatch.setattr(_shutil, "which", lambda name: None)
-    monkeypatch.setattr(_Path, "exists", lambda self: False)
+    monkeypatch.setattr(audio_codec, "codec_ok", lambda: False)
 
     st = data_health.status(data_dir)
     assert st["codec"]["ok"] is False
     assert any("codec" in w.lower() for w in st["overall"]["warnings"])
+
+
+def test_no_homebrew_ffmpeg_still_means_speech_works(data_dir, monkeypatch):
+    """The work Mac: no Homebrew. Speech is fine (PyAV); jingles and video are
+    not, and the panel says exactly that rather than "no codec".
+
+    Both probes have to fail for "no ffmpeg": `which` AND the known install
+    locations — a Finder-launched app has no Homebrew on its PATH.
+    """
+    import shutil as _shutil
+    from pathlib import Path as _Path
+
+    from services import audio_codec
+
+    monkeypatch.setattr(audio_codec, "codec_ok", lambda: True)
+    monkeypatch.setattr(_shutil, "which", lambda name: None)
+    monkeypatch.setattr(_Path, "exists", lambda self: False)
+
+    st = data_health.status(data_dir)
+    assert st["codec"]["ok"] is True and st["codec"]["ffmpeg"] is None
+    assert any("jingles" in w for w in st["overall"]["warnings"])
+    assert not any("No audio codec" in w for w in st["overall"]["warnings"])
 
 
 def test_a_staged_restore_is_surfaced(data_dir, tmp_path, monkeypatch):

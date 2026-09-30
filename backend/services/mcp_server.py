@@ -584,6 +584,76 @@ def build_server():
                 "truncated": len(text) > max_chars,
             }
 
+    # ── LB-4: memory ─────────────────────────────────────────────────────────
+    # The MCP key carries `mcp`; memory needs `memory` as well, checked per call —
+    # connect-time auth only proves the caller may use MCP at all.
+
+    def _memory_denied(timer) -> Optional[Dict[str, Any]]:
+        from services import companion_audit
+
+        identity = current_caller()
+        if identity is not None and identity.has("memory"):
+            return None
+        timer.outcome = companion_audit.OUTCOME_DENIED
+        timer.detail = "key lacks scope 'memory'"
+        return {"error": "this companion key does not carry the 'memory' scope — reconnect it "
+                         "from Settings → Companions with memory access"}
+
+    @mcp.tool(annotations=read_only)
+    async def memory_search(query: str, k: int = 8, char_budget: int = 2000) -> Dict[str, Any]:
+        """Search LocalBook's memory — core facts about the user, long-term
+        memories, and past conversations — for what bears on `query`.
+
+        One shared memory: results include what LocalBook itself learned and what
+        companions (you included) told it. Each item is tagged with its source.
+        """
+        args = {"query": query, "k": k}
+        async with _audited("memory_search", args) as timer:
+            denied = _memory_denied(timer)
+            if denied:
+                return denied
+            from services import memory_bridge
+
+            companion_id = current_caller().companion_id
+            out = await memory_bridge.prefetch(companion_id, query, "mcp",
+                                               k=max(1, min(int(k), 50)),
+                                               char_budget=max(100, min(int(char_budget), 20_000)))
+            return {"sections": out["sections"], "chars": out["chars"]}
+
+    @mcp.tool(annotations=proposes)
+    async def memory_add(text: str, topics: Optional[List[str]] = None) -> Dict[str, Any]:
+        """Remember something long-term, in LocalBook's shared memory.
+
+        Stored under your companion's tag, so LocalBook can recall it later — in
+        its own chats too — and the user can remove everything you wrote in one
+        action from Settings. Use it for durable facts, not conversation logs
+        (those go through /memory/sync-turn).
+        """
+        args = {"chars": len(text or "")}
+        async with _audited("memory_add", args) as timer:
+            denied = _memory_denied(timer)
+            if denied:
+                return denied
+            text = (text or "").strip()
+            if not text:
+                return {"error": "nothing to remember"}
+            if len(text) > 4000:
+                return {"error": "a memory is limited to 4000 characters"}
+            from models.memory import ArchivalMemoryEntry, MemorySourceType
+            from storage import companion_memory as cm
+            from storage.memory_store import memory_store
+
+            companion_id = current_caller().companion_id
+            entry = ArchivalMemoryEntry(
+                content=text,
+                content_type="companion_note",
+                source_type=MemorySourceType.MANUAL,
+                source_id=cm.conversation_id(companion_id, "mcp"),
+                topics=[str(t)[:64] for t in (topics or [])][:10],
+            )
+            await memory_store.add_archival_memory_async(entry, namespace=cm.namespace(companion_id))
+            return {"id": entry.id, "stored": True, "tag": cm.namespace(companion_id)}
+
     return mcp
 
 

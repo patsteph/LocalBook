@@ -64,7 +64,10 @@ def test_the_v1_tools_are_registered(tools):
 
 # The only tool that is not read-only. Kept as a constant so adding a second
 # write tool has to be a deliberate edit here, not a silent test pass.
-WRITE_TOOLS = {"propose_note"}
+# propose_note (LB-2) queues for approval; memory_add (LB-4) writes to memory —
+# but only with scope `memory`, tagged `companion:<id>`, and removable in one
+# action from Settings (tests/test_memory_bridge.py). Nothing else writes.
+WRITE_TOOLS = {"propose_note", "memory_add"}
 
 
 def test_every_tool_declares_read_only_explicitly(tools):
@@ -76,8 +79,9 @@ def test_every_tool_declares_read_only_explicitly(tools):
         assert tool.annotations.readOnlyHint is expected, name
 
 
-def test_propose_note_is_the_only_write_tool(tools):
-    """Writes are proposals (LB-2). If this list grows, it should hurt."""
+def test_the_write_tools_are_exactly_these(tools):
+    """Writes are proposals (LB-2) or tagged, purgeable memory (LB-4). If this
+    list grows, it should hurt."""
     writes = {n for n, t in tools.items()
               if t.annotations and t.annotations.readOnlyHint is False}
     assert writes == WRITE_TOOLS
@@ -86,6 +90,8 @@ def test_propose_note_is_the_only_write_tool(tools):
 def test_proposing_is_not_marked_destructive(tools):
     """It adds to a review queue; it changes nothing the user already has."""
     assert tools["propose_note"].annotations.destructiveHint is False
+    # memory_add only ADDS a tagged memory; it overwrites nothing.
+    assert tools["memory_add"].annotations.destructiveHint is False
 
 
 # ── auth: loopback, key, scope ──────────────────────────────────────────────

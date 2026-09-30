@@ -150,6 +150,14 @@ tiktoken>=0.7.0  # Token counting for memory management
 PyYAML>=6.0.0  # YAML config parsing
 # hdbscan>=0.8.33  # Optional fallback - sklearn.cluster.HDBSCAN is preferred (sklearn 1.3+)
 numpy>=1.21.0  # Looser requirement for compatibility
+# LB-3 speech. PyAV = ffmpeg's libraries in-process: decode for STT, mp3/opus for
+# /v1/audio/speech, no Homebrew needed (the MDM Mac has none).
+av>=19.0.0
+# parakeet-mlx (installed --no-deps in build_backend.sh — it declares numpy>=2.2.5, and
+# moving the whole stack to numpy 2 is not this change) needs librosa + dacite.
+# librosa is capped <1.0 because 1.0 requires numpy>=2.1.
+librosa>=0.11.0,<1.0
+dacite>=1.9.2
 pyarrow>=14.0.0
 
 # mflux (FLUX.2 Klein image generation) imports `toml` at model-load time. It is NOT a

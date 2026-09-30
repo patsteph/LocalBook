@@ -51,6 +51,12 @@ EXEMPT_PATHS = frozenset({
     # snapshot (models + token counters + queue depth) — same trust class as
     # /health — so exempt it. Without this the tray 401s and shows all-zeros.
     "/system/tray-status",
+    # LB-4 memory bridge. NOT unauthenticated — api/memory_bridge.py requires a
+    # companion key with scope `memory` on each route, like /v1/. Exact paths, not
+    # the `/memory/` prefix: the rest of /memory stays app-token only.
+    "/memory/prefetch",
+    "/memory/sync-turn",
+    "/memory/session-end",
 })
 
 # Path prefixes that bypass auth. Used for media/file endpoints the browser

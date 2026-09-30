@@ -64,6 +64,20 @@ if ! python -c "import kokoro_mlx; import misaki; import soundfile" 2>/dev/null;
     echo -e "${RED}  Try: pip install --no-deps kokoro-mlx && pip install misaki soundfile${NC}"
 fi
 
+# parakeet-mlx: LB-3 speech-to-text (Parakeet TDT v3). --no-deps because it declares
+# numpy>=2.2.5 and the stack is validated on numpy 1.26 — it runs fine there (verified
+# 2026-09-30). Its real needs (librosa<1.0, dacite, huggingface-hub, mlx) are in
+# requirements.in. PINNED, with the same version-aware guard as mlx-lm below.
+PARAKEET_VER="0.5.2"
+if ! python -c "import importlib.metadata as m; assert m.version('parakeet-mlx')=='$PARAKEET_VER'" 2>/dev/null; then
+    echo -e "${YELLOW}Installing parakeet-mlx==$PARAKEET_VER (--no-deps, LB-3 speech-to-text)...${NC}"
+    pip install -q --no-deps "parakeet-mlx==$PARAKEET_VER" 2>/dev/null || echo -e "${YELLOW}  parakeet-mlx install warning — STT falls back to whisper${NC}"
+fi
+if ! python -c "import parakeet_mlx, librosa, dacite, av" 2>/dev/null; then
+    echo -e "${RED}⚠ WARNING: speech packages (parakeet-mlx / librosa / dacite / av) not importable.${NC}"
+    echo -e "${RED}  Transcription falls back to whisper; /v1/audio and codec_ok need av.${NC}"
+fi
+
 # mlx-lm / mlx-vlm: Wave 9 in-process MLX LLM engine (opt-in, dual-engine).
 # Install --no-deps because their declared trees conflict with LocalBook's (mlx-vlm pins
 # starlette>=1.0.1 vs fastapi <0.51.0; both pin transformers 5.x) — but they run fine on the
@@ -168,6 +182,13 @@ python -W ignore -m PyInstaller \
     --add-data="$SCRIPT_DIR/config.py:." \
     --hidden-import=api \
     --hidden-import=api.openai_compat \
+    --hidden-import=api.openai_audio \
+    --hidden-import=services.audio_codec \
+    --hidden-import=services.speech_to_text \
+    --hidden-import=services.mlx_asr \
+    --hidden-import=api.memory_bridge \
+    --hidden-import=services.memory_bridge \
+    --hidden-import=storage.companion_memory \
     --hidden-import=api.companions \
     --hidden-import=api.folders \
     --hidden-import=api.agent_browser \
@@ -363,6 +384,10 @@ python -W ignore -m PyInstaller \
     --collect-all=justext \
     --collect-all=mlx \
     --collect-all=mlx_whisper \
+    --collect-all=parakeet_mlx \
+    --collect-all=av \
+    --collect-all=librosa \
+    --collect-all=dacite \
     --collect-all=mlx_lm \
     --collect-all=mlx_vlm \
     --collect-all=mlx_embeddings \

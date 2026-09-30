@@ -256,19 +256,24 @@ _CODEC_LOCATIONS = (
 
 
 def _codec() -> Dict[str, object]:
-    """Whether the audio codec is actually present.
+    """Whether the audio codecs are actually present.
 
-    `ffmpeg` comes from Homebrew today (`build.sh:68`), so it is genuinely
-    absent on a machine that never had Homebrew — the work Mac, for instance.
-    LB-3 bundles one; until then this reports the truth.
+    `ok` is the SPEECH codec — PyAV, in-process, shipped with the app (LB-3) —
+    which is what transcription and `/v1/audio/*` need, on any Mac. `ffmpeg` is
+    reported beside it because podcast jingles and video generation still run
+    the binary, and that comes from Homebrew (`build.sh:68`): genuinely absent
+    on a machine that never had Homebrew — the work Mac, for instance.
     """
+    from services.audio_codec import codec_ok
+
     found = shutil.which("ffmpeg")
     if not found:
         for candidate in _CODEC_LOCATIONS:
             if Path(candidate).exists():
                 found = candidate
                 break
-    return {"ffmpeg": found, "ok": bool(found), "on_path": bool(shutil.which("ffmpeg"))}
+    return {"ok": codec_ok(), "speech": "pyav", "ffmpeg": found,
+            "on_path": bool(shutil.which("ffmpeg"))}
 
 
 def status(data_dir: Optional[Path] = None) -> Dict[str, object]:
@@ -437,6 +442,9 @@ def _overall(parts: Dict[str, object]) -> Dict[str, object]:
     codec = parts.get("codec") or {}
     if isinstance(codec, dict) and codec.get("ok") is False:
         warnings.append("No audio codec found — audio features will not work.")
+    elif isinstance(codec, dict) and codec.get("ok") and codec.get("ffmpeg") is None:
+        warnings.append("ffmpeg is not installed — speech works, but podcast jingles and "
+                        "video generation need it.")
 
     return {
         "ok": not problems,

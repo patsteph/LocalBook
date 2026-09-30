@@ -70,6 +70,8 @@ export function AgentKeysPanel() {
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [confirmRevoke, setConfirmRevoke] = useState<string | null>(null);
+    const [confirmForget, setConfirmForget] = useState<string | null>(null);
+    const [note, setNote] = useState<string | null>(null);
 
     const refresh = useCallback(async () => {
         try {
@@ -117,6 +119,24 @@ export function AgentKeysPanel() {
         }
     };
 
+    // LB-4: one shared memory means a companion's writes reach LocalBook's own
+    // chat — so the user can take them all back, from every tier, in one action.
+    const forget = async (companionId: string) => {
+        setBusy(true); setError(null); setNote(null);
+        try {
+            const { data } = await api.delete(`/companions/${encodeURIComponent(companionId)}/memory`);
+            const p = data?.purged ?? {};
+            const n = (p.recall ?? 0) + (p.archival ?? 0) + (p.core ?? 0) + (p.summaries ?? 0);
+            setNote(n ? `Forgot ${n} memor${n === 1 ? 'y' : 'ies'} ${companionId} wrote.`
+                      : `${companionId} had not written any memories.`);
+            setConfirmForget(null);
+        } catch (e: any) {
+            setError(e?.response?.data?.detail ?? 'Could not remove those memories.');
+        } finally {
+            setBusy(false);
+        }
+    };
+
     const purge = async (companionId?: string) => {
         setBusy(true); setError(null);
         try {
@@ -147,6 +167,11 @@ export function AgentKeysPanel() {
             {error && (
                 <div className="rounded-lg border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-red-200">
                     {error}
+                </div>
+            )}
+            {note && (
+                <div className="rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-200">
+                    {note}
                 </div>
             )}
 
@@ -257,6 +282,32 @@ export function AgentKeysPanel() {
                                         {when(k.last_used_at)}
                                     </div>
                                 </div>
+                                <span className="flex gap-2">
+                                {confirmForget === k.companion_id ? (
+                                    <span className="flex gap-2">
+                                        <button
+                                            onClick={() => forget(k.companion_id)}
+                                            disabled={busy}
+                                            className="rounded bg-red-600 px-2.5 py-1 text-xs text-white hover:bg-red-500"
+                                        >
+                                            Forget everything it wrote
+                                        </button>
+                                        <button
+                                            onClick={() => setConfirmForget(null)}
+                                            className="rounded border border-gray-600 px-2.5 py-1 text-xs text-gray-300"
+                                        >
+                                            Cancel
+                                        </button>
+                                    </span>
+                                ) : (
+                                    <button
+                                        onClick={() => setConfirmForget(k.companion_id)}
+                                        className="rounded border border-gray-600 px-2.5 py-1 text-xs text-gray-300 hover:bg-gray-800"
+                                        title="Remove every memory this companion added — facts, notes and conversation turns"
+                                    >
+                                        Forget what it wrote…
+                                    </button>
+                                )}
                                 {confirmRevoke === k.companion_id ? (
                                     <span className="flex gap-2">
                                         <button
@@ -281,6 +332,7 @@ export function AgentKeysPanel() {
                                         Revoke
                                     </button>
                                 )}
+                                </span>
                             </li>
                         ))}
                     </ul>

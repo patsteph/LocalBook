@@ -762,6 +762,7 @@ class MLXEngine:
     def __init__(self) -> None:
         self._resident: Dict[str, Any] = {}              # model_id -> (model, tokenizer/processor)
         self._embed_resident: Dict[str, Any] = {}        # embedding model_id -> (model, tokenizer)
+        self._asr_resident: Dict[str, Any] = {}          # speech-to-text model_id -> model (mlx_asr)
         self._last_used: Dict[str, float] = {}           # model_id -> monotonic ts (LRU order)
         self._vlm_config: Dict[str, Any] = {}            # model_id -> config (vlm only)
         self._kind: Dict[str, str] = {}                  # model_id -> "lm" | "vlm"
@@ -879,7 +880,7 @@ class MLXEngine:
         except Exception:
             return 0.0
         total = 0.0
-        for mid in list(self._resident) + list(self._embed_resident):
+        for mid in list(self._resident) + list(self._embed_resident) + list(self._asr_resident):
             w = exact_weight_gb(mid)
             if w:
                 total += w
@@ -928,7 +929,8 @@ class MLXEngine:
 
             # LRU first — the model used longest ago is the cheapest to lose.
             order = sorted(
-                (m for m in list(self._resident) + list(self._embed_resident) if m != model_id),
+                (m for m in list(self._resident) + list(self._embed_resident)
+                 + list(self._asr_resident) if m != model_id),
                 key=lambda m: self._last_used.get(m, 0.0),
             )
             logger.info(f"[mlx-engine] budget: resident {resident} GB + incoming {round(need,2)} GB "
@@ -997,6 +999,7 @@ class MLXEngine:
         out: Dict[str, Any] = {
             "text": sorted(self._resident.keys()),
             "embed": sorted(self._embed_resident.keys()),
+            "asr": sorted(self._asr_resident.keys()),
         }
         try:
             import mlx.core as mx
@@ -1027,7 +1030,8 @@ class MLXEngine:
           last Python reference is gone, and dropping the dict entry is not enough on its own.
         · Short-circuit when nothing is loaded: touching Metal to free nothing still costs.
         """
-        if model_id not in self._resident and model_id not in self._embed_resident:
+        if (model_id not in self._resident and model_id not in self._embed_resident
+                and model_id not in self._asr_resident):
             return False
 
         lock = self._model_locks.setdefault(model_id, asyncio.Lock())
@@ -1041,6 +1045,7 @@ class MLXEngine:
             before = self._active_gb()
             self._resident.pop(model_id, None)
             self._embed_resident.pop(model_id, None)
+            self._asr_resident.pop(model_id, None)
             self._vlm_config.pop(model_id, None)
 
             def _free() -> None:
@@ -1064,7 +1069,7 @@ class MLXEngine:
     async def unload_all(self, *, keep: Optional[List[str]] = None, wait: float = 2.0) -> List[str]:
         """Unload every resident model except `keep`. Returns what was actually freed."""
         keep_set = set(keep or [])
-        targets = [m for m in list(self._resident) + list(self._embed_resident)
+        targets = [m for m in list(self._resident) + list(self._embed_resident) + list(self._asr_resident)
                    if m not in keep_set]
         if not targets:
             return []

@@ -115,6 +115,11 @@ class Settings(BaseSettings):
     # the SAME checkpoint — one gemma resident, not two.
     vision_model: str = "mlx-community/gemma-4-e4b-it-4bit"
     image_model: str = "Runpod/FLUX.2-klein-4B-mflux-4bit"      # FLUX.2 Klein via mflux
+    # Speech-to-text (LB-3). Parakeet TDT v3 (NVIDIA, CC-BY-4.0, 25 European languages) runs in
+    # the MLX engine; whisper is the fallback when Parakeet fails. Both get pre-decoded audio
+    # (services/audio_codec.py), so neither shells out to an ffmpeg on PATH.
+    stt_model: str = "mlx-community/parakeet-tdt-0.6b-v3"
+    stt_fallback_model: str = "mlx-community/whisper-base-mlx"
 
     # arctic-embed-l-v2.0 — the SAME model and the SAME 1024 dim as the old Ollama
     # `snowflake-arctic-embed2`, so the existing index needed no re-embedding.

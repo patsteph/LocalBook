@@ -30,6 +30,21 @@ class AgentNamespace(str, Enum):
     COLLECTOR = "collector"  # Per-notebook isolation (requires notebook_id)
 
 
+# LB-4: a companion's archival memories live in `companion:<id>`. ONE shared memory
+# (user decision 2026-09-30): they are visible wherever SYSTEM is, and the prefix is
+# what makes them purgeable in one action (storage/companion_memory.py).
+COMPANION_PREFIX = "companion:"
+
+
+def _ns_value(namespace) -> str:
+    return namespace.value if isinstance(namespace, Enum) else str(namespace)
+
+
+def _shared(r_namespace: str) -> bool:
+    """Visible to anyone who may read SYSTEM memories."""
+    return r_namespace == AgentNamespace.SYSTEM.value or str(r_namespace).startswith(COMPANION_PREFIX)
+
+
 from models.memory import (
     CoreMemory, CoreMemoryEntry, MemoryCategory, MemoryImportance, MemorySourceType,
     RecallMemoryEntry, ConversationSummary,
@@ -360,6 +375,28 @@ class MemoryStore:
         except Exception as e:
             print(f"[MemoryStore] FTS sync error: {e}")
     
+    def delete_fts(self, memory_ids) -> int:
+        """Drop the keyword-index rows of archival memories that were deleted.
+
+        LanceDB and `archival_fts` are separate stores; every archival delete must
+        clear both, or BM25 keeps scoring memories that no longer exist.
+        """
+        ids = [str(i) for i in (memory_ids or [])]
+        if not ids:
+            return 0
+        conn = self._get_recall_connection()
+        try:
+            n = 0
+            for i in range(0, len(ids), 500):
+                part = ids[i:i + 500]
+                cur = conn.execute(
+                    f"DELETE FROM archival_fts WHERE memory_id IN ({','.join('?' * len(part))})", part)
+                n += cur.rowcount or 0
+            conn.commit()
+            return n
+        finally:
+            conn.close()
+
     @staticmethod
     def _sanitize_fts_query(query: str) -> str:
         """Build a safe FTS5 MATCH expression from arbitrary user text.
@@ -741,7 +778,7 @@ class MemoryStore:
     def add_archival_memory(
         self, 
         entry: ArchivalMemoryEntry,
-        namespace: AgentNamespace = AgentNamespace.SYSTEM,
+        namespace: "AgentNamespace | str" = AgentNamespace.SYSTEM,
         notebook_id: Optional[str] = None
     ) -> None:
         """
@@ -769,7 +806,7 @@ class MemoryStore:
         # Prepare record with namespace
         record = {
             "id": entry.id,
-            "namespace": namespace.value,
+            "namespace": _ns_value(namespace),
             "content": entry.content,
             "content_type": entry.content_type,
             "source_type": entry.source_type.value,
@@ -787,7 +824,7 @@ class MemoryStore:
         table.add([record])
         
         # Sync to FTS5 for hybrid BM25 search
-        self._sync_to_fts(entry.id, entry.content, namespace.value, effective_notebook_id)
+        self._sync_to_fts(entry.id, entry.content, _ns_value(namespace), effective_notebook_id)
     
     def search_archival_memory(
         self, 
@@ -836,17 +873,17 @@ class MemoryStore:
                 filtered_results.append(r)
             elif namespace == AgentNamespace.CURATOR:
                 # Curator without cross_notebook: CURATOR + SYSTEM namespaces
-                if r_namespace in [AgentNamespace.CURATOR.value, AgentNamespace.SYSTEM.value]:
+                if r_namespace == AgentNamespace.CURATOR.value or _shared(r_namespace):
                     filtered_results.append(r)
             elif namespace == AgentNamespace.COLLECTOR:
                 # Collector: own COLLECTOR namespace + SYSTEM
-                if r_namespace == AgentNamespace.SYSTEM.value:
+                if _shared(r_namespace):
                     filtered_results.append(r)
                 elif r_namespace == AgentNamespace.COLLECTOR.value and r_notebook == notebook_id:
                     filtered_results.append(r)
             else:
-                # SYSTEM: only SYSTEM namespace
-                if r_namespace == AgentNamespace.SYSTEM.value:
+                # SYSTEM: SYSTEM + companion namespaces (one shared memory, LB-4)
+                if _shared(r_namespace):
                     filtered_results.append(r)
         
         # Legacy filter by notebook_id (for backwards compatibility)
@@ -857,7 +894,10 @@ class MemoryStore:
         
         # --- Hybrid Search: BM25 keyword scoring (Improvement 1) ---
         # Run BM25 search in parallel to find exact keyword matches
-        bm25_namespace = namespace.value if namespace != AgentNamespace.CURATOR or not cross_notebook else None
+        # No namespace filter at the FTS level: visibility spans several namespaces
+        # (SYSTEM + companion:*), and every BM25 hit passes the same filter as the
+        # vector hits below before it can be returned.
+        bm25_namespace = None
         bm25_scores = self._bm25_search(
             query=query,
             limit=limit * 3,
@@ -936,12 +976,12 @@ class MemoryStore:
                         if namespace == AgentNamespace.CURATOR and cross_notebook:
                             allowed = True
                         elif namespace == AgentNamespace.CURATOR:
-                            allowed = r_namespace in [AgentNamespace.CURATOR.value, AgentNamespace.SYSTEM.value]
+                            allowed = r_namespace == AgentNamespace.CURATOR.value or _shared(r_namespace)
                         elif namespace == AgentNamespace.COLLECTOR:
-                            allowed = (r_namespace == AgentNamespace.SYSTEM.value or 
+                            allowed = (_shared(r_namespace) or
                                       (r_namespace == AgentNamespace.COLLECTOR.value and r_notebook == notebook_id))
                         else:
-                            allowed = r_namespace == AgentNamespace.SYSTEM.value
+                            allowed = _shared(r_namespace)
                         
                         if not allowed:
                             continue
@@ -1016,8 +1056,9 @@ class MemoryStore:
             deleted = before - len(keep)
             
             if deleted > 0:
-                # Recreate table without the deleted rows
+                gone = df[df["source_notebook_id"] == notebook_id]["id"].tolist()
                 table.delete(f'source_notebook_id = "{notebook_id}"')
+                self.delete_fts(gone)      # keyword rows used to outlive their memories
                 print(f"[MemoryStore] Deleted {deleted} archival memories for notebook {notebook_id}")
             
             return deleted

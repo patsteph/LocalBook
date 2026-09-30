@@ -520,12 +520,18 @@ class MemoryManager:
             if results:
                 ids_to_prune = [r["id"] for r in results if "id" in r]
                 if ids_to_prune:
+                    gone = []
                     for rid in ids_to_prune:
                         try:
                             table.delete(f"id = '{rid}'")
+                            gone.append(rid)
                             pruned += 1
                         except Exception as _e:
                             logger.warning(f"[memory-manager] {type(_e).__name__}: {_e}")
+                    try:
+                        self.memory_store.delete_fts(gone)   # keep BM25 in step with LanceDB
+                    except Exception as _e:
+                        logger.warning(f"[memory-manager] fts cleanup: {_e}")
                     if pruned > 0:
                         logger.info(f"Pruned {pruned} archival memories (>90 days, never accessed)")
         except Exception as e:

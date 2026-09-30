@@ -974,7 +974,16 @@ async def full_health_check():
         if results["overall"] == "healthy":
             results["overall"] = "degraded"
     
-    # ffmpeg Check - required for audio/video transcription
+    # Speech codec (LB-3): PyAV ships in the app — transcription needs no Homebrew.
+    from services.audio_codec import codec_ok
+    add_check("functional_tests", {
+        "name": "speech_codec",
+        "display": "Speech codec (PyAV)",
+        "status": "pass" if codec_ok() else "fail",
+        **({} if codec_ok() else {"error": "PyAV failed to load — transcription and /v1/audio will not work"}),
+    })
+
+    # ffmpeg Check - podcast jingles and video generation still run the binary
     ffmpeg_path = find_binary("ffmpeg")
     if ffmpeg_path:
         try:
@@ -1011,7 +1020,7 @@ async def full_health_check():
         results["issues"].append({
             "severity": "medium",
             "title": "FFmpeg Not Installed",
-            "message": "Audio/video transcription won't work. Run: brew install ffmpeg",
+            "message": "Podcast jingles and video generation need it (transcription does not). Run: brew install ffmpeg",
             "repair": None
         })
         if results["overall"] == "healthy":
