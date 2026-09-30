@@ -141,9 +141,99 @@ def test_finish_nags_while_the_plaintext_copy_remains(env, monkeypatch):
     monkeypatch.setattr(volume_gate, "encryption_enabled", lambda: True)
     monkeypatch.setattr(volume_service, "is_mounted", lambda mp=None: True)
     monkeypatch.setattr(em, "plaintext_copies", lambda: [{"bytes": 100}])
-    assert encryption_setup.prompt() == {"show": True, "kind": "finish", "bytes": 100}
+    p = encryption_setup.prompt()
+    assert (p["show"], p["kind"], p["bytes"]) == (True, "finish", 100)
     encryption_setup.respond_to_prompt("dismiss")        # cannot be dismissed away
     assert encryption_setup.prompt()["kind"] == "finish"
 
     monkeypatch.setattr(em, "plaintext_copies", lambda: [])
     assert encryption_setup.prompt()["show"] is False
+
+
+def test_finish_carries_the_check_for_the_kept_copy(env, monkeypatch):
+    """The wizard offers one-click removal on the strength of this."""
+    from services import volume_gate, volume_service
+
+    monkeypatch.setattr(volume_gate, "encryption_enabled", lambda: True)
+    monkeypatch.setattr(volume_service, "is_mounted", lambda mp=None: True)
+    monkeypatch.setattr(em, "plaintext_copies", lambda: [{"path": "/x/copy", "bytes": 1}])
+    monkeypatch.setattr(em, "last_apply", lambda: {"applied": True,
+                        "plaintext_kept_at": "/x/copy", "verified": {"ok": True}})
+    assert encryption_setup.prompt()["verified"] == {"ok": True}
+
+    monkeypatch.setattr(em, "last_apply", lambda: {"applied": True,
+                        "plaintext_kept_at": "/x/other", "verified": {"ok": True}})
+    assert encryption_setup.prompt()["verified"] is None
+
+
+# ── the default backup folder ───────────────────────────────────────────────
+
+
+def test_a_default_backup_folder_is_proposed_not_saved(env, monkeypatch, tmp_path):
+    from config import settings
+
+    monkeypatch.setattr(settings, "backup_destination", "")
+    monkeypatch.setattr(encryption_setup.Path, "home", lambda: tmp_path / "home")
+    check = encryption_setup.preflight()["checks"]["backup_destination"]
+    assert check["ok"] is False                      # still needs the user's OK
+    assert check["proposed_path"] == str(tmp_path / "home" / "LocalBook Backups")
+    assert not (tmp_path / "home").exists()          # nothing written
+
+
+def test_no_proposal_once_one_is_configured(env):
+    assert encryption_setup.preflight()["checks"]["backup_destination"]["proposed_path"] is None
+
+
+@pytest.mark.parametrize("inside", ["data", "image", "copy"])
+def test_a_backup_folder_inside_what_it_backs_up_is_refused(env, monkeypatch, inside):
+    target = {
+        "data": env / "backups",
+        "image": env.parent / f"{env.name}.sparsebundle" / "x",
+        "copy": env.parent / "LocalBook.plaintext-1" / "b",
+    }[inside]
+    monkeypatch.setattr(em, "plaintext_copies",
+                        lambda: [{"path": str(env.parent / "LocalBook.plaintext-1")}])
+    assert encryption_setup.backup_destination_problem(target)
+    assert encryption_setup.backup_destination_problem(env.parent / "elsewhere") is None
+
+
+def test_the_proposal_is_dropped_if_home_would_be_inside_the_data(env, monkeypatch):
+    monkeypatch.setattr(encryption_setup.Path, "home", lambda: env)
+    assert encryption_setup.proposed_backup_destination() is None
+
+
+# ── saving it: /settings/backup-destination {create} ────────────────────────
+
+
+def _save(monkeypatch, path, create):
+    import asyncio
+
+    from api import settings as settings_api
+
+    written = {}
+    monkeypatch.setattr(settings_api, "_write_env", lambda k, v: written.update({k: v}))
+    req = settings_api.BackupDestinationRequest(path=str(path), create=create)
+    return asyncio.run(settings_api.set_backup_destination(req)), written
+
+
+def test_create_makes_the_accepted_default(env, monkeypatch, tmp_path):
+    folder = tmp_path / "home" / "LocalBook Backups"
+    out, written = _save(monkeypatch, folder, create=True)
+    assert folder.is_dir() and out["destination"] == str(folder)
+    assert written == {"LOCALBOOK_BACKUP_DESTINATION": str(folder)}
+
+
+def test_without_create_a_missing_folder_is_still_refused(env, monkeypatch, tmp_path):
+    from fastapi import HTTPException
+
+    with pytest.raises(HTTPException):
+        _save(monkeypatch, tmp_path / "nope", create=False)
+    assert not (tmp_path / "nope").exists()
+
+
+def test_create_never_makes_a_folder_inside_the_data(env, monkeypatch):
+    from fastapi import HTTPException
+
+    with pytest.raises(HTTPException):
+        _save(monkeypatch, env / "backups", create=True)
+    assert not (env / "backups").exists()

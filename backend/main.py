@@ -58,6 +58,16 @@ try:
 except Exception as _e:
     print(f"⚠️  encryption migration skipped: {_e}")
 
+# The databases half of the post-swap check (LB-11 simplified flow). HERE, before
+# anything opens a database, because this is the only moment the row counts
+# cannot have drifted. The files half runs after startup (`_run_startup_tasks`).
+try:
+    from services import encryption_verify as _ev
+    if _ev.needs_databases():
+        _ev.verify_databases()
+except Exception as _e:
+    print(f"⚠️  post-swap database check skipped: {_e}")
+
 # ── LB-11: apply a staged DEcryption (the escape hatch), same constraints ───
 try:
     from services.encryption_rollback import apply_pending as _apply_decryption
@@ -273,6 +283,17 @@ async def _run_startup_tasks():
             await asyncio.gather(work, asyncio.sleep(MIN_STEP_MS))
         else:
             await asyncio.sleep(MIN_STEP_MS)
+
+    # ── Post-swap file check (LB-11) ──────────────────────────────────────
+    # Fire and forget, off the loop: hashing a large corpus must not hold up
+    # startup (the wizard polls for the result).
+    try:
+        from services import encryption_verify
+        if encryption_verify.needs_files():
+            safe_create_task(asyncio.to_thread(encryption_verify.verify_files),
+                             name="lb11-verify-files")
+    except Exception as _e:
+        logger.warning(f"[main] post-swap file check skipped: {_e}")
 
     # ── Data health (LB-10 item 6) ────────────────────────────────────────
     # Before the schema ledger, before anything writes. If the last run did not

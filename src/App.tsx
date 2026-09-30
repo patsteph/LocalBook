@@ -69,7 +69,6 @@ function App() {
   const [curatorBriefData, setCuratorBriefData] = useState<any>(null);
   const [showSettingsModal, setShowSettingsModal] = useState(false);
   const [settingsSection, setSettingsSection] = useState<SectionId | undefined>(undefined);
-  const [settingsFocus, setSettingsFocus] = useState<'finish' | undefined>(undefined);
   const [showLLMModal, setShowLLMModal] = useState(false);
   const [showHealthModal, setShowHealthModal] = useState(false);
   const [showEmbeddingModal, setShowEmbeddingModal] = useState(false);
@@ -546,6 +545,12 @@ function App() {
   // canvas tombstone with the item's content + flip back to the Chat view
   // so the canvas comes back into focus. Library's "browse" is always a
   // detour from the canvas; this listener completes the round-trip.
+  // The encryption wizard (owned by EncryptionPrompt) replaces Settings while it runs.
+  useEffect(() => onEvent('lb:openEncryptionWizard', () => {
+    setShowSettingsModal(false);
+    setSettingsSection(undefined);
+  }), []);
+
   useEffect(() => {
     return onEvent('lb:openLibraryItem', (item) => {
       const raw = item.raw || {};
@@ -1077,7 +1082,7 @@ function App() {
         )}
 
         {/* LB-11: the encryption offer — the only road into the setup flow */}
-        <EncryptionPrompt onOpen={(focus) => { setSettingsSection('encryption'); setSettingsFocus(focus); setShowSettingsModal(true); }} />
+        <EncryptionPrompt />
 
         {/* Morning Brief — floats above canvas */}
         {morningBrief && (
@@ -1286,8 +1291,8 @@ function App() {
         </div>
 
         {/* Settings Modal */}
-        <Modal isOpen={showSettingsModal} onClose={() => { setShowSettingsModal(false); setSettingsSection(undefined); setSettingsFocus(undefined); }} title="Settings" size="lg">
-          <Settings initialSection={settingsSection} encryptionFocus={settingsFocus} />
+        <Modal isOpen={showSettingsModal} onClose={() => { setShowSettingsModal(false); setSettingsSection(undefined); }} title="Settings" size="lg">
+          <Settings initialSection={settingsSection} />
         </Modal>
 
         {/* LLM Studio Modal — Locker + Evaluator + History in one place */}

@@ -86,3 +86,19 @@ def test_an_existing_new_item_wins_and_the_keyring_is_not_read(store, monkeypatc
     legacy[(km.SERVICE_NAME, km.BUNDLE_KEY)] = json.dumps({"brave_api_key": "old"})
 
     assert km._load_bundle() == {"brave_api_key": "new"}
+
+
+def test_legacy_items_already_gone_do_not_warn_every_launch(store, monkeypatch, caplog):
+    # A key already in the bundle is queued for legacy deletion on every launch;
+    # "item not found" is the goal state, not a warning.
+    km.set_api_key("brave_api_key", "k-123")
+    monkeypatch.setattr(km, "_migration_done", False)
+
+    def _gone(s, k):
+        raise km.keyring.errors.PasswordDeleteError("(-25300, 'Item not found')")
+
+    monkeypatch.setattr(km.keyring, "delete_password", _gone)
+    with caplog.at_level("WARNING", logger=km.logger.name):
+        km._migrate_legacy_keys()
+    assert km._migration_done
+    assert not [r for r in caplog.records if r.levelname == "WARNING"]

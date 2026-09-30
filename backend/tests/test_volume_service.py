@@ -324,6 +324,15 @@ def test_compacting_a_mounted_volume_reports_rather_than_raises(vol):
     assert "mounted" in result["reason"]
 
 
+def test_compacting_a_detached_volume_uses_the_piped_passphrase(vol):
+    """Without -stdinpass hdiutil ignores stdin and raises a GUI prompt; the
+    _run timeout would then fail this, leaving the dialog behind."""
+    vol.initialise_new_volume()
+    vol.detach()
+    result = vol.compact()
+    assert result["compacted"] is True, result
+
+
 def test_compacting_with_no_image_is_harmless(vol):
     assert vol.compact()["compacted"] is False
 

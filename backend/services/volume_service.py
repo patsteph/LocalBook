@@ -544,8 +544,10 @@ def detach(*, allow_force: bool = False) -> Dict[str, object]:
 
 
 def compact() -> Dict[str, object]:
-    """Reclaim space from deleted bands (LB-11 measure 7, a NIGHT job).
+    """Reclaim space from deleted bands (LB-11 measure 7).
 
+    The scheduled run is in lib.rs (`compact_volume_if_due`), on a cold launch
+    before the attach — the only moment the app has the image detached.
     Requires the volume DETACHED — `hdiutil compact` on a mounted image either
     refuses or does nothing useful. Reports rather than raising when it is
     mounted, because this runs unattended and a nightly job that raises on a
@@ -558,7 +560,9 @@ def compact() -> Dict[str, object]:
         return {"compacted": False, "reason": "the volume is mounted"}
 
     before = _dir_bytes(image)
-    proc = _run(["hdiutil", "compact", str(image)], stdin=passphrase(), timeout=900)
+    # -stdinpass: without it hdiutil ignores stdin and raises a GUI prompt.
+    proc = _run(["hdiutil", "compact", "-stdinpass", str(image)],
+                stdin=passphrase(), timeout=900)
     if proc.returncode != 0:
         return {"compacted": False, "reason": (proc.stderr or "").strip()[:200]}
     after = _dir_bytes(image)

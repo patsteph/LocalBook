@@ -626,3 +626,97 @@ def test_a_clean_shutdown_marker_carries_across_the_swap(env):
 
     assert em.apply_pending()["applied"] is True
     assert (env / ".clean_shutdown").is_file()
+
+
+# ── after the swap: the automatic check (simplified flow) ───────────────────
+
+
+def _swap(env):
+    from services import encryption_verify as ev
+
+    em.prepare()
+    kept = Path(em.apply_pending()["plaintext_kept_at"])
+    old = kept.stat().st_mtime - 60     # "before the swap", for staged damage
+    return ev, kept, old
+
+
+def test_the_check_after_a_clean_swap_passes(env):
+    ev, _, _ = _swap(env)
+    assert ev.needs_databases() and ev.needs_files()
+    ev.verify_databases()
+    assert em.last_apply()["verified"]["state"] == "running"   # files not yet
+    v = ev.verify_files()
+    assert v["ok"] is True and v["state"] == "done"
+    assert v["files"] >= 3 and not v["mismatched_files"]
+    assert not ev.needs_databases() and not ev.needs_files()
+
+
+def test_the_check_catches_a_lost_row(env):
+    ev, _, _ = _swap(env)
+    conn = sqlite3.connect(env / "localbook.db")
+    conn.execute("DELETE FROM sources WHERE id='s3'")
+    conn.commit()
+    conn.close()
+    ev.verify_databases()
+    v = ev.verify_files()
+    assert v["ok"] is False
+    assert v["row_count_drift"]["localbook.db"]["sources"] == {"expected": 25, "actual": 24}
+
+
+def test_the_check_catches_a_changed_file_and_a_missing_one(env):
+    """Damage that happened in the copy, so no mtime after the swap."""
+    import os
+
+    ev, _, old = _swap(env)
+    lance = env / "lancedb" / "nb1.lance"
+    lance.write_bytes(b"corrupt" * 500)
+    os.utime(lance, (old, old))
+    (env / "notebooks" / "nb1.json").unlink()
+    os.utime(env / "notebooks", (old, old))
+
+    ev.verify_databases()
+    v = ev.verify_files()
+    assert v["ok"] is False
+    assert "lancedb/nb1.lance" in v["mismatched_files"]
+    assert "notebooks/nb1.json (missing)" in v["mismatched_files"]
+
+
+def test_a_file_the_app_rewrote_after_the_swap_is_not_a_failure(env):
+    ev, _, _ = _swap(env)
+    (env / "sources.json").write_text('{"s1": {}, "s2": {}}')
+    ev.verify_databases()
+    v = ev.verify_files()
+    assert v["ok"] is True
+    assert v["changed_since_swap"] == 1
+    assert v["changed_files"] == ["sources.json"]      # named, not just counted
+
+
+def test_a_file_the_app_removed_after_the_swap_is_named(env):
+    ev, _, _ = _swap(env)
+    (env / "notebooks" / "nb1.json").unlink()          # the folder's mtime moves with it
+    ev.verify_databases()
+    v = ev.verify_files()
+    assert v["ok"] is True
+    assert v["removed_files"] == ["notebooks/nb1.json"]
+
+
+def test_a_failed_check_keeps_the_plaintext_copy(env):
+    ev, kept, _ = _swap(env)
+    conn = sqlite3.connect(env / "localbook.db")
+    conn.execute("DELETE FROM sources")
+    conn.commit()
+    conn.close()
+    ev.verify_databases()
+    ev.verify_files()
+
+    result = em.discard_plaintext(str(kept))
+    assert result["deleted"] is False
+    assert "differences" in result["error"]
+    assert kept.is_dir()
+
+
+def test_a_passed_check_allows_removal(env):
+    ev, kept, _ = _swap(env)
+    ev.verify_databases()
+    ev.verify_files()
+    assert em.discard_plaintext(str(kept))["deleted"] is True

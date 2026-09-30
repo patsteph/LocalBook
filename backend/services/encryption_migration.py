@@ -794,6 +794,13 @@ def discard_plaintext(path: str) -> Dict[str, object]:
                      "plaintext copy while it is the only readable one.",
         }
 
+    from services.encryption_verify import verified_for
+
+    if (verified_for(str(target)) or {}).get("ok") is False:
+        return {"deleted": False,
+                "error": "the check after the switch found differences between the "
+                         "encrypted volume and this copy — it is kept."}
+
     try:
         size = sum(f.stat().st_size for f in target.rglob("*") if f.is_file())
         shutil.rmtree(target)

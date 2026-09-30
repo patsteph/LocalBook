@@ -617,6 +617,9 @@ class ExternalReserveRequest(BaseModel):
 
 class BackupDestinationRequest(BaseModel):
     path: str
+    # The encryption wizard's pre-filled default may not exist yet. Only ever
+    # sent for a path the user has seen and accepted.
+    create: bool = False
 
 
 def _write_env(key: str, value: str) -> None:
@@ -663,6 +666,19 @@ async def set_backup_destination(req: BackupDestinationRequest):
     raw = (req.path or "").strip()
     if raw:
         folder = Path(raw).expanduser()
+        from services.encryption_setup import backup_destination_problem
+
+        problem = backup_destination_problem(folder)
+        if problem:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Backups must go outside LocalBook's own data: {problem}.",
+            )
+        if req.create and not folder.exists():
+            try:
+                folder.mkdir(parents=True)
+            except OSError as exc:
+                raise HTTPException(status_code=400, detail=f"could not create {folder}: {exc}")
         if not folder.is_dir():
             raise HTTPException(
                 status_code=400,

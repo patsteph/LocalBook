@@ -350,6 +350,90 @@ fn volume_passphrase() -> Option<String> {
     if pw.is_empty() { None } else { Some(pw) }
 }
 
+/// Default days between compactions; `LOCALBOOK_VOLUME_COMPACT_DAYS` overrides
+/// (0 disables). Not in `schedule_store`: that lives INSIDE the volume, which is
+/// exactly what is not readable here.
+const VOLUME_COMPACT_DEFAULT_DAYS: u64 = 7;
+
+/// Stamp of the last successful compact. Beside the data dir, like the flag.
+fn volume_compact_stamp_path() -> Option<PathBuf> {
+    app_support_dir().map(|d| d.join("LocalBook.encryption-last-compact"))
+}
+
+/// LB-11 measure 7: reclaim the bands of deleted data. `hdiutil compact` needs
+/// the image DETACHED, and the app never detaches it — so the only safe moment
+/// is here, on a cold launch before the attach (after a reboot or logout).
+///
+/// Best effort, never fatal. A sparsebundle compact only deletes unused band
+/// files, and macOS itself cancels it on sleep, so an interrupted run is safe;
+/// no stamp is written, and the next cold launch retries. It refuses on battery
+/// power by default — also fine, it retries. Not killed on a timeout: the work
+/// is done by a `diskimages-helper` child that would outlive `hdiutil` and hold
+/// the image, and the attach right after would then fail.
+fn compact_volume_if_due(image: &PathBuf, passphrase: &str) {
+    let days = std::env::var("LOCALBOOK_VOLUME_COMPACT_DAYS")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .unwrap_or(VOLUME_COMPACT_DEFAULT_DAYS);
+    if days == 0 {
+        return;
+    }
+    let stamp = match volume_compact_stamp_path() {
+        Some(p) => p,
+        None => return,
+    };
+    let due = std::fs::metadata(&stamp)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.elapsed().ok())
+        .map(|age| age >= Duration::from_secs(days * 86_400))
+        .unwrap_or(true);
+    if !due {
+        return;
+    }
+
+    println!("[Volume] compacting {:?} (last compact over {} days ago)", image, days);
+    let started = std::time::Instant::now();
+    let mut child = match std::process::Command::new("hdiutil")
+        // -stdinpass is required: without it hdiutil ignores stdin and raises
+        // a GUI password prompt instead.
+        .args(["compact", "-stdinpass"])
+        .arg(image)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("[Volume] could not run hdiutil compact: {}", e);
+            return;
+        }
+    };
+    if let Some(mut stdin) = child.stdin.take() {
+        use std::io::Write;
+        let _ = stdin.write_all(passphrase.as_bytes());
+    }
+    match child.wait_with_output() {
+        Ok(out) if out.status.success() => {
+            let _ = std::fs::write(
+                &stamp,
+                String::from_utf8_lossy(&out.stdout).trim().as_bytes(),
+            );
+            println!(
+                "[Volume] compacted in {:.1}s: {}",
+                started.elapsed().as_secs_f64(),
+                String::from_utf8_lossy(&out.stdout).trim()
+            );
+        }
+        Ok(out) => eprintln!(
+            "[Volume] compact skipped: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ),
+        Err(e) => eprintln!("[Volume] compact failed: {}", e),
+    }
+}
+
 /// Attach the volume if there is one and it is not already up.
 ///
 /// Returns true when the data directory is usable — either it was mounted, or
@@ -412,6 +496,8 @@ fn ensure_volume_mounted() -> bool {
             return false;
         }
     }
+
+    compact_volume_if_due(&image, &passphrase);
 
     println!("[Volume] attaching {:?}", image);
     let mut child = match std::process::Command::new("hdiutil")

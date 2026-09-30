@@ -23,6 +23,34 @@ logger = logging.getLogger(__name__)
 FREE_SPACE_HEADROOM_BYTES = 2 * 1024 ** 3
 
 
+DEFAULT_BACKUP_FOLDER = "LocalBook Backups"
+
+
+def backup_destination_problem(folder: Path) -> Optional[str]:
+    """Why `folder` cannot hold backups, or None. A backup that lives inside
+    what it backs up — the data dir, the encrypted image, a kept plaintext copy
+    — is lost with it."""
+    data = em._data_dir().resolve()
+    try:
+        f = folder.expanduser().resolve()
+    except OSError as exc:
+        return str(exc)
+    image = data.parent / f"{data.name}.sparsebundle"
+    forbidden = [data, image]
+    forbidden += [Path(c["path"]).resolve() for c in em.plaintext_copies()]
+    for bad in forbidden:
+        if f == bad or bad in f.parents:
+            return f"{f} is inside {bad.name} — a backup there would be lost with it"
+    return None
+
+
+def proposed_backup_destination() -> Optional[str]:
+    """`~/LocalBook Backups` — outside everything LocalBook stores. LB-10
+    backups are encrypted, so an obvious default is safe."""
+    candidate = Path.home() / DEFAULT_BACKUP_FOLDER
+    return None if backup_destination_problem(candidate) else str(candidate)
+
+
 def preflight() -> Dict[str, object]:
     """Everything that must be true before the migration is offered.
 
@@ -52,6 +80,9 @@ def preflight() -> Dict[str, object]:
     checks["backup_destination"] = {
         "ok": dest is not None and Path(dest).is_dir(),
         "path": str(dest) if dest else None,
+        # A default the wizard SHOWS pre-filled; it is saved only when the user
+        # presses Encrypt. Never written silently.
+        "proposed_path": None if dest else proposed_backup_destination(),
     }
 
     data_bytes = em._tree_bytes(source) if source.is_dir() else 0
@@ -196,8 +227,15 @@ def prompt() -> Dict[str, object]:
     if encrypted:
         copies = em.plaintext_copies()
         if copies:
+            from services.encryption_verify import verified_for
+
+            # The check that makes one-click removal safe. `None` while it runs
+            # (or for a copy from before the check existed).
+            verified = next((v for c in copies
+                             if (v := verified_for(str(c.get("path")))) is not None), None)
             return {"show": True, "kind": "finish",
-                    "bytes": sum(int(c.get("bytes") or 0) for c in copies)}
+                    "bytes": sum(int(c.get("bytes") or 0) for c in copies),
+                    "copies": copies, "verified": verified}
         return {"show": False}
 
     # 3. The offer. Quiet while a migration is running or staged.

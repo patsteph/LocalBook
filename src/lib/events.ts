@@ -20,6 +20,8 @@ export interface LBEventMap {
   'openSourceByName': { notebookId: string; sourceName: string; searchTerm: string };
   'openExportModal': { content: string; title: string; theme: 'light' };
   'openCanvasVisual': { content: string };
+  // LB-11: Settings › Encryption asks for the setup wizard (EncryptionPrompt owns it)
+  'lb:openEncryptionWizard': void;
   'createFlashcardsDeck': { notebookId: string; topic: string; difficulty: 'easy' | 'medium' | 'hard'; count: number; reason: string };
 
   // Library refresh pulses (no payload)

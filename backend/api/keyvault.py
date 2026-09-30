@@ -40,7 +40,7 @@ logger = logging.getLogger(__name__)
 
 # How many of the 24 words the user types back. Enough that skipping the write-
 # down is not survivable; few enough that it is not a punishment.
-VERIFY_WORD_COUNT = 4
+VERIFY_WORD_COUNT = 3
 
 
 class BeginResponse(BaseModel):

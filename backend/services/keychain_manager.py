@@ -251,7 +251,9 @@ def _migrate_legacy_keys() -> None:
             try:
                 keyring.delete_password(SERVICE_NAME, key_name)
             except keyring.errors.PasswordDeleteError as _e:
-                logger.warning(f"[keychain-manager] {type(_e).__name__}: {_e}")
+                # A key already in the bundle is queued here on every launch; its
+                # legacy item is normally long gone (-25300) — the goal state.
+                logger.debug(f"[keychain-manager] legacy {key_name} already removed: {_e}")
             except Exception as _e:
                 logger.warning(f"[keychain-manager] {type(_e).__name__}: {_e}")
 
