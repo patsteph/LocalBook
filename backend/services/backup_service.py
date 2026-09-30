@@ -625,23 +625,47 @@ def verify_archive(archive: Path, *, phrase: Optional[str] = None) -> Dict[str, 
 
 # ── retention (LB-10 item 3) ────────────────────────────────────────────────
 
-KEEP_DAILY = 7
-KEEP_WEEKLY = 4
+# How many archives to keep. Two, by decision (2026-09-29): at ~550 MB each,
+# eleven archives was ~6 GB for a corpus that grows slowly, and the machine is
+# not short of copies — three Macs hold the data once LB-12 lands.
+#
+# ⚠️ **Retention depth IS the "how long until you notice" window.** With two
+# archives on a daily cadence, a corruption that goes unnoticed for three days
+# is in both of them. That is the cost, it is accepted, and it is the reason
+# this is a setting rather than a constant.
+DEFAULT_KEEP = 2
+
+# The tiered 7-daily/4-weekly scheme is gone with it. Weekly thinning is
+# meaningless below about five archives — there is nothing to thin.
 
 
-def prune(destination_dir: Path, *, keep_daily: int = KEEP_DAILY,
-          keep_weekly: int = KEEP_WEEKLY) -> Dict[str, object]:
-    """Keep 7 daily and 4 weekly archives; delete the rest.
+def keep_count() -> int:
+    """How many archives to retain, read per call so a change takes effect at
+    the next prune rather than the next restart."""
+    try:
+        from config import settings
+
+        return max(1, int(getattr(settings, "backup_keep", DEFAULT_KEEP)))
+    except Exception:
+        return DEFAULT_KEEP
+
+
+def prune(destination_dir: Path, *, keep: Optional[int] = None) -> Dict[str, object]:
+    """Keep the newest `keep` archives; delete the rest.
 
     Runs only AFTER a successful backup, never before. Pruning first would mean
     a failed backup costs an old archive too — the exact moment you can least
     afford to lose one.
+
+    Never deletes the last archive, whatever `keep` says: `keep_count()` floors
+    at 1, so a mistyped 0 cannot leave the user with no backups at all.
 
     An archive whose header cannot be read is KEPT, not deleted. It may be
     corrupt, but "I could not understand this file" is not grounds for removing
     the only copy of something; a corrupt archive is still evidence, and the
     drill will say so.
     """
+    keep = keep_count() if keep is None else max(1, int(keep))
     destination_dir = Path(destination_dir)
     if not destination_dir.is_dir():
         return {"kept": [], "deleted": [], "unreadable": []}
@@ -659,24 +683,11 @@ def prune(destination_dir: Path, *, keep_daily: int = KEEP_DAILY,
 
     dated.sort(key=lambda pair: pair[0], reverse=True)
 
-    keep: set = set()
-    for _, path in dated[:keep_daily]:
-        keep.add(path)
-
-    # One per ISO week, newest first, for the weekly tier.
-    seen_weeks: set = set()
-    for stamp, path in dated:
-        week = stamp.isocalendar()[:2]
-        if week in seen_weeks:
-            continue
-        seen_weeks.add(week)
-        keep.add(path)
-        if len(seen_weeks) >= keep_weekly + 1:
-            break
+    keeping: set = {path for _, path in dated[:keep]}
 
     deleted: List[str] = []
     for _, path in dated:
-        if path in keep:
+        if path in keeping:
             continue
         try:
             path.unlink()
@@ -685,7 +696,8 @@ def prune(destination_dir: Path, *, keep_daily: int = KEEP_DAILY,
             logger.warning("[backup] could not prune %s: %s", path.name, exc)
 
     return {
-        "kept": sorted(p.name for p in keep),
+        "keep": keep,
+        "kept": sorted(p.name for p in keeping),
         "deleted": sorted(deleted),
         "unreadable": sorted(unreadable),
     }

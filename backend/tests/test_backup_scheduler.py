@@ -198,7 +198,9 @@ def _stamped(raw: bytes, dest: Path, when: datetime) -> Path:
     return target
 
 
-def test_the_last_seven_days_are_kept(data_dir, dest):
+def test_only_the_newest_two_are_kept(data_dir, dest):
+    """Two, by decision (2026-09-29): at ~550 MB each, eleven archives was ~6 GB
+    for a slowly-growing corpus, and three Macs will hold the data anyway."""
     now = datetime.now(timezone.utc)
     template = _archive_template(dest, data_dir)
     for days in range(10):
@@ -207,23 +209,43 @@ def test_the_last_seven_days_are_kept(data_dir, dest):
     report = backup_service.prune(dest)
 
     kept = set(report["kept"])
-    for days in range(7):
+    assert len(kept) == 2
+    for days in (0, 1):
         stamp = (now - timedelta(days=days)).strftime("%Y%m%dT%H%M%SZ")
         assert f"localbook-{stamp}.lbbackup" in kept
+    for days in range(2, 10):
+        stamp = (now - timedelta(days=days)).strftime("%Y%m%dT%H%M%SZ")
+        assert f"localbook-{stamp}.lbbackup" not in kept
+
+    assert len(list(dest.glob(f"*{backup_service.ARCHIVE_SUFFIX}"))) == 2
 
 
-def test_older_archives_are_thinned_to_weeklies(data_dir, dest):
+def test_the_retained_count_is_a_setting(data_dir, dest, monkeypatch):
+    from config import settings
+
     now = datetime.now(timezone.utc)
     template = _archive_template(dest, data_dir)
-    for days in range(0, 60, 3):
+    for days in range(6):
         _stamped(template, dest, now - timedelta(days=days))
 
+    monkeypatch.setattr(settings, "backup_keep", 4)
+    assert len(backup_service.prune(dest)["kept"]) == 4
+
+
+def test_a_zero_or_negative_setting_still_keeps_one(data_dir, dest, monkeypatch):
+    """A mistyped 0 must not leave the user with no backups at all."""
+    from config import settings
+
+    now = datetime.now(timezone.utc)
+    template = _archive_template(dest, data_dir)
+    for days in range(4):
+        _stamped(template, dest, now - timedelta(days=days))
+
+    monkeypatch.setattr(settings, "backup_keep", 0)
     report = backup_service.prune(dest)
 
-    remaining = list(dest.glob(f"*{backup_service.ARCHIVE_SUFFIX}"))
-    assert report["deleted"], "nothing was thinned at all"
-    assert len(remaining) < 20
-    assert len(remaining) == len(report["kept"])
+    assert len(report["kept"]) == 1
+    assert list(dest.glob(f"*{backup_service.ARCHIVE_SUFFIX}"))
 
 
 def test_an_unreadable_archive_is_kept_not_deleted(data_dir, dest):
@@ -252,6 +274,14 @@ def test_pruning_never_deletes_everything(data_dir, dest):
         _stamped(template, dest, now - timedelta(days=days))
     backup_service.prune(dest)
     assert list(dest.glob(f"*{backup_service.ARCHIVE_SUFFIX}"))
+
+
+def test_a_single_archive_is_never_pruned(data_dir, dest):
+    """The first backup on a new machine must survive its own prune."""
+    _stamped(_archive_template(dest, data_dir), dest, datetime.now(timezone.utc))
+    report = backup_service.prune(dest)
+    assert report["deleted"] == []
+    assert len(list(dest.glob(f"*{backup_service.ARCHIVE_SUFFIX}"))) == 1
 
 
 # ── the loop's contract ─────────────────────────────────────────────────────

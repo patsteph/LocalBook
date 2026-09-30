@@ -250,6 +250,11 @@ class Settings(BaseSettings):
     # ~6 GB and ~900 MB. Audio is regenerable from its notebook. A manual
     # backup still includes them by default.
     backup_include_blobs_nightly: bool = False
+    # How many archives to keep. Two by default: at ~550 MB each, the old
+    # 7-daily + 4-weekly scheme was ~6 GB for a slowly-growing corpus.
+    # ⚠️ This is also the "how long until you notice" window — with two archives
+    # on a daily cadence, a corruption unnoticed for three days is in both.
+    backup_keep: int = 2
 
     # MLX's internal buffer cache. Unbounded it will happily hold on to every
     # buffer it has ever allocated, which reads as LocalBook hoarding memory

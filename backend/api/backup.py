@@ -19,10 +19,9 @@ from pydantic import BaseModel
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
-# 7 daily and 4 weekly, per the plan. Retention runs after a successful write,
-# never before — pruning first would mean a failed backup costs an old one too.
-KEEP_DAILY = 7
-KEEP_WEEKLY = 4
+# Retention lives in backup_service.keep_count(); it is a setting, not a
+# constant here. Pruning runs after a successful write, never before — doing it
+# first would mean a failed backup costs an old one too.
 
 
 class BackupRequest(BaseModel):
