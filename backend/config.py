@@ -256,6 +256,12 @@ class Settings(BaseSettings):
     # on a daily cadence, a corruption unnoticed for three days is in both.
     backup_keep: int = 2
 
+    # ── Encryption at rest (LB-11) ───────────────────────────────────
+    # A sparsebundle's size is a CEILING, not an allocation: bands on disk only
+    # ever total what the data needs. Generous so it never has to be resized,
+    # which is an operation with its own failure modes.
+    volume_max_size_gb: int = 512
+
     # MLX's internal buffer cache. Unbounded it will happily hold on to every
     # buffer it has ever allocated, which reads as LocalBook hoarding memory
     # the moment anything else on the machine wants some.

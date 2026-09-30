@@ -9,11 +9,20 @@ Three purposes live in this vault:
     backup           the key LB-10's encrypted backups are written under
     device_identity  this machine's Ed25519 seed, used by LB-12 pairing
 
-The volume password is deliberately NOT here. Per D20 it is held by macOS as an
-ordinary disk-image password in the login keychain, resolved at mount time by
-`security find-generic-password -w | hdiutil attach -stdinpass`. Nothing that
-gates access to the data volume may depend on this module, or on the app's code
-signature.
+    volume           the passphrase for LB-11's encrypted sparsebundle
+
+**On `volume`, and the plan's apparent contradiction.** K-1 says the volume
+password is "held by macOS, not by us" and moves it out of this module; LB-11
+says it "comes from `keyvault("volume")`". Both describe what is implemented
+here, because this module's storage IS D20's mechanism:
+`security add-generic-password -A` writes an ordinary login-keychain item with a
+permissive ACL, so no app identity is consulted and an ad-hoc `./build.sh
+--rebuild` reads the same item. What K-1 was ruling out was `SecItemAdd` and the
+data-protection keychain, which an ad-hoc build cannot use at all.
+
+Routing it through here also satisfies K-1(c) — "a copy of every key, **including
+the volume password**, is wrapped to the recovery public key" — with no extra
+machinery. Reconciled 2026-09-29 while building LB-11.
 
 Two things about this module are asymmetric with `keychain_manager`, on purpose:
 
@@ -73,7 +82,7 @@ logger = logging.getLogger(__name__)
 # ── constants ───────────────────────────────────────────────────────────────
 
 SERVICE_NAME = "LocalBook-keyvault"
-PURPOSES = ("credentials", "backup", "device_identity")
+PURPOSES = ("credentials", "backup", "device_identity", "volume")
 KEY_BYTES = 32
 
 _WRAP_INFO = b"LocalBook/K-1/recovery-wrap/v1"

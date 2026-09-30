@@ -72,7 +72,33 @@ def test_get_or_create_is_stable_and_isolated_per_purpose(vault):
 
 def test_unknown_purpose_is_refused(vault):
     with pytest.raises(KeyVaultError, match="unknown purpose"):
-        vault.get_or_create("volume")  # belongs to macOS per D20, not to us
+        vault.get_or_create("disk")
+
+
+def test_volume_is_a_real_purpose_now(vault):
+    """Reconciled 2026-09-29. K-1 said the volume password was "held by macOS,
+    not by us"; LB-11 said it "comes from keyvault". Both describe what is built,
+    because this module's storage IS D20's mechanism — `security -A` writes an
+    ordinary login-keychain item with a permissive ACL, so no app identity is
+    consulted. What K-1 ruled out was SecItemAdd and the data-protection
+    keychain, which an ad-hoc build cannot use at all.
+
+    Routing it here also gives K-1(c)'s wrapped recovery copy of the volume
+    password for free.
+    """
+    assert "volume" in vault.PURPOSES
+    key = vault.get_or_create("volume")
+    assert len(key) == vault.KEY_BYTES
+
+
+def test_the_volume_password_gets_a_wrapped_copy(vault, phrase):
+    """K-1(c): a copy of EVERY key, including the volume password, is wrapped to
+    the recovery key. Without it, a wiped Keychain means an unopenable volume."""
+    vault.set_recovery_key(phrase)
+    key = vault.get_or_create("volume")
+
+    assert vault.wrapped_path("volume").exists()
+    assert vault.unwrap_with_phrase(phrase, "volume") == key
 
 
 def test_device_id_is_stable_and_not_the_hostname(vault, tmp_path):
