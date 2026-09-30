@@ -187,6 +187,15 @@ def apply_pending() -> Optional[Dict[str, object]]:
         return _record({"applied": False, "error": msg})
 
     if not staged.is_dir():
+        # Interrupted AFTER the move: the plaintext is already in place and the
+        # volume detached — only the flag is left. Failing here would lock the
+        # user out of data sitting right there in the data dir.
+        if (source / "localbook.db").is_file() and not volume_service.is_mounted(source):
+            logger.warning("[decrypt] resuming an interrupted switch — plaintext already in place")
+            _disable_encryption_flag(source)
+            _marker_path().unlink(missing_ok=True)
+            return _record({"applied": True, "image_kept_at": str(volume_service.image_path()),
+                            "resumed": True})
         return fail(f"the staged copy is gone: {staged}")
     if not volume_service.is_mounted(source):
         # The writes since `prepare` are inside the volume, and it is not open.

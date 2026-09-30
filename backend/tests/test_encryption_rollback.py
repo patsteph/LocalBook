@@ -149,3 +149,21 @@ def test_the_image_can_be_deleted_once_encryption_is_off(encrypted):
     assert er.discard_image()["deleted"] is True
     assert not volume_service.image_path().exists()
     assert _rows(encrypted / "localbook.db") == 25
+
+
+def test_killed_after_the_move_finishes_instead_of_locking(encrypted, monkeypatch):
+    """Plaintext already in place, flag still on: must finish, not lock."""
+    er.prepare()
+    real = er._disable_encryption_flag
+    monkeypatch.setattr(er, "_disable_encryption_flag",
+                        lambda d: (_ for _ in ()).throw(KeyboardInterrupt("kill -9")))
+    with pytest.raises(KeyboardInterrupt):
+        er.apply_pending()
+    monkeypatch.setattr(er, "_disable_encryption_flag", real)
+    assert volume_gate.encryption_enabled() is True   # flag still on after the crash
+
+    result = er.apply_pending()
+    assert result["applied"] is True and result.get("resumed")
+    assert volume_gate.encryption_enabled() is False
+    assert volume_gate.evaluate().locked is False
+    assert _rows(encrypted / "localbook.db") == 25

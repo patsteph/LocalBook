@@ -537,6 +537,13 @@ def apply_pending() -> Optional[Dict[str, object]]:
 
     The plaintext directory is MOVED ASIDE and kept. If any step fails, it is
     moved back — the app must never be left with no data directory at all.
+
+    **Re-entrant.** A `kill -9`, a crash or a power cut can land between any two
+    steps, and the next launch runs this again. So the aside path is written to
+    the marker BEFORE the move (write-ahead), and a re-run resumes from what is
+    on disk instead of starting over. Starting over was the bug: after the move,
+    the data dir is empty, and a fresh catch-up from an empty dir would have
+    "synced" the volume down to nothing.
     """
     info = pending()
     if not info:
@@ -546,15 +553,31 @@ def apply_pending() -> Optional[Dict[str, object]]:
 
     source = _data_dir()
     image = volume_service.image_path()
+    aside = Path(str(info["aside"])) if info.get("aside") else None
+
+    # Interrupted after the attach: only the bookkeeping is missing.
+    if volume_service.is_mounted(source):
+        logger.warning("[encrypt] resuming an interrupted swap — the volume is already in place")
+        return _finish_swap(image, aside)
+
     if not image.exists():
+        if aside and aside.is_dir():
+            _restore_plaintext(source, aside)
         _marker_path().unlink(missing_ok=True)
-        return {"applied": False, "error": f"the prepared volume is gone: {image}"}
+        return _record_apply({"applied": False, "error": f"the prepared volume is gone: {image}"})
+
+    # Where the live plaintext is right now: still in the data dir, or already
+    # moved aside by an interrupted attempt.
+    resumed = bool(aside and aside.is_dir())
+    live = aside if resumed else source
 
     # The app kept running between `prepare` and this restart — Collector runs,
     # chats happen. Without a catch-up pass those writes would stay behind in the
     # plaintext copy while the user carried on in a volume that never saw them.
-    catch_up = _catch_up(source)
+    catch_up = _catch_up(live)
     if not catch_up.get("ok"):
+        if resumed:
+            _restore_plaintext(source, aside)
         _marker_path().unlink(missing_ok=True)
         return _record_apply({
             "applied": False,
@@ -563,56 +586,78 @@ def apply_pending() -> Optional[Dict[str, object]]:
             "catch_up": catch_up,
         })
 
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    aside = source.parent / f"{PLAINTEXT_PREFIX}{stamp}"
+    if not resumed:
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        aside = source.parent / f"{PLAINTEXT_PREFIX}{stamp}"
+        _marker_path().write_text(json.dumps(dict(info, aside=str(aside)), indent=2))
 
     try:
-        if source.exists():
+        if source.exists() and not resumed:
             shutil.move(str(source), str(aside))
         source.mkdir(parents=True, exist_ok=True)
+        if any(source.iterdir()):
+            # Something wrote into the data dir after the move. Never mount over
+            # it (that would hide it) and never delete it.
+            raise RuntimeError(f"{source} is not empty after the plaintext was moved aside")
         _attach_at(source)
     except Exception as exc:
         logger.error("[encrypt] swap failed: %s", exc)
         # Put it back. An app with no data directory is worse than an
         # unencrypted one.
-        try:
-            if not source.exists() or not any(source.iterdir()):
-                if source.exists():
-                    source.rmdir()
-                if aside.exists():
-                    shutil.move(str(aside), str(source))
-        except Exception as inner:
-            logger.critical(
-                "[encrypt] COULD NOT RESTORE THE PLAINTEXT DIRECTORY: %s. "
-                "Your data is at %s", inner, aside,
-            )
+        if not _restore_plaintext(source, aside):
             return _record_apply({"applied": False, "error": str(exc),
                                   "plaintext_at": str(aside),
                                   "needs_manual_recovery": True})
+        _marker_path().unlink(missing_ok=True)
         return _record_apply({"applied": False, "error": str(exc)})
 
     if not volume_service.is_mounted(source):
         logger.error("[encrypt] volume mounted but carries no sentinel — rolling back")
         try:
             _detach(source)
-            source.rmdir()
-            shutil.move(str(aside), str(source))
         except Exception as inner:
-            logger.critical("[encrypt] rollback failed: %s — data is at %s", inner, aside)
+            logger.critical("[encrypt] rollback detach failed: %s — data is at %s", inner, aside)
+        _restore_plaintext(source, aside)
+        _marker_path().unlink(missing_ok=True)
         return _record_apply({"applied": False, "error": "the volume carries no sentinel"})
 
+    return _finish_swap(image, aside)
+
+
+def _restore_plaintext(source: Path, aside: Optional[Path]) -> bool:
+    """Move the kept plaintext back into the data dir. True on success.
+
+    Only ever into an absent or EMPTY data dir — anything else is left exactly
+    where it is and logged, never overwritten.
+    """
+    if not aside or not aside.is_dir():
+        return source.is_dir()
+    try:
+        if source.exists():
+            if any(source.iterdir()):
+                logger.critical("[encrypt] %s is not empty — NOT restoring over it. "
+                                "Your data is at %s", source, aside)
+                return False
+            source.rmdir()
+        shutil.move(str(aside), str(source))
+        return True
+    except Exception as exc:
+        logger.critical("[encrypt] COULD NOT RESTORE THE PLAINTEXT DIRECTORY: %s. "
+                        "Your data is at %s", exc, aside)
+        return False
+
+
+def _finish_swap(image: Path, aside: Optional[Path]) -> Dict[str, object]:
     _marker_path().unlink(missing_ok=True)
     _enable_encryption_flag()
-
     logger.warning(
         "[encrypt] the data directory is now encrypted. The plaintext copy is "
         "kept at %s until you confirm.", aside,
     )
     return _record_apply({
         "applied": True,
-        "plaintext_kept_at": str(aside),
+        "plaintext_kept_at": str(aside) if aside else None,
         "image": str(image),
-        "caught_up_files": catch_up.get("files", 0),
         # Deliberately surfaced: the migration is not finished until the user
         # has seen their own notebooks and said so.
         "confirm_required": True,
@@ -635,6 +680,12 @@ def _catch_up(source: Path) -> Dict[str, object]:
     except Exception as exc:
         return {"ok": False, "errors": [f"could not mount the prepared volume: {exc}"]}
     try:
+        # Never sync FROM a directory that has lost its database while the
+        # volume still has one: that is an interrupted swap or a wrong path, and
+        # following it would delete the corpus out of the volume.
+        if (staging / "localbook.db").is_file() and not (source / "localbook.db").is_file():
+            raise RuntimeError(f"{source} has no localbook.db but the volume does — "
+                               "refusing to sync from it")
         _sync_into(source, staging, report, changed)
         _verify(source, staging, report, only=changed)
     except Exception as exc:

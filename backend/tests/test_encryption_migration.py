@@ -77,7 +77,7 @@ def env(tmp_path, monkeypatch):
                 pass
         for purpose in keyvault.PURPOSES:
             real_run(
-                ["security", "delete-generic-password", "-a", purpose, "-s", service],
+                ["security", "delete-generic-password", "-a", purpose, "-s", keyvault.service_name()],
                 capture_output=True,
             )
 
@@ -551,3 +551,68 @@ def test_an_abandoned_prepare_does_not_lock_a_live_plaintext_dir(env):
     em.cancel_pending()
     assert volume_service.image_path().exists()
     assert volume_gate.evaluate().locked is False
+
+
+# ── kill -9 mid-swap: every interruption point resumes, never wipes ─────────
+
+
+def test_killed_after_the_move_resumes_instead_of_syncing_from_empty(env, monkeypatch):
+    """The bug: after the move the data dir is empty, and a fresh catch-up from
+    it would have deleted the corpus out of the volume."""
+    em.prepare()
+    real_attach = em._attach_at
+    calls = {"n": 0}
+
+    def attach_then_die(mp):
+        if mp == env:          # the final attach, after the move
+            raise KeyboardInterrupt("kill -9")
+        return real_attach(mp)
+
+    monkeypatch.setattr(em, "_attach_at", attach_then_die)
+    with pytest.raises(KeyboardInterrupt):
+        em.apply_pending()
+    # The crash left: plaintext moved aside, marker records it, data dir empty.
+    assert em.pending().get("aside")
+    assert not (env / "localbook.db").exists()
+
+    monkeypatch.setattr(em, "_attach_at", real_attach)
+    result = em.apply_pending()                       # the next launch
+
+    assert result["applied"] is True, result
+    conn = sqlite3.connect(f"file:{env / 'localbook.db'}?mode=ro", uri=True)
+    try:
+        assert conn.execute("SELECT COUNT(*) FROM sources").fetchone()[0] == 25
+    finally:
+        conn.close()
+    assert result["plaintext_kept_at"] == em.plaintext_copies()[0]["path"]
+
+
+def test_killed_after_the_attach_just_finishes(env, monkeypatch):
+    em.prepare()
+    real_finish = em._finish_swap
+    monkeypatch.setattr(em, "_finish_swap",
+                        lambda *a: (_ for _ in ()).throw(KeyboardInterrupt("kill -9")))
+    with pytest.raises(KeyboardInterrupt):
+        em.apply_pending()
+    monkeypatch.setattr(em, "_finish_swap", real_finish)
+    assert em.pending() is not None                  # the marker survived the crash
+
+    result = em.apply_pending()
+    assert result["applied"] is True
+    assert volume_service.is_mounted(env)
+
+
+def test_a_catch_up_never_syncs_from_a_dir_without_its_database(env):
+    em.prepare()
+    (env / "localbook.db").rename(env.parent / "moved.db")
+
+    result = em.apply_pending()
+    assert result["applied"] is False
+    volume_service.create  # the prepared volume must still hold the corpus:
+    staging = env.parent / em.STAGING_MOUNT
+    staging.mkdir(exist_ok=True)
+    em._attach_at(staging)
+    try:
+        assert (staging / "localbook.db").is_file()
+    finally:
+        em._detach(staging)
