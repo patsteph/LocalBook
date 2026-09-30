@@ -81,7 +81,9 @@ def test_device_id_is_stable_and_not_the_hostname(vault, tmp_path):
     first = vault.device_id()
     assert first == vault.device_id()
     assert platform.node() not in first
-    assert (tmp_path / "LocalBook.keys" / "device_id").exists()
+    # Beside the data dir, not inside it — see the D6' section below.
+    assert (vault._keys_dir() / "device_id").exists()
+    assert not (tmp_path / "LocalBook.keys" / "device_id").exists()
 
 
 # ── recovery: the round trip ────────────────────────────────────────────────
@@ -334,3 +336,100 @@ def test_status_reports_without_leaking_key_material(vault, phrase):
     }
     assert st["purposes"]["backup"]["in_keychain"] is False
     assert base64.b64encode(key).decode() not in json.dumps(st)
+
+
+# ── where the wrapped keys live (D6', prerequisite for LB-11) ───────────────
+
+
+def test_wrapped_keys_live_beside_the_data_dir_not_inside_it(vault, tmp_path):
+    """LB-11 makes the data dir a mount point for an encrypted sparsebundle.
+    Wrapped keys stored inside it would be sealed in the very volume they exist
+    to unlock — unrecoverable at exactly the moment recovery is needed, while
+    the UI reported "protected"."""
+    keys = vault._keys_dir()
+    assert keys.parent == tmp_path.parent
+    assert tmp_path not in keys.parents
+    assert keys != tmp_path / "LocalBook.keys"
+
+
+def test_the_keys_dir_is_named_after_the_data_dir(vault, tmp_path):
+    """A fixed `LocalBook.keys` would have had the dev sandbox reading and
+    wrapping against the real machine's keys."""
+    assert vault._keys_dir().name == f"{tmp_path.name}.keys"
+
+
+def test_two_data_dirs_do_not_share_a_keys_dir(tmp_path, monkeypatch):
+    from config import settings
+
+    monkeypatch.setattr(settings, "data_dir", tmp_path / "LocalBook")
+    prod = keyvault._keys_dir()
+    monkeypatch.setattr(settings, "data_dir", tmp_path / "LocalBook-dev")
+    dev = keyvault._keys_dir()
+    assert prod != dev
+
+
+def test_a_legacy_keys_dir_is_copied_out_and_the_original_kept(tmp_path, monkeypatch):
+    """The wrapped keys are the last line of recovery — a half-finished MOVE of
+    them is the one failure with nothing behind it. So: copy, and keep."""
+    from config import settings
+
+    data_dir = tmp_path / "LocalBook"
+    legacy = data_dir / keyvault.LEGACY_KEYS_DIRNAME
+    (legacy / "abc123").mkdir(parents=True)
+    (legacy / "device_id").write_text("abc123\n")
+    (legacy / "recovery.pub").write_text("cHVibGljCg==\n")
+    (legacy / "abc123" / "credentials.wrapped").write_text('{"purpose": "credentials"}')
+
+    monkeypatch.setattr(settings, "data_dir", data_dir)
+    relocated = keyvault._keys_dir()
+
+    assert relocated == tmp_path / "LocalBook.keys"
+    assert (relocated / "device_id").read_text().strip() == "abc123"
+    assert (relocated / "abc123" / "credentials.wrapped").is_file()
+    assert legacy.is_dir(), "the original must be kept until LB-11 proves the volume"
+
+
+def test_the_relocation_does_not_overwrite_an_existing_keys_dir(tmp_path, monkeypatch):
+    from config import settings
+
+    data_dir = tmp_path / "LocalBook"
+    legacy = data_dir / keyvault.LEGACY_KEYS_DIRNAME
+    legacy.mkdir(parents=True)
+    (legacy / "device_id").write_text("old\n")
+
+    target = tmp_path / "LocalBook.keys"
+    target.mkdir()
+    (target / "device_id").write_text("current\n")
+
+    monkeypatch.setattr(settings, "data_dir", data_dir)
+    assert (keyvault._keys_dir() / "device_id").read_text().strip() == "current"
+
+
+def test_the_relocated_keys_dir_is_owner_only(tmp_path, monkeypatch):
+    from config import settings
+
+    data_dir = tmp_path / "LocalBook"
+    legacy = data_dir / keyvault.LEGACY_KEYS_DIRNAME
+    legacy.mkdir(parents=True)
+    (legacy / "device_id").write_text("x\n")
+
+    monkeypatch.setattr(settings, "data_dir", data_dir)
+    assert keyvault._keys_dir().stat().st_mode & 0o777 == 0o700
+
+
+def test_a_failed_relocation_does_not_break_key_access(tmp_path, monkeypatch):
+    """Raising here would make the app unable to read keys it can still read
+    perfectly well in the old place."""
+    import shutil as _shutil
+
+    from config import settings
+
+    data_dir = tmp_path / "LocalBook"
+    (data_dir / keyvault.LEGACY_KEYS_DIRNAME).mkdir(parents=True)
+    monkeypatch.setattr(settings, "data_dir", data_dir)
+    monkeypatch.setattr(
+        _shutil, "copytree",
+        lambda *a, **k: (_ for _ in ()).throw(OSError("read-only filesystem")),
+    )
+
+    assert keyvault._keys_dir() == tmp_path / "LocalBook.keys"   # must not raise

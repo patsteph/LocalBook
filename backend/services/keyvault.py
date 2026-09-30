@@ -54,6 +54,7 @@ import json
 import logging
 import os
 import secrets
+import shutil
 import stat
 import subprocess
 from pathlib import Path
@@ -106,10 +107,58 @@ def _data_dir() -> Path:
     return Path(settings.data_dir)
 
 
+# The legacy location, inside the data dir. Migrated out on first access.
+LEGACY_KEYS_DIRNAME = "LocalBook.keys"
+
+
 def _keys_dir() -> Path:
-    """Where wrapped copies live: outside the volume, so recovery works when it
-    cannot mount."""
-    return _data_dir() / "LocalBook.keys"
+    """Where wrapped copies live: BESIDE the data dir, never inside it.
+
+    This is D6′, and LB-11 is why it matters. LB-11 makes the data dir a mount
+    point for an encrypted sparsebundle — so wrapped keys stored inside it would
+    be sealed in exactly the volume they exist to unlock. A Keychain reset would
+    then be unrecoverable at precisely the moment recovery is needed, while the
+    UI cheerfully reported "protected".
+
+    Named after the data dir rather than fixed, so the dev sandbox and production
+    do not share one keys directory:
+
+        ~/Library/Application Support/LocalBook       →  LocalBook.keys
+        ~/Library/Application Support/LocalBook-dev   →  LocalBook-dev.keys
+
+    A fixed `LocalBook.keys` would have had a dev run reading and wrapping
+    against the real machine's keys.
+    """
+    data_dir = _data_dir()
+    current = data_dir.parent / f"{data_dir.name}.keys"
+    _migrate_keys_dir(data_dir, current)
+    return current
+
+
+def _migrate_keys_dir(data_dir: Path, target: Path) -> None:
+    """Move a pre-LB-11 keys directory out of the data dir, once.
+
+    Copies rather than moves, and only when the target does not exist — the
+    wrapped keys are the last line of recovery, and a half-finished move of them
+    is the one failure with no fallback behind it. The original is left in place
+    for a release; LB-11's migration removes it after the volume is proven.
+    """
+    legacy = data_dir / LEGACY_KEYS_DIRNAME
+    if target.exists() or not legacy.is_dir():
+        return
+    try:
+        shutil.copytree(legacy, target)
+        os.chmod(target, stat.S_IRWXU)
+        logger.warning(
+            "[keyvault] wrapped keys copied out of the data dir to %s (D6' — they "
+            "must not live inside the volume they unlock). The original is kept.",
+            target,
+        )
+    except OSError as exc:
+        # Not fatal, and deliberately not raising: failing here would make the
+        # app unable to read keys it can still perfectly well read in the old
+        # place. The next launch tries again.
+        logger.error("[keyvault] could not relocate the keys dir: %s", exc)
 
 
 def _recovery_pub_path() -> Path:
