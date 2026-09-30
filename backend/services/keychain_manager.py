@@ -2,7 +2,8 @@
 
 Design:
 - All API keys are stored as a single JSON blob under ONE Keychain item
-  (SERVICE_NAME / "api_keys"), eliminating the per-key password prompts.
+  (`keyvault.service_name()` / "api_keys", permissive ACL), eliminating the
+  per-key password prompts AND the re-prompt after every rebuild.
 - On macOS, Touch ID / biometric unlock is requested via LocalAuthentication
   before reading secrets. Falls back gracefully if biometrics are unavailable
   (e.g., non-Touch-ID Macs, running headless, pyobjc not installed).
@@ -142,12 +143,59 @@ async def _request_biometric_auth_async(reason: str = "unlock LocalBook search &
 
 # ── Internal bundle helpers ──────────────────────────────────────────────────
 
+# The bundle lives in a keyvault-style item: `security -A` (permissive ACL, D20)
+# under `keyvault.service_name()`. It used to be a `keyring` item, whose ACL names
+# the binary that created it — so every ad-hoc rebuild changed the signature and
+# macOS asked for the login password again (K-1 gate item 9, observed on the mini
+# 2026-09-30). The keyring item is read once, copied, verified and removed.
+_BUNDLE_ACCOUNT = "api_keys"
+_bundle_migrated = False
+
+
+def _legacy_bundle_migration() -> None:
+    """Move the keyring-held bundle into the keyvault item. Once per process.
+
+    PRODUCTION DATA DIR ONLY. A dev or test install sharing this Mac's login
+    keychain would otherwise copy the user's API keys into its own namespace
+    and delete the original.
+    """
+    global _bundle_migrated
+    if _bundle_migrated:
+        return
+    _bundle_migrated = True
+    from services import keyvault
+
+    if keyvault.service_name() != keyvault.SERVICE_NAME:
+        return
+    try:
+        if keyvault._keychain_read(_BUNDLE_ACCOUNT) is not None:
+            return
+        raw = keyring.get_password(SERVICE_NAME, BUNDLE_KEY)   # may prompt ONCE
+        if not raw:
+            return
+        json.loads(raw)                                          # never copy garbage
+        keyvault._keychain_write(_BUNDLE_ACCOUNT, raw.encode())
+        if keyvault._keychain_read(_BUNDLE_ACCOUNT) != raw.encode():
+            logger.error("[Keychain] API-key bundle copy did not verify — keeping the original")
+            return
+        try:
+            keyring.delete_password(SERVICE_NAME, BUNDLE_KEY)
+        except Exception as e:
+            logger.warning(f"[Keychain] copied the API-key bundle but could not remove the old item: {e}")
+        logger.info("[Keychain] API-key bundle moved to the rebuild-proof keychain item")
+    except Exception as e:
+        logger.warning(f"[Keychain] API-key bundle migration skipped: {e}")
+
+
 def _load_bundle() -> dict:
     """Read the consolidated JSON blob from Keychain. Returns {} on miss."""
+    _legacy_bundle_migration()
     try:
-        raw = keyring.get_password(SERVICE_NAME, BUNDLE_KEY)
+        from services import keyvault
+
+        raw = keyvault._keychain_read(_BUNDLE_ACCOUNT)
         if raw:
-            return json.loads(raw)
+            return json.loads(raw.decode())
     except Exception as e:
         logger.warning(f"[Keychain] Failed to load bundle: {e}")
     return {}
@@ -155,8 +203,11 @@ def _load_bundle() -> dict:
 
 def _save_bundle(data: dict) -> None:
     """Write the consolidated JSON blob to Keychain."""
+    _legacy_bundle_migration()
     try:
-        keyring.set_password(SERVICE_NAME, BUNDLE_KEY, json.dumps(data))
+        from services import keyvault
+
+        keyvault._keychain_write(_BUNDLE_ACCOUNT, json.dumps(data).encode())
     except Exception as e:
         logger.error(f"[Keychain] Failed to save bundle: {e}")
         raise
