@@ -123,3 +123,84 @@ async def compact_volume():
     from services import volume_service
 
     return await asyncio.to_thread(volume_service.compact)
+
+
+# ── the migration (LB-11 measure 5) ─────────────────────────────────────────
+
+
+class MigrateRequest(BaseModel):
+    # Only for a machine that genuinely has no destination and accepts the risk.
+    # Defaults to taking one, because the backup is the thing standing behind
+    # the whole operation.
+    skip_backup: bool = False
+
+
+class DiscardRequest(BaseModel):
+    path: str
+
+
+@router.post("/system/volume/migrate")
+async def migrate_to_encrypted(req: MigrateRequest):
+    """Prepare an encrypted copy of the data directory and stage the swap.
+
+    Long-running: it takes a backup, creates the volume, copies ~690 MB in and
+    verifies every database and every file. Nothing live is touched — the
+    plaintext directory is only read, and a failure leaves no marker, so an
+    abandoned attempt costs nothing.
+    """
+    import asyncio
+
+    from services import encryption_migration
+
+    report = await asyncio.to_thread(
+        encryption_migration.prepare, skip_backup=req.skip_backup
+    )
+    out = report.as_dict()
+    out["detail"] = (
+        "Prepared and verified. Quit and reopen LocalBook to switch over — your "
+        "current data is kept, not replaced."
+        if report.ok
+        else "Not staged. Your data has not been touched."
+    )
+    return out
+
+
+@router.get("/system/volume/migrate/pending")
+async def pending_migration():
+    from services import encryption_migration
+
+    return {"pending": encryption_migration.pending()}
+
+
+@router.delete("/system/volume/migrate/pending")
+async def cancel_migration():
+    """Abandon a staged migration. The prepared volume is left in place, unused."""
+    from services import encryption_migration
+
+    return {"cancelled": encryption_migration.cancel_pending()}
+
+
+@router.get("/system/volume/plaintext-copies")
+async def list_plaintext_copies():
+    """What the migration kept. Shown until the user says it can go."""
+    from services import encryption_migration
+
+    return {"copies": encryption_migration.plaintext_copies()}
+
+
+@router.delete("/system/volume/plaintext-copies")
+async def discard_plaintext(req: DiscardRequest):
+    """Delete a kept plaintext copy. The only destructive call in LB-11.
+
+    Refused unless the encrypted volume is currently mounted — deleting it while
+    the volume is unavailable turns a recoverable situation into a total loss,
+    and that is exactly the moment a frustrated user is most likely to try.
+    """
+    import asyncio
+
+    from services import encryption_migration
+
+    result = await asyncio.to_thread(encryption_migration.discard_plaintext, req.path)
+    if not result.get("deleted"):
+        raise HTTPException(status_code=400, detail=result.get("error", "could not delete"))
+    return result

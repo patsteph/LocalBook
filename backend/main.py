@@ -31,6 +31,33 @@ if _ca:
         if not _cur or not os.path.exists(_cur):   # override a missing/broken pre-set value
             os.environ[_var] = _ca
 
+# ── LB-11: apply a prepared encryption migration, before ANYTHING else ──────
+# Ahead of the volume gate, because a successful swap is what makes the gate
+# find a mounted volume. Ahead of every `from api import ...` below, because
+# those reach storage.database — by lifespan time the databases are open and
+# the data directory cannot be moved.
+#
+# The plaintext copy is MOVED ASIDE and kept. Nothing here deletes anything.
+try:
+    from services.encryption_migration import apply_pending as _apply_encryption
+    _enc = _apply_encryption()
+    if _enc and _enc.get("applied"):
+        print("=" * 72)
+        print("🔐 YOUR DATA DIRECTORY IS NOW ENCRYPTED")
+        print(f"    plaintext copy kept at: {_enc.get('plaintext_kept_at')}")
+        print("    Check your notebooks, then remove it from Settings → Data Health.")
+        print("=" * 72)
+    elif _enc and _enc.get("needs_manual_recovery"):
+        print("=" * 72)
+        print("⚠️  ENCRYPTION SWAP FAILED AND COULD NOT BE ROLLED BACK")
+        print(f"    Your data is intact at: {_enc.get('plaintext_at')}")
+        print("    Move it back to the data directory to continue.")
+        print("=" * 72)
+    elif _enc:
+        print(f"⚠️  encryption migration not applied: {_enc.get('error')}")
+except Exception as _e:
+    print(f"⚠️  encryption migration skipped: {_e}")
+
 # ── LB-11: decide whether we may serve at all, before ANY store opens ───────
 # Ordered before the restore pre-flight and before every `from api import ...`
 # below, because importing those reaches `storage.database`. If the encrypted
