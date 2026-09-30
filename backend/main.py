@@ -31,6 +31,24 @@ if _ca:
         if not _cur or not os.path.exists(_cur):   # override a missing/broken pre-set value
             os.environ[_var] = _ca
 
+# ── LB-11: decide whether we may serve at all, before ANY store opens ───────
+# Ordered before the restore pre-flight and before every `from api import ...`
+# below, because importing those reaches `storage.database`. If the encrypted
+# volume is not mounted, nothing may open, create or migrate anything — the app
+# comes up in a locked state serving only a recovery screen.
+try:
+    from services.volume_gate import evaluate as _evaluate_volume_gate
+    _gate = _evaluate_volume_gate()
+    if _gate.locked:
+        print("=" * 72)
+        print("🔒 LOCALBOOK IS LOCKED — the encrypted volume is not open")
+        print(f"    {_gate.reason}")
+        print(f"    {_gate.detail}")
+        print("    Your notebooks have NOT been touched.")
+        print("=" * 72)
+except Exception as _e:
+    print(f"⚠️  volume gate check failed: {_e}")
+
 # ── LB-10: apply a staged restore BEFORE anything opens a database ──────────
 # This has to be the first real thing that happens. `storage.database.Database`
 # opens the SQLite connection on first use, and importing the API modules below
@@ -40,6 +58,12 @@ if _ca:
 # Deliberately quiet and non-fatal when there is nothing staged: the common case
 # is every launch, forever.
 try:
+    from services.volume_gate import current as _gate_now
+    if _gate_now().locked:
+        # Unpacking a restore into an unmounted mount point would put a whole
+        # data directory where the volume belongs, and the next successful
+        # attach would then refuse because the mount point is not empty.
+        raise RuntimeError("locked — a staged restore cannot be applied yet")
     from services.restore_service import apply_pending as _apply_pending_restore
     _restore_result = _apply_pending_restore()
     if _restore_result:
@@ -750,6 +774,10 @@ from utils.auth_middleware import AppTokenAuthMiddleware
 # (set AUTH_ENFORCE=false in ~/Library/Application Support/LocalBook/.env)
 # while diagnosing 401 regressions, then flip back when fixed.
 app.add_middleware(AppTokenAuthMiddleware, enforce=settings.auth_enforce)
+# LB-11: added LAST so Starlette makes it OUTERMOST — it must not be bypassable
+# by any other middleware, and it costs nothing once the gate is open.
+from services.volume_gate import LockedGateMiddleware as _LockedGateMiddleware
+app.add_middleware(_LockedGateMiddleware)
 logger.info(f"[main] auth middleware enforce={settings.auth_enforce}")
 
 # CORS middleware — added LAST so it's the OUTERMOST wrapper. This is
@@ -813,6 +841,10 @@ app.include_router(keyvault_api.router, tags=["keyvault"])
 # LB-10: backup + verify. The destination is always outside the data dir.
 from api import backup as backup_api
 app.include_router(backup_api.router, tags=["backup"])
+# LB-11: the encrypted volume and the recovery surface. These stay reachable
+# while the app is locked — they are how the user gets back in.
+from api import volume as volume_api
+app.include_router(volume_api.router, tags=["volume"])
 # OpenAI-compatible surface so companion tools can use LocalBook's engine
 # instead of loading a second copy of the same model. Auth is the companion
 # key, checked inside the router (see utils/auth_middleware EXEMPT_PREFIXES).

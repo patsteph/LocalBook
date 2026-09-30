@@ -261,6 +261,15 @@ class Settings(BaseSettings):
     # ever total what the data needs. Generous so it never has to be resized,
     # which is an operation with its own failure modes.
     volume_max_size_gb: int = 512
+    # Per-machine, NEVER synced (D11). The plan rolls encryption out one Mac at
+    # a time; a synced flag would switch it on for a machine with no volume and
+    # lock that machine out of its own data.
+    encryption_enabled: bool = Field(
+        False,
+        validation_alias=AliasChoices(
+            "LOCALBOOK_ENCRYPTION_ENABLED", "encryption_enabled"
+        ),
+    )
 
     # MLX's internal buffer cache. Unbounded it will happily hold on to every
     # buffer it has ever allocated, which reads as LocalBook hoarding memory
@@ -303,6 +312,15 @@ class Settings(BaseSettings):
 
 settings = Settings()
 
-# Ensure data directories exist
-settings.data_dir.mkdir(parents=True, exist_ok=True)
-settings.db_path.mkdir(parents=True, exist_ok=True)
+# ── LB-11 measure 1: do NOT create the data directory at import ─────────────
+# When encryption is on, `data_dir` is a MOUNT POINT. Creating it here — which
+# this did unconditionally — is precisely what made a failed mount
+# indistinguishable from a new install: an empty directory appears, nothing above
+# can tell why, and LocalBook comes up blank and starts writing a fresh corpus
+# over the top of encrypted data it simply could not open.
+#
+# With encryption off, nothing has changed. With it on, the directories are
+# created AFTER a successful mount, by `volume_gate.ensure_subdirs()`.
+if not bool(getattr(settings, "encryption_enabled", False)):
+    settings.data_dir.mkdir(parents=True, exist_ok=True)
+    settings.db_path.mkdir(parents=True, exist_ok=True)

@@ -280,6 +280,8 @@ python -W ignore -m PyInstaller \
     --hidden-import=services.backup_scheduler \
     --hidden-import=services.data_health \
     --hidden-import=services.volume_service \
+    --hidden-import=services.volume_gate \
+    --hidden-import=api.volume \
     --hidden-import=api.backup \
     --hidden-import=services.companion_keys \
     --hidden-import=services.companion_audit \
