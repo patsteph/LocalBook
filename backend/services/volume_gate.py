@@ -188,6 +188,60 @@ def evaluate() -> Gate:
         return _gate
 
 
+def check_still_mounted() -> Gate:
+    """Lock if the volume vanished while the app was running. Idempotent.
+
+    Called by `volume_watch`. Only ever moves OPEN → LOCKED; getting back is a
+    restart, because every store opened before the eject holds handles into a
+    filesystem that is gone.
+    """
+    global _gate
+
+    if _gate.locked or not encryption_enabled():
+        return _gate
+    from services import volume_service
+
+    if volume_service.is_mounted():
+        return _gate
+    _gate = Gate(
+        state=GateState.LOCKED,
+        reason="the encrypted volume was disconnected while LocalBook was running",
+        detail=(
+            "LocalBook stopped using its encrypted volume because it disappeared — "
+            "for example it was ejected. Nothing has been lost. Quit and reopen "
+            "LocalBook to reconnect it."
+        ),
+    )
+    logger.critical("[volume-gate] LOCKED — the volume disappeared while running")
+    return _gate
+
+
+def _move_strays_aside(mp: Path) -> Optional[Path]:
+    """Files at a bare mount point were written after the volume went away.
+
+    Mounting over them would hide them and `attach` rightly refuses; deleting
+    them could lose a user's last few minutes. So they are MOVED to a sibling
+    folder, kept, and named in the log — then the volume can mount.
+    """
+    from datetime import datetime, timezone
+
+    from services import volume_service
+
+    if not mp.is_dir() or (mp / volume_service.SENTINEL).exists():
+        return None
+    strays = list(mp.iterdir())
+    if not strays:
+        return None
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    dest = mp.parent / f"{mp.name}.unmounted-writes-{stamp}"
+    dest.mkdir()
+    for item in strays:
+        item.rename(dest / item.name)
+    logger.warning("[volume-gate] %d item(s) written while the volume was away kept at %s",
+                   len(strays), dest)
+    return dest
+
+
 def unlock() -> Gate:
     """Try to mount and, if it works, open the gate.
 
@@ -198,6 +252,7 @@ def unlock() -> Gate:
     from services import volume_service
 
     try:
+        _move_strays_aside(volume_service.mount_point())
         state = volume_service.attach()
     except Exception as exc:
         _gate = Gate(state=GateState.LOCKED, reason=str(exc),

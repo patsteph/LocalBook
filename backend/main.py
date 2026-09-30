@@ -514,6 +514,9 @@ async def _run_startup_tasks():
         # destination is set in Settings — there is no safe default.
         from services.backup_scheduler import nightly_backup
         nightly_backup.start()
+        # LB-11: lock if the encrypted volume vanishes mid-session.
+        from services.volume_watch import volume_watch
+        volume_watch.start()
         from services.memory_manager import memory_manager
         safe_create_task(memory_manager.start_scheduler(), name="memory-scheduler")
         print("📝 Memory consolidation manager started")

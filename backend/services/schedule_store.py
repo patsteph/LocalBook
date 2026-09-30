@@ -308,6 +308,26 @@ SCHEDULE_REGISTRY: List[ScheduleDef] = [
         can_disable=True,
     ),
     ScheduleDef(
+        id="volume-watch",
+        name="Encrypted volume watch",
+        agent="system",
+        category=CAT_INFRA,
+        cadence_kind=KIND_INTERVAL,
+        default_seconds=15,
+        min_seconds=5,
+        max_seconds=5 * 60,
+        editable=True,
+        rung_c_candidate=True,
+        module_const="volume_watch.DEFAULT_INTERVAL_SECONDS",
+        note="Checks the encrypted volume is still attached while LocalBook runs, "
+             "and locks the app if it disappears (e.g. ejected) instead of letting "
+             "it write into an empty folder. Does nothing when encryption is off.",
+        tier=None,
+        managed_in="Settings → Encryption",
+        can_disable=True,
+        advanced=True,
+    ),
+    ScheduleDef(
         id="stuck-source-recovery",
         name="Stuck-source recovery",
         agent="system",
