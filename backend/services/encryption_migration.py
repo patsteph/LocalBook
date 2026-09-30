@@ -70,7 +70,12 @@ SQLITE_DBS = (
 # Never copied into the volume. Transient, reproducible, or actively harmful to
 # carry across — a stale `.app_token` would be read by the next launch, and the
 # WAL/SHM files belong to a snapshot that no longer exists once the DB is copied.
-SKIP_NAMES = {".app_token", ".DS_Store", ".volume_id", ".clean_shutdown"}
+#
+# `.clean_shutdown` is deliberately NOT here. The catch-up runs after the old
+# backend has exited, so the source's marker is the true answer to "did the last
+# run shut down cleanly" — skipping it made every first launch after a migration
+# report an unclean shutdown that never happened (seen on the mini, 2026-09-30).
+SKIP_NAMES = {".app_token", ".DS_Store", ".volume_id"}
 SKIP_SUFFIXES = ("-wal", "-shm", ".keyvault-tmp", ".json.tmp")
 
 

@@ -171,8 +171,26 @@ fn kill_existing_backend() {
             }
         }
 
-        // Wait for graceful shutdown (3s is enough for DB flush + model save)
-        std::thread::sleep(Duration::from_secs(3));
+        // Wait for the graceful shutdown to FINISH, not for a fixed guess. It
+        // was a flat 3 s, and the lifespan shutdown (stop workers, unload
+        // models, WAL checkpoint, then the clean-shutdown marker LAST) can take
+        // longer — so a normal Restart got SIGKILLed and the next launch ran its
+        // post-crash integrity check (seen on the mini, 2026-09-30). Returns as
+        // soon as the process is gone; a genuinely frozen backend still gets
+        // SIGKILL below after GRACEFUL_SHUTDOWN_SECS.
+        const GRACEFUL_SHUTDOWN_SECS: u64 = 15;
+        let deadline = std::time::Instant::now() + Duration::from_secs(GRACEFUL_SHUTDOWN_SECS);
+        while std::time::Instant::now() < deadline {
+            let alive = std::process::Command::new("pgrep")
+                .args(["-f", "localbook-backend"])
+                .output()
+                .map(|o| !o.stdout.is_empty())
+                .unwrap_or(false);
+            if !alive && port_8000_holders().is_empty() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(250));
+        }
 
         // 3. Force-kill stragglers on port 8000
         if let Ok(output) = std::process::Command::new("lsof")

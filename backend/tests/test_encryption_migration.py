@@ -616,3 +616,13 @@ def test_a_catch_up_never_syncs_from_a_dir_without_its_database(env):
         assert (staging / "localbook.db").is_file()
     finally:
         em._detach(staging)
+
+
+def test_a_clean_shutdown_marker_carries_across_the_swap(env):
+    """Without it, every first launch after a migration reported an unclean
+    shutdown that never happened (the mini, 2026-09-30)."""
+    em.prepare()
+    (env / ".clean_shutdown").write_text("clean\n")      # the old backend exited cleanly
+
+    assert em.apply_pending()["applied"] is True
+    assert (env / ".clean_shutdown").is_file()
