@@ -38,8 +38,32 @@ def _resolve_log_path() -> Path:
         ) / "LocalBook"
     else:
         base = Path.home() / ".localbook"
+    if not override:
+        base = _scoped_to_data_dir(base)
     base.mkdir(parents=True, exist_ok=True)
     return base / "backend.log"
+
+
+def _scoped_to_data_dir(base: Path) -> Path:
+    """The production data dir logs where it always has; any other data dir (the
+    dev sandbox, a test, a throwaway end-to-end run) gets its own subfolder.
+
+    Found on the mini, 2026-09-30: a second backend pointed at a scratch data dir
+    wrote into the REAL backend.log, interleaving a test's migration lines with
+    the user's. Same rule as `keyvault.service_name()`.
+    """
+    import hashlib
+
+    try:
+        from config import PRODUCTION_DATA_DIR, get_data_directory
+
+        data_dir = Path(get_data_directory()).expanduser().resolve()
+        if data_dir == PRODUCTION_DATA_DIR.resolve():
+            return base
+        digest = hashlib.sha256(str(data_dir).encode()).hexdigest()[:12]
+        return base / f"{data_dir.name}.{digest}"
+    except Exception:
+        return base
 
 
 def setup_logging(level: int = logging.INFO) -> None:
