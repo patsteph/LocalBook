@@ -213,6 +213,23 @@ def _audit_denied(companion_id: str, tool: str, detail: str) -> None:
         pass
 
 
+# ── per-call scopes ─────────────────────────────────────────────────────────
+
+
+def _scope_denied(timer, scope: str) -> Optional[Dict[str, Any]]:
+    """The key's `mcp` scope only proves it may use MCP at all. Tools behind a
+    further scope (`events`, `memory`) check it per call — denied is audited."""
+    from services import companion_audit
+
+    identity = current_caller()
+    if identity is not None and identity.has(scope):
+        return None
+    timer.outcome = companion_audit.OUTCOME_DENIED
+    timer.detail = f"key lacks scope '{scope}'"
+    return {"error": f"this companion key does not carry the '{scope}' scope — reconnect it "
+                     f"from Settings → Companions with that access"}
+
+
 # ── audit wrapper ───────────────────────────────────────────────────────────
 
 
@@ -393,7 +410,10 @@ def build_server():
         """
         limit = _bounded_k(limit, 50)
         args = {"cursor": cursor, "kinds": kinds, "limit": limit}
-        async with _audited("events_since", args):
+        async with _audited("events_since", args) as timer:
+            denied = _scope_denied(timer, "events")
+            if denied:
+                return denied
             import asyncio as _asyncio
 
             from services import event_feed
@@ -407,7 +427,10 @@ def build_server():
     @mcp.tool(annotations=read_only)
     async def event_kinds() -> Dict[str, Any]:
         """The event kinds actually present, for filtering `events_since`."""
-        async with _audited("event_kinds", {}):
+        async with _audited("event_kinds", {}) as timer:
+            denied = _scope_denied(timer, "events")
+            if denied:
+                return denied
             import asyncio as _asyncio
 
             from services import event_feed
@@ -415,49 +438,75 @@ def build_server():
             return {"kinds": await _asyncio.to_thread(event_feed.known_kinds)}
 
     @mcp.tool(annotations=read_only)
-    async def curator_insights(k: int = 10) -> Dict[str, Any]:
+    async def curator_insights(since: Optional[str] = None, k: int = 10) -> Dict[str, Any]:
         """What Curator has noticed across the user's notebooks.
 
         Patterns, connections and open questions it surfaced — the things the
-        user would see in a morning brief. Read-only: reading an insight here
-        does NOT mark it surfaced, because an agent glancing at it is not the
-        user having seen it.
+        user would see in a morning brief. `since` (ISO time) keeps only what is
+        newer. Read-only: reading an insight here does NOT mark it surfaced,
+        because an agent glancing at it is not the user having seen it.
         """
         k = _bounded_k(k, 10)
-        async with _audited("curator_insights", {"k": k}):
+        async with _audited("curator_insights", {"since": since, "k": k}):
             import asyncio as _asyncio
+
+            def _newer(rows):
+                if not since:
+                    return rows
+                return [r for r in rows if str(r.get("created_at") or "") >= since]
 
             def _read():
                 from services.curator_brain import curator_brain
 
-                insights = curator_brain.get_active_insights(limit=k)
-                reflections = curator_brain.get_unsurfaced_reflections(limit=min(k, 5))
-                return {"insights": insights, "reflections": reflections}
+                # Over-fetch when filtering so `k` survives the cut.
+                pool = k * 5 if since else k
+                insights = _newer(curator_brain.get_active_insights(limit=pool))[:k]
+                reflections = _newer(curator_brain.get_unsurfaced_reflections(
+                    limit=min(pool, 25)))[:min(k, 5)]
+                return {"insights": insights, "reflections": reflections, "since": since}
 
             return await _asyncio.to_thread(_read)
 
     @mcp.tool(annotations=read_only)
-    async def approval_queue(notebook_id: str, k: int = 20) -> Dict[str, Any]:
+    async def approval_queue(status: str = "pending", k: int = 20,
+                             notebook_id: Optional[str] = None) -> Dict[str, Any]:
         """Items the Collector found and is holding for the user's approval.
 
+        `status`: "pending" (everything waiting) or "expiring" (due to lapse
+        within 3 days). Across every notebook unless `notebook_id` is given.
         Read-only on purpose. **Approving stays in the UI** — an agent may see
         what is waiting and say something useful about it, but the decision to
         take a source into the corpus is the user's.
         """
         k = _bounded_k(k, 20)
-        async with _audited("approval_queue", {"notebook_id": notebook_id, "k": k}):
+        if status not in ("pending", "expiring"):
+            return {"error": "status must be 'pending' or 'expiring' — the queue only holds "
+                             "items still waiting; approved ones become sources"}
+        async with _audited("approval_queue", {"status": status, "notebook_id": notebook_id, "k": k}):
             import asyncio as _asyncio
+
+            from storage.notebook_store import notebook_store
+
+            ids = [notebook_id] if notebook_id else [b.get("id") for b in await notebook_store.list()]
 
             def _read():
                 from agents.collector import get_collector
 
-                collector = get_collector(notebook_id)
-                pending = collector.get_pending_approvals()
+                items, expiring = [], 0
+                for nb in ids:
+                    collector = get_collector(nb)
+                    soon = collector.get_expiring_soon(days=3)
+                    expiring += len(soon)
+                    rows = collector.get_pending_approvals() if status == "pending" else soon
+                    for row in rows:
+                        items.append({**row, "notebook_id": nb} if isinstance(row, dict) else row)
                 return {
-                    "pending": pending[:k],
-                    "total": len(pending),
-                    "truncated": len(pending) > k,
-                    "expiring_soon": len(collector.get_expiring_soon(days=3)),
+                    "status": status,
+                    "items": items[:k],
+                    "pending": items[:k],          # LB-2's first name for the list
+                    "total": len(items),
+                    "truncated": len(items) > k,
+                    "expiring_soon": expiring,
                 }
 
             return await _asyncio.to_thread(_read)
@@ -589,15 +638,7 @@ def build_server():
     # connect-time auth only proves the caller may use MCP at all.
 
     def _memory_denied(timer) -> Optional[Dict[str, Any]]:
-        from services import companion_audit
-
-        identity = current_caller()
-        if identity is not None and identity.has("memory"):
-            return None
-        timer.outcome = companion_audit.OUTCOME_DENIED
-        timer.detail = "key lacks scope 'memory'"
-        return {"error": "this companion key does not carry the 'memory' scope — reconnect it "
-                         "from Settings → Companions with memory access"}
+        return _scope_denied(timer, "memory")
 
     @mcp.tool(annotations=read_only)
     async def memory_search(query: str, k: int = 8, char_budget: int = 2000) -> Dict[str, Any]:
@@ -621,38 +662,38 @@ def build_server():
             return {"sections": out["sections"], "chars": out["chars"]}
 
     @mcp.tool(annotations=proposes)
-    async def memory_add(text: str, topics: Optional[List[str]] = None) -> Dict[str, Any]:
+    async def memory_add(text: str, category: str = "") -> Dict[str, Any]:
         """Remember something long-term, in LocalBook's shared memory.
 
         Stored under your companion's tag, so LocalBook can recall it later — in
         its own chats too — and the user can remove everything you wrote in one
         action from Settings. Use it for durable facts, not conversation logs
-        (those go through /memory/sync-turn).
+        (those go through /memory/sync-turn). `category` is a free label
+        ("preference", "person", ...) kept with the memory.
         """
-        args = {"chars": len(text or "")}
+        args = {"chars": len(text or ""), "category": category}
         async with _audited("memory_add", args) as timer:
             denied = _memory_denied(timer)
             if denied:
                 return denied
-            text = (text or "").strip()
-            if not text:
-                return {"error": "nothing to remember"}
-            if len(text) > 4000:
-                return {"error": "a memory is limited to 4000 characters"}
-            from models.memory import ArchivalMemoryEntry, MemorySourceType
-            from storage import companion_memory as cm
-            from storage.memory_store import memory_store
+            import asyncio as _asyncio
 
-            companion_id = current_caller().companion_id
-            entry = ArchivalMemoryEntry(
-                content=text,
-                content_type="companion_note",
-                source_type=MemorySourceType.MANUAL,
-                source_id=cm.conversation_id(companion_id, "mcp"),
-                topics=[str(t)[:64] for t in (topics or [])][:10],
-            )
-            await memory_store.add_archival_memory_async(entry, namespace=cm.namespace(companion_id))
-            return {"id": entry.id, "stored": True, "tag": cm.namespace(companion_id)}
+            from services import memory_bridge
+
+            try:
+                return await _asyncio.to_thread(memory_bridge.add_memory,
+                                                current_caller().companion_id, text, category)
+            except ValueError as exc:
+                return {"error": str(exc)}
+
+    # The rest of the Jocasta contract's tools (notes, YouTube, scholarly,
+    # research jobs) live beside this file.
+    from services import mcp_tools_more
+
+    starts_work = {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False}
+    mcp_tools_more.register(mcp, read_only=read_only, starts_work=starts_work,
+                            audited=_audited, bounded_k=_bounded_k,
+                            current_caller=current_caller)
 
     return mcp
 
@@ -672,6 +713,25 @@ def get_app():
         _app = CompanionAuthMiddleware(inner)
         _app.inner = inner  # kept so the lifespan below can reach it
     return _app
+
+
+class ExactMountPath:
+    """Serve `/mcp` itself, not only `/mcp/`.
+
+    Starlette's Mount matches `/mcp/...`; a request for exactly `/mcp` gets a
+    307 to `/mcp/`, and an MCP client POSTing JSON-RPC does not reliably follow
+    it — Hermes is configured with exactly `/mcp` (Jocasta contract, 2026-09-30).
+    Rewriting the path before routing costs nothing and keeps the mount as is.
+    """
+
+    def __init__(self, app, path: str = "/mcp"):
+        self.app, self.path = app, path
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") == "http" and scope.get("path") == self.path:
+            scope = dict(scope, path=self.path + "/",
+                         raw_path=(self.path + "/").encode())
+        await self.app(scope, receive, send)
 
 
 @asynccontextmanager

@@ -189,6 +189,8 @@ python -W ignore -m PyInstaller \
     --hidden-import=api.memory_bridge \
     --hidden-import=services.memory_bridge \
     --hidden-import=storage.companion_memory \
+    --hidden-import=services.mcp_tools_more \
+    --hidden-import=services.research_jobs \
     --hidden-import=api.companions \
     --hidden-import=api.folders \
     --hidden-import=api.agent_browser \

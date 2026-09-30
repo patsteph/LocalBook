@@ -67,7 +67,10 @@ def test_the_v1_tools_are_registered(tools):
 # propose_note (LB-2) queues for approval; memory_add (LB-4) writes to memory —
 # but only with scope `memory`, tagged `companion:<id>`, and removable in one
 # action from Settings (tests/test_memory_bridge.py). Nothing else writes.
-WRITE_TOOLS = {"propose_note", "memory_add"}
+WRITE_TOOLS = {"propose_note", "memory_add", "start_research"}
+# start_research changes no user data, but it launches minutes of scraping and
+# model work — an agent deciding what it may call unattended should not read
+# that as read-only.
 
 
 def test_every_tool_declares_read_only_explicitly(tools):

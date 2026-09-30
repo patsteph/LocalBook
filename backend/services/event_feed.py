@@ -207,10 +207,51 @@ def events_since(
         else:
             new_activity = max(new_activity, event["id"])
 
+    cursor_out = encode_cursor(new_brain, new_activity)
     return {
-        "events": page,
-        "cursor": encode_cursor(new_brain, new_activity),
+        "events": [_contract_shape(e) for e in page],
+        # `next_cursor` is the Jocasta contract's name; `cursor` is kept for
+        # callers written against LB-2's first shape. Same value.
+        "next_cursor": cursor_out,
+        "cursor": cursor_out,
         "has_more": has_more or len(curator_rows) == limit or len(activity_rows) == limit,
+    }
+
+
+# Payload keys that name what an event is about, most specific first.
+_REF_KEYS = ("source_id", "item_id", "note_id", "insight_id", "job_id", "quiz_id",
+             "audio_id", "url")
+_TITLE_KEYS = ("title", "filename", "topic", "name", "query", "summary")
+
+
+def _contract_shape(event: Dict[str, Any]) -> Dict[str, Any]:
+    """The Jocasta contract's event: `{id, kind, ts, ref, summary}`, plus the
+    fields LB-2 already returned.
+
+    `id` is a string that is unique across BOTH sources — the numeric ids are
+    per-database and collide ("curator:12" and "activity:12" are different
+    events). `ref` points at what the event is about; `summary` is one line a
+    person could read without the payload.
+    """
+    payload = event.get("payload") or {}
+    ref = next((str(payload[k]) for k in _REF_KEYS if payload.get(k)), None)
+    if ref is None and event.get("notebook_id"):
+        ref = f"notebook:{event['notebook_id']}"
+    title = next((str(payload[k]) for k in _TITLE_KEYS if payload.get(k)), "")
+    who = event.get("actor") or event.get("source") or "localbook"
+    summary = f"{who}: {str(event.get('kind') or '').replace('_', ' ')}"
+    if title:
+        summary += f" — {title[:120]}"
+    return {
+        "id": f"{event['source']}:{event['id']}",
+        "kind": event.get("kind"),
+        "ts": event.get("ts"),
+        "ref": ref,
+        "summary": summary,
+        "source": event.get("source"),
+        "notebook_id": event.get("notebook_id"),
+        "actor": event.get("actor"),
+        "payload": payload,
     }
 
 

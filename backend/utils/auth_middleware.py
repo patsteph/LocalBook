@@ -57,6 +57,7 @@ EXEMPT_PATHS = frozenset({
     "/memory/prefetch",
     "/memory/sync-turn",
     "/memory/session-end",
+    "/memory/add",
 })
 
 # Path prefixes that bypass auth. Used for media/file endpoints the browser

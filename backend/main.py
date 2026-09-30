@@ -535,6 +535,16 @@ async def _run_startup_tasks():
         # destination is set in Settings — there is no safe default.
         from services.backup_scheduler import nightly_backup
         nightly_backup.start()
+        # Research jobs a companion started must survive a restart (Jocasta contract).
+        try:
+            from services import research_jobs
+            _resumed = await asyncio.to_thread(research_jobs.resume_interrupted)
+            for _job_id in _resumed:
+                research_jobs.launch(_job_id)          # on the loop, not the worker thread
+            if _resumed:
+                logger.info(f"[main] resumed {len(_resumed)} research job(s)")
+        except Exception as _e:
+            logger.warning(f"[main] research job resume skipped: {_e}")
         # LB-11: lock if the encrypted volume vanishes mid-session.
         from services.volume_watch import volume_watch
         volume_watch.start()
@@ -922,8 +932,10 @@ app.include_router(openai_audio.router, prefix="/v1", tags=["openai-compat"])
 # companion key carrying scope `mcp` — both enforced in the ASGI middleware
 # inside services/mcp_server.py, not here. Its lifespan is entered above.
 try:
-    from services.mcp_server import get_app as _mcp_app
+    from services.mcp_server import ExactMountPath, get_app as _mcp_app
     app.mount("/mcp", _mcp_app())
+    # Exactly `/mcp` (no slash) must not 307 — Hermes posts there.
+    app.add_middleware(ExactMountPath, path="/mcp")
 except Exception as _e:
     logger.error(f"[main] could not mount /mcp (non-fatal): {_e}")
 app.include_router(memory.router, tags=["memory"])
@@ -994,8 +1006,31 @@ async def health():
             "external_reserve_gb": external_reserve_gb(),
             "budget_gb": budget_gb(),
         }
+        # The Jocasta contract reads these three at the TOP level: brainctl's
+        # memory governor sizes Ornith from `resident_gb` (and assumed 9.5 GB
+        # when it was missing).
+        out["budget_gb"] = out["memory"]["budget_gb"]
+        out["reserve_gb"] = out["memory"]["external_reserve_gb"]
     except Exception as exc:
         out["memory"] = {"error": str(exc)}
+    try:
+        import sys
+        # What LocalBook holds on the GPU right now: MLX active memory plus its
+        # buffer cache — both are unavailable to anything else. Only if MLX is
+        # already loaded: /health must stay cheap, and 0 is the truth before then.
+        if "mlx.core" in sys.modules:
+            mx = sys.modules["mlx.core"]
+            active = mx.get_active_memory()
+            try:
+                active += mx.get_cache_memory()
+            except Exception:
+                pass
+            out["resident_gb"] = round(active / 1024 ** 3, 2)
+        else:
+            out["resident_gb"] = 0.0
+    except Exception as exc:
+        out["resident_gb"] = None
+        out["resident_error"] = str(exc)
     try:
         from services import migration_ledger
         # The head is what two LB-12 peers compare before syncing: the one that

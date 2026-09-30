@@ -106,8 +106,44 @@ async def prefetch(companion_id: str, query: str, session_id: str, k: int = 8,
                                        "source": _tag(entry.conversation_id)})
 
     lines = [s["text"] for part in ("core", "archival", "recall") for s in sections[part]]
-    return {"sections": sections, "text": "\n".join(lines),
+    # The Jocasta contract's shape: one list, ranked best first — the same
+    # priority the budget was spent in (core facts, then archival by score,
+    # then this session, then older mentions). `sections` stays for callers
+    # that want the tiers.
+    items = [{"kind": part, "text": s["text"], "source": s.get("source")}
+             for part in ("core", "archival", "recall") for s in sections[part]]
+    return {"items": items, "sections": sections, "text": "\n".join(lines),
             "chars": max(0, int(char_budget)) - budget.left}
+
+
+def add_memory(companion_id: str, content: str, category: str = "",
+               topics=None) -> Dict[str, Any]:
+    """Remember one durable fact, tagged to the companion (shared memory, purgeable).
+
+    Stored as an archival memory — searchable by LocalBook's chat and by every
+    companion — rather than a core entry: core memory is the always-in-prompt
+    set, and what goes there is LocalBook's extraction's call, not an agent's.
+    """
+    from models.memory import ArchivalMemoryEntry, MemorySourceType
+    from storage.memory_store import memory_store
+
+    content = (content or "").strip()
+    if not content:
+        raise ValueError("nothing to remember")
+    if len(content) > 4000:
+        raise ValueError("a memory is limited to 4000 characters")
+    cm.check_ids(companion_id)
+    category = (category or "").strip()[:64]
+    entry = ArchivalMemoryEntry(
+        content=content,
+        content_type=f"companion_note:{category}" if category else "companion_note",
+        source_type=MemorySourceType.MANUAL,
+        source_id=cm.conversation_id(companion_id, "mcp"),
+        topics=[str(t)[:64] for t in (topics or [])][:10] + ([category] if category else []),
+    )
+    memory_store.add_archival_memory(entry, namespace=cm.namespace(companion_id))
+    return {"id": entry.id, "stored": True, "tag": cm.namespace(companion_id),
+            "category": category or None}
 
 
 def sync_turn(companion_id: str, session_id: str, user: str, assistant: str, ts,

@@ -44,6 +44,12 @@ class SessionEndRequest(BaseModel):
     session_id: str
 
 
+class AddRequest(BaseModel):
+    content: str
+    category: str = ""
+    source: Optional[str] = None
+
+
 def _bad(exc: Exception):
     raise HTTPException(400, str(exc))
 
@@ -81,6 +87,19 @@ async def session_end(req: SessionEndRequest, authorization: Optional[str] = Hea
     try:
         return await asyncio.to_thread(memory_bridge.session_end, who.companion_id, req.session_id)
     except CompanionMemoryError as exc:
+        _bad(exc)
+
+
+@router.post("/memory/add")
+async def add(req: AddRequest, authorization: Optional[str] = Header(None)):
+    """One durable fact from a companion (Jocasta contract gap 1). Tagged to the
+    calling key's companion — `source` in the body is informational only."""
+    who = _require_companion_key(authorization, "memory")
+    from services import memory_bridge
+    try:
+        return await asyncio.to_thread(memory_bridge.add_memory, who.companion_id,
+                                       req.content, req.category)
+    except (CompanionMemoryError, ValueError) as exc:
         _bad(exc)
 
 
