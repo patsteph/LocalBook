@@ -614,6 +614,10 @@ async fn start_backend(app_handle: &AppHandle) -> Result<Option<std::process::Ch
         println!("Backend working directory: {:?}", backend_dir);
 
         let mut cmd = std::process::Command::new(&candidate);
+        // The backend stops itself when this pid is gone (utils/parent_watch.py):
+        // a Force Quit or a crash skips RunEvent::Exit, and an orphaned backend
+        // kept collecting and scraping with no window (MBP, 2026-10-01).
+        cmd.env("LOCALBOOK_PARENT_PID", std::process::id().to_string());
         cmd.current_dir(backend_dir)
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::inherit())

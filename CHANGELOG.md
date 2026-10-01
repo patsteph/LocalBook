@@ -4,7 +4,22 @@ All notable changes to LocalBook will be documented in this file.
 
 ## Unreleased
 
+### Added
+- **Encrypt your library.** A banner offers it; a three-step wizard does the rest: write down a
+  24-word recovery phrase (and type three words back), back up and copy everything into an
+  encrypted volume that is checked file by file, then restart onto it and remove the unencrypted
+  copy with one click once every database is verified to match. The volume opens at login with
+  the key in the Keychain, with no password prompts. Verified end to end on two Macs.
+
 ### Fixed
+- **Every Mac now runs the same embedding model.** A setting saved before the MLX switch kept one
+  Mac on the 8-bit build of the embedder while another ran bf16, so the same question could find
+  different passages. The old build is now retired automatically once the bf16 one is downloaded,
+  the startup log names every model and any saved override, and LLM Labs shows `8bit` / `bf16` in
+  model names instead of giving both builds the same name.
+- **A fresh install could not make a recovery phrase.** Two packages had only ever been installed
+  by hand on the development Mac, so other Macs' builds shipped without them. They are now in the
+  lock file, and the build refuses to finish if any required package will not import.
 - **The extension reported the wrong version.** Every release since v2.1.1 shipped an extension
   that said `2.1.1`, because the release script's version bump was wrapped in a test that had
   already been made false by hand-editing the root manifest first. The bump is now unconditional

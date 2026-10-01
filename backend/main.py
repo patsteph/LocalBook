@@ -231,6 +231,9 @@ from utils.diagnostics import install_signal_handlers, start_heartbeat, stop_hea
 
 # Layer 1: Install crash signal handlers before anything else
 install_signal_handlers()
+# Force Quit / a crash of the app skips its backend cleanup; stop with it anyway.
+from utils import parent_watch as _parent_watch
+_parent_watch.start()
 
 # ── SQLite migration: MUST run before store singletons are created ──────────
 # Stores read settings.use_sqlite at import time and cache it. If we delay
