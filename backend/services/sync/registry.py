@@ -30,6 +30,10 @@ class Table:
     exclude: Tuple[str, ...] = ()
     content: Tuple[str, ...] = ()
     paths: Tuple[str, ...] = ()
+    # Append-only logs keyed locally by INTEGER AUTOINCREMENT: they sync by a
+    # `uid` column SQLite fills itself (journal.install), and the local `id`
+    # never ships — no collisions, no table rebuild, local readers unchanged.
+    uid: bool = False
 
 
 # ── localbook.db ─────────────────────────────────────────────────────────────
@@ -65,6 +69,12 @@ MAIN: List[Table] = [
     Table("contradictions", ("id",)),
     Table("documents", ("kind", "key"), content=("body_json",)),
     Table("sync_conflicts", ("id",)),
+    # Logs (phase F): union by uid.
+    Table("activity_events", ("uid",), exclude=("id",), uid=True),
+    Table("correspondent_events", ("uid",), exclude=("id",), uid=True),
+    Table("unsubscribe_log", ("uid",), exclude=("id",), uid=True),
+    Table("routing_decisions", ("uid",), exclude=("id",), uid=True),
+    Table("voice_observations", ("uid",), exclude=("id",), uid=True),
 ]
 
 # Tables in localbook.db that stay on this Mac (12h) or are rebuilt locally.
@@ -82,13 +92,6 @@ MAIN_LOCAL: Dict[str, str] = {
     "pending_digest": "transient: mail waiting for this Mac's next digest",
     "pending_unsubscribes": "transient: short-lived unsubscribe tokens",
     "research_jobs": "per-machine: a companion's research job runs on the Mac it started on",
-    # Append-only logs with AUTOINCREMENT ids — phase F syncs them by
-    # (origin device, local id); until then they stay local.
-    "activity_events": "log (phase F)",
-    "correspondent_events": "log (phase F)",
-    "unsubscribe_log": "log (phase F)",
-    "routing_decisions": "log (phase F)",
-    "voice_observations": "log (phase F)",
     "sqlite_sequence": "sqlite internal",
 }
 
@@ -98,15 +101,27 @@ RECALL: List[Table] = [
     Table("recall_entries", ("id",), exclude=("is_summarized", "summary")),
     Table("conversation_summaries", ("id",)),
     Table("user_signals", ("id",)),
+    # Archival memory's TEXT (phase D2). The LanceDB table is derived from it.
+    Table("archival_records", ("id",), content=("content",)),
 ]
 RECALL_LOCAL: Dict[str, str] = {
     "archival_fts": "derived: keyword index over archival memory",
     "archival_access": "per-machine: access counters",
 }
 
+# ── curator_brain/brain.db ───────────────────────────────────────────────────
+# D14: per-machine — EXCEPT events and insights (D17), so `events_since` on one
+# Mac sees what Curator found on another. Counters never ship.
+BRAIN: List[Table] = [
+    Table("events", ("uid",), exclude=("id",), uid=True),
+    Table("insights", ("uid",), exclude=("id", "surfaced_count", "last_surfaced", "thumbs_up"),
+          content=("summary",), uid=True),
+]
+
 DATABASES: Dict[str, Tuple[str, List[Table]]] = {
     "main": ("localbook.db", MAIN),
     "recall": ("memory/recall_memory.db", RECALL),
+    "brain": ("curator_brain/brain.db", BRAIN),
 }
 
 
@@ -134,6 +149,8 @@ def classify_table(db: str, name: str) -> str:
         return "internal"
     if any(t.name == name for t in tables(db)):
         return "synced"
+    if db == "brain":
+        return "local"                        # D14: everything else in brain.db
     local = MAIN_LOCAL if db == "main" else RECALL_LOCAL
     if name in local:
         return "local"
@@ -150,11 +167,13 @@ def classify_table(db: str, name: str) -> str:
 PATH_RULES: List[Tuple[str, str]] = [
     ("localbook.db", "record"), ("tabular.db", "local"),
     ("memory/recall_memory.db", "record"), ("curator_brain/", "local"),
-    ("memory/core_memory.json", "record"), ("memory/archival_memory/", "record"),
+    # Phase D: these files were imported into the synced `documents` table and
+    # archival_records; what is left on disk is history (local) or an index (derived).
+    ("memory/core_memory.json", "local"), ("memory/archival_memory/", "derived"),
     ("memory/events/", "local"), ("memory/", "derived"),
-    ("user_profile.json", "record"), ("app_preferences.json", "record"),
-    ("curator_config.yaml", "record"), ("schedule_overrides.json", "local"),
-    ("notebooks/", "record"), ("quizzes/", "record"), ("correspondent/", "local"),
+    ("user_profile.json", "local"), ("app_preferences.json", "local"),
+    ("curator_config.yaml", "local"), ("schedule_overrides.json", "local"),
+    ("notebooks/", "local"), ("quizzes/", "local"), ("correspondent/", "local"),
     ("audio/jingles/", "derived"), ("audio/", "blob"), ("video/", "blob"),
     ("pptx_templates/", "blob"),
     ("audio_output/", "transient"), ("images/", "derived"),

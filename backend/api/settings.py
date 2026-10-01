@@ -182,6 +182,21 @@ USER_PROFILE_PATH = settings.data_dir / "user_profile.json"
 # App preferences storage path
 APP_PREFERENCES_PATH = settings.data_dir / "app_preferences.json"
 
+
+# LB-12 D1: both live in the synced `documents` table; the files above are
+# imported once and kept only as history.
+def _load_profile() -> dict:
+    from storage import documents
+
+    body = documents.import_file("user_profile", "main", USER_PROFILE_PATH, documents.read_json)
+    return body or documents.get("user_profile", "main", {}) or {}
+
+
+def _save_profile(data: dict) -> None:
+    from storage import documents
+
+    documents.put("user_profile", "main", data)
+
 class SetAPIKeyRequest(BaseModel):
     key_name: str
     value: str
@@ -441,11 +456,8 @@ def get_api_key(key_name: str) -> str | None:
 async def get_user_profile():
     """Get the user profile for personalization"""
     try:
-        if USER_PROFILE_PATH.exists():
-            with open(USER_PROFILE_PATH, 'r') as f:
-                data = json.load(f)
-                return UserProfile(**data)
-        return UserProfile()
+        data = _load_profile()
+        return UserProfile(**data) if data else UserProfile()
     except Exception as e:
         print(f"Error loading user profile: {e}")
         return UserProfile()
@@ -455,12 +467,7 @@ async def get_user_profile():
 async def save_user_profile(profile: UserProfile):
     """Save the user profile for personalization"""
     try:
-        # Ensure data directory exists
-        USER_PROFILE_PATH.parent.mkdir(parents=True, exist_ok=True)
-        
-        with open(USER_PROFILE_PATH, 'w') as f:
-            json.dump(profile.model_dump(exclude_none=True), f, indent=2)
-        
+        _save_profile(profile.model_dump(exclude_none=True))
         return {"message": "User profile saved successfully"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to save user profile: {str(e)}")
@@ -470,6 +477,10 @@ async def save_user_profile(profile: UserProfile):
 async def delete_user_profile():
     """Delete the user profile"""
     try:
+        from storage import documents
+
+        _load_profile()                     # import first, so the old file cannot resurrect it
+        documents.delete("user_profile", "main")
         if USER_PROFILE_PATH.exists():
             USER_PROFILE_PATH.unlink()
         return {"message": "User profile deleted"}
@@ -480,10 +491,7 @@ async def delete_user_profile():
 def get_user_profile_sync() -> dict:
     """Helper function to get user profile synchronously (for use in RAG engine)"""
     try:
-        if USER_PROFILE_PATH.exists():
-            with open(USER_PROFILE_PATH, 'r') as f:
-                return json.load(f)
-        return {}
+        return _load_profile()
     except Exception:
         return {}
 
@@ -539,21 +547,21 @@ def build_user_context(profile: dict) -> str:
 # ==================== App Preferences Endpoints ====================
 
 def _load_app_preferences() -> dict:
-    """Load app preferences from disk"""
+    """App preferences (synced `documents`, LB-12 D1)."""
     try:
-        if APP_PREFERENCES_PATH.exists():
-            with open(APP_PREFERENCES_PATH, 'r') as f:
-                return json.load(f)
-        return {}
+        from storage import documents
+
+        body = documents.import_file("app_preferences", "main", APP_PREFERENCES_PATH, documents.read_json)
+        return body or documents.get("app_preferences", "main", {}) or {}
     except Exception:
         return {}
 
 
 def _save_app_preferences(prefs: dict):
-    """Save app preferences to disk"""
-    APP_PREFERENCES_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with open(APP_PREFERENCES_PATH, 'w') as f:
-        json.dump(prefs, f, indent=2)
+    """Save app preferences (synced `documents`, LB-12 D1)."""
+    from storage import documents
+
+    documents.put("app_preferences", "main", prefs)
 
 
 @router.get("/preferences", response_model=AppPreferences)

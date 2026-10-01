@@ -530,6 +530,7 @@ class MemoryManager:
                             logger.warning(f"[memory-manager] {type(_e).__name__}: {_e}")
                     try:
                         self.memory_store.delete_fts(gone)   # keep BM25 in step with LanceDB
+                        self.memory_store.delete_archival_records(gone)   # and the records (LB-12)
                     except Exception as _e:
                         logger.warning(f"[memory-manager] fts cleanup: {_e}")
                     if pruned > 0:

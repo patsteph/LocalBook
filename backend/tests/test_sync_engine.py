@@ -221,3 +221,41 @@ def test_a_source_added_to_a_notebook_deleted_elsewhere_is_kept_in_a_conflict(ma
         assert m.sql("SELECT COUNT(*) FROM sources").fetchone()[0] == 0
     items = a.conflicts()
     assert len(items) == 1 and "a document added on B" in items[0][5]
+
+
+# ── phase D/F: documents and logs ride the same engine ──────────────────────
+
+
+def _doc(m, kind, key, body):
+    m.sql("INSERT INTO documents (kind, key, uuid, body_json, updated_at) VALUES (?, ?, ?, ?, 'now') "
+          "ON CONFLICT(kind, key) DO UPDATE SET body_json=excluded.body_json",
+          kind, key, f"{m.name}-{key}", json.dumps(body))
+
+
+def test_core_memories_added_on_two_macs_both_survive(macs):
+    """One document per entry: two Macs adding memories while apart is not a conflict."""
+    a, b = macs("A", "B")
+    _doc(a, "core_memory", "e1", {"key": "name", "value": "Pat"})
+    _doc(b, "core_memory", "e2", {"key": "city", "value": "Lisbon"})
+    sync(a, b)
+    sync(b, a)
+    assert_converged([a, b])
+    for m in (a, b):
+        assert sorted(k for (k,) in m.sql("SELECT key FROM documents WHERE kind='core_memory'")) == ["e1", "e2"]
+        assert m.conflicts() == []
+
+
+def test_log_rows_sync_by_uid_without_id_collisions(macs):
+    """Both Macs' first log row has local id 1; they must not overwrite each other."""
+    a, b = macs("A", "B")
+    a.sql("INSERT INTO correspondent_events (ts, event_type, sender) VALUES ('t1', 'mail', 'a@x')")
+    b.sql("INSERT INTO correspondent_events (ts, event_type, sender) VALUES ('t2', 'mail', 'b@x')")
+    assert a.sql("SELECT id FROM correspondent_events").fetchone()[0] == 1
+    assert b.sql("SELECT id FROM correspondent_events").fetchone()[0] == 1
+    sync(a, b)
+    sync(b, a)
+    for m in (a, b):
+        rows = sorted(m.sql("SELECT sender FROM correspondent_events").fetchall())
+        assert rows == [("a@x",), ("b@x",)]
+        assert m.sql("SELECT COUNT(DISTINCT uid) FROM correspondent_events").fetchone()[0] == 2
+    assert_converged([a, b])

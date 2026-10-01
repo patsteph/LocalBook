@@ -506,10 +506,9 @@ async def refresh_notebook_insights(notebook_id: str):
     Skips members with insufficient profile data.
     """
     try:
-        from api.people import _load_config, _save_config, _get_config_path
+        from api.people import _load_config, _save_config, is_people_notebook
 
-        config_path = _get_config_path(notebook_id)
-        if not config_path.exists():
+        if not is_people_notebook(notebook_id):
             return  # Not a people notebook — nothing to do
 
         config = _load_config(notebook_id)
@@ -589,22 +588,14 @@ async def check_stale_insights_on_startup():
         from api.people import _get_config_path, _load_config
         from storage.source_store import source_store
 
-        notebooks_dir = settings.data_dir / "notebooks"
-        if not notebooks_dir.exists():
-            return
 
         refreshed = 0
         # Pre-load all sources once for the loop below
         all_sources_by_nb = await source_store.list_all()
         
-        for notebook_dir in notebooks_dir.iterdir():
-            if not notebook_dir.is_dir():
-                continue
+        from api.people import people_notebook_ids
 
-            notebook_id = notebook_dir.name
-            config_path = _get_config_path(notebook_id)
-            if not config_path.exists():
-                continue  # Not a people notebook
+        for notebook_id in people_notebook_ids():
 
             config = _load_config(notebook_id)
             if not config.members:

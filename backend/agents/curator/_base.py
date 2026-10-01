@@ -56,29 +56,33 @@ class CuratorConfigMixin:
         return Path(settings.data_dir) / "curator_config.yaml"
 
     def _load_config(self) -> Dict[str, Any]:
-        """Load curator configuration from YAML file"""
-        config_path = self._get_config_path()
-        
-        if config_path.exists():
-            try:
-                with open(config_path, 'r') as f:
-                    config = yaml.safe_load(f)
-                    if config:
-                        return {**self.DEFAULT_CONFIG, **config}
-            except Exception as e:
-                logger.error(f"Error loading curator config: {e}")
-        
-        # Save default config if none exists
-        self._save_config(self.DEFAULT_CONFIG)
-        return self.DEFAULT_CONFIG
+        """Curator configuration (synced `documents`, LB-12 D1).
+
+        `curator_config.yaml` is imported once. When nothing is stored the
+        defaults are RETURNED, not written: writing defaults on first load would
+        race a sync and could overwrite the configuration another Mac sends.
+        """
+        try:
+            from storage import documents
+
+            stored = documents.import_file("curator_config", "main", self._get_config_path(),
+                                           documents.read_yaml)
+            stored = stored or documents.get("curator_config", "main")
+            if stored:
+                return {**self.DEFAULT_CONFIG, **stored}
+        except Exception as e:
+            logger.error(f"Error loading curator config: {e}")
+        return dict(self.DEFAULT_CONFIG)
 
     def _save_config(self, config: Dict[str, Any]) -> None:
-        """Save curator configuration to YAML file"""
-        config_path = self._get_config_path()
-        config_path.parent.mkdir(parents=True, exist_ok=True)
-        
-        with open(config_path, 'w') as f:
-            yaml.dump(config, f, default_flow_style=False)
+        """Save curator configuration (synced `documents`)."""
+        from storage import documents
+
+        documents.put("curator_config", "main", config)
+
+    def reload_config(self) -> None:
+        """After a sync applied a configuration from another Mac."""
+        self.config = self._load_config()
 
     def update_config(self, updates: Dict[str, Any]) -> Dict[str, Any]:
         """Update curator configuration"""

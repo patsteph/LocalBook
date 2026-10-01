@@ -28,7 +28,8 @@ def data_dir() -> Path:
     return Path(settings.data_dir)
 
 
-DB_FILES = {"main": "localbook.db", "recall": "memory/recall_memory.db"}
+DB_FILES = {"main": "localbook.db", "recall": "memory/recall_memory.db",
+            "brain": "curator_brain/brain.db"}
 
 
 def clock() -> Clock:
@@ -76,6 +77,11 @@ def ledger_head() -> int:
 def vvs() -> Dict[str, Dict[str, int]]:
     out = {}
     for db in DB_FILES:
+        # A database this Mac has not created yet (Curator never ran) has
+        # nothing to report — and opening it would fail, not create it.
+        if not (data_dir() / DB_FILES[db]).exists():
+            out[db] = {}
+            continue
         r = replica(db)
         try:
             journal.install(r.conn, db)

@@ -160,7 +160,19 @@ async def delete_notebook(notebook_id: str):
             print(f"[CLEANUP] Deleted notebook data dir: {notebook_data_dir}")
     except Exception as e:
         cleanup_errors.append(f"data dir: {e}")
-    
+
+    # 1b. The notebook's synced documents (LB-12 D1): collector + people config,
+    # approval items, quiz cards and reviews. Deleting them ships the delete.
+    try:
+        from storage import documents
+        for kind in ("collector_config", "people_config", "approval_queue_imported", "quiz_cards_imported"):
+            documents.delete(kind, notebook_id)
+        for kind in ("approval_item", "quiz_card", "quiz_review"):
+            for key, _ in documents.items(kind, f"{notebook_id}/"):
+                documents.delete(kind, key)
+    except Exception as e:
+        cleanup_errors.append(f"documents: {e}")
+
     # 2. Clear collector from in-memory registry
     try:
         from agents.collector import clear_collector_cache

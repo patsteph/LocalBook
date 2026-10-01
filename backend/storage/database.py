@@ -812,6 +812,16 @@ class Database:
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_sources_content_hash ON sources(content_hash)")
         _add_column(conn, "skills", "created_at", "TEXT")
         _add_column(conn, "skills", "updated_at", "TEXT")
+        # The synced documents + conflict queue: readers use them from the first
+        # request (core memory, preferences, quiz cards) — before the ledger runs.
+        cursor.execute("""CREATE TABLE IF NOT EXISTS documents (
+            kind TEXT NOT NULL, key TEXT NOT NULL, uuid TEXT NOT NULL,
+            body_json TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (kind, key))""")
+        cursor.execute("""CREATE TABLE IF NOT EXISTS sync_conflicts (
+            id TEXT PRIMARY KEY, tbl TEXT NOT NULL, pk TEXT NOT NULL, field TEXT NOT NULL,
+            kind TEXT NOT NULL, kept_value TEXT, other_value TEXT, kept_clock TEXT,
+            other_clock TEXT, status TEXT NOT NULL DEFAULT 'open', resolution TEXT,
+            created_at TEXT, resolved_at TEXT)""")
 
         conn.commit()
     

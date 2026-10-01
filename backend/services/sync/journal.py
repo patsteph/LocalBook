@@ -67,12 +67,30 @@ def trigger_names(table: str) -> List[str]:
     return [f"_sync_{table}_ai", f"_sync_{table}_au", f"_sync_{table}_ad"]
 
 
+def ensure_uid(conn: sqlite3.Connection, table: str) -> None:
+    """A log table's cross-Mac identity: a `uid` column, unique, filled by
+    SQLite on every insert with built-in `randomblob` (never a custom function),
+    and backfilled once for rows that predate it."""
+    cols = {r[1] for r in conn.execute(f'PRAGMA table_info("{table}")')}
+    if "uid" not in cols:
+        conn.execute(f'ALTER TABLE "{table}" ADD COLUMN uid TEXT')
+    conn.execute(f'UPDATE "{table}" SET uid = lower(hex(randomblob(16))) WHERE uid IS NULL')
+    conn.execute(f'CREATE UNIQUE INDEX IF NOT EXISTS "_uid_{table}" ON "{table}"(uid)')
+    conn.execute(f"""CREATE TRIGGER IF NOT EXISTS "_uid_{table}_fill" AFTER INSERT ON "{table}"
+        WHEN NEW.uid IS NULL BEGIN
+            UPDATE "{table}" SET uid = lower(hex(randomblob(16))) WHERE rowid = NEW.rowid;
+        END""")
+
+
 def install(conn: sqlite3.Connection, db: str) -> List[str]:
     """Create the journal tables and every trigger for tables that exist now.
     Idempotent; returns the tables newly covered (lazily created stores get
     theirs on a later call)."""
     conn.executescript(SCHEMA)
     existing = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    for t in registry.tables(db):
+        if t.uid and t.name in existing:
+            ensure_uid(conn, t.name)
     have = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='trigger'")}
     added = []
     for t in registry.tables(db):

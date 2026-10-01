@@ -158,6 +158,7 @@ def purge(companion_id: str, store=None) -> Dict[str, int]:
                 table.delete(f"namespace = '{ns}' OR source_id LIKE '{ns}:%'")
                 out["archival"] = len(ids)
                 out["fts"] = s.delete_fts(ids)
+                s.delete_archival_records(ids)
     except Exception as exc:
         logger.error("[companion-memory] archival purge for %s failed: %s", companion_id, exc)
         raise

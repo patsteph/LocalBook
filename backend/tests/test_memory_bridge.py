@@ -34,6 +34,14 @@ def mem(tmp_path, monkeypatch):
     from storage import memory_store as ms
 
     monkeypatch.setattr(settings, "data_dir", tmp_path)
+    # Core memory lives in localbook.db `documents` (LB-12 D1): the Database
+    # singleton must follow this test's data dir too, or rows leak between tests.
+    import importlib
+
+    import storage.database as _db
+    importlib.reload(_db)
+    from services import migration_ledger
+    migration_ledger.run_pending(_db.Database().get_connection(), tmp_path)
     monkeypatch.setattr(ms.MemoryStore, "_instance", None)
     store = ms.MemoryStore()
     monkeypatch.setattr(store, "get_embedding", lambda text: _embed(text, settings.embedding_dim))

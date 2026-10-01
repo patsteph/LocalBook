@@ -91,12 +91,17 @@ class CollectorAgentBase:
 
     def _load_approval_queue(self) -> List[ApprovalQueueItem]:
         """Load persisted approval queue from disk"""
-        queue_path = self._get_queue_path()
-        if not queue_path.exists():
-            return []
+        # LB-12 D1: one synced document per item (`approval_item/<nb>/<item id>`),
+        # so items queued on two Macs both survive. The JSON file is imported once.
+        from storage import documents
+        prefix = f"{self.notebook_id}/"
         try:
-            with open(queue_path, 'r') as f:
-                data = json.load(f)
+            if not documents.items("approval_item", prefix) and self._get_queue_path().exists() \
+                    and not documents.exists("approval_queue_imported", self.notebook_id):
+                for entry in json.loads(self._get_queue_path().read_text()):
+                    documents.put("approval_item", prefix + str(entry["item"].get("id")), entry)
+                documents.put("approval_queue_imported", self.notebook_id, True)
+            data = [body for _, body in documents.items("approval_item", prefix)]
             now = datetime.utcnow()
             items = []
             for entry in data:
@@ -114,8 +119,7 @@ class CollectorAgentBase:
             return []
 
     def _save_approval_queue(self) -> None:
-        """Persist approval queue to disk"""
-        queue_path = self._get_queue_path()
+        """Persist the approval queue (synced documents, one per item)."""
         try:
             data = []
             for q in self._approval_queue:
@@ -130,41 +134,42 @@ class CollectorAgentBase:
                     "expires_at": q.expires_at.isoformat(),
                     "batch_id": q.batch_id,
                 })
-            with open(queue_path, 'w') as f:
-                json.dump(data, f, indent=2, default=str)
+            from storage import documents
+            documents.put("approval_queue_imported", self.notebook_id, True)
+            documents.replace_set("approval_item", f"{self.notebook_id}/",
+                                  {f"{self.notebook_id}/{e['item'].get('id')}":
+                                   json.loads(json.dumps(e, default=str)) for e in data})
         except Exception as e:
             logger.error(f"Error saving approval queue for {self.notebook_id}: {e}")
 
     def _load_config(self) -> CollectorConfig:
-        """Load Collector configuration from YAML file"""
-        config_path = self._get_config_path()
-        
-        if config_path.exists():
-            try:
-                with open(config_path, 'r') as f:
-                    data = yaml.safe_load(f)
-                    if data:
-                        # Convert string enums back to enums
-                        if "collection_mode" in data and isinstance(data["collection_mode"], str):
-                            data["collection_mode"] = CollectionMode(data["collection_mode"])
-                        if "approval_mode" in data and isinstance(data["approval_mode"], str):
-                            data["approval_mode"] = ApprovalMode(data["approval_mode"])
-                        # Convert ISO strings back to datetimes
-                        if "created_at" in data and isinstance(data["created_at"], str):
-                            data["created_at"] = datetime.fromisoformat(data["created_at"])
-                        if "updated_at" in data and isinstance(data["updated_at"], str):
-                            data["updated_at"] = datetime.fromisoformat(data["updated_at"])
-                        return CollectorConfig(**data)
-            except Exception as e:
-                logger.error(f"Error loading collector config for {self.notebook_id}: {e}")
-        
+        """Collector configuration (synced `documents`, LB-12 D1; the YAML file
+        is imported once)."""
+        from storage import documents
+
+        try:
+            data = documents.import_file("collector_config", self.notebook_id,
+                                         self._get_config_path(), documents.read_yaml) \
+                or documents.get("collector_config", self.notebook_id)
+            if data:
+                # Convert string enums back to enums
+                if "collection_mode" in data and isinstance(data["collection_mode"], str):
+                    data["collection_mode"] = CollectionMode(data["collection_mode"])
+                if "approval_mode" in data and isinstance(data["approval_mode"], str):
+                    data["approval_mode"] = ApprovalMode(data["approval_mode"])
+                # Convert ISO strings back to datetimes
+                if "created_at" in data and isinstance(data["created_at"], str):
+                    data["created_at"] = datetime.fromisoformat(data["created_at"])
+                if "updated_at" in data and isinstance(data["updated_at"], str):
+                    data["updated_at"] = datetime.fromisoformat(data["updated_at"])
+                return CollectorConfig(**data)
+        except Exception as e:
+            logger.error(f"Error loading collector config for {self.notebook_id}: {e}")
+
         return CollectorConfig()
 
     def _save_config(self) -> None:
-        """Save Collector configuration to YAML file"""
-        config_path = self._get_config_path()
-        config_path.parent.mkdir(parents=True, exist_ok=True)
-        
+        """Save Collector configuration (synced `documents`)."""
         self.config.updated_at = datetime.utcnow()
         
         # Convert to dict with serializable values
@@ -180,8 +185,8 @@ class CollectorAgentBase:
         if "updated_at" in data and hasattr(data["updated_at"], "isoformat"):
             data["updated_at"] = data["updated_at"].isoformat()
         
-        with open(config_path, 'w') as f:
-            yaml.dump(data, f, default_flow_style=False)
+        from storage import documents
+        documents.put("collector_config", self.notebook_id, data)
 
     def update_config(self, updates: Dict[str, Any]) -> CollectorConfig:
         """Update Collector configuration"""

@@ -105,6 +105,12 @@ class MemoryStore:
         
         # Backfill FTS5 from existing archival memories (one-time migration)
         self._backfill_fts_from_archival()
+        # LB-12 D2: every archival memory gets its record (its text, synced).
+        try:
+            from storage import archival_records
+            archival_records.backfill(self)
+        except Exception as e:
+            print(f"[MemoryStore] archival record backfill error (non-fatal): {e}")
         
         self._initialized = True
     
@@ -154,30 +160,52 @@ class MemoryStore:
     # =========================================================================
     
     def load_core_memory(self) -> CoreMemory:
-        """Load core memory from disk"""
+        """Core memory, from the synced `documents` table (LB-12 D1).
+
+        One document per entry (`core_memory/<id>`) plus `core_memory_meta/main`,
+        so memories added on two Macs both survive. `core_memory.json` is
+        imported once and then only read as history.
+        """
         with self._core_memory_lock:
             if self._core_memory_cache is not None:
                 return self._core_memory_cache
-            
-            if self.core_memory_path.exists():
-                try:
-                    data = json.loads(self.core_memory_path.read_text())
-                    self._core_memory_cache = CoreMemory(**data)
-                except Exception as e:
-                    print(f"Error loading core memory: {e}")
-                    self._core_memory_cache = CoreMemory()
-            else:
+            from storage import documents
+            try:
+                if not documents.items("core_memory") and not documents.exists("core_memory_meta", "main") \
+                        and self.core_memory_path.exists():
+                    self._import_core_memory_file()
+                entries = [body for _, body in documents.items("core_memory")]
+                meta = documents.get("core_memory_meta", "main", {}) or {}
+                self._core_memory_cache = CoreMemory(**{**meta, "entries": entries})
+            except Exception as e:
+                print(f"Error loading core memory: {e}")
                 self._core_memory_cache = CoreMemory()
-            
             return self._core_memory_cache
-    
+
+    def _import_core_memory_file(self) -> None:
+        from storage import documents
+        data = json.loads(self.core_memory_path.read_text())
+        memory = CoreMemory(**data)
+        self._write_core_documents(memory)
+        print(f"[MemoryStore] imported {len(memory.entries)} core memories into documents")
+
+    def _write_core_documents(self, memory: CoreMemory) -> None:
+        from storage import documents
+        dumped = memory.model_dump(mode="json")
+        entries = dumped.pop("entries", [])
+        documents.replace_set("core_memory", "", {e["id"]: e for e in entries})
+        documents.put("core_memory_meta", "main", dumped)
+
+    def invalidate_core_memory_cache(self) -> None:
+        """After a sync applied core-memory documents from another Mac."""
+        with self._core_memory_lock:
+            self._core_memory_cache = None
+
     def save_core_memory(self, memory: CoreMemory) -> None:
-        """Save core memory to disk"""
+        """Save core memory (documents; only changed entries are rewritten)."""
         with self._core_memory_lock:
             self._core_memory_cache = memory
-            # Atomic write (write-temp + fsync + rename) — crash mid-write
-            # cannot leave core_memory.json partial. P0.4 (2026-05-15).
-            atomic_write_json(self.core_memory_path, memory.model_dump(mode="json"))
+            self._write_core_documents(memory)
     
     def add_core_memory(self, entry: CoreMemoryEntry) -> Tuple[bool, Optional[MemoryConflict]]:
         """
@@ -336,6 +364,9 @@ class MemoryStore:
         """)
         
         # User signals for negative signal learning (Enhancement #3)
+        # LB-12 D2: archival memory's text (synced); LanceDB is the index over it.
+        from storage import archival_records as _ar
+        cursor.execute(_ar.SCHEMA)
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS user_signals (
                 id TEXT PRIMARY KEY,
@@ -375,6 +406,19 @@ class MemoryStore:
         except Exception as e:
             print(f"[MemoryStore] FTS sync error: {e}")
     
+    def delete_archival_records(self, memory_ids) -> int:
+        """Delete the records (LB-12 D2) — a delete that leaves its record would
+        be re-indexed by the next reconcile."""
+        from storage import archival_records
+        conn = self._get_recall_connection()
+        try:
+            archival_records.ensure(conn)
+            n = archival_records.delete(conn, memory_ids)
+            conn.commit()
+            return n
+        finally:
+            conn.close()
+
     def delete_fts(self, memory_ids) -> int:
         """Drop the keyword-index rows of archival memories that were deleted.
 
@@ -794,19 +838,38 @@ class MemoryStore:
         """
         if namespace == AgentNamespace.COLLECTOR and not notebook_id:
             raise ValueError("notebook_id required for COLLECTOR namespace")
-        
-        table = self.archival_db.open_table("archival_memories")
-        
-        # Generate embedding
-        embedding = self.get_embedding(entry.content)
-        
+
         # Use provided notebook_id or fall back to entry's source_notebook_id
         effective_notebook_id = notebook_id or entry.source_notebook_id or ""
-        
-        # Prepare record with namespace
+
+        # LB-12 D2: the RECORD is the truth (it syncs); LanceDB is its index.
+        from storage import archival_records
+        conn = self._get_recall_connection()
+        try:
+            archival_records.ensure(conn)
+            archival_records.write(conn, {
+                "id": entry.id, "namespace": _ns_value(namespace), "content": entry.content,
+                "content_type": entry.content_type, "source_type": entry.source_type.value,
+                "source_id": entry.source_id or "", "source_notebook_id": effective_notebook_id,
+                "topics": json.dumps(entry.topics), "entities": json.dumps(entry.entities),
+                "importance": entry.importance.value, "created_at": entry.created_at.isoformat(),
+            })
+            conn.commit()
+        finally:
+            conn.close()
+        self._index_archival(entry, _ns_value(namespace), effective_notebook_id)
+
+    def _index_archival(self, entry: ArchivalMemoryEntry, namespace: str, notebook_id: str,
+                        created_at: Optional[str] = None) -> None:
+        """Embed one archival memory into LanceDB + the keyword index. The
+        record already exists; this is the derived half (archival_records.reconcile
+        calls it for records that arrived from another Mac)."""
+        table = self.archival_db.open_table("archival_memories")
+        embedding = self.get_embedding(entry.content)
+        effective_notebook_id = notebook_id
         record = {
             "id": entry.id,
-            "namespace": _ns_value(namespace),
+            "namespace": namespace,
             "content": entry.content,
             "content_type": entry.content_type,
             "source_type": entry.source_type.value,
@@ -815,16 +878,16 @@ class MemoryStore:
             "topics": json.dumps(entry.topics),
             "entities": json.dumps(entry.entities),
             "importance": entry.importance.value,
-            "created_at": entry.created_at.isoformat(),
+            "created_at": created_at or entry.created_at.isoformat(),
             "last_accessed": entry.last_accessed.isoformat(),
             "access_count": entry.access_count,
             "vector": embedding,
         }
-        
+
         table.add([record])
-        
+
         # Sync to FTS5 for hybrid BM25 search
-        self._sync_to_fts(entry.id, entry.content, _ns_value(namespace), effective_notebook_id)
+        self._sync_to_fts(entry.id, entry.content, namespace, effective_notebook_id)
     
     def search_archival_memory(
         self, 
@@ -1059,6 +1122,7 @@ class MemoryStore:
                 gone = df[df["source_notebook_id"] == notebook_id]["id"].tolist()
                 table.delete(f'source_notebook_id = "{notebook_id}"')
                 self.delete_fts(gone)      # keyword rows used to outlive their memories
+                self.delete_archival_records(gone)
                 print(f"[MemoryStore] Deleted {deleted} archival memories for notebook {notebook_id}")
             
             return deleted

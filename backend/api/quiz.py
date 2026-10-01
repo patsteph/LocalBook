@@ -157,16 +157,60 @@ def _get_cards_path(notebook_id: str) -> Path:
     return _get_quiz_dir() / f"{notebook_id}_cards.json"
 
 
-def _load_cards(notebook_id: str) -> Dict[str, Any]:
+# LB-12 D1: cards and reviews are synced documents — one per card
+# (`quiz_card/<nb>/<card id>`) and one per review (`quiz_review/<nb>/<hash>`), so
+# reviewing on two Macs merges instead of colliding. `<nb>_cards.json` is
+# imported once.
+
+
+def _review_key(notebook_id: str, review: Dict[str, Any]) -> str:
+    import hashlib
+    raw = json.dumps(review, sort_keys=True, default=str)
+    return f"{notebook_id}/{hashlib.sha256(raw.encode()).hexdigest()[:24]}"
+
+
+def _import_cards_file(notebook_id: str) -> None:
+    from storage import documents
+    if documents.exists("quiz_cards_imported", notebook_id):
+        return
     path = _get_cards_path(notebook_id)
     if path.exists():
-        return json.loads(path.read_text())
-    return {"cards": {}, "reviews": []}
+        data = json.loads(path.read_text())
+        _write_cards(notebook_id, data)
+    documents.put("quiz_cards_imported", notebook_id, True)
+
+
+def _write_cards(notebook_id: str, data: Dict[str, Any]) -> None:
+    from storage import documents
+    cards = data.get("cards") or {}
+    documents.replace_set("quiz_card", f"{notebook_id}/",
+                          {f"{notebook_id}/{cid}": json.loads(json.dumps(card, default=str))
+                           for cid, card in cards.items()})
+    for review in data.get("reviews") or []:
+        body = json.loads(json.dumps(review, default=str))
+        documents.put("quiz_review", _review_key(notebook_id, body), body)
+
+
+def _load_cards(notebook_id: str) -> Dict[str, Any]:
+    from storage import documents
+    _import_cards_file(notebook_id)
+    prefix = f"{notebook_id}/"
+    cards = {k[len(prefix):]: body for k, body in documents.items("quiz_card", prefix)}
+    reviews = [body for _, body in documents.items("quiz_review", prefix)]
+    reviews.sort(key=lambda r: str(r.get("reviewed_at") or r.get("timestamp") or ""))
+    return {"cards": cards, "reviews": reviews}
 
 
 def _save_cards(notebook_id: str, data: Dict[str, Any]):
-    path = _get_cards_path(notebook_id)
-    path.write_text(json.dumps(data, indent=2, default=str))
+    _write_cards(notebook_id, data)
+
+
+def _card_notebooks() -> List[str]:
+    """Notebooks that have cards — documents first, old files not yet imported too."""
+    from storage import documents
+    ids = {k.split("/", 1)[0] for k, _ in documents.items("quiz_card")}
+    ids |= {f.stem.replace("_cards", "") for f in _get_quiz_dir().glob("*_cards.json")}
+    return sorted(ids)
 
 
 # =============================================================================
@@ -457,8 +501,7 @@ async def review_card(rating: FSRSRating):
     """Submit a review rating for a single card (FSRS algorithm)."""
 
     # No notebook_id on this route — scan the per-notebook card files for the owning one.
-    for cards_file in _get_quiz_dir().glob("*_cards.json"):
-        notebook_id = cards_file.stem.replace("_cards", "")
+    for notebook_id in _card_notebooks():
         cards_data = _load_cards(notebook_id)
         outcome = _apply_fsrs_review(cards_data, rating.card_id, rating.rating)
         if outcome is not None:

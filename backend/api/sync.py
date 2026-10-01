@@ -86,7 +86,7 @@ async def apply(device_id: str):
 
 @router.post("/devices/{device_id}/sync")
 async def sync_now(device_id: str):
-    return await _call(_svc().sync_with(device_id))
+    return await _call(_svc().sync_with(device_id, user_initiated=True))
 
 
 @router.post("/devices/{device_id}/revoke")

@@ -81,7 +81,13 @@ async def hello(request: Request):
             "vv": await asyncio.to_thread(runtime.vvs)}
 
 
+def _missing_db(db: str) -> bool:
+    return not (runtime.data_dir() / runtime.DB_FILES[db]).exists()
+
+
 def _export(db: str, vv: Dict[str, int], limit: int) -> Dict[str, Any]:
+    if _missing_db(db):
+        return {"versions": [], "more": False, "vv": {}}
     with runtime.engine_lock:
         r = runtime.replica(db)
         try:
@@ -91,6 +97,10 @@ def _export(db: str, vv: Dict[str, int], limit: int) -> Dict[str, Any]:
 
 
 def _apply(db: str, page: Dict[str, Any], dry_run: bool) -> Dict[str, Any]:
+    if _missing_db(db):
+        # Nothing to merge into yet (e.g. Curator has never run on this Mac); the
+        # peer keeps these changes and offers them again next time.
+        return {"inserted": 0, "updated": 0, "deleted": 0, "conflicts": [], "tables": {}, "vv": {}}
     with runtime.engine_lock:
         r = runtime.replica(db)
         try:
@@ -125,8 +135,7 @@ async def push(request: Request):
         # Mac initiates too (it is how a seed starts pulling from a joiner).
         if v["device"].get("mode") != "live":
             store.update_device(v["device"]["device_id"], mode="live")
-        if b["db"] == "main":
-            await _after_apply(rep)
+        await _after_apply(rep, b["db"])
     return rep
 
 
@@ -139,6 +148,44 @@ async def genesis_index(request: Request):
         return genesis.index(r.conn)
     finally:
         r.conn.close()
+
+
+# ── blobs (phase E) ──────────────────────────────────────────────────────────
+
+
+@sync_app.post("/sync/blobs/missing")
+async def blobs_missing(request: Request):
+    """Which of these files this Mac does not have."""
+    _check_enabled()
+    v = await _verified(request)
+    from services.sync import blobs
+    return {"missing": await asyncio.to_thread(blobs.missing, list(v["body"].get("paths") or []))}
+
+
+@sync_app.post("/sync/blob/get")
+async def blob_get(request: Request):
+    _check_enabled()
+    v = await _verified(request)
+    from services.sync import blobs
+    try:
+        return await asyncio.to_thread(blobs.read_chunk, v["body"]["path"], int(v["body"].get("offset", 0)))
+    except (blobs.BlobPathError, FileNotFoundError) as exc:
+        raise HTTPException(404, str(exc))
+
+
+@sync_app.post("/sync/blob/put")
+async def blob_put(request: Request):
+    _check_enabled()
+    v = await _verified(request)
+    b = v["body"]
+    from services.sync import blobs
+    try:
+        return await asyncio.to_thread(blobs.write_chunk, b["path"], int(b["offset"]), b["data"],
+                                       int(b["total"]), b["sha256"])
+    except blobs.BlobPathError as exc:
+        raise HTTPException(403, str(exc))
+    except ValueError as exc:
+        raise HTTPException(409, str(exc))
 
 
 def first_apply_backup() -> Dict[str, Any]:
@@ -155,14 +202,21 @@ def first_apply_backup() -> Dict[str, Any]:
     return {"path": path}
 
 
-async def _after_apply(report: Dict[str, Any]) -> None:
-    """Arrived sources are re-embedded here, as dosed background jobs (12j)."""
-    if not report.get("tables", {}).get("sources", {}).get("changed"):
-        return
+def _changed(report: Dict[str, Any], table: str) -> bool:
+    return bool((report.get("tables") or {}).get(table, {}).get("changed"))
+
+
+async def _after_apply(report: Dict[str, Any], db: str = "main") -> None:
+    """What other Macs' changes require here, after they are committed:
+    derived indexes rebuilt (12j) and in-memory caches dropped."""
     try:
         from services.enrichment_jobs import EnrichmentJob, JobTier
         from services.enrichment_worker import enrichment_worker
+    except Exception as exc:
+        logger.warning("[sync] post-apply skipped: %s", exc)
+        return
 
+    if db == "main" and _changed(report, "sources"):
         async def _reindex_all_changed():
             from api.reindex import reindex_notebook
             from storage.notebook_store import notebook_store
@@ -176,8 +230,36 @@ async def _after_apply(report: Dict[str, Any]) -> None:
         enrichment_worker.enqueue(EnrichmentJob(key="sync-reindex", tier=JobTier.DAYDREAM,
                                                 factory=_reindex_all_changed,
                                                 label="re-index after sync"))
-    except Exception as exc:
-        logger.warning("[sync] could not queue the re-index: %s", exc)
+
+    if db == "main" and _changed(report, "documents"):
+        # Settings and core memory are cached in memory; another Mac changed them.
+        try:
+            from storage.memory_store import memory_store
+            memory_store.invalidate_core_memory_cache()
+        except Exception as exc:
+            logger.debug("[sync] core memory cache: %s", exc)
+        try:
+            from agents.curator import curator
+            curator.reload_config()
+        except Exception as exc:
+            logger.debug("[sync] curator config: %s", exc)
+        try:
+            from agents.collector import _collector_registry
+            _collector_registry.clear()          # rebuilt with the synced config on next use
+        except Exception as exc:
+            logger.debug("[sync] collector registry: %s", exc)
+
+    if db == "recall" and _changed(report, "archival_records"):
+        async def _reconcile():
+            import asyncio as _a
+
+            from storage import archival_records
+            from storage.memory_store import memory_store
+            out = await _a.to_thread(archival_records.reconcile, memory_store)
+            logger.info("[sync] archival index reconciled: %s", out)
+
+        enrichment_worker.enqueue(EnrichmentJob(key="sync-archival-reconcile", tier=JobTier.DAYDREAM,
+                                                factory=_reconcile, label="memory index after sync"))
 
 
 # ── server: pairing ──────────────────────────────────────────────────────────
@@ -346,11 +428,84 @@ class Session:
                                                   "limit": PREVIEW_PAGE if dry_run else PAGE})
             rep = await asyncio.to_thread(_apply, db, page, dry_run)
             _add(total, rep)
-            if not dry_run and db == "main":
-                await _after_apply(rep)
+            if not dry_run:
+                await _after_apply(rep, db)
             if not page.get("more") or dry_run:
                 return total
         raise RuntimeError("pull did not finish")
+
+    async def fetch_blobs(self) -> Dict[str, int]:
+        """Download every audio/video file local rows point at but this Mac lacks."""
+        from services.sync import blobs
+
+        def _need():
+            r = runtime.replica("main")
+            try:
+                return blobs.missing(blobs.referenced(r.conn))
+            finally:
+                r.conn.close()
+
+        got = failed = 0
+        for rel in await asyncio.to_thread(_need):
+            try:
+                offset = await asyncio.to_thread(blobs.partial_offset, rel)
+                digest, total = None, None
+                if offset:
+                    head = await self.post("/sync/blob/get", {"path": rel, "offset": 0})
+                    digest, total = head["sha256"], head["total"]
+                while True:
+                    c = await self.post("/sync/blob/get", {"path": rel, "offset": offset})
+                    digest = digest or c["sha256"]
+                    total = c["total"]
+                    res = await asyncio.to_thread(blobs.write_chunk, rel, offset, c["data"], total, digest)
+                    offset = res["next"]
+                    if res["done"]:
+                        got += 1
+                        break
+            except Exception as exc:
+                failed += 1
+                logger.info("[sync] blob %s not fetched yet: %s", rel, exc)
+        return {"fetched": got, "pending": failed}
+
+    async def send_blobs(self) -> Dict[str, int]:
+        """Upload what the peer lacks among the files this Mac has."""
+        import base64
+
+        from services.sync import blobs
+
+        def _have():
+            r = runtime.replica("main")
+            try:
+                refs = blobs.referenced(r.conn)
+            finally:
+                r.conn.close()
+            return [x for x in refs if x not in blobs.missing(refs)]
+
+        have = await asyncio.to_thread(_have)
+        if not have:
+            return {"sent": 0}
+        need = (await self.post("/sync/blobs/missing", {"paths": have}))["missing"]
+        sent = 0
+        for rel in need:
+            try:
+                path = blobs.safe_path(rel)
+                total = path.stat().st_size
+                digest = await asyncio.to_thread(blobs.sha256, path)
+                offset = 0
+                with open(path, "rb") as f:
+                    while True:
+                        f.seek(offset)
+                        data = f.read(blobs.CHUNK)
+                        res = await self.post("/sync/blob/put", {
+                            "path": rel, "offset": offset, "total": total, "sha256": digest,
+                            "data": base64.b64encode(data).decode("ascii")})
+                        offset = res["next"]
+                        if res["done"]:
+                            sent += 1
+                            break
+            except Exception as exc:
+                logger.info("[sync] blob %s not sent yet: %s", rel, exc)
+        return {"sent": sent}
 
     async def push_all(self, db: str, peer_vv: Dict[str, int], dry_run: bool = False) -> Dict[str, Any]:
         total = {"inserted": 0, "updated": 0, "deleted": 0, "conflicts": 0, "tables": {}}

@@ -160,7 +160,7 @@ async def apply(device_id: str) -> Dict[str, Any]:
             await asyncio.to_thread(_rekey, the_plan)
             store.put(f"genesis_done:{device_id}", the_plan["counts"])
     store.update_device(device_id, mode="live")
-    return await sync_with(device_id)
+    return await sync_with(device_id, user_initiated=True)
 
 
 def _rekey(the_plan: Dict[str, Any]) -> None:
@@ -180,7 +180,7 @@ def _rekey(the_plan: Dict[str, Any]) -> None:
 # ── ongoing sync ────────────────────────────────────────────────────────────
 
 
-async def sync_with(device_id: str) -> Dict[str, Any]:
+async def sync_with(device_id: str, user_initiated: bool = False) -> Dict[str, Any]:
     d = _device(device_id)
     if d.get("mode") != "live":
         raise ValueError("preview and apply this Mac first")
@@ -192,9 +192,17 @@ async def sync_with(device_id: str) -> Dict[str, Any]:
             h = await s.hello()
             out = {}
             for db in runtime.DB_FILES:
+                if not (runtime.data_dir() / runtime.DB_FILES[db]).exists():
+                    continue
                 incoming = await s.pull_all(db)
                 outgoing = await s.push_all(db, (h.get("vv") or {}).get(db, {}))
                 out[db] = {"in": incoming, "out": outgoing}
+            # Files last, and only while the user is not active (D15: eager, but
+            # at the lowest priority) — a skipped round is picked up by the next.
+            if user_initiated or _user_idle():
+                out["blobs"] = {**await s.fetch_blobs(), **await s.send_blobs()}
+            else:
+                out["blobs"] = {"deferred": "you are using LocalBook"}
         store.update_device(device_id, last_seen=time.time(), last_error=None)
         store.put(f"last_sync:{device_id}", {"at": time.time(), "result": out})
         return out
@@ -206,6 +214,14 @@ async def sync_with(device_id: str) -> Dict[str, Any]:
         raise
     finally:
         _busy.pop(device_id, None)
+
+
+def _user_idle() -> bool:
+    try:
+        from services import presence
+        return not presence.is_active()
+    except Exception:
+        return True
 
 
 async def sync_all() -> Dict[str, Any]:

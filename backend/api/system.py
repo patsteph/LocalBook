@@ -77,6 +77,12 @@ async def get_tray_status():
         out["enrichment"] = {"queue_depth": int(enrichment_worker.queue_depth() or 0)}
     except Exception as e:
         logger.debug(f"[system.tray] enrichment snapshot failed: {e}")
+    try:
+        # LB-12: the menu-bar kill switch reads its state from here.
+        from services.sync import store as _sync_store
+        out["sync"] = {"enabled": _sync_store.enabled(), "paired": len(_sync_store.devices())}
+    except Exception as e:
+        logger.debug(f"[system.tray] sync snapshot failed: {e}")
     return out
 
 

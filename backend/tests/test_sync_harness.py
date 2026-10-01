@@ -32,6 +32,10 @@ op = st.one_of(
     st.tuples(st.just("del"), mac_i, st.sampled_from(NOTES), st.just(None)),
     st.tuples(st.just("rmnb"), mac_i, st.sampled_from(NOTEBOOKS), st.just(None)),
     st.tuples(st.just("sync"), mac_i, mac_i, st.booleans()),
+    # Phase D/F: granular documents and append-only logs.
+    st.tuples(st.just("doc"), mac_i, st.sampled_from(["m1", "m2"]), st.sampled_from(["v1", "v2", "v3"])),
+    st.tuples(st.just("undoc"), mac_i, st.sampled_from(["m1", "m2"]), st.just(None)),
+    st.tuples(st.just("log"), mac_i, st.sampled_from(["s1", "s2"]), st.just(None)),
 )
 
 
@@ -53,6 +57,14 @@ def _do(macs, step):
         m.sql("DELETE FROM canvas_notes WHERE id=?", x)
     elif kind == "rmnb":
         m.sql("DELETE FROM notebooks WHERE id=?", x)
+    elif kind == "doc":
+        m.sql("INSERT INTO documents (kind, key, uuid, body_json, updated_at) VALUES "
+              "('core_memory', ?, 'u', ?, 'now') ON CONFLICT(kind, key) DO UPDATE SET "
+              "body_json=excluded.body_json", x, f'"{y}"')
+    elif kind == "undoc":
+        m.sql("DELETE FROM documents WHERE kind='core_memory' AND key=?", x)
+    elif kind == "log":
+        m.sql("INSERT INTO correspondent_events (ts, event_type, sender) VALUES ('t', 'e', ?)", x)
     elif kind == "sync":
         j, partial = x, y
         if i == j:

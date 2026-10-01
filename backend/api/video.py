@@ -188,7 +188,13 @@ async def stream_video(video_id: str, request: Request):
 
     video_path = generation.get("video_file_path")
     if not video_path or not Path(video_path).exists():
-        raise HTTPException(status_code=404, detail="Video file not found")
+        # Same fallback api/audio.py has: a row synced from another Mac (or a moved
+        # data dir) still finds its file under this Mac's data dir.
+        from config import settings
+        fallback = Path(settings.data_dir) / "video" / f"{video_id}.mp4"
+        if not fallback.exists():
+            raise HTTPException(status_code=404, detail="Video file not found")
+        video_path = str(fallback)
 
     file_path = Path(video_path)
     file_size = file_path.stat().st_size

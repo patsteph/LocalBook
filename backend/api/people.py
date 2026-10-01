@@ -8,6 +8,7 @@ Handles:
 - Collection triggers
 """
 
+import json
 import logging
 from typing import List, Optional, Dict, Any
 from datetime import datetime
@@ -83,12 +84,33 @@ def _get_config_path(notebook_id: str):
     return settings.data_dir / "notebooks" / notebook_id / "people_config.yaml"
 
 
+def is_people_notebook(notebook_id: str) -> bool:
+    """Has a people configuration — in the synced documents, or still only in
+    the old YAML (not yet imported)."""
+    from storage import documents
+
+    return documents.exists("people_config", notebook_id) or _get_config_path(notebook_id).exists()
+
+
+def people_notebook_ids() -> List[str]:
+    from storage import documents
+
+    from config import settings
+
+    ids = {k for k, _ in documents.items("people_config")}
+    nb_dir = settings.data_dir / "notebooks"
+    if nb_dir.exists():
+        ids |= {d.name for d in nb_dir.iterdir() if (d / "people_config.yaml").exists()}
+    return sorted(ids)
+
+
 def _load_config(notebook_id: str) -> PeopleNotebookConfig:
-    import yaml
-    config_path = _get_config_path(notebook_id)
-    if config_path.exists():
-        with open(config_path, "r") as f:
-            data = yaml.safe_load(f) or {}
+    # LB-12 D1: synced `documents`; the YAML file is imported once.
+    from storage import documents
+
+    data = documents.import_file("people_config", notebook_id, _get_config_path(notebook_id),
+                                 documents.read_yaml) or documents.get("people_config", notebook_id)
+    if data:
         config = PeopleNotebookConfig(**data)
         # Auto-detect coaching mode from existing data — supersedes manual toggle
         if not config.coaching_enabled:
@@ -121,15 +143,13 @@ def _should_auto_enable_coaching(config: PeopleNotebookConfig, notebook_id: str)
     
     # Check collector config intent for coaching keywords
     try:
-        from config import settings
-        import yaml as _yaml
-        collector_path = settings.data_dir / "notebooks" / notebook_id / "collector_config.yaml"
-        if collector_path.exists():
-            with open(collector_path, "r") as f:
-                cdata = _yaml.safe_load(f) or {}
-            intent = (cdata.get("intent", "") + " " + cdata.get("subject", "")).lower()
-            if any(kw in intent for kw in _COACHING_KEYWORDS):
-                return True
+        # The Collector's real configuration. This used to read
+        # `collector_config.yaml`, a file nothing ever wrote — the check was dead.
+        from storage import documents
+        cdata = documents.get("collector_config", notebook_id) or {}
+        intent = (str(cdata.get("intent", "")) + " " + str(cdata.get("subject", ""))).lower()
+        if any(kw in intent for kw in _COACHING_KEYWORDS):
+            return True
     except Exception as _e:
         logger.debug(f"[people] {type(_e).__name__}: {_e}")
     
@@ -137,12 +157,10 @@ def _should_auto_enable_coaching(config: PeopleNotebookConfig, notebook_id: str)
 
 
 def _save_config(notebook_id: str, config: PeopleNotebookConfig):
-    import yaml
-    config_path = _get_config_path(notebook_id)
-    config_path.parent.mkdir(parents=True, exist_ok=True)
+    from storage import documents
+
     config.updated_at = datetime.utcnow().isoformat()
-    with open(config_path, "w") as f:
-        yaml.dump(config.model_dump(), f, default_flow_style=False, sort_keys=False)
+    documents.put("people_config", notebook_id, json.loads(json.dumps(config.model_dump(), default=str)))
 
 
 # =============================================================================
