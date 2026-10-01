@@ -311,7 +311,8 @@ def status() -> Dict[str, Any]:
         devices.append({k: d.get(k) for k in ("device_id", "name", "host", "port", "role", "mode",
                                                "paired_at", "last_seen", "last_error")}
                        | {"fingerprint": d["fingerprint"][:16], "preview": store.preview(d["device_id"]),
-                          "last_sync": store.get(f"last_sync:{d['device_id']}")})
+                          "last_sync": store.get(f"last_sync:{d['device_id']}"),
+                          "model_mismatch": store.get(f"model_mismatch:{d['device_id']}") or {}})
     try:
         c = runtime.replica("main").conn
         open_conflicts = c.execute("SELECT COUNT(*) FROM sync_conflicts WHERE status='open'").fetchone()[0]

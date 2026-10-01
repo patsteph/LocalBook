@@ -19,6 +19,7 @@ type Device = {
     last_seen?: number; last_error?: string; fingerprint: string;
     preview?: { genesis?: Record<string, number>; incoming?: { inserted: number; updated: number; deleted: number; conflicts: number }; created_at?: number } | null;
     last_sync?: { at: number } | null;
+    model_mismatch?: Record<string, { here: string; there: string }>;
 };
 type Pairing = { id: string; direction: 'incoming' | 'outgoing'; device_id: string; name?: string; sas: string; host?: string };
 type Status = {
@@ -187,6 +188,11 @@ export function SyncSection() {
                                             {d.host ?? 'address unknown'} · last contact {ago(d.last_seen)} · last sync {ago(d.last_sync?.at)}
                                         </div>
                                         {d.last_error && <div className="text-xs text-amber-300">{d.last_error}</div>}
+                                        {Object.entries(d.model_mismatch ?? {}).map(([role, m]) => (
+                                            <div key={role} className="text-xs text-amber-300">
+                                                Different {role} model — this Mac: {m.here.split('/').pop()}, {d.name ?? 'that Mac'}: {m.there.split('/').pop()}
+                                            </div>
+                                        ))}
                                     </div>
                                     <div className="flex gap-2">
                                         {d.mode !== 'live' && (

@@ -212,11 +212,17 @@ if _prefs_path.exists():
         #
         # The migration (run above, BEFORE this) is what guarantees the keys are already in
         # the new shape — a v3-or-older file still stores mlx_main_model etc.
+        # Every role is named, and every override of a config default is called out: this
+        # line printing only main+fast is how the MBP ran an 8-bit embedder for weeks unseen.
         for _k in ("main_model", "fast_model", "vision_model", "image_model", "embedding_model"):
             if _default_combo.get(_k):
+                if _default_combo[_k] != getattr(settings, _k):
+                    print(f"[SafeStart] ⚠️ user_preferences.json overrides {_k}: "
+                          f"{getattr(settings, _k)} → {_default_combo[_k]}")
                 setattr(settings, _k, _default_combo[_k])
-        print(f"[SafeStart] Applied user default combo: "
-              f"main={settings.main_model} fast={settings.fast_model}")
+        print("[SafeStart] Models: " + " ".join(
+            f"{_k.replace('_model', '')}={getattr(settings, _k)}"
+            for _k in ("main_model", "fast_model", "vision_model", "image_model", "embedding_model")))
     except Exception as e:
         print(f"[SafeStart] Failed to load user preferences, using built-in defaults: {e}")
 

@@ -76,9 +76,41 @@ async def hello(request: Request):
     theirs = int(v["body"].get("head", -1))
     if theirs != mine:
         raise HTTPException(409, json.dumps({"reason": "version", "head": mine, "peer_head": theirs}))
+    _note_models(v["device"], v["body"].get("models"))
     return {"device_id": identity.device_id(), "name": identity.device_name(),
-            "proto": identity.PROTOCOL, "head": mine,
+            "proto": identity.PROTOCOL, "head": mine, "models": models(),
             "vv": await asyncio.to_thread(runtime.vvs)}
+
+
+MODEL_ROLES = ("main_model", "fast_model", "vision_model", "image_model", "embedding_model")
+
+
+def models() -> Dict[str, str]:
+    """This Mac's resolved model per role. Exchanged in hello so two Macs that are meant to
+    run the same models can see when they do not (a stale prefs override, a half download)."""
+    from config import settings
+
+    return {k: getattr(settings, k, "") or "" for k in MODEL_ROLES}
+
+
+def model_mismatch(theirs: Optional[Dict[str, str]]) -> Dict[str, Dict[str, str]]:
+    """role → {here, there} for every role whose model differs. An older peer that sends
+    no models compares as nothing to report, not as a mismatch."""
+    if not theirs:
+        return {}
+    mine = models()
+    return {k.replace("_model", ""): {"here": mine[k], "there": theirs.get(k, "")}
+            for k in MODEL_ROLES if theirs.get(k) and theirs[k] != mine[k]}
+
+
+def _note_models(d: Dict[str, Any], theirs: Optional[Dict[str, str]]) -> None:
+    """Record (both ends of every hello) whether the peer runs different models. A warning,
+    not a refusal: records still merge correctly, but each Mac embeds its own index, so a
+    different embedder means the same question retrieves differently on each Mac."""
+    diff = model_mismatch(theirs)
+    store.put(f"model_mismatch:{d['device_id']}", diff)
+    if diff:
+        logger.warning("[sync] %s runs different models: %s", d.get("name") or d["device_id"], diff)
 
 
 def _missing_db(db: str) -> bool:
@@ -417,8 +449,11 @@ class Session:
         return r.json()
 
     async def hello(self) -> Dict[str, Any]:
-        return await self.post("/sync/hello", {"device_id": identity.device_id(),
-                                               "head": runtime.ledger_head(), "proto": identity.PROTOCOL})
+        h = await self.post("/sync/hello", {"device_id": identity.device_id(),
+                                            "head": runtime.ledger_head(), "proto": identity.PROTOCOL,
+                                            "models": models()})
+        _note_models(self.d, h.get("models"))
+        return h
 
     async def pull_all(self, db: str, dry_run: bool = False) -> Dict[str, Any]:
         total = {"inserted": 0, "updated": 0, "deleted": 0, "conflicts": 0, "tables": {}}

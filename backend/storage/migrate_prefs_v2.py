@@ -71,10 +71,62 @@ def _prefs_path() -> Optional[str]:
         return None
 
 
+# Checkpoint ids that were once a default and are now superseded → their replacement.
+# A prefs file freezes whatever was the default when it was written, and main.py restores it
+# over config.py on every launch, so a superseded default lives on forever on the Macs that
+# had it — on 2026-10-01 the MBP was still loading the 8-bit arctic embedder (default
+# 2026-07-22 → 08-06) while the mini, hand-edited on 08-19, loaded bf16. Same app, same
+# models chosen, different retrieval. bf16 is pinned for measured reasons (config.py).
+SUPERSEDED = {
+    "mlx-community/snowflake-arctic-embed-l-v2.0-8bit": "mlx-community/snowflake-arctic-embed-l-v2.0-bf16",
+}
+
+
 def run(path: Optional[str] = None) -> Dict[str, Any]:
-    """Migrate the prefs file to schema v2. Returns a summary; never raises."""
-    out: Dict[str, Any] = {"ran": False, "reason": "", "backup": None, "resolved": {}}
+    """Migrate the prefs file, then retire superseded ids. Returns a summary; never raises."""
     p = path or _prefs_path()
+    out = _migrate(p)
+    out["retired"] = retire_superseded(p)
+    return out
+
+
+def retire_superseded(p: Optional[str]) -> Dict[str, str]:
+    """Rewrite every saved superseded id to its replacement — but only when the replacement
+    is on disk (pointing a role at missing weights stalls first run; embeddings RAISE).
+    Not tied to schema_version: it re-checks every launch, so a Mac that downloads the
+    replacement later is fixed on its next start. Backs up first, never raises."""
+    done: Dict[str, str] = {}
+    try:
+        if not p or not os.path.isfile(p):
+            return done
+        with open(p) as fh:
+            data = json.load(fh)
+        combo = data.get("default_combo") or {}
+        stale = {k: v for k, v in combo.items() if isinstance(v, str) and v in SUPERSEDED}
+        if not stale:
+            return done
+        from services.model_presence import is_present
+        for k, old in stale.items():
+            new = SUPERSEDED[old]
+            if is_present(new):
+                combo[k] = new
+                done[k] = new
+            else:
+                logger.warning(f"[migrate-prefs] {k} is the superseded {old}; {new} is not "
+                               f"downloaded, so it stays until it is")
+        if done:
+            data["default_combo"] = combo
+            if _write(p, data, {}, tag="superseded"):
+                logger.info(f"[migrate-prefs] retired superseded models: {done}")
+            else:
+                done = {}
+    except Exception as e:
+        logger.warning(f"[migrate-prefs] superseded check skipped: {e}")
+    return done
+
+
+def _migrate(p: Optional[str]) -> Dict[str, Any]:
+    out: Dict[str, Any] = {"ran": False, "reason": "", "backup": None, "resolved": {}}
     if not p or not os.path.isfile(p):
         out["reason"] = "no prefs file (fresh install)"
         return out
@@ -186,10 +238,10 @@ def run(path: Optional[str] = None) -> Dict[str, Any]:
     return out
 
 
-def _write(path: str, data: Dict[str, Any], out: Dict[str, Any]) -> bool:
+def _write(path: str, data: Dict[str, Any], out: Dict[str, Any], tag: str = "") -> bool:
     """Back up, then write atomically. Returns False (and leaves the file alone) on failure."""
     try:
-        backup = f"{path}.pre-v{SCHEMA_VERSION}-backup-{time.strftime('%Y%m%d-%H%M%S')}"
+        backup = f"{path}.pre-{tag or f'v{SCHEMA_VERSION}'}-backup-{time.strftime('%Y%m%d-%H%M%S')}"
         shutil.copy2(path, backup)
         out["backup"] = backup
     except Exception as e:
