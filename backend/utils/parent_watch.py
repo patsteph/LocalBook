@@ -23,6 +23,7 @@ import time
 logger = logging.getLogger(__name__)
 
 INTERVAL = 3.0
+CONFIRMS = 3                # consecutive misses before acting — never on one odd reading
 
 
 def _alive(pid: int) -> bool:
@@ -47,10 +48,17 @@ def start() -> bool:
     parent = int(raw)
 
     def _watch():
+        misses = 0
         while True:
             time.sleep(INTERVAL)
-            if app_gone(parent):
-                logger.warning("[parent-watch] LocalBook (pid %d) is gone — shutting the backend down", parent)
+            if not app_gone(parent):
+                misses = 0
+                continue
+            misses += 1
+            logger.warning("[parent-watch] LocalBook (pid %d) not found (ppid now %d) — check %d/%d",
+                           parent, os.getppid(), misses, CONFIRMS)
+            if misses >= CONFIRMS:
+                logger.warning("[parent-watch] LocalBook is gone — shutting the backend down")
                 os.kill(os.getpid(), signal.SIGTERM)
                 return
 

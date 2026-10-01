@@ -158,17 +158,9 @@ fn kill_existing_backend() {
             .output();
 
         // 2. Kill by port (catches dev-mode python, orphaned processes, etc.)
-        //    lsof -t -i:8000 returns PIDs; kill sends SIGTERM to each
-        if let Ok(output) = std::process::Command::new("lsof")
-            .args(["-t", "-i:8000"])
-            .output()
-        {
-            let pids = String::from_utf8_lossy(&output.stdout);
-            for pid in pids.split_whitespace() {
-                let _ = std::process::Command::new("kill")
-                    .arg(pid)
-                    .output();
-            }
+        //    the LISTENING pids only (never this app — see port_8000_holders); SIGTERM each
+        for pid in port_8000_holders() {
+            let _ = std::process::Command::new("kill").arg(&pid).output();
         }
 
         // Wait for the graceful shutdown to FINISH, not for a fixed guess. It
@@ -193,16 +185,8 @@ fn kill_existing_backend() {
         }
 
         // 3. Force-kill stragglers on port 8000
-        if let Ok(output) = std::process::Command::new("lsof")
-            .args(["-t", "-i:8000"])
-            .output()
-        {
-            let pids = String::from_utf8_lossy(&output.stdout);
-            for pid in pids.split_whitespace() {
-                let _ = std::process::Command::new("kill")
-                    .args(["-9", pid])
-                    .output();
-            }
+        for pid in port_8000_holders() {
+            let _ = std::process::Command::new("kill").args(["-9", &pid]).output();
         }
 
         // SIGKILL any localbook-backend stragglers too
@@ -246,22 +230,30 @@ fn kill_existing_backend() {
             eprintln!(
                 "[Backend] FATAL: port 8000 still held by PID(s) {:?} after six SIGKILL \
                  attempts. The new backend cannot bind and will not start. Recover with \
-                 `kill -9 $(lsof -t -i:8000)`.",
+                 `kill -9 $(lsof -t -iTCP:8000 -sTCP:LISTEN)`.",
                 stuck
             );
         }
     }
 }
 
-/// PIDs currently listening on the backend port. Empty means the port is free.
+/// PIDs LISTENING on the backend port — never this app. Empty means the port is free.
+///
+/// Plain `lsof -i:8000` also lists every process CONNECTED to the port, and this app
+/// connects to it (the tray poll starts before the backend is restarted). With an
+/// orphaned backend still serving, the app found its own pid in that list and
+/// SIGTERMed itself on every launch: the window flashed and nothing opened
+/// (both Macs, 2026-10-01).
 #[cfg(unix)]
 fn port_8000_holders() -> Vec<String> {
+    let me = std::process::id().to_string();
     std::process::Command::new("lsof")
-        .args(["-t", "-i:8000"])
+        .args(["-t", "-nP", "-iTCP:8000", "-sTCP:LISTEN"])
         .output()
         .map(|o| {
             String::from_utf8_lossy(&o.stdout)
                 .split_whitespace()
+                .filter(|pid| *pid != me)
                 .map(str::to_string)
                 .collect()
         })
