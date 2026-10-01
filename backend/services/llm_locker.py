@@ -15,21 +15,15 @@ logger = logging.getLogger(__name__)
 
 
 def _get_default_vision_model() -> str:
-    """
-    Return the best available standalone vision model from the registry.
+    """The vision model to restore when the main/fast model it shared no longer sees.
 
-    Selection order is conservative on purpose: we pick a model that we
-    KNOW the current Ollama runner can serve, and treat newer-but-flaky
-    models as opt-in via Settings → Models.
-
-    granite3.2-vision:2b is the stable floor. granite3.3 was removed after
-    Ollama 0.23.x llama-runner segfaults on Apple Silicon. Users can select
-    any installed vision model (gemma3:4b, gemma4:e2b, llava, moondream)
-    via the Vision column in the LLM Selector.
+    The shipped default from config.py — an MLX checkpoint id. This used to return
+    "granite3.2-vision:2b", an Ollama tag the MLX engine cannot load, so swapping to a
+    non-vision model silently broke every image task (found 2026-10-01).
     """
-    if registry.get_model("granite3.2-vision:2b"):
-        return "granite3.2-vision:2b"
-    return "granite3.2-vision:2b"
+    from config import Settings
+
+    return Settings.model_fields["vision_model"].default
 
 
 class ModelSwapError(Exception):

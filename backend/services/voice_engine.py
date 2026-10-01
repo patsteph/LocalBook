@@ -110,27 +110,24 @@ SAMPLES:
 """
 
         try:
+            # The configured fast model — never a hardcoded name. This said
+            # "phi4-mini:latest" (an Ollama tag) after the MLX cutover, so every rebuild
+            # failed: MLX cannot load it (seen in the MBP log, 2026-10-01).
+            from config import settings
+            from utils.json_repair import robust_json_parse
+
             result = await llm_runtime.generate(
                 prompt=prompt,
-                model="phi4-mini:latest",
+                model=settings.fast_model,
                 system="You output strictly valid JSON with no markdown formatting or explanation.",
                 temperature=0.1
             )
-            
-            response_text = result.get("response", "").strip()
-            # Clean up potential markdown formatting
-            if response_text.startswith("```json"):
-                response_text = response_text[7:]
-            if response_text.startswith("```"):
-                response_text = response_text[3:]
-            if response_text.endswith("```"):
-                response_text = response_text[:-3]
-            
-            profile_json = response_text.strip()
-            
-            # Validate JSON
-            json.loads(profile_json)
-            
+            profile = robust_json_parse(result.get("response", ""), label="voice-profile")
+            if not isinstance(profile, dict):
+                logger.warning("Voice profile rebuild: the model returned no usable JSON; keeping the old profile")
+                return False
+            profile_json = json.dumps(profile)
+
             # Save to DB
             now = datetime.utcnow().isoformat() + "Z"
             cursor.execute("""
