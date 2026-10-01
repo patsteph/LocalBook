@@ -38,6 +38,9 @@ attrs==25.4.0
 audioread==3.1.0
     # via
     #   librosa
+authlib==1.6.6
+    # via
+    #   fastmcp
 av==19.0.0
     # via
     #   -r requirements.in
@@ -45,6 +48,9 @@ babel==2.17.0
     # via
     #   courlan
     #   csvw
+beartype==0.22.9
+    # via
+    #   fastmcp
 beautifulsoup4==4.14.3
     # via -r requirements.in
 bertopic==0.17.4
@@ -79,6 +85,9 @@ click==8.4.2
     #   uvicorn
 cloudpathlib==0.23.0
     # via weasel
+cloudpickle==3.1.2
+    # via
+    #   fastmcp
 coloredlogs==15.0.1
     # via onnxruntime
 confection==0.1.5
@@ -91,6 +100,9 @@ cryptography==46.0.7
     # via -r requirements.in
 csvw==3.7.0
     # via segments
+cyclopts==4.4.6
+    # via
+    #   fastmcp
 cymem==2.0.13
     # via
     #   preshed
@@ -120,12 +132,27 @@ dlinfo==2.0.0
     #   phonemizer
 docopt==0.6.2
     # via num2words
+docstring-parser==0.17.0
+    # via
+    #   fastmcp
+docutils==0.22.4
+    # via
+    #   fastmcp
 et-xmlfile==2.0.0
     # via openpyxl
+exceptiongroup==1.3.1
+    # via
+    #   fastmcp
+fakeredis==2.33.0
+    # via
+    #   fastmcp
 fastapi==0.128.0
     # via -r requirements.in
 fastjsonschema==2.21.2
     # via nbformat
+fastmcp==2.14.3
+    # via
+    #   -r requirements.in
 feedparser==6.0.12
     # via -r requirements.in
 filelock==3.20.3
@@ -167,6 +194,9 @@ httpx==0.28.1
     #   langgraph-sdk
     #   langsmith
     #   openai
+httpx-sse==0.4.3
+    # via
+    #   fastmcp
 huggingface-hub==1.23.0
     # via
     #   mlx-whisper
@@ -183,6 +213,9 @@ idna==3.15
     #   yarl
 imap-tools==1.6.0
     # via -r requirements.in
+importlib-metadata==8.7.1
+    # via
+    #   fastmcp
 isodate==0.7.2
     # via csvw
 jaraco-classes==3.4.0
@@ -211,6 +244,9 @@ jsonschema==4.26.0
     # via
     #   csvw
     #   nbformat
+jsonschema-path==0.3.4
+    # via
+    #   fastmcp
 jsonschema-specifications==2025.9.1
     # via jsonschema
 jupyter-core==5.9.1
@@ -280,6 +316,9 @@ markdown-it-py==4.0.0
     # via rich
 markupsafe==3.0.3
     # via jinja2
+mcp==1.25.0
+    # via
+    #   fastmcp
 mdurl==0.1.2
     # via markdown-it-py
 misaki==0.7.4
@@ -292,6 +331,9 @@ mlx-metal==0.32.0
     # via mlx
 mlx-whisper==0.4.3 ; sys_platform == "darwin"
     # via -r requirements.in
+mnemonic==0.21
+    # via
+    #   -r requirements.in
 more-itertools==10.8.0
     # via
     #   jaraco-classes
@@ -354,10 +396,28 @@ onnxruntime==1.23.2
     # via flashrank
 openai==2.15.0
     # via -r requirements.in
+openapi-pydantic==0.5.1
+    # via
+    #   fastmcp
 opencv-python-headless==4.11.0.86
     # via -r requirements.in
 openpyxl==3.1.5
     # via -r requirements.in
+opentelemetry-api==1.39.1
+    # via
+    #   fastmcp
+opentelemetry-exporter-prometheus==0.60b1
+    # via
+    #   fastmcp
+opentelemetry-instrumentation==0.60b1
+    # via
+    #   fastmcp
+opentelemetry-sdk==1.39.1
+    # via
+    #   fastmcp
+opentelemetry-semantic-conventions==0.60b1
+    # via
+    #   fastmcp
 orjson==3.11.6
     # via
     #   langgraph-sdk
@@ -384,6 +444,9 @@ pandas==2.3.3
     # via
     #   -r requirements.in
     #   bertopic
+pathable==0.4.4
+    # via
+    #   fastmcp
 phonemizer==3.3.0
     # via -r requirements.in
 piexif==1.1.3
@@ -410,6 +473,9 @@ preshed==3.0.12
     # via
     #   spacy
     #   thinc
+prometheus-client==0.24.1
+    # via
+    #   fastmcp
 propcache==0.4.1
     # via
     #   aiohttp
@@ -420,6 +486,12 @@ protobuf==6.33.5 ; sys_platform == "darwin"
     #   onnxruntime
 psutil==7.2.1
     # via -r requirements.in
+py-key-value-aio==0.3.0
+    # via
+    #   fastmcp
+py-key-value-shared==0.3.0
+    # via
+    #   fastmcp
 pyarrow==22.0.0
     # via
     #   -r requirements.in
@@ -445,6 +517,9 @@ pydantic-core==2.41.5
     # via pydantic
 pydantic-settings==2.14.2
     # via -r requirements.in
+pydocket==0.16.6
+    # via
+    #   fastmcp
 pyee==13.0.0
     # via playwright
 pygments==2.20.0
@@ -453,6 +528,9 @@ pyinstaller==6.18.0
     # via -r requirements.in
 pyinstaller-hooks-contrib==2025.11
     # via pyinstaller
+pyjwt==2.10.1
+    # via
+    #   fastmcp
 pymupdf==1.27.1
     # via
     #   -r requirements.in
@@ -490,6 +568,9 @@ pyobjc-framework-vision==12.1 ; sys_platform == "darwin"
     # via -r requirements.in
 pyparsing==3.3.2
     # via rdflib
+pyperclip==1.11.0
+    # via
+    #   fastmcp
 pytesseract==0.3.13
     # via -r requirements.in
 python-dateutil==2.9.0.post0
@@ -506,6 +587,9 @@ python-dotenv==1.2.2
     #   -r requirements.in
     #   pydantic-settings
     #   uvicorn
+python-json-logger==4.0.0
+    # via
+    #   fastmcp
 python-multipart==0.0.31
     # via -r requirements.in
 python-pptx==1.0.2
@@ -525,6 +609,9 @@ rank-bm25==0.2.2
     # via -r requirements.in
 rdflib==7.6.0
     # via csvw
+redis==7.1.0
+    # via
+    #   fastmcp
 referencing==0.36.2
     # via
     #   jsonschema
@@ -553,6 +640,9 @@ rfc3986==1.5.0
     # via csvw
 rich==14.2.0
     # via typer
+rich-rst==1.3.2
+    # via
+    #   fastmcp
 rpds-py==0.30.0
     # via
     #   jsonschema
@@ -598,6 +688,9 @@ smart-open==7.5.1
     # via weasel
 sniffio==1.3.1
     # via openai
+sortedcontainers==2.4.0
+    # via
+    #   fastmcp
 soundfile==0.13.1
     # via -r requirements.in
 soupsieve==2.8.4
@@ -617,6 +710,9 @@ srsly==2.5.2
     #   spacy
     #   thinc
     #   weasel
+sse-starlette==3.1.2
+    # via
+    #   fastmcp
 standard-aifc==3.13.0
     # via
     #   librosa
@@ -766,6 +862,9 @@ yarl==1.22.0
     # via aiohttp
 youtube-transcript-api==1.2.3
     # via -r requirements.in
+zipp==3.23.0
+    # via
+    #   importlib-metadata
 zstandard==0.25.0
     # via langsmith
 

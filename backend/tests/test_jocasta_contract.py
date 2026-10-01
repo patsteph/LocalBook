@@ -265,3 +265,20 @@ def test_start_research_launches_on_the_event_loop_and_finishes(tools, store, mo
 
     job = asyncio.run(go())
     assert job["status"] == "done" and job["results"][0]["url"] == "https://x"
+
+
+def test_an_unhandled_error_is_logged_and_explained(caplog):
+    """The MBP's Encrypt banner said only "Could not generate a recovery phrase"
+    and backend.log was silent. Now the reason reaches both."""
+    import json as _json
+
+    import main
+    from starlette.requests import Request
+
+    req = Request({"type": "http", "method": "POST", "path": "/keyvault/recovery/begin",
+                   "headers": [], "query_string": b""})
+    with caplog.at_level("ERROR"):
+        resp = asyncio.run(main._unhandled_error(req, ModuleNotFoundError("No module named 'mnemonic'")))
+    assert resp.status_code == 500
+    assert "mnemonic" in _json.loads(resp.body)["detail"]
+    assert any("recovery/begin" in r.getMessage() and r.exc_info for r in caplog.records)

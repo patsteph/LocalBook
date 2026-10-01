@@ -914,6 +914,25 @@ app.include_router(timeline.router, prefix="/timeline", tags=["timeline"])
 app.include_router(export.router, prefix="/export", tags=["export"])
 app.include_router(reindex.router, prefix="/reindex", tags=["reindex"])
 app.include_router(folders_api.router, prefix="/folders", tags=["linked-folders"])
+# Any error a route did not handle: written to backend.log WITH its traceback, and
+# returned as a JSON `detail` the UI can show. Before this, FastAPI answered a bare
+# "Internal Server Error" and the traceback went only to the console — on
+# 2026-10-01 the Encrypt banner failed on the MBP with "Could not generate a
+# recovery phrase" and backend.log said nothing at all (a missing package).
+from fastapi import Request as _Request
+from fastapi.responses import JSONResponse as _JSONResponse
+
+
+@app.exception_handler(Exception)
+async def _unhandled_error(request: _Request, exc: Exception):
+    # exc_info=exc, not logger.exception(): a handler is not inside the `except`,
+    # so .exception() would log the message and silently drop the traceback.
+    logger.error(f"[main] unhandled error on {request.method} {request.url.path}: {exc!r}",
+                 exc_info=exc)
+    return _JSONResponse(status_code=500,
+                         content={"detail": f"{type(exc).__name__}: {exc}"[:500]})
+
+
 # LB-4 before companions + memory: Starlette matches in definition order, and a
 # later wildcard on either router must not swallow these (cf. /companions/keys).
 app.include_router(memory_bridge_api.router, tags=["memory-bridge"])
