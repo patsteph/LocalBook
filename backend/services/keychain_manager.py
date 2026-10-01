@@ -65,8 +65,14 @@ def _request_biometric_auth_sync(reason: str = "unlock LocalBook search & YouTub
 
     Runs the blocking LAContext evaluation on the calling (worker) thread; the
     async wrapper offloads it so the event loop never blocks.
+
+    LOCALBOOK_NO_INTERACTIVE_AUTH=1 (throwaway test backends) withholds the keys
+    without showing a prompt — it can only deny, never grant. Test runs used to put
+    a password dialog on the user's screen per backend started (2026-10-01).
     """
     global _biometric_until
+    if os.environ.get("LOCALBOOK_NO_INTERACTIVE_AUTH") == "1":
+        return False
 
     if time.monotonic() < _biometric_until:
         return True

@@ -23,3 +23,13 @@ def test_no_per_call_chromium_launch():
         if re.search(r"chromium\.launch\(", p.read_text(errors="ignore")):
             offenders.append(rel)
     assert not offenders, f"launch a browser via get_shared_browser() instead: {offenders}"
+
+
+def test_the_frozen_backend_never_boots_for_an_interpreter_invocation():
+    """joblib's loky pool starts workers as `sys.executable -m ...`; in the frozen app
+    that is the LocalBook binary, which booted a whole backend per worker (a Dock icon
+    and a Keychain prompt each). main.py must refuse those and keep joblib in-process."""
+    src = (ROOT / "main.py").read_text()
+    head = src[:src.index("# ── Fix SSL certificates")]
+    assert 'sys.argv[1] in ("-m", "-c")' in head and "sys.exit(" in head
+    assert 'os.environ.setdefault("JOBLIB_MULTIPROCESSING", "0")' in head

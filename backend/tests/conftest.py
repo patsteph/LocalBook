@@ -18,6 +18,9 @@ individual tests remembering to opt in.
 
 CI is unaffected (a fresh runner has no data dir anyway) — this protects the dev machines.
 """
+import os as _os
+_os.environ.setdefault("LOCALBOOK_NO_INTERACTIVE_AUTH", "1")   # never a Keychain/Touch ID prompt from a test
+
 import os
 from pathlib import Path
 

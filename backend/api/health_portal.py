@@ -1647,6 +1647,7 @@ async def execute_repair(request: RepairRequest, background_tasks: BackgroundTas
                 "AND LENGTH(content) < ?",
                 (SHALLOW_MAX_CHARS,)
             )
+            conn.commit()      # never hold the write lock through the re-scrape below
             if cursor.rowcount > 0:
                 add_log("INFO", f"Cleared remediated flags from {cursor.rowcount} sources for retry", "health_portal")
             rows = conn.execute(

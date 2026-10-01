@@ -139,6 +139,7 @@ class _FakeRag:
         return True
 
     async def ingest_document(self, **kw):
+        assert kw["deferred"] is True        # topic model + entities wait for sustained idle
         self.ingested.append((kw["source_id"], kw["enable_hyde"], kw["precomputed_summary"]))
         return {}
 

@@ -7,6 +7,15 @@ import sys
 if getattr(sys, 'frozen', False):
     multiprocessing.freeze_support()
 
+    # In the frozen app sys.executable is THIS binary, so a library that starts a helper
+    # as `sys.executable -m <module>` / `-c <code>` (joblib's loky pool does) boots a whole
+    # second LocalBook backend instead — a Dock icon and a Keychain prompt per worker
+    # (MBP, 2026-10-01). Never boot for that: exit at once, and keep joblib in-process.
+    if len(sys.argv) > 1 and sys.argv[1] in ("-m", "-c"):
+        sys.stderr.write(f"[frozen] refusing interpreter invocation {sys.argv[1:3]}\n")
+        sys.exit(2)
+    os.environ.setdefault("JOBLIB_MULTIPROCESSING", "0")
+
 # ── Fix SSL certificates for the bundled (PyInstaller) app + fresh macOS Python ──
 # The frozen app's Python has no usable default CA bundle, so HTTPS (HuggingFace model
 # downloads, FlashRank, etc.) fails with CERTIFICATE_VERIFY_FAILED. Point ssl/requests/httpx at a
@@ -613,6 +622,11 @@ async def _run_startup_tasks():
                     "AND (json_extract(metadata_json, '$.remediated_shallow_scrape') IS NULL "
                     "     OR json_extract(metadata_json, '$.remediated_shallow_scrape') = false)"
                 )
+                # The shared connection's implicit transaction must end HERE: left
+                # open, it write-locked localbook.db for every other connection on a
+                # fresh install's first launch (found 2026-10-01 — sync, the engine
+                # and every worker thread got "database is locked").
+                conn.commit()
                 if cursor.rowcount > 0:
                     print(f"🔧 Migration: marked {cursor.rowcount} previously-attempted shallow sources as remediated")
                 sentinel.write_text("done")

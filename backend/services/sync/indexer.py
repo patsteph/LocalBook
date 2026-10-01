@@ -119,9 +119,13 @@ def plan() -> Dict[str, Any]:
 # ── doing it ─────────────────────────────────────────────────────────────────
 
 
-async def run_into(run) -> Dict[str, Any]:
+async def run_into(run, paced: bool = False) -> Dict[str, Any]:
     """Index what is pending, reporting into `run` (phase "index"). Stoppable
-    between sources; anything not reached stays pending for next time."""
+    between sources; anything not reached stays pending for next time.
+
+    paced: a run the user did not start (startup catch-up, the background loop,
+    another Mac's push) rests between sources while the user is active, so a
+    100-source catch-up trickles instead of pinning the Mac."""
     from services.rag_engine import rag_engine
     from storage.source_store import source_store
 
@@ -152,13 +156,15 @@ async def run_into(run) -> Dict[str, Any]:
                 await rag_engine.ingest_document(
                     notebook_id=s["notebook_id"], source_id=s["id"], text=text,
                     filename=s["filename"], source_type=s["type"],
-                    enable_hyde=False, precomputed_summary=s["summary"])
+                    enable_hyde=False, precomputed_summary=s["summary"], deferred=True)
                 indexed += 1
             _forget(reindex=[s["id"]])
         except Exception as exc:
             failed += 1
             logger.warning("[sync-index] %s (%s) not indexed yet: %s", s["filename"], s["id"], exc)
         run.advance(1, detail=s["filename"])
+        if paced:
+            await asyncio.sleep(_pace())
     # A source that failed is retried at the next startup catch-up or the next sync that
     # brings sources — not every minute: a permanently failing one would rescan forever.
     store.put(_DIRTY, False)
@@ -166,6 +172,14 @@ async def run_into(run) -> Dict[str, Any]:
     if indexed or removed or failed:
         logger.info("[sync-index] %s", out)
     return out
+
+
+def _pace() -> float:
+    try:
+        from services import presence
+        return presence.background_pace_seconds()
+    except Exception:
+        return 2.0
 
 
 def _tables() -> List[str]:
@@ -212,7 +226,7 @@ async def _loop(delay: float) -> None:
             else:
                 run = progress.begin("index", "index", ["index"])
                 try:
-                    run.finish(result=await run_into(run))
+                    run.finish(result=await run_into(run, paced=True))
                 except progress.Cancelled:
                     run.finish(result={"stopped": True})
                 except Exception as exc:

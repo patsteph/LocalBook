@@ -246,7 +246,7 @@ async def sync_with(device_id: str, user_initiated: bool = False, run=None) -> D
             else:
                 out["blobs"] = {"deferred": "you are using LocalBook"}
         # This Mac's own index for what arrived — inside the run, so it is visible.
-        out["index"] = await indexer.run_into(run)
+        out["index"] = await indexer.run_into(run, paced=not user_initiated)
         store.update_device(device_id, last_seen=time.time(), last_error=None)
         store.put(f"last_sync:{device_id}", {"at": time.time(), "result": out})
         return out
