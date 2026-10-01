@@ -37,6 +37,7 @@ type Status = {
     open_conflicts: number | null;
     backup_destination: string | null;
     proposed_backup: string | null;
+    collector?: { chosen: { device_id: string; name?: string } | null; here: boolean; reason: string };
 };
 type Conflict = { id: string; tbl: string; field: string; kind: string; kept_value: any; other_value: any; created_at: string };
 
@@ -305,6 +306,30 @@ export function SyncSection() {
                         ))}
                         <p className="text-xs text-gray-500">Revoking stops a Mac syncing at once. It cannot erase what that Mac already has.</p>
                     </section>
+
+                    {/* ── which Mac collects ── */}
+                    {st.devices.length > 0 && (
+                        <section className="space-y-2 rounded-lg border border-gray-700 bg-gray-900/40 p-4 text-sm">
+                            <h3 className="font-semibold text-gray-100">Collections</h3>
+                            <div className="flex flex-wrap items-center gap-2">
+                                <span className="text-gray-300">Scheduled collections run on</span>
+                                <select
+                                    className="rounded border border-gray-600 bg-gray-800 px-2 py-1 text-sm text-gray-100"
+                                    disabled={!!busy}
+                                    value={st.collector?.chosen?.device_id ?? ''}
+                                    onChange={(e) => run('collector', () => api.post('/sync/collector', { device_id: e.target.value }))}>
+                                    {!st.collector?.chosen && <option value="">every Mac (not chosen)</option>}
+                                    <option value={st.this_mac.device_id}>{st.this_mac.name} (this Mac)</option>
+                                    {st.devices.map((d) => <option key={d.device_id} value={d.device_id}>{d.name ?? d.device_id}</option>)}
+                                </select>
+                            </div>
+                            <p className="text-xs text-gray-500">
+                                One Mac searches and collects on schedule; sync brings what it finds to the others, so the
+                                work isn't repeated and the same article isn't added twice. "Collect now" still works on
+                                any Mac. {st.collector?.reason ? `This Mac: ${st.collector.reason}.` : ''}
+                            </p>
+                        </section>
+                    )}
 
                     {/* ── conflicts ── */}
                     <section className="space-y-2 rounded-lg border border-gray-700 bg-gray-900/40 p-4 text-sm">

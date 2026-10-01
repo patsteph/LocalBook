@@ -130,6 +130,25 @@ async def revoke(device_id: str):
     return await _call(_svc().revoke(device_id))
 
 
+class Collector(BaseModel):
+    device_id: str
+
+
+@router.post("/collector")
+async def set_collector(req: Collector):
+    """Which Mac runs scheduled collections — one synced setting for every Mac."""
+    from services.sync import identity, roles, store
+    if req.device_id == identity.device_id():
+        name = identity.device_name()
+    else:
+        d = store.device(req.device_id)
+        if not d or d.get("revoked_at"):
+            raise HTTPException(400, "that Mac is not paired")
+        name = d.get("name")
+    roles.set_collector(req.device_id, name)
+    return _svc().status()
+
+
 @router.get("/conflicts")
 async def conflicts(status: str = "open"):
     from services.sync import runtime

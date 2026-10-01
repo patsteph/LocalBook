@@ -148,6 +148,14 @@ class CollectionScheduler:
         3. A STAGGER_DELAY_SECONDS pause is inserted between consecutive runs
            so Ollama can breathe.
         """
+        # LB-12: with Macs sharing a library, ONE Mac runs scheduled collections
+        # (services/sync/roles.py); sync brings the results to the others.
+        from services.sync import roles
+        here, why = roles.collects_here()
+        if not here:
+            logger.info(f"Scheduler: skipping this cycle — {why}")
+            return
+
         notebooks = await notebook_store.list()
 
         # ── Phase 1: identify eligible notebooks ──
@@ -366,8 +374,12 @@ class CollectionScheduler:
             except Exception:
                 next_due[nb_id] = {"last_run": last.isoformat()}
 
+        from services.sync import roles
+        here, why = roles.collects_here()
         return {
             "running": self._running,
+            "collects_here": here,
+            "collects_here_reason": why,
             "notebooks_tracked": len(self._last_runs),
             "last_runs": {
                 k: v.isoformat() for k, v in self._last_runs.items()

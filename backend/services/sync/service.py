@@ -69,6 +69,7 @@ async def startup() -> None:
         # build before the indexer existed — the mini's first sync).
         indexer.mark_dirty()
         indexer.kick(delay=60)
+        default_collector()          # Macs paired before the setting existed
     except Exception as exc:
         logger.error("[sync] could not start: %s", exc)
 
@@ -102,12 +103,34 @@ async def confirm_pairing(pairing_id: str) -> Dict[str, Any]:
     store.pin(req, role)
     _adopt_recovery_key(req.get("recovery_pub"))
     await peer.start_sync_listener()                       # the trust store changed
+    default_collector()
     if role == "seed":
         # This Mac asked to pair, so it previews — by itself, as soon as the other
         # Mac confirms too. One less click, and the summary is waiting.
         from utils.tasks import safe_create_task
         safe_create_task(_auto_preview(req["device_id"]), name="sync-auto-preview")
     return status()
+
+
+def default_collector() -> None:
+    """If no Mac is chosen to run scheduled collections, choose the Mac that was paired
+    WITH (the seed — the one that opened its pairing window, usually the always-on
+    one). Every Mac computes the same answer from its own pairing records, so the
+    synced setting agrees. Never overrides a choice; never raises."""
+    try:
+        from services.sync import roles
+        if roles.collector():
+            return
+        devices = store.devices()
+        if not devices:
+            return
+        seeds = [d for d in devices if d.get("role") == "seed"]
+        if seeds:                                        # another Mac is the seed
+            roles.set_collector(seeds[0]["device_id"], seeds[0].get("name"))
+        else:                                            # this Mac is everyone's seed
+            roles.set_collector(identity.device_id(), identity.device_name())
+    except Exception as exc:
+        logger.warning("[sync] could not choose a default collector: %s", exc)
 
 
 async def _auto_preview(device_id: str, patience: float = 600) -> None:
@@ -453,4 +476,11 @@ def status() -> Dict[str, Any]:
         "proposed_backup": _proposed_backup(),
         "first_apply_backup": store.get("first_apply_backup"),
         "schema_head": runtime.ledger_head(),
+        "collector": _collector_status(),
     }
+
+
+def _collector_status() -> Dict[str, Any]:
+    from services.sync import roles
+    here, why = roles.collects_here()
+    return {"chosen": roles.collector(), "here": here, "reason": why}
