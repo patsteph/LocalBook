@@ -256,7 +256,7 @@ from storage.findings_store import init_findings_store
 init_findings_store(settings.data_dir)
 
 # NOW import API modules — stores will read the (possibly corrected) use_sqlite flag
-from api import notebooks, sources, chat, skills, audio, source_viewer, web, settings as settings_api, embeddings, timeline, export, reindex, memory, graph, constellation_ws, updates, content, exploration, quiz, visual, writing, voice, site_search, contradictions, credentials, browser, browser_transform, audio_llm, rag_health, health_portal, jobs, agent_browser, rlm, curator, collector, source_discovery, people, video, evaluator, flashcards, canvas_notes as canvas_notes_api, scan as scan_api, comparison, correspondent as correspondent_api, synthesis as synthesis_api, articles as articles_api, system as system_api, signals as signals_api, incidents as incidents_api, canvas as canvas_api, folders as folders_api, companions as companions_api, openai_compat, openai_audio, memory_bridge as memory_bridge_api
+from api import notebooks, sources, chat, skills, audio, source_viewer, web, settings as settings_api, embeddings, timeline, export, reindex, memory, graph, constellation_ws, updates, content, exploration, quiz, visual, writing, voice, site_search, contradictions, credentials, browser, browser_transform, audio_llm, rag_health, health_portal, jobs, agent_browser, rlm, curator, collector, source_discovery, people, video, evaluator, flashcards, canvas_notes as canvas_notes_api, scan as scan_api, comparison, correspondent as correspondent_api, synthesis as synthesis_api, articles as articles_api, system as system_api, signals as signals_api, incidents as incidents_api, canvas as canvas_api, folders as folders_api, companions as companions_api, openai_compat, openai_audio, memory_bridge as memory_bridge_api, sync as sync_api
 from api.capture import capture_router
 from api.updates import check_if_upgrade, set_startup_status, mark_startup_complete, CURRENT_VERSION
 from services.model_warmup import initial_warmup, start_warmup_task, stop_warmup_task
@@ -548,6 +548,12 @@ async def _run_startup_tasks():
         # LB-11: lock if the encrypted volume vanishes mid-session.
         from services.volume_watch import volume_watch
         volume_watch.start()
+        # LB-12: resume sync if this Mac had it on (listener + loop).
+        try:
+            from services.sync import service as _sync_service
+            await _sync_service.startup()
+        except Exception as _e:
+            logger.warning(f"[main] sync startup skipped: {_e}")
         from services.memory_manager import memory_manager
         safe_create_task(memory_manager.start_scheduler(), name="memory-scheduler")
         print("📝 Memory consolidation manager started")
@@ -911,6 +917,7 @@ app.include_router(folders_api.router, prefix="/folders", tags=["linked-folders"
 # LB-4 before companions + memory: Starlette matches in definition order, and a
 # later wildcard on either router must not swallow these (cf. /companions/keys).
 app.include_router(memory_bridge_api.router, tags=["memory-bridge"])
+app.include_router(sync_api.router)
 app.include_router(companions_api.router, tags=["companions"])
 # K-1: recovery-phrase setup and key recovery. Without this the move off
 # the old machine-derived key is a DOWNGRADE in durability — see api/keyvault.py.

@@ -308,6 +308,24 @@ SCHEDULE_REGISTRY: List[ScheduleDef] = [
         can_disable=True,
     ),
     ScheduleDef(
+        id="sync",
+        name="Sync with your other Macs",
+        agent="system",
+        category=CAT_INFRA,
+        cadence_kind=KIND_INTERVAL,
+        default_seconds=60,
+        min_seconds=15,
+        max_seconds=60 * 60,
+        editable=True,
+        rung_c_candidate=True,
+        module_const="services.sync.service.DEFAULT_INTERVAL",
+        note="LB-12. Pulls from and pushes to every paired Mac that is reachable. "
+             "Light: only re-embedding arrived sources is dosed through the enrichment "
+             "worker. Does nothing until sync is turned on in Settings › Sync.",
+        tier=None,
+        can_disable=True,
+    ),
+    ScheduleDef(
         id="volume-watch",
         name="Encrypted volume watch",
         agent="system",

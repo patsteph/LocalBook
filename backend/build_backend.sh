@@ -191,6 +191,8 @@ python -W ignore -m PyInstaller \
     --hidden-import=storage.companion_memory \
     --hidden-import=services.mcp_tools_more \
     --hidden-import=services.research_jobs \
+    --hidden-import=api.sync \
+    --collect-submodules=services.sync \
     --hidden-import=api.companions \
     --hidden-import=api.folders \
     --hidden-import=api.agent_browser \

@@ -802,6 +802,17 @@ class Database:
             )
         """)
 
+        # -- LB-12 (0.7.0): columns source_store writes on every create/update.
+        # Declared HERE as well as in migration 0002, because sources can be
+        # written before the ledger runs (the JSON→SQLite step at import); the
+        # migration does the one-time backfill. Idempotent, like the ALTERs above.
+        from services.migration_ledger import _add_column
+        _add_column(conn, "sources", "content_hash", "TEXT")
+        _add_column(conn, "sources", "updated_at", "TEXT")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_sources_content_hash ON sources(content_hash)")
+        _add_column(conn, "skills", "created_at", "TEXT")
+        _add_column(conn, "skills", "updated_at", "TEXT")
+
         conn.commit()
     
     def close(self):

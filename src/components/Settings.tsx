@@ -10,6 +10,7 @@ import { ProfileSection } from './settings/ProfileSection';
 import { UpdatesSection } from './settings/UpdatesSection';
 import { APIKeysSection } from './settings/APIKeysSection';
 import { RecoveryKeySection } from './settings/RecoveryKeySection';
+import { SyncSection } from './settings/SyncSection';
 import { EncryptionSection } from './settings/EncryptionSection';
 import { DataHealthSection } from './settings/DataHealthSection';
 import { CuratorSettings } from './CuratorSettings';
@@ -51,7 +52,7 @@ class SettingsErrorBoundary extends React.Component<
 
 export type SectionId =
     | 'profile' | 'voice'
-    | 'api-keys' | 'credentials' | 'correspondent' | 'recovery' | 'encryption' | 'data-health'
+    | 'api-keys' | 'credentials' | 'correspondent' | 'recovery' | 'encryption' | 'data-health' | 'sync'
     | 'curator' | 'memory'
     | 'schedules'
     | 'folders' | 'companions'
@@ -83,6 +84,7 @@ const SECTION_GROUPS: { title: string; items: SectionDef[] }[] = [
             { id: 'recovery',      label: 'Recovery',      icon: '🔑', accent: 'amber' },
             { id: 'encryption',    label: 'Encryption',    icon: '🔒', accent: 'amber' },
             { id: 'data-health',   label: 'Data Health',   icon: '🩺', accent: 'amber' },
+            { id: 'sync',          label: 'Sync',          icon: '🔄', accent: 'amber' },
             { id: 'correspondent', label: 'Correspondent', icon: '📬', accent: 'amber' },
         ],
     },
@@ -163,6 +165,7 @@ export const Settings: React.FC<{ initialSection?: SectionId }> = ({ initialSect
                     )}
 
                     {activeSection === 'recovery' && <SettingsErrorBoundary fallbackLabel="Recovery"><RecoveryKeySection /></SettingsErrorBoundary>}
+                    {activeSection === 'sync' && <SettingsErrorBoundary fallbackLabel="Sync"><SyncSection /></SettingsErrorBoundary>}
                     {activeSection === 'encryption' && <SettingsErrorBoundary fallbackLabel="Encryption"><EncryptionSection /></SettingsErrorBoundary>}
                     {activeSection === 'data-health' && <SettingsErrorBoundary fallbackLabel="Data Health"><DataHealthSection /></SettingsErrorBoundary>}
                     {activeSection === 'profile' && <ProfileSection setError={setError} setSuccess={setSuccess} />}

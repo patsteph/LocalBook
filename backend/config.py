@@ -87,6 +87,10 @@ def _migrate_old_data(new_data_dir: Path) -> None:
 class Settings(BaseSettings):
     # API settings
     api_port: int = 8000
+    # LB-12: Mac-to-Mac sync. The sync listener (mutual TLS, paired Macs only)
+    # uses this port on all interfaces; pairing uses port + 1, only while a
+    # pairing window is open. Nothing listens unless sync is on.
+    sync_port: int = 47600
     api_host: str = "127.0.0.1"
 
     # Browser extension — pinned ID derived from extension/.key.pem manifest key.

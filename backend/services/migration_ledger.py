@@ -338,3 +338,76 @@ def _m0001_baseline(ctx: MigrationContext) -> None:
     ever applied", which is indistinguishable from a corrupt ledger.
     """
     return None
+
+
+SYNC_SCHEMA_VERSION = "0.7.0"
+
+
+def text_hash(content) -> str:
+    """The identity of a source's TEXT across machines (LB-12 genesis dedupe, D16).
+
+    Hash of the extracted text, whitespace-trimmed — the same document added on
+    two Macs yields the same value. Not the file-bytes hash some ingest paths
+    keep in `metadata_json["content_hash"]` (folder_watcher, correspondent):
+    that one keeps its own meaning and its own lookup.
+    """
+    import hashlib
+
+    return hashlib.sha256((content or "").strip().encode("utf-8")).hexdigest()
+
+
+def _add_column(conn, table: str, column: str, decl: str) -> None:
+    cols = {r[1] for r in conn.execute(f'PRAGMA table_info("{table}")')}
+    if column not in cols:
+        conn.execute(f'ALTER TABLE "{table}" ADD COLUMN {column} {decl}')
+
+
+@register(2, "sync-schema", SYNC_SCHEMA_VERSION)
+def _m0002_sync_schema(ctx: MigrationContext) -> None:
+    """LB-12d — the one schema change sync needs, for everyone (D1, D11).
+
+    * `sources.content_hash` (indexed, backfilled from `content`) — genesis
+      matches the same document across Macs by it (D16).
+    * `sources.updated_at` — editing content left no trace before.
+    * timestamps on `skills`.
+    * `documents` — the irreplaceable JSON/YAML move here (phase D).
+    * `sync_conflicts` — the review queue; a synced record, so a conflict
+      resolved on one Mac is resolved on all.
+    Pure SQL + hashing: no model calls, safe inside the migration transaction.
+    """
+    conn = ctx.conn
+    _add_column(conn, "sources", "content_hash", "TEXT")
+    _add_column(conn, "sources", "updated_at", "TEXT")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_sources_content_hash ON sources(content_hash)")
+    rows = conn.execute("SELECT id, content, created_at FROM sources "
+                        "WHERE content_hash IS NULL OR updated_at IS NULL").fetchall()
+    for sid, content, created in rows:
+        conn.execute("UPDATE sources SET content_hash = ?, updated_at = COALESCE(updated_at, ?) "
+                     "WHERE id = ?", (text_hash(content), created, sid))
+
+    _add_column(conn, "skills", "created_at", "TEXT")
+    _add_column(conn, "skills", "updated_at", "TEXT")
+    conn.execute("UPDATE skills SET created_at = COALESCE(created_at, CURRENT_TIMESTAMP), "
+                 "updated_at = COALESCE(updated_at, CURRENT_TIMESTAMP)")
+
+    conn.execute("""CREATE TABLE IF NOT EXISTS documents (
+        kind TEXT NOT NULL,
+        key TEXT NOT NULL,
+        uuid TEXT NOT NULL,
+        body_json TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (kind, key))""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS sync_conflicts (
+        id TEXT PRIMARY KEY,
+        tbl TEXT NOT NULL,
+        pk TEXT NOT NULL,
+        field TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        kept_value TEXT,
+        other_value TEXT,
+        kept_clock TEXT,
+        other_clock TEXT,
+        status TEXT NOT NULL DEFAULT 'open',
+        resolution TEXT,
+        created_at TEXT,
+        resolved_at TEXT)""")
