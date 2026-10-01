@@ -292,6 +292,10 @@ async def _after_apply(report: Dict[str, Any], db: str = "main") -> None:
         logger.warning("[sync] post-apply skipped: %s", exc)
         return
 
+    if db == "main" and (report.get("removed_notebooks") or report.get("removed_audio")
+                         or report.get("removed_video")):
+        await asyncio.to_thread(_clean_removed, report)
+
     if db == "main":
         from services.sync import indexer
 
@@ -339,6 +343,57 @@ async def _after_apply(report: Dict[str, Any], db: str = "main") -> None:
 
         enrichment_worker.enqueue(EnrichmentJob(key="sync-archival-reconcile", tier=JobTier.DAYDREAM,
                                                 factory=_reconcile, label="memory index after sync"))
+
+
+def _clean_removed(report: Dict[str, Any]) -> None:
+    """Another Mac deleted these: remove what the rows pointed at outside the database —
+    exactly what api/notebooks.delete_notebook removes on the deleting Mac, and only
+    that (media by the deleted rows' own ids; a deleted notebook's folder, vector table
+    and derived entries). Each step is best-effort; a failure is logged, never raised."""
+    import shutil
+
+    from api.notebooks import remove_media_files
+
+    media = {"audio": list(report.get("removed_audio") or []),
+             "video": list(report.get("removed_video") or [])}
+    try:
+        n = remove_media_files(media)
+        if n:
+            logger.info("[sync] removed %d media file(s) deleted on another Mac", n)
+    except Exception as exc:
+        logger.warning("[sync] media cleanup: %s", exc)
+    gone = [nb for nb in (report.get("removed_notebooks") or []) if nb]
+    if not gone:
+        return
+    from services import rag_storage
+    for nb in gone:
+        try:
+            rag_storage.drop_notebook_table(nb)
+        except Exception as exc:
+            logger.warning("[sync] vector table for %s: %s", nb, exc)
+        try:
+            d = runtime.data_dir() / "notebooks" / str(nb)
+            if d.is_dir() and d.resolve().parent == (runtime.data_dir() / "notebooks").resolve():
+                shutil.rmtree(d)
+        except Exception as exc:
+            logger.warning("[sync] notebook folder for %s: %s", nb, exc)
+        try:
+            from agents.collector import clear_collector_cache
+            clear_collector_cache(nb)
+        except Exception:
+            pass
+    try:
+        from storage.database import get_db
+        live = {r[0] for r in get_db().get_connection().execute("SELECT id FROM notebooks")}
+        from services.community_detection import community_detector
+        from services.entity_extractor import entity_extractor
+        from services.entity_graph import entity_graph
+        entity_extractor.reconcile_notebooks(live)
+        entity_graph.reconcile_notebooks(live)
+        community_detector.reconcile_notebooks(live)
+    except Exception as exc:
+        logger.warning("[sync] derived-store reconcile: %s", exc)
+    logger.info("[sync] cleaned up %d notebook(s) deleted on another Mac", len(gone))
 
 
 # ── server: pairing ──────────────────────────────────────────────────────────

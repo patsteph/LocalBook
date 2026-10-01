@@ -248,3 +248,46 @@ def test_start_sync_returns_at_once_and_the_run_finishes(monkeypatch):
     assert d["running"] is False and d["error"] is None
     assert d["result"] == {"received": {"sources": 3}, "sent": {}, "conflicts": 1,
                            "files": {"fetched": 0}, "index": {"indexed": 3}}
+
+
+# ── a notebook deleted on another Mac leaves nothing behind here ─────────────
+
+
+def test_a_synced_notebook_delete_reports_what_it_took_with_it(macs):
+    a, b = macs("A", "B")
+    a.notebook("nb1")
+    a.source("s1", "nb1")
+    a.sql("INSERT INTO audio_generations (audio_id, notebook_id, status, created_at, updated_at) "
+          "VALUES ('pod1', 'nb1', 'completed', 'now', 'now')")
+    pull(b, a)
+    a.sql("DELETE FROM notebooks WHERE id='nb1'")          # the app cascades sources + audio
+    removed = {"removed_notebooks": [], "removed_audio": [], "unindex": []}
+    for _ in range(20):
+        page = engine.export(a.rep, engine.vv(b.conn), limit=7)
+        rep = engine.apply(b.rep, page)
+        for k in removed:
+            removed[k] += rep.get(k, [])
+        if not page["more"]:
+            break
+    assert removed == {"removed_notebooks": ["nb1"], "removed_audio": ["pod1"], "unindex": ["s1"]}
+
+
+def test_cleanup_removes_only_what_the_deleted_rows_named(tmp_path, monkeypatch):
+    from config import settings
+    from services import rag_storage
+    from services.sync import peer
+
+    dropped = []
+    monkeypatch.setattr(rag_storage, "drop_notebook_table", lambda nb: dropped.append(nb) or True)
+    (tmp_path / "audio").mkdir()
+    for name in ("pod1.wav", "pod1_speech.wav", "other.wav"):
+        (tmp_path / "audio" / name).write_bytes(b"x")
+    (tmp_path / "notebooks" / "nb1").mkdir(parents=True)
+    (tmp_path / "notebooks" / "nb1" / "collector.yaml").write_text("x")
+    (tmp_path / "notebooks" / "nb2").mkdir()
+    from storage.database import get_db
+    get_db()                                                   # schema in the temp dir
+    peer._clean_removed({"removed_notebooks": ["nb1"], "removed_audio": ["pod1"]})
+    assert sorted(p.name for p in (tmp_path / "audio").iterdir()) == ["other.wav"]
+    assert not (tmp_path / "notebooks" / "nb1").exists() and (tmp_path / "notebooks" / "nb2").exists()
+    assert dropped == ["nb1"]

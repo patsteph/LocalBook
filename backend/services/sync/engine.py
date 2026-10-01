@@ -353,8 +353,7 @@ def _apply_one(r: Replica, t: registry.Table, v: Dict[str, Any], report: Dict[st
         if exists:
             r.conn.execute(f'DELETE FROM "{t.name}" WHERE {_where(t)}', pkvals)
             report["deleted"] += 1
-            if t.name == "sources":
-                report.setdefault("unindex", []).append(pkvals[0])
+            _note_removed(report, t.name, pkvals[0])
         for name, reg in merged.items():
             meta[name] = {k: reg[k] for k in ("c", "h")} | ({"v": reg["v"]} if name == merge.DEL else {})
             if name != merge.DEL and not reg.get("nv"):
@@ -448,11 +447,23 @@ def _resolve_orphans(r: Replica, report: Dict[str, Any]) -> None:
                         "kept_clock": None, "other_clock": max(clocks, default=None),
                     })
                 conn.execute(f'DELETE FROM "{child}" WHERE rowid=?', (rowid,))
-                if child == "sources":
-                    report.setdefault("unindex", []).append(row[0])
+                _note_removed(report, child, row[0])
             acted = True
         if not acted:
             return
+
+
+# What a delete leaves outside the database, by table → the report key the receiving
+# Mac's post-apply cleanup reads (peer._after_apply): search entries, media files, and
+# a deleted notebook's own folder / vector table / derived stores.
+_REMOVED_KEYS = {"sources": "unindex", "audio_generations": "removed_audio",
+                 "video_generations": "removed_video", "notebooks": "removed_notebooks"}
+
+
+def _note_removed(report: Dict[str, Any], table: str, key: Any) -> None:
+    k = _REMOVED_KEYS.get(table)
+    if k:
+        report.setdefault(k, []).append(key)
 
 
 def _record_conflict(conn, c: Dict[str, Any]) -> None:
