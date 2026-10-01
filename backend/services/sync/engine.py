@@ -253,8 +253,21 @@ def export(r: Replica, peer_vv: Dict[str, int], limit: int = 500) -> Dict[str, A
             else:
                 state[name] = {"v": None, "nv": True, "c": reg["c"], "h": reg["h"]}
         versions.append({"tbl": tbl, "pk": pk, "origin": origin, "oseq": oseq, "state": state})
-    return {"versions": versions, "more": more,
+    return {"versions": versions, "more": more, "remaining": len(entries),
             "vv": vv(r.conn) if not more else {}}
+
+
+def pending(r: Replica, peer_vv: Dict[str, int]) -> int:
+    """How many row versions a peer holding `peer_vv` still lacks — the denominator a
+    progress bar needs before the first page moves."""
+    ship(r)
+    n = 0
+    for origin, oseq_max in r.conn.execute("SELECT origin, MAX(oseq) FROM _sync_log GROUP BY origin"):
+        have = int(peer_vv.get(origin, 0))
+        if oseq_max > have:
+            n += r.conn.execute("SELECT COUNT(*) FROM _sync_log WHERE origin=? AND oseq>?",
+                                (origin, have)).fetchone()[0]
+    return n
 
 
 # ── apply ───────────────────────────────────────────────────────────────────
@@ -340,6 +353,8 @@ def _apply_one(r: Replica, t: registry.Table, v: Dict[str, Any], report: Dict[st
         if exists:
             r.conn.execute(f'DELETE FROM "{t.name}" WHERE {_where(t)}', pkvals)
             report["deleted"] += 1
+            if t.name == "sources":
+                report.setdefault("unindex", []).append(pkvals[0])
         for name, reg in merged.items():
             meta[name] = {k: reg[k] for k in ("c", "h")} | ({"v": reg["v"]} if name == merge.DEL else {})
             if name != merge.DEL and not reg.get("nv"):
@@ -372,6 +387,12 @@ def _apply_one(r: Replica, t: registry.Table, v: Dict[str, Any], report: Dict[st
         sql += f"DO UPDATE SET {updates}" if updates else "DO NOTHING"
         r.conn.execute(sql, [values[c] for c in names])
         report["updated" if exists else "inserted"] += 1
+        # A source whose text changed here must be re-embedded on this Mac — each Mac
+        # keeps its own search index (12j); a new one is found by the indexer's diff.
+        if t.name == "sources" and exists and "content" in values:
+            lv = local.get("content")
+            if not lv or lv.get("nv") or merge.decode(lv["v"]) != values["content"]:
+                report.setdefault("reindex", []).append(pkvals[0])
     stats["changed"] += 1
     _save_meta(r, t.name, pk, meta)
     if _same(merged, remote):
@@ -427,6 +448,8 @@ def _resolve_orphans(r: Replica, report: Dict[str, Any]) -> None:
                         "kept_clock": None, "other_clock": max(clocks, default=None),
                     })
                 conn.execute(f'DELETE FROM "{child}" WHERE rowid=?', (rowid,))
+                if child == "sources":
+                    report.setdefault("unindex", []).append(row[0])
             acted = True
         if not acted:
             return

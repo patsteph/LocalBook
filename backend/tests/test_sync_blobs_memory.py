@@ -163,4 +163,4 @@ def test_tray_status_reports_sync_state(ddir):
 
     from api import system
     out = asyncio.run(system.get_tray_status())
-    assert out["sync"] == {"enabled": False, "paired": 0}
+    assert out["sync"] == {"enabled": False, "paired": 0, "running": False, "label": ""}

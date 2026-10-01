@@ -80,7 +80,9 @@ async def get_tray_status():
     try:
         # LB-12: the menu-bar kill switch reads its state from here.
         from services.sync import store as _sync_store
-        out["sync"] = {"enabled": _sync_store.enabled(), "paired": len(_sync_store.devices())}
+        from services.sync import progress as _sync_progress
+        out["sync"] = {"enabled": _sync_store.enabled(), "paired": len(_sync_store.devices()),
+                       **_sync_progress.summary()}
     except Exception as e:
         logger.debug(f"[system.tray] sync snapshot failed: {e}")
     return out

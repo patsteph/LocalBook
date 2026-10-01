@@ -1,17 +1,20 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api } from '../../services/api';
+import { SyncProgress } from './SyncProgress';
 
 /**
  * Settings › Sync (LB-12): this Mac's peers.
  *
- * Pairing is two Macs on the same network: one opens a 5-minute window, the
- * other connects to its address, and BOTH screens show a 6-digit code — the user
- * confirms only if the codes match (that is what defeats a man in the middle).
- * The Mac that opened the window is the seed: on first contact the other Mac's
- * matching notebooks and sources become the seed's records.
+ * Pairing is two Macs on the same network. A Mac with sync on and no partner is
+ * always ready to be paired; the other Mac lists it (Bonjour) and pairs with one
+ * click — or types its address where multicast is blocked. BOTH screens then show
+ * a 6-digit code and the user confirms only if they match (that is what defeats a
+ * man in the middle). The Mac that was paired WITH is the seed: on first contact
+ * the other Mac's matching notebooks and sources become the seed's records.
  *
- * First contact is always a preview (user decision 2026-09-30); Apply converges
- * it, after a backup on this Mac.
+ * First contact is always a preview (user decision 2026-09-30) — it now runs by
+ * itself once both Macs confirm — and Start sync converges it, after a backup.
+ * Every sync runs in the background with progress (SyncProgress), 2026-10-01.
  */
 
 type Device = {
@@ -20,7 +23,9 @@ type Device = {
     preview?: { genesis?: Record<string, number>; incoming?: { inserted: number; updated: number; deleted: number; conflicts: number }; created_at?: number } | null;
     last_sync?: { at: number } | null;
     model_mismatch?: Record<string, { here: string; there: string }>;
+    preview_state?: string | null;
 };
+type FoundMac = { name: string; host: string; port: number; device_id?: string | null };
 type Pairing = { id: string; direction: 'incoming' | 'outgoing'; device_id: string; name?: string; sas: string; host?: string };
 type Status = {
     enabled: boolean;
@@ -59,6 +64,8 @@ export function SyncSection() {
     const [host, setHost] = useState('');
     const [folder, setFolder] = useState('');
     const [conflicts, setConflicts] = useState<Conflict[] | null>(null);
+    const [found, setFound] = useState<FoundMac[] | null>(null);
+    const [syncing, setSyncing] = useState(false);
 
     const refresh = useCallback(async () => {
         try {
@@ -72,11 +79,27 @@ export function SyncSection() {
 
     useEffect(() => { void refresh(); }, [refresh]);
     const windowOpen = !!st && st.pairing_open_until * 1000 > Date.now();
+    const waitingPreview = !!st?.devices.some((d) => d.preview_state);
     useEffect(() => {
-        if (!windowOpen && !(st?.pairing.length)) return;
+        if (!windowOpen && !(st?.pairing.length) && !waitingPreview) return;
         const t = window.setInterval(() => { void refresh(); }, 2000);
         return () => window.clearInterval(t);
-    }, [windowOpen, st?.pairing.length, refresh]);
+    }, [windowOpen, st?.pairing.length, waitingPreview, refresh]);
+
+    // A run finishing changes last-sync times, previews and conflicts.
+    const onRunningChange = useCallback((running: boolean) => {
+        setSyncing(running);
+        if (!running) void refresh();
+    }, [refresh]);
+
+    const discover = useCallback(async () => {
+        setFound(null);
+        try {
+            const { data } = await api.get<{ macs: FoundMac[] }>('/sync/discover');
+            setFound(data.macs);
+        } catch { setFound([]); }
+    }, []);
+    useEffect(() => { if (st?.enabled) void discover(); }, [st?.enabled, discover]);
 
     const run = async (label: string, fn: () => Promise<any>) => {
         setBusy(label); setError(null);
@@ -126,9 +149,18 @@ export function SyncSection() {
                     </div>
                 ) : (
                     <div className="space-y-2">
-                        <p className="text-gray-300">A backup of this Mac is taken before its first sync, to:</p>
-                        <input value={folder} onChange={(e) => setFolder(e.target.value)} disabled={!!st.backup_destination}
-                            className="w-full rounded border border-gray-600 bg-gray-800 px-2 py-1 font-mono text-xs text-gray-100" />
+                        {st.backup_destination ? (
+                            <p className="text-gray-300">
+                                A backup of this Mac is taken before its first sync, to{' '}
+                                <span className="font-mono text-xs">{st.backup_destination}</span>.
+                            </p>
+                        ) : (
+                            <>
+                                <p className="text-gray-300">A backup of this Mac is taken before its first sync, to:</p>
+                                <input value={folder} onChange={(e) => setFolder(e.target.value)}
+                                    className="w-full rounded border border-gray-600 bg-gray-800 px-2 py-1 font-mono text-xs text-gray-100" />
+                            </>
+                        )}
                         <button className={primary} disabled={!!busy || !folder} onClick={turnOn}>Turn on sync</button>
                     </div>
                 )}
@@ -136,28 +168,60 @@ export function SyncSection() {
 
             {st.enabled && (
                 <>
+                    <SyncProgress onRunningChange={onRunningChange} />
+
                     {/* ── pairing ── */}
                     <section className="space-y-3 rounded-lg border border-gray-700 bg-gray-900/40 p-4 text-sm">
-                        <h3 className="font-semibold text-gray-100">Pair a Mac</h3>
-                        <div className="flex flex-wrap items-center gap-2">
-                            <button className={secondary} disabled={!!busy || windowOpen}
-                                onClick={() => run('open', () => api.post('/sync/pairing/open'))}>
-                                {windowOpen ? 'Waiting for another Mac…' : 'Let another Mac pair with this one'}
+                        <div className="flex items-center justify-between gap-2">
+                            <h3 className="font-semibold text-gray-100">Pair a Mac</h3>
+                            <button className={secondary} disabled={!!busy || found === null} onClick={() => void discover()}>
+                                {found === null ? 'Looking…' : 'Look again'}
                             </button>
-                            {windowOpen && (
-                                <span className="text-xs text-gray-400">
-                                    On the other Mac, connect to <span className="font-mono">{st.this_mac.addresses[0]}</span>
-                                </span>
+                        </div>
+                        {found && found.length > 0 && (
+                            <ul className="space-y-2">
+                                {found.map((m) => (
+                                    <li key={`${m.device_id}-${m.host}`} className="flex items-center justify-between gap-3 rounded border border-gray-700/60 px-3 py-2">
+                                        <div>
+                                            <div className="text-gray-100">{m.name}</div>
+                                            <div className="text-xs text-gray-500">{m.host}</div>
+                                        </div>
+                                        <button className={primary} disabled={!!busy}
+                                            onClick={() => run(`pair-${m.host}`, () => api.post('/sync/pairing/connect', { host: m.host, port: m.port }))}>
+                                            {busy === `pair-${m.host}` ? 'Asking…' : 'Pair'}
+                                        </button>
+                                    </li>
+                                ))}
+                            </ul>
+                        )}
+                        {found && found.length === 0 && (
+                            <p className="text-xs text-gray-500">
+                                No other LocalBook found on this network. Turn sync on there, or enter its address below
+                                (some work networks block finding Macs automatically).
+                            </p>
+                        )}
+                        <div className="flex flex-wrap items-center gap-2 text-xs text-gray-400">
+                            {windowOpen ? (
+                                <span>This Mac is ready to be paired — choose <span className="text-gray-200">{st.this_mac.name}</span> on the other Mac.</span>
+                            ) : (
+                                <button className={secondary} disabled={!!busy}
+                                    onClick={() => run('open', () => api.post('/sync/pairing/open'))}>
+                                    Let another Mac pair with this one
+                                </button>
                             )}
                         </div>
-                        <div className="flex items-center gap-2">
-                            <input value={host} onChange={(e) => setHost(e.target.value)} placeholder="the other Mac's address, e.g. 192.168.1.20"
-                                className="flex-1 rounded border border-gray-600 bg-gray-800 px-2 py-1 text-sm text-gray-100" />
-                            <button className={secondary} disabled={!!busy || !host.trim()}
-                                onClick={() => run('connect', () => api.post('/sync/pairing/connect', { host }))}>
-                                Connect
-                            </button>
-                        </div>
+                        <details className="text-xs text-gray-400">
+                            <summary className="cursor-pointer">Enter an address instead</summary>
+                            <div className="mt-2 flex items-center gap-2">
+                                <input value={host} onChange={(e) => setHost(e.target.value)} placeholder="the other Mac's address, e.g. 192.168.1.20"
+                                    className="flex-1 rounded border border-gray-600 bg-gray-800 px-2 py-1 text-sm text-gray-100" />
+                                <button className={secondary} disabled={!!busy || !host.trim()}
+                                    onClick={() => run('connect', () => api.post('/sync/pairing/connect', { host }))}>
+                                    Connect
+                                </button>
+                            </div>
+                            <div className="mt-1">This Mac: <span className="font-mono">{st.this_mac.addresses[0] ?? '?'}</span></div>
+                        </details>
                         {st.pairing.map((p) => (
                             <div key={p.id} className="flex items-center justify-between gap-3 rounded border border-amber-500/40 bg-amber-500/5 px-3 py-2">
                                 <div>
@@ -187,6 +251,7 @@ export function SyncSection() {
                                         <div className="text-xs text-gray-500">
                                             {d.host ?? 'address unknown'} · last contact {ago(d.last_seen)} · last sync {ago(d.last_sync?.at)}
                                         </div>
+                                        {d.preview_state && <div className="text-xs text-blue-200">{d.preview_state}…</div>}
                                         {d.last_error && <div className="text-xs text-amber-300">{d.last_error}</div>}
                                         {Object.entries(d.model_mismatch ?? {}).map(([role, m]) => (
                                             <div key={role} className="text-xs text-amber-300">
@@ -195,22 +260,22 @@ export function SyncSection() {
                                         ))}
                                     </div>
                                     <div className="flex gap-2">
-                                        {d.mode !== 'live' && (
-                                            <button className={secondary} disabled={!!busy || !d.host}
-                                                onClick={() => run(`preview-${d.device_id}`, () => api.post(`/sync/devices/${d.device_id}/preview`))}>
-                                                {busy === `preview-${d.device_id}` ? 'Previewing…' : 'Preview'}
+                                        {d.mode !== 'live' && d.preview && (
+                                            <button className={primary} disabled={!!busy || syncing}
+                                                onClick={() => run(`apply-${d.device_id}`, () => api.post(`/sync/devices/${d.device_id}/apply`))}>
+                                                Start sync
                                             </button>
                                         )}
-                                        {d.mode !== 'live' && d.preview && (
-                                            <button className={primary} disabled={!!busy}
-                                                onClick={() => run(`apply-${d.device_id}`, () => api.post(`/sync/devices/${d.device_id}/apply`))}>
-                                                {busy === `apply-${d.device_id}` ? 'Backing up and syncing…' : 'Apply'}
+                                        {d.mode !== 'live' && !d.preview_state && (
+                                            <button className={secondary} disabled={!!busy || syncing || !d.host}
+                                                onClick={() => run(`preview-${d.device_id}`, () => api.post(`/sync/devices/${d.device_id}/preview`))}>
+                                                {busy === `preview-${d.device_id}` ? 'Previewing…' : d.preview ? 'Preview again' : 'Preview'}
                                             </button>
                                         )}
                                         {d.mode === 'live' && (
-                                            <button className={secondary} disabled={!!busy || !d.host}
+                                            <button className={secondary} disabled={!!busy || syncing || !d.host}
                                                 onClick={() => run(`sync-${d.device_id}`, () => api.post(`/sync/devices/${d.device_id}/sync`))}>
-                                                {busy === `sync-${d.device_id}` ? 'Syncing…' : 'Sync now'}
+                                                Sync now
                                             </button>
                                         )}
                                         <button className={secondary} disabled={!!busy}
@@ -233,7 +298,7 @@ export function SyncSection() {
                                                 {d.preview.genesis ? ' (before matching)' : ''}.
                                             </div>
                                         )}
-                                        <div className="mt-1 text-gray-500">Nothing has changed yet. Apply backs this Mac up first.</div>
+                                        <div className="mt-1 text-gray-500">Nothing has changed yet. Start sync backs this Mac up first, then shows its progress above.</div>
                                     </div>
                                 )}
                             </div>

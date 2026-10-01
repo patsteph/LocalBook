@@ -40,12 +40,17 @@ struct Enrich {
     #[serde(default)]
     queue_depth: u64,
 }
-#[derive(Deserialize, Default, Clone, Copy)]
+#[derive(Deserialize, Default, Clone)]
 struct SyncState {
     #[serde(default)]
     enabled: bool,
     #[serde(default)]
     paired: u32,
+    // A run in progress: the item shows "Syncing with … 45%" instead of the toggle text.
+    #[serde(default)]
+    running: bool,
+    #[serde(default)]
+    label: String,
 }
 #[derive(Deserialize, Default)]
 struct Status {
@@ -118,7 +123,7 @@ pub(crate) fn init(app: &AppHandle) -> tauri::Result<()> {
                 Some(st) => {
                     fails = 0;
                     render_up(&s, &m, &m2, &me, &sy, &st);
-                    render_sync(&sync_item, st.sync);
+                    render_sync(&sync_item, &st.sync);
                 }
                 None => {
                     fails += 1;
@@ -191,9 +196,12 @@ fn render_up(
 /// What the sync item says, and therefore what clicking it does.
 static SYNC_ON: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-fn render_sync(item: &MenuItem<Wry>, st: SyncState) {
+fn render_sync(item: &MenuItem<Wry>, st: &SyncState) {
     SYNC_ON.store(st.enabled, std::sync::atomic::Ordering::Relaxed);
-    let _ = item.set_text(if st.enabled {
+    let _ = item.set_text(if st.enabled && st.running && !st.label.is_empty() {
+        // Still a click target: clicking pauses sync, which stops the run safely.
+        format!("⏸ {}", st.label)
+    } else if st.enabled {
         format!("⏸ Pause sync ({} Mac{})", st.paired, if st.paired == 1 { "" } else { "s" })
     } else {
         "▶︎ Resume sync".to_string()

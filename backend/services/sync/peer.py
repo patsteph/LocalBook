@@ -27,7 +27,7 @@ from typing import Any, Dict, Optional
 
 from fastapi import FastAPI, HTTPException, Request
 
-from services.sync import engine, genesis, identity, runtime, store
+from services.sync import engine, genesis, identity, progress, runtime, store
 
 logger = logging.getLogger(__name__)
 
@@ -148,8 +148,47 @@ async def pull(request: Request):
     _check_enabled()
     v = await _verified(request)
     b = v["body"]
-    return await asyncio.to_thread(_export, b["db"], b.get("vv") or {},
+    page = await asyncio.to_thread(_export, b["db"], b.get("vv") or {},
                                    min(int(b.get("limit", PAGE)), PREVIEW_PAGE))
+    if not b.get("dry_run"):
+        _count_incoming(v["device"], "send", page)
+    return page
+
+
+def _count_incoming(d: Dict[str, Any], phase: str, page: Dict[str, Any]) -> None:
+    """Show, on THIS Mac, that the other Mac is moving changes (it drives the run)."""
+    n = len(page.get("versions") or [])
+    if not n:
+        return
+    run = progress.incoming(d["device_id"], d.get("name"))
+    run.step(phase, unit="changes")
+    run.advance(n)
+    rest = int(page.get("remaining") or 0) - n
+    if rest > 0 and run.total < run.done + rest:
+        run.add_total(run.done + rest - run.total)
+
+
+@sync_app.post("/sync/pending")
+async def pending(request: Request):
+    """How many changes the caller lacks, per database — the bar's denominator."""
+    _check_enabled()
+    v = await _verified(request)
+    vvs = v["body"].get("vv") or {}
+    return {"pending": await asyncio.to_thread(_pending_all, vvs)}
+
+
+def _pending_all(vvs: Dict[str, Dict[str, int]]) -> Dict[str, int]:
+    out = {}
+    for db in runtime.DB_FILES:
+        if _missing_db(db):
+            continue
+        with runtime.engine_lock:
+            r = runtime.replica(db)
+            try:
+                out[db] = engine.pending(r, vvs.get(db) or {})
+            finally:
+                r.conn.close()
+    return out
 
 
 @sync_app.post("/sync/push")
@@ -163,6 +202,7 @@ async def push(request: Request):
         await asyncio.to_thread(first_apply_backup)
     rep = await asyncio.to_thread(_apply, b["db"], b["page"], dry)
     if not dry:
+        _count_incoming(v["device"], "receive", b["page"])
         # The other Mac's user pressed Apply after a preview: from now on this
         # Mac initiates too (it is how a seed starts pulling from a joiner).
         if v["device"].get("mode") != "live":
@@ -210,6 +250,10 @@ async def blob_put(request: Request):
     _check_enabled()
     v = await _verified(request)
     b = v["body"]
+    run = progress.incoming(v["device"]["device_id"], v["device"].get("name"))
+    run.step("files", unit="files")
+    run.advance(0, detail=f"{b.get('path', '').split('/')[-1]} — "
+                          f"{_mb(int(b.get('offset', 0)))} of {_mb(int(b.get('total', 0)))}")
     from services.sync import blobs
     try:
         return await asyncio.to_thread(blobs.write_chunk, b["path"], int(b["offset"]), b["data"],
@@ -248,20 +292,23 @@ async def _after_apply(report: Dict[str, Any], db: str = "main") -> None:
         logger.warning("[sync] post-apply skipped: %s", exc)
         return
 
-    if db == "main" and _changed(report, "sources"):
-        async def _reindex_all_changed():
-            from api.reindex import reindex_notebook
-            from storage.notebook_store import notebook_store
+    if db == "main":
+        from services.sync import indexer
 
-            for nb in await notebook_store.list():
-                try:
-                    await reindex_notebook(nb["id"], force=False)
-                except Exception as exc:
-                    logger.warning("[sync] re-index of %s after sync failed: %s", nb.get("id"), exc)
-
-        enrichment_worker.enqueue(EnrichmentJob(key="sync-reindex", tier=JobTier.DAYDREAM,
-                                                factory=_reindex_all_changed,
-                                                label="re-index after sync"))
+        # Each Mac embeds its own index. A user-started run indexes inside itself
+        # (with progress); anything else — the other Mac pushing, the background
+        # loop — gets its own visible indexing run shortly after.
+        if indexer.note(report) and not progress.active("initiated"):
+            indexer.kick()
+        changed = [t for t, st in (report.get("tables") or {}).items() if st.get("changed")]
+        if changed:
+            # The open screens hold the old lists; tell them what changed (a UI reload
+            # used to be the only way to see what sync brought in).
+            try:
+                from api.constellation_ws import broadcast_update
+                await broadcast_update("sync_applied", {"tables": changed})
+            except Exception as exc:
+                logger.debug("[sync] ui notify: %s", exc)
 
     if db == "main" and _changed(report, "documents"):
         # Settings and core memory are cached in memory; another Mac changed them.
@@ -423,8 +470,9 @@ async def request_pairing(host: str, port: Optional[int] = None) -> Dict[str, An
 class Session:
     """One contact with one paired Mac, as the initiator."""
 
-    def __init__(self, d: Dict[str, Any]):
+    def __init__(self, d: Dict[str, Any], run=None):
         self.d = d
+        self.run = run or progress.NULL
 
     async def __aenter__(self):
         import httpx
@@ -455,13 +503,26 @@ class Session:
         _note_models(self.d, h.get("models"))
         return h
 
+    async def pending(self) -> Dict[str, Dict[str, int]]:
+        """Changes waiting in each direction, per database: {"in": {...}, "out": {...}}.
+        An older peer without /sync/pending gives no totals; the bar then grows as
+        pages report what remains."""
+        mine = await asyncio.to_thread(runtime.vvs)
+        try:
+            theirs = (await self.post("/sync/pending", {"vv": mine}))["pending"]
+        except Exception:
+            theirs = {}
+        return {"in": theirs}
+
     async def pull_all(self, db: str, dry_run: bool = False) -> Dict[str, Any]:
         total = {"inserted": 0, "updated": 0, "deleted": 0, "conflicts": 0, "tables": {}}
         for _ in range(100_000):
+            self.run.check()
             vv = (await asyncio.to_thread(runtime.vvs))[db]
-            page = await self.post("/sync/pull", {"db": db, "vv": vv,
+            page = await self.post("/sync/pull", {"db": db, "vv": vv, "dry_run": dry_run,
                                                   "limit": PREVIEW_PAGE if dry_run else PAGE})
             rep = await asyncio.to_thread(_apply, db, page, dry_run)
+            self.run.advance(len(page.get("versions") or []))
             _add(total, rep)
             if not dry_run:
                 await _after_apply(rep, db)
@@ -481,7 +542,11 @@ class Session:
                 r.conn.close()
 
         got = failed = 0
-        for rel in await asyncio.to_thread(_need):
+        need = await asyncio.to_thread(_need)
+        self.run.add_total(len(need))
+        for rel in need:
+            self.run.check()
+            name = rel.split("/")[-1]
             try:
                 offset = await asyncio.to_thread(blobs.partial_offset, rel)
                 digest, total = None, None
@@ -494,12 +559,17 @@ class Session:
                     total = c["total"]
                     res = await asyncio.to_thread(blobs.write_chunk, rel, offset, c["data"], total, digest)
                     offset = res["next"]
+                    self.run.advance(0, detail=f"{name} — {_mb(offset)} of {_mb(total)}")
                     if res["done"]:
                         got += 1
                         break
+                    self.run.check()
+            except progress.Cancelled:
+                raise
             except Exception as exc:
                 failed += 1
                 logger.info("[sync] blob %s not fetched yet: %s", rel, exc)
+            self.run.advance(1)
         return {"fetched": got, "pending": failed}
 
     async def send_blobs(self) -> Dict[str, int]:
@@ -520,8 +590,11 @@ class Session:
         if not have:
             return {"sent": 0}
         need = (await self.post("/sync/blobs/missing", {"paths": have}))["missing"]
+        self.run.add_total(len(need))
         sent = 0
         for rel in need:
+            self.run.check()
+            name = rel.split("/")[-1]
             try:
                 path = blobs.safe_path(rel)
                 total = path.stat().st_size
@@ -535,20 +608,27 @@ class Session:
                             "path": rel, "offset": offset, "total": total, "sha256": digest,
                             "data": base64.b64encode(data).decode("ascii")})
                         offset = res["next"]
+                        self.run.advance(0, detail=f"{name} — {_mb(offset)} of {_mb(total)}")
                         if res["done"]:
                             sent += 1
                             break
+                        self.run.check()
+            except progress.Cancelled:
+                raise
             except Exception as exc:
                 logger.info("[sync] blob %s not sent yet: %s", rel, exc)
+            self.run.advance(1)
         return {"sent": sent}
 
     async def push_all(self, db: str, peer_vv: Dict[str, int], dry_run: bool = False) -> Dict[str, Any]:
         total = {"inserted": 0, "updated": 0, "deleted": 0, "conflicts": 0, "tables": {}}
         for _ in range(100_000):
+            self.run.check()
             page = await asyncio.to_thread(_export, db, peer_vv, PREVIEW_PAGE if dry_run else PAGE)
             if not page["versions"] and not page.get("vv"):
                 return total
             rep = await self.post("/sync/push", {"db": db, "page": page, "dry_run": dry_run})
+            self.run.advance(len(page["versions"]))
             _add(total, rep)
             peer_vv = rep.get("vv") or peer_vv
             if not page.get("more") or dry_run:
@@ -561,6 +641,10 @@ class VersionSkew(RuntimeError):
         super().__init__(f"Update LocalBook on {name if detail.get('peer_head', 0) > detail.get('head', 0) else 'this Mac'} "
                          f"to resume sync (schema {detail.get('head')} vs {detail.get('peer_head')})")
         self.detail = detail
+
+
+def _mb(n: int) -> str:
+    return f"{n / 1_048_576:.1f} MB"
 
 
 def _add(total: Dict[str, Any], rep: Dict[str, Any]) -> None:

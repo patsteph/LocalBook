@@ -421,6 +421,12 @@ function App() {
       // Result: badges moved only on a UI reload.
       const scope = refreshScopeFor(message, selectedNotebookId);
       if (scope.notebooks) scheduleNotebooksRefresh();
+      if (message.type === 'sync_applied') {
+        // Another Mac's changes landed: refresh what is on screen, no reload needed.
+        if (scope.selectedNotebook) setRefreshSources(prev => prev + 1);
+        scope.pulses?.forEach((e) => emitEvent(e));
+        return;
+      }
 
       if (message.type === 'source_updated' && scope.selectedNotebook) {
         setRefreshSources(prev => prev + 1);

@@ -15,7 +15,7 @@ import socket
 import time
 from typing import Any, Dict, List, Optional
 
-from services.sync import genesis, identity, peer, runtime, store
+from services.sync import discovery, genesis, identity, indexer, peer, progress, runtime, store
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +37,10 @@ async def enable() -> Dict[str, Any]:
     await asyncio.to_thread(runtime.install_journals)
     store.put("enabled", True)
     await peer.start_sync_listener()
+    discovery.advertise(identity.device_name(), peer.sync_port(), identity.device_id())
+    if not store.devices():
+        # First Mac or a new one: be findable without an extra click.
+        await peer.open_pairing_window()
     start_loop()
     return status()
 
@@ -45,6 +49,8 @@ async def disable() -> Dict[str, Any]:
     """The kill switch: takes effect immediately. Journals keep recording, so
     turning sync back on loses nothing."""
     store.put("enabled", False)
+    progress.cancel()
+    discovery.stop()
     await peer.stop("sync")
     await peer.stop("pair")
     return status()
@@ -57,7 +63,12 @@ async def startup() -> None:
     try:
         await asyncio.to_thread(runtime.install_journals)
         await peer.start_sync_listener()
+        discovery.advertise(identity.device_name(), peer.sync_port(), identity.device_id())
         start_loop()
+        # Catch up on anything synced but never indexed (a restart mid-run, or a
+        # build before the indexer existed — the mini's first sync).
+        indexer.mark_dirty()
+        indexer.kick(delay=60)
     except Exception as exc:
         logger.error("[sync] could not start: %s", exc)
 
@@ -91,7 +102,28 @@ async def confirm_pairing(pairing_id: str) -> Dict[str, Any]:
     store.pin(req, role)
     _adopt_recovery_key(req.get("recovery_pub"))
     await peer.start_sync_listener()                       # the trust store changed
+    if role == "seed":
+        # This Mac asked to pair, so it previews — by itself, as soon as the other
+        # Mac confirms too. One less click, and the summary is waiting.
+        from utils.tasks import safe_create_task
+        safe_create_task(_auto_preview(req["device_id"]), name="sync-auto-preview")
     return status()
+
+
+async def _auto_preview(device_id: str, patience: float = 600) -> None:
+    deadline = time.time() + patience
+    store.put(f"preview_state:{device_id}", "waiting for the other Mac to confirm the code")
+    while time.time() < deadline:
+        try:
+            await preview(device_id)
+            store.put(f"preview_state:{device_id}", None)
+            return
+        except Exception as exc:
+            if "403" not in str(exc):            # anything but "not paired there yet"
+                store.put(f"preview_state:{device_id}", f"preview failed: {exc}"[:300])
+                return
+        await asyncio.sleep(2)
+    store.put(f"preview_state:{device_id}", "the other Mac did not confirm — pair again")
 
 
 def _adopt_recovery_key(pub: Optional[str]) -> None:
@@ -147,20 +179,24 @@ async def preview(device_id: str) -> Dict[str, Any]:
     return report
 
 
-async def apply(device_id: str) -> Dict[str, Any]:
-    """The user pressed Apply after reading the preview."""
+async def apply(device_id: str, run=None) -> Dict[str, Any]:
+    """The user pressed Start sync after reading the preview."""
+    run = run or progress.NULL
     d = _device(device_id)
     if not store.get("first_apply_backup"):
+        run.step("backup")
         await asyncio.to_thread(peer.first_apply_backup)
-    async with peer.Session(d) as s:
+    async with peer.Session(d, run) as s:
+        run.step("connect")
         await s.hello()
         if d.get("role") == "seed" and not store.get(f"genesis_done:{device_id}"):
+            run.step("match")
             seed_index = await s.post("/sync/genesis-index", {})
             the_plan = genesis.plan(await asyncio.to_thread(_local_index), seed_index)
             await asyncio.to_thread(_rekey, the_plan)
             store.put(f"genesis_done:{device_id}", the_plan["counts"])
     store.update_device(device_id, mode="live")
-    return await sync_with(device_id, user_initiated=True)
+    return await sync_with(device_id, user_initiated=True, run=run)
 
 
 def _rekey(the_plan: Dict[str, Any]) -> None:
@@ -180,7 +216,8 @@ def _rekey(the_plan: Dict[str, Any]) -> None:
 # ── ongoing sync ────────────────────────────────────────────────────────────
 
 
-async def sync_with(device_id: str, user_initiated: bool = False) -> Dict[str, Any]:
+async def sync_with(device_id: str, user_initiated: bool = False, run=None) -> Dict[str, Any]:
+    run = run or progress.NULL
     d = _device(device_id)
     if d.get("mode") != "live":
         raise ValueError("preview and apply this Mac first")
@@ -188,24 +225,34 @@ async def sync_with(device_id: str, user_initiated: bool = False) -> Dict[str, A
         return {"skipped": "already syncing"}
     _busy[device_id] = True
     try:
-        async with peer.Session(d) as s:
+        async with peer.Session(d, run) as s:
+            run.step("connect")
             h = await s.hello()
-            out = {}
-            for db in runtime.DB_FILES:
-                if not (runtime.data_dir() / runtime.DB_FILES[db]).exists():
-                    continue
-                incoming = await s.pull_all(db)
-                outgoing = await s.push_all(db, (h.get("vv") or {}).get(db, {}))
-                out[db] = {"in": incoming, "out": outgoing}
-            # Files last, and only while the user is not active (D15: eager, but
-            # at the lowest priority) — a skipped round is picked up by the next.
+            dbs = [db for db in runtime.DB_FILES if (runtime.data_dir() / runtime.DB_FILES[db]).exists()]
+            out: Dict[str, Any] = {db: {} for db in dbs}
+            pend = await s.pending()
+            run.step("receive", total=sum(int(v) for v in pend["in"].values()), unit="changes")
+            for db in dbs:
+                out[db]["in"] = await s.pull_all(db)
+            peer_vv = h.get("vv") or {}
+            run.step("send", total=await asyncio.to_thread(_local_pending, peer_vv), unit="changes")
+            for db in dbs:
+                out[db]["out"] = await s.push_all(db, peer_vv.get(db, {}))
+            # Files, only while the user is not active unless they asked (D15:
+            # eager, but at the lowest priority) — a skipped round is picked up next.
+            run.step("files", unit="files")
             if user_initiated or _user_idle():
                 out["blobs"] = {**await s.fetch_blobs(), **await s.send_blobs()}
             else:
                 out["blobs"] = {"deferred": "you are using LocalBook"}
+        # This Mac's own index for what arrived — inside the run, so it is visible.
+        out["index"] = await indexer.run_into(run)
         store.update_device(device_id, last_seen=time.time(), last_error=None)
         store.put(f"last_sync:{device_id}", {"at": time.time(), "result": out})
         return out
+    except progress.Cancelled:
+        store.update_device(device_id, last_error=None)
+        raise
     except peer.VersionSkew as exc:
         store.update_device(device_id, last_error=str(exc))
         raise
@@ -214,6 +261,65 @@ async def sync_with(device_id: str, user_initiated: bool = False) -> Dict[str, A
         raise
     finally:
         _busy.pop(device_id, None)
+
+
+def _local_pending(peer_vv: Dict[str, Dict[str, int]]) -> int:
+    return sum(peer._pending_all(peer_vv).values())
+
+
+# ── runs: what Start sync / Sync now start, in the background ────────────────
+
+
+FIRST_PHASES = ["backup", "connect", "match", "receive", "send", "files", "index"]
+SYNC_PHASES = ["connect", "receive", "send", "files", "index"]
+
+
+def start_run(device_id: str, first: bool = False) -> Dict[str, Any]:
+    """Start a sync in the background and return at once; the screen follows it
+    through /sync/progress. (Holding the request open for minutes is how the
+    WebKit network process gives up — CLAUDE.md.)"""
+    if progress.active("initiated"):
+        raise ValueError("a sync is already running — stop it first or wait for it")
+    d = _device(device_id)
+    phases = list(FIRST_PHASES) if first else list(SYNC_PHASES)
+    if first and store.get("first_apply_backup"):
+        phases.remove("backup")
+    if first and (d.get("role") != "seed" or store.get(f"genesis_done:{device_id}")):
+        phases.remove("match")
+    run = progress.begin("initiated", "initiated", phases, device_id=device_id, name=d.get("name"))
+
+    async def _go():
+        try:
+            res = await (apply(device_id, run) if first else sync_with(device_id, True, run))
+            run.finish(result=summarize(res))
+        except progress.Cancelled:
+            run.finish(result={"stopped": True})
+        except Exception as exc:
+            logger.warning("[sync] run with %s failed: %s", d.get("name") or device_id, exc)
+            run.finish(error=f"{type(exc).__name__}: {exc}"[:300] if not isinstance(exc, ValueError)
+                       else str(exc))
+
+    from utils.tasks import safe_create_task
+    safe_create_task(_go(), name=f"sync-run-{run.run_id}")
+    return {"run_id": run.run_id}
+
+
+def summarize(out: Dict[str, Any]) -> Dict[str, Any]:
+    """What a run moved, per table, for the plain-words summary on screen."""
+    got: Dict[str, int] = {}
+    sent: Dict[str, int] = {}
+    conflicts = 0
+    for db, io in out.items():
+        if not isinstance(io, dict) or "in" not in io:
+            continue
+        for side, acc in (("in", got), ("out", sent)):
+            rep = io.get(side) or {}
+            conflicts += int(rep.get("conflicts", 0)) if side == "in" else 0
+            for t, st in (rep.get("tables") or {}).items():
+                if st.get("changed"):
+                    acc[t] = acc.get(t, 0) + int(st["changed"])
+    return {"received": got, "sent": sent, "conflicts": conflicts,
+            "files": out.get("blobs") or {}, "index": out.get("index") or {}}
 
 
 def _user_idle() -> bool:
@@ -229,9 +335,17 @@ async def sync_all() -> Dict[str, Any]:
     for d in store.devices():
         if d.get("mode") != "live" or not d.get("host"):
             continue
+        if progress.active("initiated"):
+            break                                      # the user's own run is going
+        run = progress.begin("initiated", "initiated", list(SYNC_PHASES), device_id=d["device_id"],
+                             name=d.get("name"), quiet=True)
         try:
-            results[d["device_id"]] = await sync_with(d["device_id"])
+            results[d["device_id"]] = await sync_with(d["device_id"], run=run)
+            run.finish(result=summarize(results[d["device_id"]]))
+        except progress.Cancelled:
+            run.finish(result={"stopped": True})
         except Exception as exc:
+            run.finish(error=str(exc)[:300])
             # "Waiting for a peer" is a normal state (the MDM Mac is often the
             # only one on), not an error worth more than a line.
             results[d["device_id"]] = {"error": str(exc)[:200]}
@@ -254,6 +368,11 @@ async def _loop() -> None:
         interval = DEFAULT_INTERVAL
         try:
             interval = schedule_store.get_interval(SCHEDULE_ID, DEFAULT_INTERVAL)
+            if store.enabled() and not store.devices() \
+                    and float(store.get("pairing_open_until", 0)) <= time.time():
+                # No partner yet: stay findable (the window is only for pairing,
+                # and pairing still needs the code confirmed on both Macs).
+                await peer.open_pairing_window()
             if store.enabled() and schedule_store.is_enabled(SCHEDULE_ID):
                 await asyncio.to_thread(runtime.install_journals)
                 await sync_all()
@@ -312,7 +431,8 @@ def status() -> Dict[str, Any]:
                                                "paired_at", "last_seen", "last_error")}
                        | {"fingerprint": d["fingerprint"][:16], "preview": store.preview(d["device_id"]),
                           "last_sync": store.get(f"last_sync:{d['device_id']}"),
-                          "model_mismatch": store.get(f"model_mismatch:{d['device_id']}") or {}})
+                          "model_mismatch": store.get(f"model_mismatch:{d['device_id']}") or {},
+                          "preview_state": store.get(f"preview_state:{d['device_id']}")})
     try:
         c = runtime.replica("main").conn
         open_conflicts = c.execute("SELECT COUNT(*) FROM sync_conflicts WHERE status='open'").fetchone()[0]

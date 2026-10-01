@@ -81,12 +81,48 @@ async def preview(device_id: str):
 
 @router.post("/devices/{device_id}/apply")
 async def apply(device_id: str):
-    return await _call(_svc().apply(device_id))
+    """Start sync (first time): returns at once with a run id; follow /sync/progress."""
+    try:
+        return _svc().start_run(device_id, first=True)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
 
 
 @router.post("/devices/{device_id}/sync")
 async def sync_now(device_id: str):
-    return await _call(_svc().sync_with(device_id, user_initiated=True))
+    try:
+        return _svc().start_run(device_id, first=False)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@router.get("/progress")
+async def get_progress():
+    from services.sync import progress
+
+    return progress.snapshot()
+
+
+@router.post("/progress/cancel")
+async def cancel_progress():
+    """Stop safely: what already arrived is kept; the next sync continues."""
+    from services.sync import progress
+
+    return {"stopping": progress.cancel()}
+
+
+@router.get("/discover")
+async def discover():
+    """LocalBook Macs answering on this network (Bonjour), minus this one and the
+    ones already paired. Empty on networks that block multicast — type the address."""
+    import asyncio
+
+    from services.sync import discovery, identity, store
+    if not store.enabled():
+        return {"macs": []}
+    paired = {d["device_id"] for d in store.devices()}
+    found = await asyncio.to_thread(discovery.browse, identity.device_id())
+    return {"macs": [m for m in found if m.get("device_id") not in paired]}
 
 
 @router.post("/devices/{device_id}/revoke")
