@@ -269,3 +269,11 @@ def test_sync_reports_which_roles_differ_between_macs(monkeypatch):
     assert peer.model_mismatch(theirs) == {"embedding": {"here": _NEW_EMBED, "there": _OLD_EMBED}}
     assert peer.model_mismatch(peer.models()) == {}
     assert peer.model_mismatch(None) == {}, "an older peer sends no models: nothing to report"
+
+
+def test_friendly_names_keep_the_quantization():
+    from utils.model_display import friendly_model_name as f
+
+    assert f(_OLD_EMBED) != f(_NEW_EMBED)
+    assert f(_NEW_EMBED).endswith("(MLX · bf16)")
+    assert f("mlx-community/gemma-4-e4b-it-4bit") == "Gemma 4 e4b (MLX · 4bit)"

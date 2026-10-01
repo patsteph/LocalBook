@@ -11,9 +11,11 @@ export function friendlyModelName(id?: string): string {
   // MLX / HuggingFace path form
   if (id.includes('/')) {
     let base = id.split('/').pop() || id;
-    base = base.replace(/-(4bit|8bit|bf16|fp16|q4|q8|q4_k_m|q8_0)$/i, '');
+    // Keep the quantization: 8-bit and bf16 builds of one model are different weights.
+    const q = base.match(/-(4bit|8bit|bf16|fp16|q4|q8|q4_k_m|q8_0)$/i);
+    if (q) base = base.slice(0, q.index);
     base = base.replace(/-(it|instruct|chat)$/i, '');
-    return `${prettify(base)} (MLX)`;
+    return `${prettify(base)} (MLX${q ? ` · ${q[1]}` : ''})`;
   }
   // Ollama "family:tag"
   const [base, tag] = id.split(':');
