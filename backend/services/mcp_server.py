@@ -287,6 +287,25 @@ def build_server():
             }
 
     @mcp.tool(annotations=read_only)
+    async def list_sources(notebook_id: str, k: int = 20) -> Dict[str, Any]:
+        """List a notebook's sources, newest first (id, title, type, added). Use the ids with get_source."""
+        k = max(1, min(int(k or 20), 100))
+        async with _audited("list_sources", {"notebook_id": notebook_id, "k": k}):
+            from storage.source_store import source_store
+
+            rows = await source_store.list(notebook_id)
+            rows.sort(key=lambda s: s.get("created_at") or "", reverse=True)
+            return {
+                "notebook_id": notebook_id,
+                "total": len(rows),
+                "sources": [
+                    {"id": s.get("id"), "title": s.get("title") or s.get("filename"),
+                     "type": s.get("type") or s.get("format"), "added_at": s.get("created_at")}
+                    for s in rows[:k]
+                ],
+            }
+
+    @mcp.tool(annotations=read_only)
     async def search_notebooks(
         query: str,
         notebook_ids: Optional[List[str]] = None,

@@ -210,7 +210,43 @@ class AudioLLMService:
                 raise
         
         print(f"[AudioLLM] ✓ Kokoro-82M (MLX) pipeline ready")
-    
+        self._install_g2p_fallback()
+
+    def _install_g2p_fallback(self) -> None:
+        """Give Kokoro's G2P a way to say words that aren't in misaki's lexicon.
+
+        misaki 0.7.4 with unk="" and no fallback leaves an out-of-lexicon word's phonemes
+        as None, then G2P.__call__ raises TypeError joining them, so the WHOLE chunk
+        produces no audio ("offsite", "Ornith", most names). eSpeak NG (bundled via
+        espeakng-loader) pronounces those words; if it can't load, drop just the unknown
+        word instead of losing the sentence.
+        """
+        try:
+            g2p = self._model._phonemizer._g2p
+        except AttributeError:
+            logger.warning("[AudioLLM] kokoro_mlx layout changed; G2P fallback not installed")
+            return
+        if getattr(g2p, "fallback", None) is not None:
+            return
+        try:
+            import os
+
+            import espeakng_loader
+            from phonemizer.backend.espeak.wrapper import EspeakWrapper
+            EspeakWrapper.set_library(espeakng_loader.get_library_path())
+            # phonemizer 3.3.0 (our pin) has no set_data_path — that is phonemizer-fork's
+            # API. The library reads ESPEAK_DATA_PATH when initialised with no path.
+            if hasattr(EspeakWrapper, "set_data_path"):
+                EspeakWrapper.set_data_path(espeakng_loader.get_data_path())
+            else:
+                os.environ["ESPEAK_DATA_PATH"] = espeakng_loader.get_data_path()
+            from misaki.espeak import EspeakFallback
+            g2p.fallback = EspeakFallback(british=False)
+            logger.info("[AudioLLM] G2P fallback: eSpeak NG")
+        except Exception as e:
+            logger.warning("[AudioLLM] eSpeak NG unavailable (%s); unknown words will be skipped", e)
+            g2p.fallback = lambda token: ("", 1)
+
     @staticmethod
     def _patch_spacy_download():
         """Prevent spacy.cli.download() from running pip in frozen binaries.
@@ -756,8 +792,8 @@ class AudioLLMService:
                     if attempt == 0:
                         print(f"[AudioLLM] Warning: chunk {i+1}/{len(chunks)} failed (attempt 1): {e} — retrying")
                     else:
-                        print(f"[AudioLLM] ERROR: chunk {i+1}/{len(chunks)} failed after retry: {e}")
-                        print(f"[AudioLLM]   chunk text ({len(chunk)} chars): {chunk[:80]}...")
+                        logger.warning("[AudioLLM] chunk %d/%d failed after retry: %r — text: %.80s",
+                                       i + 1, len(chunks), e, chunk)
             if not success and stats is not None:
                 stats["failed"] += 1
 

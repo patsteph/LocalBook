@@ -25,7 +25,7 @@ CONTRACT_TOOLS = {
     "memory_search": ["query", "k"], "ask_notebook": ["question", "notebook_id"],
     "list_notebooks": [], "get_note": ["note_id"], "list_recent_notes": ["n"],
     "approval_queue": ["status", "k"], "youtube_search": [], "scholarly_search": [],
-    "memory_add": ["text", "category"],
+    "memory_add": ["text", "category"], "list_sources": ["notebook_id", "k"],
 }
 
 
@@ -56,7 +56,7 @@ def _call(tools, name, **kw):
 
 
 def test_all_nineteen_contract_tools_exist_with_their_argument_names(tools):
-    assert len(CONTRACT_TOOLS) == 19
+    assert len(CONTRACT_TOOLS) == 20
     for name, args in CONTRACT_TOOLS.items():
         assert name in tools, f"missing tool {name}"
         params = inspect.signature(tools[name].fn).parameters
@@ -282,3 +282,20 @@ def test_an_unhandled_error_is_logged_and_explained(caplog):
     assert resp.status_code == 500
     assert "mnemonic" in _json.loads(resp.body)["detail"]
     assert any("recovery/begin" in r.getMessage() and r.exc_info for r in caplog.records)
+
+
+def test_list_sources_is_newest_first_and_capped(monkeypatch):
+    """Jocasta could find a notebook but not what was in it — she went round in circles."""
+    from storage.source_store import source_store
+    rows = [{"id": f"s{i}", "filename": f"f{i}.pdf", "format": "pdf", "created_at": f"2026-09-{10 + i}"}
+            for i in range(5)]
+
+    async def fake_list(nb):
+        return [dict(r) for r in rows]
+    monkeypatch.setattr(source_store, "list", fake_list)
+    _as("read")
+    tool = asyncio.run(mcp_server.build_server().get_tools())["list_sources"]
+    out = asyncio.run(tool.fn(notebook_id="nb1", k=2))
+    assert out["total"] == 5
+    assert [s["id"] for s in out["sources"]] == ["s4", "s3"]
+    assert out["sources"][0] == {"id": "s4", "title": "f4.pdf", "type": "pdf", "added_at": "2026-09-14"}

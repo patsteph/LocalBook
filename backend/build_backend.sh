@@ -55,7 +55,7 @@ fi
 # and `fastmcp` (Jocasta's /mcp). Install the lock file, then refuse to build
 # without them rather than ship a quietly broken app.
 pip install -q -r requirements.txt
-REQUIRED_IMPORTS="mnemonic fastmcp cryptography av librosa dacite"
+REQUIRED_IMPORTS="mnemonic fastmcp cryptography av librosa dacite espeakng_loader"
 for mod in $REQUIRED_IMPORTS; do
     if ! python -c "import $mod" 2>/dev/null; then
         echo -e "${RED}✗ Required package '$mod' is not importable in the build venv — refusing to build.${NC}"
@@ -417,6 +417,7 @@ python -W ignore -m PyInstaller \
     --collect-all=spacy \
     --collect-all=en_core_web_sm \
     --collect-all=phonemizer \
+    --collect-all=espeakng_loader \
     --collect-all=num2words \
     --collect-data=tld \
     --hidden-import=soundfile \
