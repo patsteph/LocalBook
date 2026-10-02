@@ -233,19 +233,47 @@ class AudioLLMService:
 
             import espeakng_loader
             from phonemizer.backend.espeak.wrapper import EspeakWrapper
+            data = self._espeak_data_path(espeakng_loader.get_data_path())
             EspeakWrapper.set_library(espeakng_loader.get_library_path())
             # phonemizer 3.3.0 (our pin) has no set_data_path — that is phonemizer-fork's
             # API. The library reads ESPEAK_DATA_PATH when initialised with no path.
             if hasattr(EspeakWrapper, "set_data_path"):
-                EspeakWrapper.set_data_path(espeakng_loader.get_data_path())
+                EspeakWrapper.set_data_path(data)
             else:
-                os.environ["ESPEAK_DATA_PATH"] = espeakng_loader.get_data_path()
+                os.environ["ESPEAK_DATA_PATH"] = data
             from misaki.espeak import EspeakFallback
             g2p.fallback = EspeakFallback(british=False)
             logger.info("[AudioLLM] G2P fallback: eSpeak NG")
         except Exception as e:
             logger.warning("[AudioLLM] eSpeak NG unavailable (%s); unknown words will be skipped", e)
             g2p.fallback = lambda token: ("", 1)
+
+    # eSpeak NG keeps its data path in a fixed buffer (~160 chars) and, when the path does
+    # not resolve, calls exit() — killing the whole backend, uncatchable from Python. The
+    # bundled data sits wherever the app is installed (192 chars from the build folder,
+    # 2026-10-02), so it is reached through a short per-user link, and checked first.
+    ESPEAK_PATH_LIMIT = 120
+
+    @classmethod
+    def _espeak_data_path(cls, data: str) -> str:
+        """A short path to eSpeak's data, or raise (→ the skip-the-word fallback)."""
+        import os
+
+        if not os.path.isfile(os.path.join(data, "phontab")):
+            raise RuntimeError(f"eSpeak data incomplete at {data}")
+        if len(data) < cls.ESPEAK_PATH_LIMIT:
+            return data
+        link = f"/tmp/localbook-espeak-{os.getuid()}"
+        try:
+            if os.path.islink(link) and os.readlink(link) != data:
+                os.unlink(link)
+            if not os.path.lexists(link):
+                os.symlink(data, link)
+        except OSError as e:
+            raise RuntimeError(f"cannot link eSpeak data to a short path: {e}")
+        if os.path.realpath(link) != os.path.realpath(data) or not os.path.isfile(os.path.join(link, "phontab")):
+            raise RuntimeError(f"{link} does not point at eSpeak's data")
+        return link
 
     @staticmethod
     def _patch_spacy_download():

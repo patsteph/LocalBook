@@ -55,3 +55,25 @@ def test_an_existing_fallback_is_left_alone():
     g2p.fallback = mine
     eng._install_g2p_fallback()
     assert g2p.fallback is mine
+
+
+def test_a_long_install_path_is_reached_through_a_short_link(tmp_path):
+    """eSpeak's path buffer is ~160 chars and it exit()s on a bad path — the bundle's data
+    path was 192 chars from the build folder (2026-10-02)."""
+    import os
+    loader = pytest.importorskip("espeakng_loader")
+    from services.audio_llm import AudioLLMService
+    deep = tmp_path / ("x" * 60) / ("y" * 60) / "espeak-ng-data"
+    deep.parent.mkdir(parents=True)
+    os.symlink(loader.get_data_path(), deep)
+    assert len(str(deep)) > 160
+    short = AudioLLMService._espeak_data_path(str(deep))
+    assert len(short) < AudioLLMService.ESPEAK_PATH_LIMIT
+    assert os.path.isfile(os.path.join(short, "phontab"))
+
+
+def test_incomplete_espeak_data_is_refused_before_espeak_starts(tmp_path):
+    from services.audio_llm import AudioLLMService
+    (tmp_path / "espeak-ng-data").mkdir()
+    with pytest.raises(RuntimeError, match="incomplete"):
+        AudioLLMService._espeak_data_path(str(tmp_path / "espeak-ng-data"))
