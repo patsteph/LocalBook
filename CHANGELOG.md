@@ -10,8 +10,41 @@ All notable changes to LocalBook will be documented in this file.
   encrypted volume that is checked file by file, then restart onto it and remove the unencrypted
   copy with one click once every database is verified to match. The volume opens at login with
   the key in the Keychain, with no password prompts. Verified end to end on two Macs.
+- **Your Macs share one library.** Pair two Macs on the same network — each lists the other by
+  name, and both show the same 6-digit code to confirm — and notebooks, sources, notes, generated
+  documents, podcasts and videos (the files too), memory, settings and the collector's
+  configuration stay the same on every Mac. Directly between them, encrypted and authenticated,
+  nothing in the cloud. The first sync is previewed before anything changes and backs the Mac up
+  first; notebooks and sources you have on both are matched, not duplicated. Every sync shows its
+  progress and can be stopped safely; open screens refresh when it brings something in; the same
+  note edited on two Macs while apart keeps one version and saves the other as a conflict, so
+  nothing is lost. A notebook deleted on one Mac is removed everywhere, files included. One Mac
+  runs the scheduled collections (by default the one the others paired with) and sync brings the
+  results to the rest. Verified between a Mac mini and a MacBook Pro.
+- **Companions can use LocalBook.** A companion agent such as Jocasta connects with its own key
+  and gets 20 tools over MCP (search notebooks, list a notebook's sources, read a source, the
+  digest and Curator insights, research jobs, web search, events), a shared memory it reads from
+  and writes to, and OpenAI-compatible speech in and out. Verified with Jocasta on a MacBook Pro.
 
 ### Fixed
+- **A word Kokoro didn't know silenced the whole sentence.** Names and words missing from its
+  dictionary ("offsite", "Ornith") made that part of a podcast or reply come out with no audio,
+  and nothing said so in the log. A bundled eSpeak NG now pronounces them, and a failed chunk is
+  logged.
+- **The Dock filled with bouncing icons during collections.** The web scraper started a new
+  headless browser for every page; one shared browser now does the work. A built-in library
+  could also start whole extra copies of the backend; it no longer can.
+- **The backend could outlive the app.** After a Force Quit it kept running — and collecting — with
+  no window. It now stops within seconds of the app closing, and the app no longer shuts itself
+  down when it finds such a leftover backend at launch.
+- **A brand-new install could lock its own database.** A one-time startup step never finished its
+  write, so on a new Mac's first launch everything else that needed to save got "database is
+  locked".
+- **Catching up after a sync ran the fans flat out.** Indexing synced sources now makes them
+  searchable first and leaves the heavier topic and entity work for when the Mac is idle, pacing
+  itself while you work.
+- **The voice profile never rebuilt**, and switching to a model without vision broke image tasks:
+  both still named models from before the MLX switch.
 - **Every Mac now runs the same embedding model.** A setting saved before the MLX switch kept one
   Mac on the 8-bit build of the embedder while another ran bf16, so the same question could find
   different passages. The old build is now retired automatically once the bf16 one is downloaded,
