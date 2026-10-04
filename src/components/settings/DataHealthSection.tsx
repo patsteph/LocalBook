@@ -25,6 +25,8 @@ type Health = {
     memory: any;
     keys: any;
     codec: any;
+    volume?: { enabled: boolean; mounted?: boolean; image_bytes?: number; free_bytes?: number;
+        last_compact?: string | null; error?: string };
     dead_weight: { path: string; name: string; bytes: number; why: string }[] | any;
     pending_restore: any;
 };
@@ -304,6 +306,20 @@ export function DataHealthSection() {
                             ? <span className="text-gray-500"> ({health.memory.external_reserve_gb} GB reserved)</span>
                             : null}
                     </Row>
+                    {health.volume?.enabled && (
+                        <>
+                            <Row label="Encrypted volume">
+                                {health.volume.mounted
+                                    ? 'mounted'
+                                    : <span className="text-red-300">not mounted</span>}
+                            </Row>
+                            <Row label="Volume size on disk">{mb(health.volume.image_bytes)}</Row>
+                            <Row label="Free space inside">{mb(health.volume.free_bytes)}</Row>
+                            <Row label="Last compacted">
+                                {health.volume.last_compact ? when(health.volume.last_compact) : 'not yet'}
+                            </Row>
+                        </>
+                    )}
                     <Row label="Audio codec">
                         {health.codec?.ok
                             ? 'found'

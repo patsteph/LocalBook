@@ -338,6 +338,7 @@ def status(data_dir: Optional[Path] = None) -> Dict[str, object]:
     probe("keys", keys)
 
     probe("codec", _codec)
+    probe("volume", _volume)
     probe("dead_weight", lambda: find_dead_weight(root))
 
     def pending_restore():
@@ -380,6 +381,34 @@ _KEY_CONSEQUENCE = {
         "you would need to pair this Mac again.",
     ),
 }
+
+
+VOLUME_LOW_FREE_BYTES = 2 * 1024 ** 3
+# Written by the app (src-tauri lib.rs `volume_compact_stamp_path`) after each compact,
+# beside the data dir — the volume itself is not readable when the compact runs.
+COMPACT_STAMP = Path.home() / "Library" / "Application Support" / "LocalBook.encryption-last-compact"
+
+
+def _volume() -> Dict[str, object]:
+    """The encrypted volume (LB-11): mounted?, size on disk, free inside, last compact."""
+    from services import volume_gate
+
+    if not volume_gate.encryption_enabled():
+        return {"enabled": False}
+    from services import volume_service
+
+    st = volume_service.state()
+    out: Dict[str, object] = {
+        "enabled": True, "mounted": st.mounted, "image_bytes": st.image_bytes,
+        "free_bytes": st.free_bytes, "last_compact": None,
+    }
+    try:
+        if COMPACT_STAMP.exists():
+            out["last_compact"] = datetime.fromtimestamp(COMPACT_STAMP.stat().st_mtime,
+                                                         timezone.utc).isoformat()
+    except OSError:
+        pass
+    return out
 
 
 def _overall(parts: Dict[str, object]) -> Dict[str, object]:
@@ -438,6 +467,13 @@ def _overall(parts: Dict[str, object]) -> Dict[str, object]:
 
     if parts.get("pending_restore"):
         warnings.append("A restore is staged and will apply on the next launch.")
+
+    volume = parts.get("volume") or {}
+    if isinstance(volume, dict) and volume.get("enabled"):
+        if not volume.get("mounted"):
+            problems.append("Encryption is on but the encrypted volume is not mounted.")
+        elif volume.get("free_bytes") is not None and 0 < int(volume["free_bytes"]) < VOLUME_LOW_FREE_BYTES:
+            warnings.append("Less than 2 GB free inside the encrypted volume.")
 
     codec = parts.get("codec") or {}
     if isinstance(codec, dict) and codec.get("ok") is False:
