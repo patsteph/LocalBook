@@ -201,7 +201,16 @@ async def resolve(conflict_id: str, req: Resolve):
         except KeyError:
             raise HTTPException(400, "that conflict's table no longer syncs")
         value = merge.decode(json.loads(other)) if other is not None else None
-        if kind in ("concurrent-edit",) and field in [c for c in t.content]:
+        if tbl == "documents" and kind in ("concurrent-edit",) and field == "body_json":
+            # Through the documents store: it journals (ships), bumps updated_at, and the
+            # in-memory copies of settings / core memory are dropped so this Mac stops
+            # serving the old value until a restart (2026-10-03).
+            from services.sync.peer import drop_document_caches
+            from storage import documents
+            doc_kind, doc_key = json.loads(pk)
+            documents.put(doc_kind, doc_key, json.loads(value) if isinstance(value, str) else value)
+            drop_document_caches()
+        elif kind in ("concurrent-edit",) and field in [c for c in t.content]:
             where = " AND ".join(f'"{c}" = ?' for c in t.pk)
             conn.execute(f'UPDATE "{tbl}" SET "{field}" = ? WHERE {where}', [value, *json.loads(pk)])
         else:

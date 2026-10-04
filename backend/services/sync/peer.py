@@ -280,6 +280,26 @@ def first_apply_backup() -> Dict[str, Any]:
     return {"path": path}
 
 
+def drop_document_caches() -> None:
+    """Settings and core memory are cached in memory: after they change underneath the
+    app (another Mac's sync, or a conflict resolved here), drop the copies."""
+    try:
+        from storage.memory_store import memory_store
+        memory_store.invalidate_core_memory_cache()
+    except Exception as exc:
+        logger.debug("[sync] core memory cache: %s", exc)
+    try:
+        from agents.curator import curator
+        curator.reload_config()
+    except Exception as exc:
+        logger.debug("[sync] curator config: %s", exc)
+    try:
+        from agents.collector import _collector_registry
+        _collector_registry.clear()          # rebuilt with the synced config on next use
+    except Exception as exc:
+        logger.debug("[sync] collector registry: %s", exc)
+
+
 def _changed(report: Dict[str, Any], table: str) -> bool:
     return bool((report.get("tables") or {}).get(table, {}).get("changed"))
 
@@ -317,22 +337,7 @@ async def _after_apply(report: Dict[str, Any], db: str = "main") -> None:
                 logger.debug("[sync] ui notify: %s", exc)
 
     if db == "main" and _changed(report, "documents"):
-        # Settings and core memory are cached in memory; another Mac changed them.
-        try:
-            from storage.memory_store import memory_store
-            memory_store.invalidate_core_memory_cache()
-        except Exception as exc:
-            logger.debug("[sync] core memory cache: %s", exc)
-        try:
-            from agents.curator import curator
-            curator.reload_config()
-        except Exception as exc:
-            logger.debug("[sync] curator config: %s", exc)
-        try:
-            from agents.collector import _collector_registry
-            _collector_registry.clear()          # rebuilt with the synced config on next use
-        except Exception as exc:
-            logger.debug("[sync] collector registry: %s", exc)
+        drop_document_caches()
 
     if db == "recall" and _changed(report, "archival_records"):
         async def _reconcile():

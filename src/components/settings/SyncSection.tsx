@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api } from '../../services/api';
 import { SyncProgress } from './SyncProgress';
+import { conflictLabel, conflictValue } from './conflictLabel';
 
 /**
  * Settings › Sync (LB-12): this Mac's peers.
@@ -43,7 +44,7 @@ type Status = {
         held_by: { device_id: string; name?: string; days: number | null }[];
     };
 };
-type Conflict = { id: string; tbl: string; field: string; kind: string; kept_value: any; other_value: any; created_at: string };
+type Conflict = { id: string; tbl: string; pk?: string; field: string; kind: string; kept_value: any; other_value: any; created_at: string };
 
 function ago(t?: number | null): string {
     if (!t) return 'never';
@@ -51,11 +52,6 @@ function ago(t?: number | null): string {
     if (s < 60) return `${s}s ago`;
     if (s < 3600) return `${Math.round(s / 60)} min ago`;
     return new Date(t * 1000).toLocaleString();
-}
-
-function text(v: any): string {
-    if (v === null || v === undefined) return '(empty)';
-    return typeof v === 'string' ? v : JSON.stringify(v);
 }
 
 const btn = 'rounded-lg px-3 py-1.5 text-sm disabled:opacity-40';
@@ -361,10 +357,10 @@ export function SyncSection() {
                         </p>
                         {conflicts?.map((c) => (
                             <div key={c.id} className="space-y-1 rounded border border-gray-700/60 px-3 py-2">
-                                <div className="text-xs text-gray-400">{c.tbl} · {c.field} · {c.kind}</div>
+                                <div className="text-xs text-gray-400">{conflictLabel(c)}{c.kind && c.kind !== 'concurrent-edit' ? ` · ${c.kind.replace(/-/g, ' ')}` : ''}</div>
                                 <div className="grid grid-cols-2 gap-2 text-xs">
-                                    <div><div className="text-gray-500">Kept</div><div className="max-h-24 overflow-auto whitespace-pre-wrap text-gray-200">{text(c.kept_value)}</div></div>
-                                    <div><div className="text-gray-500">Other</div><div className="max-h-24 overflow-auto whitespace-pre-wrap text-gray-200">{text(c.other_value)}</div></div>
+                                    <div><div className="text-gray-500">Kept</div><div className="max-h-24 overflow-auto whitespace-pre-wrap text-gray-200">{conflictValue(c, c.kept_value)}</div></div>
+                                    <div><div className="text-gray-500">Other</div><div className="max-h-24 overflow-auto whitespace-pre-wrap text-gray-200">{conflictValue(c, c.other_value)}</div></div>
                                 </div>
                                 <div className="flex gap-2">
                                     <button className={secondary} disabled={!!busy}
