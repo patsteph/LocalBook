@@ -24,9 +24,9 @@ What is refused, and why each one matters here:
 **Resolution, not just parsing.** A hostname is resolved and EVERY address it
 returns is checked, because `evil.example.com` resolving to 127.0.0.1 is the
 standard bypass for a guard that only reads the string. This still leaves a
-DNS-rebind window between the check and the fetch; closing that properly means
-pinning the resolved address into the connection, which is noted in LB-2's next
-steps rather than pretended away here.
+DNS-rebind window between the check and the fetch — closed by utils/safe_fetch,
+which re-resolves and re-checks at every connect (redirect hops included) and
+connects to the vetted address itself.
 """
 
 from __future__ import annotations
@@ -64,6 +64,10 @@ def _address_is_blocked(ip: ipaddress._BaseAddress) -> Optional[str]:
         return "private network addresses are not fetchable"
     if ip.is_reserved or ip.is_multicast or ip.is_unspecified:
         return "reserved, multicast and unspecified addresses are not fetchable"
+    if not ip.is_global:
+        # The catch-all: 100.64/10 (carrier-grade NAT — Tailscale's range) is none of the
+        # above yet reaches devices on the user's tailnet. Only internet addresses pass.
+        return "non-public addresses are not fetchable"
     return None
 
 

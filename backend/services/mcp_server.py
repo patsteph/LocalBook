@@ -616,10 +616,11 @@ def build_server():
 
     @mcp.tool(annotations=read_only)
     async def fetch_page(url: str, max_chars: int = DEFAULT_CHARS) -> Dict[str, Any]:
-        """Fetch a web page and return its readable text.
+        """Fetch a web page (or PDF/document) and return its readable text.
 
-        Refuses anything that is not a public http/https address — see
-        utils/url_guard.
+        Refuses anything that is not a public http/https address, checked again at
+        every connection and redirect (utils/safe_fetch). No browser is used, so a
+        page that only renders with JavaScript returns less text.
         """
         max_chars = _bounded_chars(max_chars)
         async with _audited("fetch_page", {"url": url, "max_chars": max_chars}) as timer:
@@ -632,19 +633,21 @@ def build_server():
                 timer.detail = verdict.reason
                 return {"error": f"refused: {verdict.reason}"}
 
-            # web_scraper is the app's own fetch path — it already handles
-            # YouTube, PDFs and arXiv as well as ordinary pages, so a companion
-            # gets exactly what the app would get, not a second implementation.
-            from services.web_scraper import web_scraper
+            # The pinned fetch, not the app's scraper: the scraper re-resolves DNS
+            # at connect, follows redirects unchecked, and drives a browser whose
+            # scripts could reach the LAN. Same extraction (trafilatura / the
+            # document extractor). It also returned `content`, a key the scraper
+            # never sets, so every successful fetch came back as "" (2026-10-03).
+            from utils import safe_fetch
 
-            scraped = await web_scraper.scrape_urls([url])
-            first = (scraped or [{}])[0] or {}
+            first = await safe_fetch.fetch(url)
             if first.get("error"):
-                timer.outcome = companion_audit.OUTCOME_ERROR
+                denied = str(first["error"]).startswith("refused")
+                timer.outcome = companion_audit.OUTCOME_DENIED if denied else companion_audit.OUTCOME_ERROR
                 timer.detail = str(first.get("error"))[:200]
                 return {"url": url, "error": first.get("error")}
 
-            text = first.get("content") or ""
+            text = first.get("text") or ""
             return {
                 "url": url,
                 "title": first.get("title"),
