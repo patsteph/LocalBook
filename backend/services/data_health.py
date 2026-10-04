@@ -242,38 +242,16 @@ def _last_backup(data_dir: Optional[Path] = None) -> Dict[str, object]:
     return out
 
 
-# Where Homebrew actually puts things. A GUI app launched from Finder inherits
-# a minimal PATH (`/usr/bin:/bin:/usr/sbin:/sbin`) with no Homebrew in it, so
-# `shutil.which` alone reported ffmpeg missing on a machine that plainly has it
-# at /opt/homebrew/bin/ffmpeg. Checking PATH *and* the known locations is the
-# difference between a truthful panel and a scary wrong one.
-_CODEC_LOCATIONS = (
-    "/opt/homebrew/bin/ffmpeg",     # Apple Silicon Homebrew
-    "/usr/local/bin/ffmpeg",        # Intel Homebrew
-    "/opt/local/bin/ffmpeg",        # MacPorts
-    "/usr/bin/ffmpeg",
-)
-
-
 def _codec() -> Dict[str, object]:
-    """Whether the audio codecs are actually present.
+    """Whether the audio/video codecs are present.
 
-    `ok` is the SPEECH codec — PyAV, in-process, shipped with the app (LB-3) —
-    which is what transcription and `/v1/audio/*` need, on any Mac. `ffmpeg` is
-    reported beside it because podcast jingles and video generation still run
-    the binary, and that comes from Homebrew (`build.sh:68`): genuinely absent
-    on a machine that never had Homebrew — the work Mac, for instance.
+    PyAV, in-process, shipped with the app (LB-3): transcription, `/v1/audio/*`,
+    podcast jingles and video all run through it, so no Mac needs Homebrew's
+    ffmpeg any more — the work Mac has none.
     """
     from services.audio_codec import codec_ok
 
-    found = shutil.which("ffmpeg")
-    if not found:
-        for candidate in _CODEC_LOCATIONS:
-            if Path(candidate).exists():
-                found = candidate
-                break
-    return {"ok": codec_ok(), "speech": "pyav", "ffmpeg": found,
-            "on_path": bool(shutil.which("ffmpeg"))}
+    return {"ok": codec_ok(), "speech": "pyav"}
 
 
 def status(data_dir: Optional[Path] = None) -> Dict[str, object]:
@@ -478,9 +456,6 @@ def _overall(parts: Dict[str, object]) -> Dict[str, object]:
     codec = parts.get("codec") or {}
     if isinstance(codec, dict) and codec.get("ok") is False:
         warnings.append("No audio codec found — audio features will not work.")
-    elif isinstance(codec, dict) and codec.get("ok") and codec.get("ffmpeg") is None:
-        warnings.append("ffmpeg is not installed — speech works, but podcast jingles and "
-                        "video generation need it.")
 
     return {
         "ok": not problems,

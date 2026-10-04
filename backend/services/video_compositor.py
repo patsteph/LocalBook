@@ -1,20 +1,21 @@
-"""Video Compositor — FFmpeg stitches slide PNGs + narration audio into MP4.
+"""Video Compositor — slide PNGs + narration audio → MP4, in-process (PyAV).
 
 Handles:
-- Ken Burns effects (zoom/pan) on still slides
-- Fade transitions between slides
+- Ken Burns effects (zoom/pan) on still slides — ffmpeg's own zoompan filter,
+  run through PyAV's filter graph, so the motion is unchanged
 - Audio/slide timing synchronization
-- Final H.264 MP4 encoding with AAC audio
+- H.264 MP4 with AAC audio, faststart
 
-This module is completely independent — it does NOT modify any existing services.
+This used to shell out to an `ffmpeg` binary from Homebrew, which a Finder-
+launched app's PATH lacks and the MDM Mac does not have at all. PyAV ships with
+the app and carries libx264, aac and zoompan.
 """
 
 import asyncio
 import logging
-import subprocess
-import shutil
+from fractions import Fraction
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import List
 
 logger = logging.getLogger(__name__)
 
@@ -95,45 +96,28 @@ KEN_BURNS_FILTERS = {
 # COMPOSITOR
 # =============================================================================
 
+FPS = 30
+WIDTH, HEIGHT = 1920, 1080
+AUDIO_RATE = 48000
+
+
 class VideoCompositor:
     """Composites slide PNGs and narration audio into a final MP4 video."""
 
-    def __init__(self):
-        self._ffmpeg = self._find_ffmpeg()
-
-    def _find_ffmpeg(self) -> str:
-        """Find FFmpeg binary path."""
-        ffmpeg = shutil.which("ffmpeg")
-        if ffmpeg:
-            return ffmpeg
-        # Common locations on macOS
-        for path in ["/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/usr/bin/ffmpeg"]:
-            if Path(path).exists():
-                return path
-        return "ffmpeg"  # Hope it's on PATH
-
-    def _find_ffprobe(self) -> str:
-        """Find ffprobe binary path."""
-        ffprobe = shutil.which("ffprobe")
-        if ffprobe:
-            return ffprobe
-        for path in ["/opt/homebrew/bin/ffprobe", "/usr/local/bin/ffprobe", "/usr/bin/ffprobe"]:
-            if Path(path).exists():
-                return path
-        return "ffprobe"
-
     def get_audio_duration(self, audio_path: Path) -> float:
-        """Get audio file duration in seconds."""
+        """Audio (or video) file duration in seconds; 0.0 when unreadable."""
         try:
-            result = subprocess.run(
-                [self._find_ffprobe(), "-v", "error", "-show_entries", "format=duration",
-                 "-of", "default=noprint_wrappers=1:nokey=1", str(audio_path)],
-                capture_output=True, text=True, timeout=10
-            )
-            return float(result.stdout.strip())
+            import av
+
+            with av.open(str(audio_path)) as container:
+                if container.duration:
+                    return container.duration / 1_000_000
+                stream = next((s for s in container.streams if s.type == "audio"), None)
+                if stream is not None and stream.duration and stream.time_base:
+                    return float(stream.duration * stream.time_base)
         except Exception as e:
-            logger.warning(f"[Compositor] ffprobe failed: {e}")
-            return 0.0
+            logger.warning(f"[Compositor] duration probe failed: {e}")
+        return 0.0
 
     def calculate_scene_durations(
         self,
@@ -185,19 +169,16 @@ class VideoCompositor:
     ) -> Path:
         """Compose slides + audio into final MP4.
 
-        Pipeline:
-        1. Calculate per-slide durations from narration word counts
-        2. Generate per-slide video clips with Ken Burns effects
-        3. Concatenate clips with crossfade transitions
-        4. Mux audio track
-        5. Encode final H.264 MP4
+        One pass: each slide is run through its Ken Burns zoompan and encoded
+        straight into the output (cut transitions — the motion already gives
+        visual flow), with the narration encoded alongside it.
 
         Args:
             slide_paths: Ordered list of PNG paths (one per scene)
             audio_path: Path to narration WAV/MP3
             scenes: Scene objects for Ken Burns and timing info
             output_path: Where to write the final MP4
-            fade_duration: Crossfade duration between slides (seconds)
+            fade_duration: Unused (kept for callers); transitions are cuts
 
         Returns:
             Path to the final MP4 file
@@ -206,172 +187,130 @@ class VideoCompositor:
             raise ValueError(f"Mismatch: {len(slide_paths)} slides vs {len(scenes)} scenes")
 
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        temp_dir = output_path.parent / f"{output_path.stem}_parts"
-        temp_dir.mkdir(parents=True, exist_ok=True)
 
+        total_duration = self.get_audio_duration(audio_path)
+        if total_duration <= 0:
+            raise RuntimeError(f"Could not determine audio duration for {audio_path}")
+
+        durations = self.calculate_scene_durations(scenes, total_duration)
+        effects = []
+        for scene in scenes:
+            visual = scene.visual if hasattr(scene, 'visual') else scene.get("visual", {})
+            effects.append(visual.ken_burns if hasattr(visual, 'ken_burns') else visual.get("ken_burns", "zoom_in"))
+        logger.info(f"[Compositor] {len(scenes)} slides, total {total_duration:.1f}s audio")
+
+        tmp = output_path.with_name(output_path.stem + ".part.mp4")
         try:
-            # Get audio duration
-            total_duration = self.get_audio_duration(audio_path)
-            if total_duration <= 0:
-                raise RuntimeError(f"Could not determine audio duration for {audio_path}")
-
-            # Calculate per-slide durations
-            durations = self.calculate_scene_durations(scenes, total_duration)
-            logger.info(f"[Compositor] {len(scenes)} slides, total {total_duration:.1f}s audio")
-
-            # Generate individual slide clips with Ken Burns
-            clip_paths = []
-            for i, (slide_path, scene, duration) in enumerate(zip(slide_paths, scenes, durations)):
-                clip_path = temp_dir / f"clip_{i:04d}.mp4"
-
-                # Get Ken Burns effect
-                visual = scene.visual if hasattr(scene, 'visual') else scene.get("visual", {})
-                kb = visual.ken_burns if hasattr(visual, 'ken_burns') else visual.get("ken_burns", "zoom_in")
-
-                await self._render_slide_clip(
-                    slide_path, clip_path, duration, kb
-                )
-                clip_paths.append(clip_path)
-
-                if (i + 1) % 5 == 0 or i == len(scenes) - 1:
-                    logger.info(f"[Compositor] Rendered clip {i+1}/{len(scenes)}")
-
-            # Concatenate all clips
-            concat_path = temp_dir / "concat_video.mp4"
-            await self._concatenate_clips(clip_paths, concat_path, fade_duration)
-
-            # Mux audio with video
-            await self._mux_audio(concat_path, audio_path, output_path, total_duration)
-
-            logger.info(f"[Compositor] Final video: {output_path} ({total_duration:.1f}s)")
-            return output_path
-
+            await asyncio.to_thread(self._render, slide_paths, durations, effects,
+                                    audio_path, total_duration, tmp)
+            tmp.replace(output_path)
         finally:
-            # Clean up temp directory
-            try:
-                shutil.rmtree(temp_dir, ignore_errors=True)
-            except Exception as _e:
-                logger.debug(f"[video-compositor] {type(_e).__name__}: {_e}")
+            tmp.unlink(missing_ok=True)
 
-    async def _render_slide_clip(
-        self,
-        slide_path: Path,
-        clip_path: Path,
-        duration: float,
-        ken_burns: str,
-    ):
-        """Render a single slide PNG into a video clip with Ken Burns effect."""
-        frames = int(duration * 30)  # 30 fps
-        frames = max(30, frames)  # At least 1 second
+        logger.info(f"[Compositor] Final video: {output_path} ({total_duration:.1f}s)")
+        return output_path
 
-        # Get the zoompan filter
-        filter_template = KEN_BURNS_FILTERS.get(ken_burns, KEN_BURNS_FILTERS["zoom_in"])
-        zp_filter = filter_template.format(frames=frames)
+    def _render(self, slide_paths: List[Path], durations: List[float], effects: List[str],
+                audio_path: Path, total_duration: float, out_path: Path) -> None:
+        import av
+        import numpy as np
 
-        cmd = [
-            self._ffmpeg,
-            "-y",  # Overwrite
-            "-loop", "1",
-            "-i", str(slide_path),
-            "-vf", zp_filter,
-            "-t", f"{duration:.2f}",
-            "-c:v", "libx264",
-            "-preset", "fast",
-            "-crf", "23",
-            "-pix_fmt", "yuv420p",
-            "-r", "30",
-            str(clip_path)
-        ]
+        from services.audio_codec import decode_pcm
 
-        await self._run_ffmpeg(cmd, f"slide clip {slide_path.name}")
+        pcm = decode_pcm(audio_path, AUDIO_RATE)[: int(total_duration * AUDIO_RATE)]
+        pcm = np.ascontiguousarray(pcm, dtype=np.float32)
 
-    async def _concatenate_clips(
-        self,
-        clip_paths: List[Path],
-        output_path: Path,
-        fade_duration: float = 0.5,
-    ):
-        """Concatenate video clips with crossfade transitions.
+        # Frame counts from cumulative time, so rounding never drifts from the audio.
+        bounds = [0]
+        acc = 0.0
+        for d in durations:
+            acc += d
+            bounds.append(max(bounds[-1] + FPS, round(acc * FPS)))   # at least 1 s per slide
 
-        For simplicity and reliability, uses the concat demuxer (cut transitions)
-        when there are many clips. Crossfade is applied via filter_complex for
-        small numbers of clips.
-        """
-        if len(clip_paths) <= 1:
-            # Single clip — just copy
-            if clip_paths:
-                shutil.copy2(clip_paths[0], output_path)
-            return
+        with av.open(str(out_path), mode="w", options={"movflags": "+faststart"}) as out:
+            video = self._video_stream(out)
+            audio = out.add_stream("aac", rate=AUDIO_RATE, layout="mono")
+            audio.bit_rate = 192_000
 
-        # Use concat demuxer (fast, reliable) — crossfade would be complex
-        # for 10+ clips and the Ken Burns motion already provides visual flow
-        concat_file = output_path.parent / "concat_list.txt"
-        with open(concat_file, 'w') as f:
-            for clip_path in clip_paths:
-                f.write(f"file '{clip_path}'\n")
+            pts = 0
+            sent = 0                                   # audio samples encoded so far
+            for i, (slide, kb) in enumerate(zip(slide_paths, effects)):
+                frames = bounds[i + 1] - bounds[i]
+                for frame in self._ken_burns(slide, kb, frames):
+                    frame.pts = pts
+                    pts += 1
+                    out.mux(video.encode(frame))
+                # Narration up to where the video now is.
+                upto = min(len(pcm), round(pts * AUDIO_RATE / FPS))
+                if upto > sent:
+                    sent = self._encode_audio(out, audio, pcm[sent:upto], sent)
+                if (i + 1) % 5 == 0 or i == len(slide_paths) - 1:
+                    logger.info(f"[Compositor] Rendered clip {i+1}/{len(slide_paths)}")
 
-        cmd = [
-            self._ffmpeg,
-            "-y",
-            "-f", "concat",
-            "-safe", "0",
-            "-i", str(concat_file),
-            "-c", "copy",
-            str(output_path)
-        ]
+            if sent < len(pcm):
+                self._encode_audio(out, audio, pcm[sent:], sent)
+            out.mux(video.encode(None))
+            out.mux(audio.encode(None))
 
-        await self._run_ffmpeg(cmd, "concatenate clips")
+    @staticmethod
+    def _video_stream(out):
+        import av
 
-        # Clean up concat list
-        concat_file.unlink(missing_ok=True)
-
-    async def _mux_audio(
-        self,
-        video_path: Path,
-        audio_path: Path,
-        output_path: Path,
-        target_duration: float,
-    ):
-        """Mux audio track with video, trim to match duration."""
-        cmd = [
-            self._ffmpeg,
-            "-y",
-            "-i", str(video_path),
-            "-i", str(audio_path),
-            "-c:v", "copy",
-            "-c:a", "aac",
-            "-b:a", "192k",
-            "-t", f"{target_duration:.2f}",
-            "-shortest",
-            "-movflags", "+faststart",  # Web-friendly MP4
-            str(output_path)
-        ]
-
-        await self._run_ffmpeg(cmd, "mux audio")
-
-    async def _run_ffmpeg(self, cmd: List[str], description: str):
-        """Run an FFmpeg command asynchronously."""
         try:
-            process = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
-            )
-            stdout, stderr = await asyncio.wait_for(
-                process.communicate(), timeout=300  # 5 minute timeout
-            )
+            av.codec.Codec("libx264", "w")
+            stream = out.add_stream("libx264", rate=FPS, options={"preset": "fast", "crf": "23"})
+        except Exception:                              # a PyAV built without x264
+            stream = out.add_stream("h264_videotoolbox", rate=FPS)
+            stream.bit_rate = 6_000_000
+        stream.width, stream.height, stream.pix_fmt = WIDTH, HEIGHT, "yuv420p"
+        stream.time_base = Fraction(1, FPS)
+        return stream
 
-            if process.returncode != 0:
-                error_msg = stderr.decode()[-500:] if stderr else "unknown error"
-                raise RuntimeError(f"FFmpeg failed ({description}): {error_msg}")
+    @staticmethod
+    def _encode_audio(out, stream, samples, start: int) -> int:
+        import av
 
-        except asyncio.TimeoutError:
-            process.kill()
-            raise RuntimeError(f"FFmpeg timed out ({description})")
-        except FileNotFoundError:
-            raise RuntimeError(
-                "FFmpeg not found. Install with: brew install ffmpeg"
-            )
+        frame = av.AudioFrame.from_ndarray(samples.reshape(1, -1), format="flt", layout="mono")
+        frame.sample_rate = AUDIO_RATE
+        frame.pts = start
+        frame.time_base = Fraction(1, AUDIO_RATE)
+        out.mux(stream.encode(frame))
+        return start + len(samples)
+
+    @staticmethod
+    def _ken_burns(slide_path: Path, ken_burns: str, frames: int):
+        """The slide's frames, `frames` long, through the zoompan filter."""
+        import av
+        from PIL import Image
+
+        template = KEN_BURNS_FILTERS.get(ken_burns, KEN_BURNS_FILTERS["zoom_in"])
+        name, args = template.format(frames=frames).split("=", 1)
+        with Image.open(slide_path) as im:
+            image = im.convert("RGB")
+        if image.size != (WIDTH, HEIGHT):
+            image = image.resize((WIDTH, HEIGHT), Image.LANCZOS)
+
+        graph = av.filter.Graph()
+        src = graph.add_buffer(width=WIDTH, height=HEIGHT, format="rgb24", time_base=Fraction(1, FPS))
+        chain = [src, graph.add(name, args), graph.add("format", "yuv420p"), graph.add("buffersink")]
+        for a, b in zip(chain, chain[1:]):
+            a.link_to(b)
+        graph.configure()
+        graph.push(av.VideoFrame.from_image(image))
+        made, frame = 0, None
+        while made < frames:
+            try:
+                frame = graph.pull()
+            except (av.BlockingIOError, av.EOFError):
+                break
+            made += 1
+            yield frame
+        if frame is None:
+            raise RuntimeError(f"Ken Burns produced no frames for {slide_path.name}")
+        # zoompan emits `d` frames per input; pad if it ever comes up short.
+        while made < frames:
+            yield frame
+            made += 1
 
 
 # Singleton

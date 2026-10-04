@@ -285,13 +285,9 @@ def test_a_genuinely_missing_codec_is_reported(data_dir, monkeypatch):
     assert any("codec" in w.lower() for w in st["overall"]["warnings"])
 
 
-def test_no_homebrew_ffmpeg_still_means_speech_works(data_dir, monkeypatch):
-    """The work Mac: no Homebrew. Speech is fine (PyAV); jingles and video are
-    not, and the panel says exactly that rather than "no codec".
-
-    Both probes have to fail for "no ffmpeg": `which` AND the known install
-    locations — a Finder-launched app has no Homebrew on its PATH.
-    """
+def test_no_homebrew_ffmpeg_is_not_a_warning(data_dir, monkeypatch):
+    """The work Mac: no Homebrew. Speech, jingles and video all run on PyAV
+    now, so a missing ffmpeg is nothing to warn about."""
     import shutil as _shutil
     from pathlib import Path as _Path
 
@@ -302,8 +298,8 @@ def test_no_homebrew_ffmpeg_still_means_speech_works(data_dir, monkeypatch):
     monkeypatch.setattr(_Path, "exists", lambda self: False)
 
     st = data_health.status(data_dir)
-    assert st["codec"]["ok"] is True and st["codec"]["ffmpeg"] is None
-    assert any("jingles" in w for w in st["overall"]["warnings"])
+    assert st["codec"]["ok"] is True
+    assert not any("ffmpeg" in w for w in st["overall"]["warnings"])
     assert not any("No audio codec" in w for w in st["overall"]["warnings"])
 
 
@@ -354,21 +350,16 @@ def test_a_fully_healthy_install_says_so(data_dir, tmp_path, monkeypatch):
 def test_the_codec_is_found_even_when_it_is_not_on_PATH(data_dir, monkeypatch):
     """A Finder-launched .app inherits a minimal PATH with no Homebrew in it, so
     `shutil.which` alone reported ffmpeg missing on a machine that plainly has
-    it at /opt/homebrew/bin/ffmpeg."""
+    it. The codec is PyAV now, so PATH and Homebrew don't matter at all."""
     import shutil as _shutil
     from pathlib import Path as _Path
 
     monkeypatch.setattr(_shutil, "which", lambda name: None)
-    monkeypatch.setattr(
-        _Path, "exists",
-        lambda self: str(self) == "/opt/homebrew/bin/ffmpeg",
-    )
+    monkeypatch.setattr(_Path, "exists", lambda self: False)
 
     codec = data_health._codec()
 
     assert codec["ok"] is True
-    assert codec["ffmpeg"] == "/opt/homebrew/bin/ffmpeg"
-    assert codec["on_path"] is False
 
 
 def test_the_panel_no_longer_counts_toward_seven_nights(data_dir, tmp_path, monkeypatch):

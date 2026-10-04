@@ -56,23 +56,12 @@ class VideoGeneration(BaseModel):
 
 
 def _preflight_check():
-    """Verify FFmpeg and Playwright are available before starting pipeline.
+    """Verify Playwright is available before starting the pipeline (encoding is PyAV, in-process).
 
     Uses the same Playwright browser detection paths as health_portal.py.
     """
-    import shutil
     import sys
     errors = []
-
-    # ── FFmpeg ──
-    if not shutil.which("ffmpeg"):
-        found = False
-        for p in ["/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg"]:
-            if Path(p).exists():
-                found = True
-                break
-        if not found:
-            errors.append("FFmpeg not found. Install with: brew install ffmpeg")
 
     # ── Playwright: check package, then auto-install browsers if needed ──
     try:

@@ -983,49 +983,6 @@ async def full_health_check():
         **({} if codec_ok() else {"error": "PyAV failed to load — transcription and /v1/audio will not work"}),
     })
 
-    # ffmpeg Check - podcast jingles and video generation still run the binary
-    ffmpeg_path = find_binary("ffmpeg")
-    if ffmpeg_path:
-        try:
-            result = subprocess.run([ffmpeg_path, "-version"], capture_output=True, timeout=5)
-            if result.returncode == 0:
-                version_line = result.stdout.decode().split('\n')[0]
-                add_check("functional_tests", {
-                    "name": "ffmpeg",
-                    "display": "FFmpeg (Audio/Video)",
-                    "status": "pass",
-                    "details": {"installed": True, "path": ffmpeg_path, "info": version_line[:50]}
-                })
-            else:
-                add_check("functional_tests", {
-                    "name": "ffmpeg",
-                    "display": "FFmpeg (Audio/Video)",
-                    "status": "warn",
-                    "error": f"Found at {ffmpeg_path} but not working properly"
-                })
-        except Exception as e:
-            add_check("functional_tests", {
-                "name": "ffmpeg",
-                "display": "FFmpeg (Audio/Video)",
-                "status": "warn",
-                "error": str(e)[:30]
-            })
-    else:
-        add_check("functional_tests", {
-            "name": "ffmpeg",
-            "display": "FFmpeg (Audio/Video)",
-            "status": "warn",
-            "error": "Not installed"
-        })
-        results["issues"].append({
-            "severity": "medium",
-            "title": "FFmpeg Not Installed",
-            "message": "Podcast jingles and video generation need it (transcription does not). Run: brew install ffmpeg",
-            "repair": None
-        })
-        if results["overall"] == "healthy":
-            results["overall"] = "degraded"
-    
     # Tesseract Check - required for OCR (optional but commonly needed)
     tesseract_path = find_binary("tesseract")
     if tesseract_path:
