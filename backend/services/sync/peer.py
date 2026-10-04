@@ -148,6 +148,8 @@ async def pull(request: Request):
     _check_enabled()
     v = await _verified(request)
     b = v["body"]
+    from services.sync import retention
+    retention.record_acked(v["device"]["device_id"], {b["db"]: b.get("vv") or {}})
     page = await asyncio.to_thread(_export, b["db"], b.get("vv") or {},
                                    min(int(b.get("limit", PAGE)), PREVIEW_PAGE))
     if not b.get("dry_run"):
@@ -556,6 +558,8 @@ class Session:
                                             "head": runtime.ledger_head(), "proto": identity.PROTOCOL,
                                             "models": models()})
         _note_models(self.d, h.get("models"))
+        from services.sync import retention
+        retention.record_acked(self.d["device_id"], h.get("vv") or {})
         return h
 
     async def pending(self) -> Dict[str, Dict[str, int]]:
@@ -686,6 +690,9 @@ class Session:
             self.run.advance(len(page["versions"]))
             _add(total, rep)
             peer_vv = rep.get("vv") or peer_vv
+            if not dry_run and rep.get("vv"):
+                from services.sync import retention
+                retention.record_acked(self.d["device_id"], {db: rep["vv"]})
             if not page.get("more") or dry_run:
                 return total
         raise RuntimeError("push did not finish")

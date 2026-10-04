@@ -36,7 +36,19 @@ op = st.one_of(
     st.tuples(st.just("doc"), mac_i, st.sampled_from(["m1", "m2"]), st.sampled_from(["v1", "v2", "v3"])),
     st.tuples(st.just("undoc"), mac_i, st.sampled_from(["m1", "m2"]), st.just(None)),
     st.tuples(st.just("log"), mac_i, st.sampled_from(["s1", "s2"]), st.just(None)),
+    # Retention: tombstone GC (once the other Macs hold the delete) and the local log purge.
+    st.tuples(st.just("oldlog"), mac_i, st.sampled_from(["o1", "o2"]), st.just(None)),
+    st.tuples(st.just("gc"), mac_i, st.just(None), st.just(None)),
+    st.tuples(st.just("purge"), mac_i, st.just(None), st.just(None)),
 )
+FAR_FUTURE_MS = 4_000_000_000_000
+NOW = __import__("datetime").datetime(2026, 10, 3)
+
+
+def _purge(m):
+    from services.sync import retention
+    engine.ship(m.rep)
+    retention.purge_old_logs(m.rep, {"correspondent_events": ("ts", 180)}, NOW)
 
 
 def _do(macs, step):
@@ -65,6 +77,15 @@ def _do(macs, step):
         m.sql("DELETE FROM documents WHERE kind='core_memory' AND key=?", x)
     elif kind == "log":
         m.sql("INSERT INTO correspondent_events (ts, event_type, sender) VALUES ('t', 'e', ?)", x)
+    elif kind == "oldlog":
+        m.sql("INSERT INTO correspondent_events (ts, event_type, sender) VALUES ('2000-01-01T00:00:00', 'e', ?)", x)
+    elif kind == "gc":
+        from services.sync import retention
+        engine.ship(m.rep)
+        others = [engine.vv(o.conn) for o in macs if o is not m]
+        retention.gc_tombstones(m.rep, others, FAR_FUTURE_MS, days=0)
+    elif kind == "purge":
+        _purge(m)
     elif kind == "sync":
         j, partial = x, y
         if i == j:
@@ -90,6 +111,9 @@ def test_three_replicas_converge_whatever_the_history(steps, tmpl, tmp_path_fact
     for step in steps:
         _do(macs, step)
     mesh(macs, rounds=3)
+    for m in macs:                    # every Mac runs the same daily purge
+        _purge(m)
+    mesh(macs, rounds=2)
     assert_converged(macs)
     before = [m.snapshot() for m in macs]
     mesh(macs, rounds=1)

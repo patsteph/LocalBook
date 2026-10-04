@@ -15,7 +15,7 @@ import socket
 import time
 from typing import Any, Dict, List, Optional
 
-from services.sync import discovery, genesis, identity, indexer, peer, progress, runtime, store
+from services.sync import discovery, genesis, identity, indexer, peer, progress, retention, runtime, store
 
 logger = logging.getLogger(__name__)
 
@@ -399,6 +399,8 @@ async def _loop() -> None:
             if store.enabled() and schedule_store.is_enabled(SCHEDULE_ID):
                 await asyncio.to_thread(runtime.install_journals)
                 await sync_all()
+            if store.enabled() and retention.due() and not progress.active("initiated"):
+                await asyncio.to_thread(retention.run)
         except Exception as exc:
             logger.warning("[sync] loop iteration failed: %s", exc)
         await asyncio.sleep(max(15, int(interval or DEFAULT_INTERVAL)))
@@ -477,6 +479,7 @@ def status() -> Dict[str, Any]:
         "first_apply_backup": store.get("first_apply_backup"),
         "schema_head": runtime.ledger_head(),
         "collector": _collector_status(),
+        "retention": {"last": store.get("retention_last"), "held_by": retention.stale_peers()},
     }
 
 

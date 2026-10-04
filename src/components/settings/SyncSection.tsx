@@ -38,6 +38,10 @@ type Status = {
     backup_destination: string | null;
     proposed_backup: string | null;
     collector?: { chosen: { device_id: string; name?: string } | null; here: boolean; reason: string };
+    retention?: {
+        last: { at: number; tombstones: Record<string, number>; logs: Record<string, number>; conflicts: number } | null;
+        held_by: { device_id: string; name?: string; days: number | null }[];
+    };
 };
 type Conflict = { id: string; tbl: string; field: string; kind: string; kept_value: any; other_value: any; created_at: string };
 
@@ -304,6 +308,20 @@ export function SyncSection() {
                                 )}
                             </div>
                         ))}
+                        {st.retention?.held_by.map((h) => (
+                            <p key={h.device_id} className="text-xs text-amber-300">
+                                {h.name ?? 'A paired Mac'} hasn't synced {h.days != null ? `in ${h.days} days` : 'yet'} — deleted
+                                items are kept until it returns (so it learns of them), or until you revoke it.
+                            </p>
+                        ))}
+                        {st.retention?.last && (
+                            <p className="text-xs text-gray-500">
+                                Last cleanup {ago(st.retention.last.at)}:{' '}
+                                {Object.values(st.retention.last.tombstones).reduce((a, b) => a + b, 0)} old deletes,{' '}
+                                {Object.values(st.retention.last.logs).reduce((a, b) => a + b, 0)} old log entries
+                                {st.retention.last.conflicts ? `, ${st.retention.last.conflicts} resolved conflicts` : ''} removed.
+                            </p>
+                        )}
                         <p className="text-xs text-gray-500">Revoking stops a Mac syncing at once. It cannot erase what that Mac already has.</p>
                     </section>
 
