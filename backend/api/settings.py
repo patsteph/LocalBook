@@ -723,12 +723,64 @@ async def get_gpu_budget():
         RESIDENT_RESERVE_GB, budget_gb, external_reserve_gb, working_set_gb,
     )
 
+    from services.model_profile import decide
+
+    try:
+        profile = decide()
+    except Exception as exc:
+        profile = {"profile": "standard", "setting": "auto", "reason": f"unavailable: {exc}"}
     return {
         "working_set_gb": round(working_set_gb(), 2),
         "resident_reserve_gb": RESIDENT_RESERVE_GB,
         "external_reserve_gb": external_reserve_gb(),
         "budget_gb": budget_gb(),
+        "profile": profile,
     }
+
+
+def _write_data_env(key: str, value: str) -> None:
+    """Set one key in the data-dir `.env` (what config.py reads in a bundle), keeping
+    every other line. Per machine, never synced."""
+    from pathlib import Path
+
+    from config import get_data_directory
+
+    env_path = Path(get_data_directory()) / ".env"
+    lines = env_path.read_text().splitlines() if env_path.exists() else []
+    out, replaced = [], False
+    for line in lines:
+        if line.strip().startswith(f"{key}="):
+            out.append(f"{key}={value}")
+            replaced = True
+        else:
+            out.append(line)
+    if not replaced:
+        out.append(f"{key}={value}")
+    env_path.parent.mkdir(parents=True, exist_ok=True)
+    env_path.write_text("\n".join(out) + "\n")
+
+
+class ModelProfileRequest(BaseModel):
+    profile: str
+
+
+@router.post("/gpu-budget/profile")
+async def set_model_profile(req: ModelProfileRequest):
+    """auto | standard | compact for THIS Mac. Takes effect on the next launch, when the
+    model roles are resolved."""
+    from config import settings
+
+    value = (req.profile or "").strip().lower()
+    if value not in ("auto", "standard", "compact"):
+        raise HTTPException(status_code=400, detail="profile must be auto, standard or compact")
+    try:
+        _write_data_env("LOCALBOOK_MODEL_PROFILE", value)
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"could not save the setting: {exc}")
+    settings.model_profile = value
+    out = await get_gpu_budget()
+    out["restart_required"] = True
+    return out
 
 
 @router.post("/gpu-budget/external-reserve")

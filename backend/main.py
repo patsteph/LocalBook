@@ -235,6 +235,11 @@ if _prefs_path.exists():
     except Exception as e:
         print(f"[SafeStart] Failed to load user preferences, using built-in defaults: {e}")
 
+# Compact Macs: the fast role shares the main model (LB-1) — after the saved choices are
+# restored (or not: a fresh install needs it most), before anything loads a model.
+from services.model_profile import apply_at_startup as _apply_profile
+_apply_profile()
+
 from utils.tasks import safe_create_task
 from utils.diagnostics import install_signal_handlers, start_heartbeat, stop_heartbeat, record_endpoint
 
@@ -1055,9 +1060,9 @@ async def health():
             "external_reserve_gb": external_reserve_gb(),
             "budget_gb": budget_gb(),
         }
-        # The Jocasta contract reads these three at the TOP level: brainctl's
-        # memory governor sizes Ornith from `resident_gb` (and assumed 9.5 GB
-        # when it was missing).
+        # Read at the TOP level by companions that share the GPU: a companion's memory
+        # governor sizes its own models from `resident_gb` (model-agnostic — whatever
+        # runs alongside LocalBook on this Mac).
         out["budget_gb"] = out["memory"]["budget_gb"]
         out["reserve_gb"] = out["memory"]["external_reserve_gb"]
     except Exception as exc:

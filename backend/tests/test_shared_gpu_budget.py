@@ -105,11 +105,16 @@ def test_no_working_set_still_returns_zero_rather_than_guessing(ws, reserve):
     assert model_sizing.budget_gb() == 0.0
 
 
-def test_an_explicit_fraction_still_bypasses_everything(ws, reserve):
-    """Kept for callers that want the old proportional behaviour."""
+def test_an_explicit_fraction_still_honours_the_reserve(ws, reserve):
+    """A proportional budget is still a budget on THIS Mac: memory set aside for another
+    app is not ours to hand out (LB-1 open item, closed 2026-10-03 — it bypassed it)."""
     ws(36.0)
-    reserve(26.0)
+    reserve(0.0)
     assert model_sizing.budget_gb(fraction=0.5) == pytest.approx(18.0, abs=0.01)
+    reserve(10.0)
+    assert model_sizing.budget_gb(fraction=0.5) == pytest.approx(8.0, abs=0.01)
+    reserve(26.0)
+    assert model_sizing.budget_gb(fraction=0.5) == 0.0
 
 
 # ── what MLX is actually told ───────────────────────────────────────────────

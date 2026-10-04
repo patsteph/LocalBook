@@ -211,32 +211,28 @@ class LLMLocker:
                 return info.disk_size_gb * 1.2
             return 3.0  # conservative default for an unknown, unmeasurable model
         
-        if role == "main_model":
-            main_vram = _model_vram(target_ollama_name)
-            # Ollama rotates between fast/vision — use the larger one as concurrent estimate
-            final_vision = changes.get("vision_model", current_vision)
-            secondary_vram = max(
-                _model_vram(current_fast),
-                _model_vram(final_vision) if final_vision != target_ollama_name else 0
-            )
-            combined_vram = main_vram + secondary_vram
-        elif role == "fast_model":
-            main_vram = _model_vram(current_main)
-            fast_vram = _model_vram(target_ollama_name)
-            # Use post-collapse vision value: if fast model supports vision, vision is now the fast model itself
-            final_vision = changes.get("vision_model", current_vision)
-            vision_vram = _model_vram(final_vision) if final_vision not in (current_main, target_ollama_name) else 0
-            combined_vram = main_vram + max(fast_vram, vision_vram)
-        else:
-            combined_vram = _model_vram(current_main) + max(
-                _model_vram(current_fast), _model_vram(target_ollama_name)
-            )
+        # The distinct models that would be resident after the swap. A role that shares a
+        # model with another (vision on main, or fast == main on a compact Mac) costs nothing
+        # extra — this used to add them twice (2026-10-03).
+        after = {"main_model": current_main, "fast_model": current_fast,
+                 "vision_model": changes.get("vision_model", current_vision)}
+        if role in after:
+            after[role] = target_ollama_name
+        combined_vram = sum(_model_vram(m) for m in {m for m in after.values() if m})
 
-        if combined_vram + OS_HEADROOM_GB > sys_ram:
+        # Against the reserve-aware GPU budget (LB-1) — memory set aside for another app on
+        # this Mac counts — falling back to total RAM minus OS headroom.
+        try:
+            from services.model_sizing import budget_gb
+            ceiling = budget_gb() or (sys_ram - OS_HEADROOM_GB)
+        except Exception:
+            ceiling = sys_ram - OS_HEADROOM_GB
+        if combined_vram > ceiling:
             return False, (
-                f"INSUFFICIENT MEMORY HEADROOM. Estimated concurrent VRAM = {combined_vram:.1f}GB + "
-                f"{OS_HEADROOM_GB}GB OS headroom = {combined_vram + OS_HEADROOM_GB:.1f}GB, but your Mac has {sys_ram}GB. "
-                f"This combination would likely cause crashes or extreme swapping."
+                f"INSUFFICIENT MEMORY HEADROOM. These models together need about "
+                f"{combined_vram:.1f} GB, but LocalBook's budget on this Mac is {ceiling:.1f} GB "
+                f"(after macOS and any memory reserved for other apps). This combination would "
+                f"cause crashes or heavy swapping."
             ), {}
 
         # Warning cap for recommended RAM

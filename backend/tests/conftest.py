@@ -20,6 +20,10 @@ CI is unaffected (a fresh runner has no data dir anyway) — this protects the d
 """
 import os as _os
 _os.environ.setdefault("LOCALBOOK_NO_INTERACTIVE_AUTH", "1")   # never a Keychain/Touch ID prompt from a test
+# Importing main.py applies the per-Mac model setup (services/model_profile). On a 16 GB dev
+# Mac that is "compact" and rewrites settings.fast_model for every later test; tests that
+# exercise the profile set it explicitly.
+_os.environ.setdefault("LOCALBOOK_MODEL_PROFILE", "standard")
 
 import os
 from pathlib import Path

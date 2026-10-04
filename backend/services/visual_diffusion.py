@@ -100,6 +100,7 @@ class KleinDiffusionService:
         # Wave 9.3b — mflux (FLUX.2 Klein on MLX) resident model, lazy-loaded once.
         self._mflux_model = None
         self._mflux_lock = asyncio.Lock()
+        self._busy = False          # True while generating — the engine never evicts it then
         # ONE dedicated thread for every mflux call (2026-09-15).
         #
         # MLX streams are THREAD-LOCAL. Loading and generating both used `asyncio.to_thread`,
@@ -165,20 +166,66 @@ class KleinDiffusionService:
                 error=f"Klein not downloaded ({settings.image_model}) — get it from LLM Studio.",
             )
         rw, rh, rs = resolve_dimensions(aspect_ratio, quality_tier)
-        return await self._generate_mflux(
-            prompt,
-            width=width if width is not None else rw,
-            height=height if height is not None else rh,
-            steps=steps if steps is not None else rs,
-        )
+        try:
+            return await self._generate_mflux(
+                prompt,
+                width=width if width is not None else rw,
+                height=height if height is not None else rh,
+                steps=steps if steps is not None else rs,
+            )
+        finally:
+            # Honoured since 2026-10-03 (it was accepted and ignored): the image model
+            # leaves the GPU after the call unless the caller wants it kept.
+            if unload_after:
+                await self.release()
+
+    def _weight_gb(self) -> float:
+        try:
+            from services.model_sizing import exact_weight_gb
+            return float(exact_weight_gb(settings.image_model) or 0.0)
+        except Exception:
+            return 0.0
+
+    async def release(self) -> None:
+        """Free the image model's weights (on its own thread) and leave the GPU budget."""
+        if self._mflux_model is None:
+            return
+        async with self._mflux_lock:
+            if self._mflux_model is None:
+                return
+
+            def _free():
+                import gc
+                self._mflux_model = None
+                gc.collect()
+                try:
+                    import mlx.core as mx
+                    mx.clear_cache()
+                except Exception:
+                    pass
+
+            await self._run_on_mflux_thread(_free)
+            from services.mlx_engine import mlx_engine
+            mlx_engine.unregister_external(settings.image_model)
+            logger.info("[visual_diffusion] image model released")
 
     async def _load_mflux(self):
-        """Load (cache) the mflux FLUX.2 Klein model. Loads once; runs off-loop."""
+        """Load (cache) the image model. Admitted through the shared GPU budget first (LB-1):
+        it used to load outside it — never counted, never evicted — so an image requested
+        during a chat answer could push the Mac into swap."""
+        from services.mlx_engine import MemoryBudgetError, mlx_engine
         if self._mflux_model is not None:
+            mlx_engine.touch(settings.image_model)
             return self._mflux_model
         async with self._mflux_lock:
             if self._mflux_model is not None:
                 return self._mflux_model
+            weight = self._weight_gb()
+            # Diffusion activations at 1024² are large relative to the weights.
+            if weight and not await mlx_engine.admit(settings.image_model, need_gb=weight * 1.5):
+                raise MemoryBudgetError(
+                    "Not enough memory right now for the image model — a chat answer may be "
+                    "using it. Try again in a moment.")
 
             def _load():
                 from mflux.models.common.config import ModelConfig  # lazy
@@ -193,7 +240,9 @@ class KleinDiffusionService:
                     lora_paths=None, lora_scales=None)
 
             self._mflux_model = await self._run_on_mflux_thread(_load)
-            logger.info(f"[visual_diffusion] mflux Klein loaded ({settings.image_model})")
+            mlx_engine.register_external(settings.image_model, weight, self.release,
+                                         lambda: self._busy)
+            logger.info(f"[visual_diffusion] image model loaded ({settings.image_model}, {weight} GB)")
             return self._mflux_model
 
     async def _generate_mflux(self, prompt: str, *, width: int, height: int, steps: int) -> DiffusionResult:
@@ -218,7 +267,11 @@ class KleinDiffusionService:
 
         try:
             logger.info(f"[visual_diffusion] mflux generate {width}x{height} steps={steps}")
-            png = await self._run_on_mflux_thread(_gen)
+            self._busy = True
+            try:
+                png = await self._run_on_mflux_thread(_gen)
+            finally:
+                self._busy = False
         except Exception as e:
             return DiffusionResult(success=False, model=settings.image_model,
                                    elapsed_ms=int((time.time() - t0) * 1000),

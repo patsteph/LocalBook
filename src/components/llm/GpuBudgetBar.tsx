@@ -19,6 +19,8 @@ type Budget = {
     resident_reserve_gb: number;
     external_reserve_gb: number;
     budget_gb: number;
+    profile?: { profile: 'standard' | 'compact'; setting: 'auto' | 'standard' | 'compact'; reason: string;
+        standard_gb?: number; compact_gb?: number };
 };
 
 export function GpuBudgetBar() {
@@ -48,6 +50,20 @@ export function GpuBudgetBar() {
             });
             setB(data);
             setEditing(false);
+        } catch (e: any) {
+            setError(e?.response?.data?.detail ?? 'Could not save that.');
+        } finally {
+            setBusy(false);
+        }
+    };
+
+    const [restartNeeded, setRestartNeeded] = useState(false);
+    const setProfile = async (profile: string) => {
+        setBusy(true); setError(null);
+        try {
+            const { data } = await api.post<Budget>('/settings/gpu-budget/profile', { profile });
+            setB(data);
+            setRestartNeeded(true);
         } catch (e: any) {
             setError(e?.response?.data?.detail ?? 'Could not save that.');
         } finally {
@@ -138,6 +154,29 @@ export function GpuBudgetBar() {
                         </button>
                     </div>
                     {error && <p className="mt-2 text-xs text-red-500">{error}</p>}
+                </div>
+            )}
+
+            {/* Standard vs compact (LB-1): on a tighter Mac the fast role shares the main model. */}
+            {b.profile && (
+                <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-gray-600 dark:text-gray-400">
+                    <span>
+                        Setup:{' '}
+                        <span className="font-medium text-gray-800 dark:text-gray-200">
+                            {b.profile.profile === 'compact' ? 'Compact — fast tasks share the main model' : 'Standard — separate main and fast models'}
+                        </span>
+                        {b.profile.setting === 'auto' ? ` (automatic: ${b.profile.reason})` : ' (chosen)'}
+                    </span>
+                    <select
+                        className="rounded border border-gray-300 bg-white px-1 py-0.5 text-xs dark:border-gray-600 dark:bg-gray-800"
+                        disabled={busy}
+                        value={b.profile.setting}
+                        onChange={(e) => void setProfile(e.target.value)}>
+                        <option value="auto">Automatic</option>
+                        <option value="standard">Standard</option>
+                        <option value="compact">Compact</option>
+                    </select>
+                    {restartNeeded && <span className="text-amber-600 dark:text-amber-400">Restart LocalBook to apply.</span>}
                 </div>
             )}
         </div>

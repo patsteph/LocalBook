@@ -119,7 +119,8 @@ def budget_gb(fraction: Optional[float] = None) -> float:
     if ws <= 0:
         return 0.0
     if fraction is not None:
-        return round(ws * fraction, 2)
+        # The reserve applies here too — it skipped it (LB-1 open item).
+        return round(max(ws * fraction - external_reserve_gb(), 0.0), 2)
     available = ws - RESIDENT_RESERVE_GB - external_reserve_gb()
     floor = min(ws * 0.5, available)
     return round(max(max(available, floor), 0.0), 2)

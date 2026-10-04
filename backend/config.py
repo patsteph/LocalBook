@@ -242,6 +242,10 @@ class Settings(BaseSettings):
             "LOCALBOOK_EXTERNAL_RESERVE_GB", "external_reserve_gb"
         ),
     )
+    # auto | standard | compact — per Mac, never synced (services/model_profile.py).
+    model_profile: str = Field(
+        "auto", validation_alias=AliasChoices("LOCALBOOK_MODEL_PROFILE", "model_profile"),
+    )
 
     # ── Backups (LB-10) ──────────────────────────────────────────────
     # A folder OUTSIDE the data dir: iCloud Drive, an external disk, a NAS.
