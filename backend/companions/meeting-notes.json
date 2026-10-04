@@ -65,6 +65,7 @@
   "control": {
     "start": "meeting-start",
     "stop": "meeting-stop",
+    "launch_app": "~/Library/Application Support/MeetingNotes/MeetingRecorderHelper.app",
     "state": {
       "pidfile": "~/Library/Application Support/MeetingNotes/recording.pid"
     },

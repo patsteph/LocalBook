@@ -125,6 +125,8 @@ export interface Companion {
   using_model: string | null;
   install?: CompanionInstall;
   can_control: boolean;
+  /** Epoch seconds the current recording began; null when not recording. */
+  recording_since?: number | null;
   has_checks?: boolean;
   extras: CompanionExtra[];
   preflight?: PreflightPlan;

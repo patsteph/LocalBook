@@ -1445,14 +1445,39 @@ def remove_extra(manifest: Dict[str, Any], extra_id: str) -> Dict[str, Any]:
 # ── control ─────────────────────────────────────────────────────────────────
 
 def run_control(manifest: Dict[str, Any], action: str) -> Dict[str, Any]:
-    """Start or stop the companion via the command it publishes."""
+    """Start or stop the companion via the command it publishes.
+
+    Start goes through the companion's own helper app when it ships one
+    (`control.launch_app`), with `open -a` — exactly what its menu-bar plugin
+    does. macOS then attributes the microphone to that helper, which carries the
+    mic entitlement and asks for it, rather than to LocalBook. `open` returns at
+    once; the recording runs on its own.
+
+    Without a helper, the start command records in the FOREGROUND for the whole
+    meeting, so it is started and left running (a child of the backend, so the
+    mic prompt still has an app to attribute to) — never waited on, which would
+    kill it at the timeout.
+    """
     control = manifest.get("control") or {}
+    if action == "start" and is_running(manifest):
+        return {"ok": True, "output": "Already recording.", "error": None}
+    app = control.get("launch_app") if action == "start" else None
+    if app and Path(app).expanduser().is_dir():
+        try:
+            proc = _run_as_user(["/usr/bin/open", "-a", str(Path(app).expanduser())], timeout=30)
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+        if proc.returncode != 0:
+            return {"ok": False, "error": (proc.stderr or "").strip()[:200] or "could not open the recorder"}
+        return {"ok": True, "output": "Recording started.", "error": None}
     binary = control.get(action)
     if not binary:
         return {"ok": False, "error": f"'{action}' is not supported by this companion"}
     resolved = _which(binary)
     if not resolved:
         return {"ok": False, "error": f"{binary} is not installed"}
+    if action == "start":
+        return _start_detached(resolved, binary)
     try:
         proc = _run_as_user([resolved], timeout=30)
         ok = proc.returncode == 0
@@ -1463,6 +1488,38 @@ def run_control(manifest: Dict[str, Any], action: str) -> Dict[str, Any]:
         return {"ok": False, "error": f"{binary} did not return within 30s"}
     except Exception as e:
         return {"ok": False, "error": str(e)}
+
+
+def _start_detached(resolved: str, binary: str, settle_s: float = 2.0) -> Dict[str, Any]:
+    """Run a long-lived start command; report only an immediate failure."""
+    import threading
+    from utils.subprocess_env import clean_child_env
+
+    try:
+        proc = subprocess.Popen([resolved], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                stderr=subprocess.PIPE, env=clean_child_env({}))
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+    try:
+        code = proc.wait(timeout=settle_s)
+    except subprocess.TimeoutExpired:
+        threading.Thread(target=proc.communicate, daemon=True).start()   # reap when it ends
+        return {"ok": True, "output": "Recording started.", "error": None}
+    err = (proc.stderr.read().decode(errors="replace") if proc.stderr else "").strip()
+    if code == 0:                     # returned quickly and cleanly (e.g. "already recording")
+        return {"ok": True, "output": err[:400], "error": None}
+    return {"ok": False, "error": err[:200] or f"{binary} exited {code}"}
+
+
+def recording_since(manifest: Dict[str, Any]) -> Optional[float]:
+    """When the current recording began — the pidfile is written at start."""
+    pidfile = ((manifest.get("control") or {}).get("state") or {}).get("pidfile")
+    if not pidfile or not is_running(manifest):
+        return None
+    try:
+        return Path(pidfile).expanduser().stat().st_mtime
+    except OSError:
+        return None
 
 
 # ── the view the UI renders ─────────────────────────────────────────────────
@@ -1518,6 +1575,7 @@ def status(manifest: Dict[str, Any]) -> Dict[str, Any]:
         "using_model": read_config(manifest).get("LLM") if connected else None,
         "install": install_source(manifest),
         "can_control": bool(manifest.get("control", {}).get("start")),
+        "recording_since": recording_since(manifest) if running else None,
         "has_checks": bool(manifest.get("verify")),
         "extras": extras_status(manifest),
         "audio": _audio_summary(manifest),

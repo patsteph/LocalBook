@@ -279,6 +279,61 @@ def test_a_stale_pidfile_does_not_read_as_recording(fake_companion, tmp_path):
     assert svc.is_running(m) is False
 
 
+def test_start_opens_the_helper_app_so_the_mic_is_its_own(fake_companion, tmp_path, monkeypatch):
+    """The menu-bar plugin starts a recording with `open -a` on the helper app:
+    macOS attributes the microphone to the helper (it has the entitlement and
+    asks), not to whoever launched it. LocalBook's Start must do the same."""
+    m, _ = fake_companion
+    helper = tmp_path / "Helper.app"
+    helper.mkdir()
+    m["control"]["launch_app"] = str(helper)
+    m["control"]["state"]["pidfile"] = str(tmp_path / "none.pid")
+    calls = []
+
+    class _P:
+        returncode, stdout, stderr = 0, "", ""
+
+    monkeypatch.setattr(svc, "_run_as_user", lambda args, timeout=900: calls.append(args) or _P())
+    assert svc.run_control(m, "start")["ok"] is True
+    assert calls == [["/usr/bin/open", "-a", str(helper)]]
+
+
+def test_a_foreground_start_command_is_left_running_not_killed(fake_companion, tmp_path, monkeypatch):
+    """Without a helper, the start command records until stopped. Waiting on it
+    meant killing it at the timeout — the recording would die after 30 s."""
+    m, _ = fake_companion
+    m["control"].pop("launch_app", None)
+    m["control"]["state"]["pidfile"] = str(tmp_path / "none.pid")
+    script = tmp_path / "rec"
+    script.write_text("#!/bin/sh\nsleep 5\n")
+    script.chmod(0o755)
+    monkeypatch.setattr(svc, "_which", lambda b: str(script))
+    out = svc.run_control(m, "start")
+    assert out["ok"] is True and out["output"] == "Recording started."
+
+
+def test_a_start_command_that_fails_at_once_says_so(fake_companion, tmp_path, monkeypatch):
+    m, _ = fake_companion
+    m["control"].pop("launch_app", None)
+    m["control"]["state"]["pidfile"] = str(tmp_path / "none.pid")
+    script = tmp_path / "rec"
+    script.write_text("#!/bin/sh\necho 'no microphone' >&2\nexit 3\n")
+    script.chmod(0o755)
+    monkeypatch.setattr(svc, "_which", lambda b: str(script))
+    out = svc.run_control(m, "start")
+    assert out["ok"] is False and "no microphone" in out["error"]
+
+
+def test_a_live_recording_reports_when_it_started(fake_companion, tmp_path):
+    import os
+    m, _ = fake_companion
+    pid = tmp_path / "recording.pid"
+    pid.write_text(str(os.getpid()))           # alive
+    m["control"]["state"]["pidfile"] = str(pid)
+    assert abs(svc.recording_since(m) - pid.stat().st_mtime) < 1e-6
+    assert svc.run_control(m, "start")["output"] == "Already recording."
+
+
 def test_the_manifest_directory_ships_in_the_built_app():
     """PyInstaller only bundles data directories it is told about. Without an
     --add-data entry the manifests vanish and Settings → Companions is empty in

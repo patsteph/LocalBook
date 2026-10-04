@@ -5,6 +5,8 @@ Thin over `services/companions.py`. The one piece of real orchestration is
 of LocalBook: point it at our engine, watch the folder it writes into, and
 (optionally) create the notebook its output belongs in.
 """
+
+import asyncio
 import logging
 from pathlib import Path
 from typing import List, Optional
@@ -361,7 +363,7 @@ async def control(companion_id: str, action: str):
     manifest = _manifest_or_404(companion_id)
     if action not in ("start", "stop"):
         raise HTTPException(status_code=400, detail="action must be start or stop")
-    result = svc.run_control(manifest, action)
+    result = await asyncio.to_thread(svc.run_control, manifest, action)
     if not result.get("ok"):
         raise HTTPException(status_code=400, detail=result.get("error", "Command failed"))
     return {"ok": True, "output": result.get("output"), "status": svc.status(manifest)}
