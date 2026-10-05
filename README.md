@@ -132,6 +132,7 @@ installed beside the app.
   selected at all.
 
 ---
+---
 
 ## What arrived in v2.4.0
 **Point LocalBook at a folder and anything that lands in it becomes a source.** Built for a user
