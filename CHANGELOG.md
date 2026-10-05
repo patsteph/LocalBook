@@ -2,7 +2,12 @@
 
 All notable changes to LocalBook will be documented in this file.
 
-## Unreleased
+## v2.5.0 — Your Macs share one library, encrypted, and companions can use it
+
+**Pair your Macs and they keep one library between them — directly, encrypted, with nothing in
+the cloud.** The library can live in an encrypted volume that opens at login, companion agents can
+search and remember through LocalBook, and podcasts, videos and speech no longer need anything
+installed beside the app.
 
 ### Added
 - **Encrypt your library.** A banner offers it; a three-step wizard does the rest: write down a
@@ -26,7 +31,32 @@ All notable changes to LocalBook will be documented in this file.
   digest and Curator insights, research jobs, web search, events), a shared memory it reads from
   and writes to, and OpenAI-compatible speech in and out. Verified with Jocasta on a MacBook Pro.
 
+- **Record a meeting from LocalBook.** The Meeting Notes card has a Record button and a running
+  clock. macOS asks for the microphone on behalf of the recorder itself, the same as starting it
+  from the menu bar.
+- **Data Health shows the encrypted volume**: whether it is open, its size on disk, the free space
+  inside it, and when it was last compacted — with a warning if it is not open or space is low.
+- **Tighter Macs get a compact model setup.** On a Mac whose GPU budget can't hold separate main
+  and fast models with room to spare, fast tasks share the main model — one model in memory
+  instead of two. Chosen automatically; LLM Studio shows which setup is in use and lets you pick.
+
 ### Fixed
+- **Generating an image no longer pushes the Mac into swap.** The image model loaded outside the
+  GPU budget; it now shares it with the chat models, makes room by unloading what is idle, and
+  waits or declines rather than overcommitting. Every memory decision uses the budget after your
+  reserve, not the Mac's total RAM.
+- **Podcast jingles and video generation work without ffmpeg.** Both now encode inside the app, so
+  a Mac without Homebrew makes podcasts with their intro and outro and renders videos with the
+  same slide motion.
+- **A companion's web fetch can't be steered into your network.** Pages are fetched with the
+  address checked at connect time, every redirect re-checked, and shared-address ranges refused;
+  `fetch_page` also returns the page text, which it never did.
+- **Sync keeps its bookkeeping small.** Records of deleted items are cleared once every paired Mac
+  has them, old activity logs are trimmed on every Mac alike, and resolved conflicts expire;
+  Settings › Sync says when a Mac that hasn't synced in a month is holding deletes.
+- **Settings and memory conflicts are readable and resolve properly.** Conflict cards name what
+  conflicted ("Core memory: …", "Collector settings: …") and show the values; keeping one now saves
+  and syncs it.
 - **A word Kokoro didn't know silenced the whole sentence.** Names and words missing from its
   dictionary ("offsite", "Ornith") made that part of a podcast or reply come out with no audio,
   and nothing said so in the log. A bundled eSpeak NG now pronounces them, and a failed chunk is

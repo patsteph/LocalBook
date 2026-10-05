@@ -2,7 +2,7 @@
 
 **Your documents, your AI, your machine.** A private, offline alternative to cloud-based AI assistants.
 
-[![Version](https://img.shields.io/badge/version-2.4.0-blue.svg)](https://github.com/patsteph/LocalBook/releases)
+[![Version](https://img.shields.io/badge/version-2.5.0-blue.svg)](https://github.com/patsteph/LocalBook/releases)
 [![Platform](https://img.shields.io/badge/platform-macOS-lightgrey.svg)](https://github.com/patsteph/LocalBook)
 [![Python](https://img.shields.io/badge/python-3.12+-green.svg)](https://www.python.org)
 [![License](https://img.shields.io/badge/license-MIT-yellow.svg)](LICENSE)
@@ -25,7 +25,103 @@ Chat with your documents using AI — completely offline and private. Upload PDF
 
 ---
 
-## 🎉 What's New in v2.4.0
+## 🎉 What's New in v2.5.0
+**Pair your Macs and they keep one library between them — directly, encrypted, with nothing in
+the cloud.** The library can live in an encrypted volume that opens at login, companion agents can
+search and remember through LocalBook, and podcasts, videos and speech no longer need anything
+installed beside the app.
+### Added
+- **Encrypt your library.** A banner offers it; a three-step wizard does the rest: write down a
+  24-word recovery phrase (and type three words back), back up and copy everything into an
+  encrypted volume that is checked file by file, then restart onto it and remove the unencrypted
+  copy with one click once every database is verified to match. The volume opens at login with
+  the key in the Keychain, with no password prompts. Verified end to end on two Macs.
+- **Your Macs share one library.** Pair two Macs on the same network — each lists the other by
+  name, and both show the same 6-digit code to confirm — and notebooks, sources, notes, generated
+  documents, podcasts and videos (the files too), memory, settings and the collector's
+  configuration stay the same on every Mac. Directly between them, encrypted and authenticated,
+  nothing in the cloud. The first sync is previewed before anything changes and backs the Mac up
+  first; notebooks and sources you have on both are matched, not duplicated. Every sync shows its
+  progress and can be stopped safely; open screens refresh when it brings something in; the same
+  note edited on two Macs while apart keeps one version and saves the other as a conflict, so
+  nothing is lost. A notebook deleted on one Mac is removed everywhere, files included. One Mac
+  runs the scheduled collections (by default the one the others paired with) and sync brings the
+  results to the rest. Verified between a Mac mini and a MacBook Pro.
+- **Companions can use LocalBook.** A companion agent such as Jocasta connects with its own key
+  and gets 20 tools over MCP (search notebooks, list a notebook's sources, read a source, the
+  digest and Curator insights, research jobs, web search, events), a shared memory it reads from
+  and writes to, and OpenAI-compatible speech in and out. Verified with Jocasta on a MacBook Pro.
+- **Record a meeting from LocalBook.** The Meeting Notes card has a Record button and a running
+  clock. macOS asks for the microphone on behalf of the recorder itself, the same as starting it
+  from the menu bar.
+- **Data Health shows the encrypted volume**: whether it is open, its size on disk, the free space
+  inside it, and when it was last compacted — with a warning if it is not open or space is low.
+- **Tighter Macs get a compact model setup.** On a Mac whose GPU budget can't hold separate main
+  and fast models with room to spare, fast tasks share the main model — one model in memory
+  instead of two. Chosen automatically; LLM Studio shows which setup is in use and lets you pick.
+### Fixed
+- **Generating an image no longer pushes the Mac into swap.** The image model loaded outside the
+  GPU budget; it now shares it with the chat models, makes room by unloading what is idle, and
+  waits or declines rather than overcommitting. Every memory decision uses the budget after your
+  reserve, not the Mac's total RAM.
+- **Podcast jingles and video generation work without ffmpeg.** Both now encode inside the app, so
+  a Mac without Homebrew makes podcasts with their intro and outro and renders videos with the
+  same slide motion.
+- **A companion's web fetch can't be steered into your network.** Pages are fetched with the
+  address checked at connect time, every redirect re-checked, and shared-address ranges refused;
+  `fetch_page` also returns the page text, which it never did.
+- **Sync keeps its bookkeeping small.** Records of deleted items are cleared once every paired Mac
+  has them, old activity logs are trimmed on every Mac alike, and resolved conflicts expire;
+  Settings › Sync says when a Mac that hasn't synced in a month is holding deletes.
+- **Settings and memory conflicts are readable and resolve properly.** Conflict cards name what
+  conflicted ("Core memory: …", "Collector settings: …") and show the values; keeping one now saves
+  and syncs it.
+- **A word Kokoro didn't know silenced the whole sentence.** Names and words missing from its
+  dictionary ("offsite", "Ornith") made that part of a podcast or reply come out with no audio,
+  and nothing said so in the log. A bundled eSpeak NG now pronounces them, and a failed chunk is
+  logged.
+- **The Dock filled with bouncing icons during collections.** The web scraper started a new
+  headless browser for every page; one shared browser now does the work. A built-in library
+  could also start whole extra copies of the backend; it no longer can.
+- **The backend could outlive the app.** After a Force Quit it kept running — and collecting — with
+  no window. It now stops within seconds of the app closing, and the app no longer shuts itself
+  down when it finds such a leftover backend at launch.
+- **A brand-new install could lock its own database.** A one-time startup step never finished its
+  write, so on a new Mac's first launch everything else that needed to save got "database is
+  locked".
+- **Catching up after a sync ran the fans flat out.** Indexing synced sources now makes them
+  searchable first and leaves the heavier topic and entity work for when the Mac is idle, pacing
+  itself while you work.
+- **The voice profile never rebuilt**, and switching to a model without vision broke image tasks:
+  both still named models from before the MLX switch.
+- **Every Mac now runs the same embedding model.** A setting saved before the MLX switch kept one
+  Mac on the 8-bit build of the embedder while another ran bf16, so the same question could find
+  different passages. The old build is now retired automatically once the bf16 one is downloaded,
+  the startup log names every model and any saved override, and LLM Labs shows `8bit` / `bf16` in
+  model names instead of giving both builds the same name.
+- **A fresh install could not make a recovery phrase.** Two packages had only ever been installed
+  by hand on the development Mac, so other Macs' builds shipped without them. They are now in the
+  lock file, and the build refuses to finish if any required package will not import.
+- **The extension reported the wrong version.** Every release since v2.1.1 shipped an extension
+  that said `2.1.1`, because the release script's version bump was wrapped in a test that had
+  already been made false by hand-editing the root manifest first. The bump is now unconditional
+  and asserted, and the extension re-derives its version at build time.
+- **Capturing a page is now instant.** A long article could take minutes: the capture endpoint ran
+  three model calls and the whole indexing pass before it answered. It now confirms as soon as the
+  page is extracted and saved, and fills in chunks, tags and a summary behind the response — the
+  way adding a page from the app already worked. A long page can also no longer be saved
+  half-extracted.
+- **An interrupted capture now really does land.** The background sweep that re-finishes a source
+  left mid-processing had never been able to do so — it read a store the app stopped writing to in
+  January, wrote status with the wrong arguments, and compared timestamps in two different
+  time bases, so nothing was ever old enough to count as stuck.
+- **Source counts update as sources arrive.** A capture into a notebook you are not looking at now
+  ticks its count up within a second, with the Sources drawer open or closed, and with no notebook
+  selected at all.
+
+---
+
+## What arrived in v2.4.0
 **Point LocalBook at a folder and anything that lands in it becomes a source.** Built for a user
 whose audio recorder transcribes 1:1s to markdown: the recordings are now searchable, chattable,
 and usable in every artifact LocalBook makes, with no step for the user after the recording ends.
@@ -101,7 +197,6 @@ and usable in every artifact LocalBook makes, with no step for the user after th
 - Post-ingest work — tagging, timeline extraction, image reading — is now applied from one place,
   so content arriving by any route gets the same treatment.
 
----
 ---
 
 ## What arrived in v2.3.0
@@ -331,7 +426,7 @@ To upgrade an existing install, append `-- --upgrade`.
 
 ### Option 2: Download Release
 
-1. Download `LocalBook-v2.4.0.zip` from [Releases](https://github.com/patsteph/LocalBook/releases)
+1. Download `LocalBook-v2.5.0.zip` from [Releases](https://github.com/patsteph/LocalBook/releases)
 2. Unzip and drag `LocalBook.app` to `/Applications`
 3. Launch LocalBook — it will download required AI models on first run
 
@@ -381,7 +476,7 @@ The **LocalBook Companion** extension lets you use LocalBook while browsing the 
 
 ### Installation
 
-1. Download `LocalBook-Extension-v2.4.0.zip` from [Releases](https://github.com/patsteph/LocalBook/releases)
+1. Download `LocalBook-Extension-v2.5.0.zip` from [Releases](https://github.com/patsteph/LocalBook/releases)
 2. Unzip to a folder (e.g., `~/LocalBook-Extension`)
 3. Open Chrome/Edge and go to `chrome://extensions`
 4. Enable **Developer mode** (toggle in top right)
