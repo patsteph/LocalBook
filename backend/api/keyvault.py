@@ -25,6 +25,7 @@ logged or written to disk. The private key derived from it exists only for the
 microseconds needed to compute the public half.
 """
 
+import asyncio
 import logging
 import secrets
 from typing import Dict, List, Optional
@@ -32,7 +33,7 @@ from typing import Dict, List, Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from services import keyvault
+from services import key_escrow, keyvault
 from services.keyvault import KeyVaultError
 
 router = APIRouter()
@@ -62,6 +63,9 @@ class RestoreRequest(BaseModel):
     phrase: str
     purpose: Optional[str] = None
     device: Optional[str] = None
+    # Another Mac's set only: use its credentials/backup key over this Mac's own.
+    # Its volume password and sync identity never replace this Mac's.
+    replace: bool = False
 
 
 class PhraseOnly(BaseModel):
@@ -128,14 +132,24 @@ async def confirm_recovery_setup(req: ConfirmRequest):
             detail=f"word {' and '.join(str(w) for w in sorted(wrong))} did not match",
         )
 
+    rotated = keyvault.has_recovery_key()
     try:
         keyvault.set_recovery_key(req.phrase)
         wrapped = keyvault.wrap_all()
     except KeyVaultError as exc:
         raise HTTPException(status_code=500, detail=str(exc))
 
-    logger.info("[keyvault] recovery key configured; wrapped %s", wrapped.get("wrapped"))
-    return {"ok": True, **wrapped, "status": keyvault.status()}
+    # Setting it up proves it; and every paired Mac now holds the new copies
+    # (replacing the old phrase's, so an exposed old phrase opens nothing current).
+    key_escrow.mark_phrase_checked()
+    key_escrow.publish()
+    logger.info("[keyvault] recovery key %s; wrapped %s",
+                "rotated" if rotated else "configured", wrapped.get("wrapped"))
+    out = {"ok": True, **wrapped, "rotated": rotated, "status": keyvault.status()}
+    if rotated:
+        out["note"] = ("Backups taken before today were sealed to your previous phrase — keep it "
+                       "until they have aged out, or take a fresh backup now.")
+    return out
 
 
 @router.post("/keyvault/recovery/check")
@@ -155,7 +169,10 @@ async def check_phrase(req: PhraseOnly):
     import base64
 
     stored = keyvault._recovery_pub_path().read_text().strip()
-    return {"matches": base64.b64encode(derived).decode() == stored}
+    matches = base64.b64encode(derived).decode() == stored
+    if matches:
+        key_escrow.mark_phrase_checked()
+    return {"matches": matches, "phrase_check": key_escrow.phrase_check()}
 
 
 @router.post("/keyvault/recovery/restore")
@@ -166,23 +183,30 @@ async def restore(req: RestoreRequest):
     device. `device` names another machine's key set — that is how a replacement
     Mac recovers from a backup.
     """
-    purposes = [req.purpose] if req.purpose else list(keyvault.PURPOSES)
-    restored, failed = [], {}
-    for purpose in purposes:
-        try:
-            keyvault.restore_from_phrase(req.phrase, purpose, device=req.device)
-            restored.append(purpose)
-        except KeyVaultError as exc:
-            failed[purpose] = str(exc)
+    try:
+        result = await asyncio.to_thread(
+            key_escrow.restore, req.phrase, req.device,
+            [req.purpose] if req.purpose else None, req.replace)
+    except KeyVaultError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    restored, kept, failed = result["restored"], result["kept"], result["failed"]
 
-    if not restored:
+    if not restored and failed:
         # Everything failed: almost always the wrong phrase, and a 200 with an
         # empty list would look like success.
         raise HTTPException(
             status_code=400,
             detail="nothing could be restored — " + "; ".join(failed.values()),
         )
-    return {"restored": restored, "failed": failed, "status": keyvault.status()}
+    return {"restored": restored, "kept": kept, "failed": failed, "status": keyvault.status()}
+
+
+@router.get("/keyvault/key-sets")
+async def key_sets():
+    """Whose keys could be restored on this Mac — this Mac's, a restored backup's,
+    and every paired Mac's escrowed set. Names and purposes only; nothing secret."""
+    sets = await asyncio.to_thread(key_escrow.key_sets)
+    return {"sets": sets, "phrase_check": key_escrow.phrase_check()}
 
 
 @router.post("/keyvault/rewrap")
@@ -191,6 +215,8 @@ async def rewrap():
     if not keyvault.has_recovery_key():
         raise HTTPException(status_code=400, detail="no recovery key is configured yet")
     try:
-        return {"ok": True, **keyvault.wrap_all(), "status": keyvault.status()}
+        out = {"ok": True, **keyvault.wrap_all(), "status": keyvault.status()}
+        key_escrow.publish()
+        return out
     except KeyVaultError as exc:
         raise HTTPException(status_code=500, detail=str(exc))

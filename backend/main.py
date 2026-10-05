@@ -284,7 +284,6 @@ from api.capture import capture_router
 from api.updates import check_if_upgrade, set_startup_status, mark_startup_complete, CURRENT_VERSION
 from services.model_warmup import initial_warmup, start_warmup_task, stop_warmup_task
 from services.startup_checks import run_all_startup_checks
-from services.migration_manager import check_and_migrate_on_startup
 
 async def _run_startup_tasks():
     """Run all startup tasks in background after HTTP server is ready.
@@ -373,6 +372,13 @@ async def _run_startup_tasks():
         await asyncio.to_thread(credential_locker._ensure_initialized)
     except Exception as _e:
         print(f"[Startup] credential key custody deferred: {_e}")
+    # Every paired Mac holds this Mac's wrapped keys (they are noise without the
+    # phrase), so a dead disk is recoverable from any of them. Never fatal.
+    try:
+        from services import key_escrow
+        await asyncio.to_thread(key_escrow.publish)
+    except Exception as _e:
+        logger.debug(f"[main] key escrow not published: {_e}")
 
     # Same shape, same reason: the legacy shared companion key is a PLAINTEXT
     # secret on disk, and its migration used to run only inside
@@ -416,21 +422,10 @@ async def _run_startup_tasks():
         await _step("starting", "Starting LocalBook...", 5)
 
     # ── Step 2: Data migration ────────────────────────────────────────────
-    migration_status = await check_and_migrate_on_startup()
-    if migration_status.get("needs_migration"):
-        migration_type = migration_status.get('migration_type')
-        print(f"📦 Migration needed: {migration_type}")
-        from services.migration_manager import migration_manager
-        async for update in migration_manager.migrate():
-            progress = update.get("progress", 0)
-            status_msg = update.get("status", "Migrating...")
-            scaled_progress = 10 + int(progress * 0.3)
-            set_startup_status("migrating", status_msg, scaled_progress)
-            print(f"[Migration] {status_msg} ({progress}%)")
-            if update.get("error"):
-                print(f"[Migration] ERROR: {update.get('error')}")
-            if update.get("warning"):
-                print(f"[Migration] WARNING: {update.get('warning')}")
+    # The numbered migration ledger (above) is the only migration framework.
+    # `migration_manager` — a LanceDB vector-dimension sniff from the 768→1024
+    # change — was retired 2026-10-05: it opened index tables every launch to
+    # conclude nothing, and it read the ledger's version.json as "unknown".
 
     # ── Step 2b: Activity-ledger backfill (one-shot per install) ──────────
     # Phase B (2026-05-22) introduced the activity_ledger; notebooks created

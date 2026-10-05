@@ -309,9 +309,9 @@ def status(data_dir: Optional[Path] = None) -> Dict[str, object]:
     probe("memory", memory)
 
     def keys():
-        from services import keyvault
+        from services import key_escrow, keyvault
 
-        return keyvault.status()
+        return {**keyvault.status(), "phrase_check": key_escrow.phrase_check()}
 
     probe("keys", keys)
 
@@ -438,6 +438,13 @@ def _overall(parts: Dict[str, object]) -> Dict[str, object]:
                 f"Protect it in Settings → Recovery."
             )
             (problems if severity == "problem" else warnings).append(line)
+
+        pc = keys.get("phrase_check") or {}
+        if pc.get("due"):
+            warnings.append(
+                f"It has been {pc['days']} days since your recovery phrase was checked — "
+                f"check you still have it in Settings → Recovery."
+            )
 
     schema = parts.get("schema") or {}
     if isinstance(schema, dict) and schema.get("pending"):
