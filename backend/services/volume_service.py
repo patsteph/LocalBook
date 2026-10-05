@@ -401,39 +401,6 @@ def _configured_max_size_gb() -> int:
 # ── attach ──────────────────────────────────────────────────────────────────
 
 
-def _encryption_flag_set(mp: Path) -> bool:
-    try:
-        from config import encryption_flag_path
-        return encryption_flag_path(mp).exists()
-    except Exception:
-        return False
-
-
-def set_aside_leftovers(mp: Path) -> Optional[Path]:
-    """Move what was written into the BARE mount point aside, then it can mount.
-
-    With encryption on and the image present, the library is inside the image —
-    anything at the bare mount point was written while it was NOT mounted: the
-    stores a locked startup opens, the token the recovery screen needs. Refusing
-    to mount over it (the old rule) locked the Mac out for good after a single
-    locked launch: the matrix found it (2026-10-05). Moved, never deleted, to a
-    dated folder beside the data dir; the rule still refuses when encryption is
-    OFF, because there the files are the live plaintext of an abandoned prepare.
-    Mirrored in lib.rs `set_aside_leftovers`.
-    """
-    stray = [p for p in mp.iterdir() if p.name != SENTINEL]
-    if not stray:
-        return None
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    aside = mp.parent / f"{mp.name}.locked-leftovers-{stamp}"
-    aside.mkdir(parents=True, exist_ok=False)
-    for p in stray:
-        shutil.move(str(p), str(aside / p.name))
-    logger.warning("[volume] %d item(s) written while the volume was not mounted were moved to %s",
-                   len(stray), aside)
-    return aside
-
-
 def attach(*, initialise_sentinel: bool = False) -> VolumeState:
     """Mount the volume at the data dir. Idempotent.
 
@@ -465,12 +432,10 @@ def attach(*, initialise_sentinel: bool = False) -> VolumeState:
     # sits invisible underneath.
     stray = [p.name for p in mp.iterdir() if p.name != SENTINEL]
     if stray:
-        if not _encryption_flag_set(mp):
-            raise VolumeError(
-                f"{mp} is not empty ({len(stray)} item(s), e.g. {stray[:3]}). Mounting "
-                f"over them would hide them. Migrate them in first."
-            )
-        set_aside_leftovers(mp)
+        raise VolumeError(
+            f"{mp} is not empty ({len(stray)} item(s), e.g. {stray[:3]}). Mounting "
+            f"over them would hide them. Migrate them in first."
+        )
 
     proc = _run(
         [

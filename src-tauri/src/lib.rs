@@ -427,8 +427,8 @@ fn compact_volume_if_due(image: &PathBuf, passphrase: &str) {
 }
 
 /// Move what a locked launch wrote into the bare mount point to a dated sibling
-/// folder (`<name>.locked-leftovers-<unix secs>`), keeping `.volume_id`. Nothing
-/// is deleted. Ok(()) when there was nothing to move.
+/// folder (`<name>.unmounted-writes-<unix secs>`, as `volume_gate._move_strays_aside`
+/// names it), keeping `.volume_id`. Nothing is deleted. Ok(()) when nothing to move.
 fn set_aside_leftovers(mount_point: &std::path::Path) -> std::io::Result<()> {
     let stray: Vec<_> = std::fs::read_dir(mount_point)?
         .filter_map(|e| e.ok())
@@ -442,7 +442,7 @@ fn set_aside_leftovers(mount_point: &std::path::Path) -> std::io::Result<()> {
         .map(|d| d.as_secs())
         .unwrap_or(0);
     let name = mount_point.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-    let aside = mount_point.with_file_name(format!("{}.locked-leftovers-{}", name, secs));
+    let aside = mount_point.with_file_name(format!("{}.unmounted-writes-{}", name, secs));
     std::fs::create_dir_all(&aside)?;
     for e in &stray {
         std::fs::rename(e.path(), aside.join(e.file_name()))?;
@@ -504,10 +504,11 @@ fn ensure_volume_mounted() -> bool {
     // mount point is empty or the encryption flag is set (the no-flag-with-files
     // case returned above). With the flag set, the library is inside the image and
     // whatever sits at the bare mount point was written while it was NOT mounted —
-    // a locked launch's stores and token. Refusing used to lock the Mac out for
-    // good after one locked launch (LB-11 matrix, 2026-10-05). Move it aside to a
-    // dated sibling folder — never delete — then mount. Mirrors the backend's
-    // `volume_service.set_aside_leftovers`.
+    // a locked launch's stores and token. Refusing here meant every launch after a
+    // locked one came up on the recovery screen until the user clicked Unlock (LB-11
+    // matrix, 2026-10-05). Move it aside to a dated sibling folder — never delete —
+    // then mount: exactly what the backend's `volume_gate._move_strays_aside` does
+    // on Unlock, with the same folder name.
     if flag_set {
         if let Err(e) = set_aside_leftovers(&mount_point) {
             eprintln!("[Volume] {:?} is not empty and could not be cleared ({}) — not mounting", mount_point, e);
