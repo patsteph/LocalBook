@@ -433,3 +433,36 @@ def test_a_skipped_file_does_not_make_the_drill_red(data_dir, dest, monkeypatch)
     breaking["on"] = False
 
     assert restore_service.verify(result.path).ok is True
+
+
+def test_the_wrapped_keys_are_backed_up_from_where_they_live_now(data_dir, dest):
+    """LB-11 moved the wrapped keys BESIDE the data dir. Backups kept reading the old
+    spot inside it, so an archive restored on a new Mac had no recovery copy of the
+    credential key — the mail passwords were gone even with the phrase."""
+    from services import keyvault
+
+    keys = keyvault._keys_dir()
+    assert keys.parent == data_dir.parent                # beside, not inside
+    (keys / "dev-a").mkdir(parents=True, exist_ok=True)
+    (keys / "dev-a" / "credentials.wrapped").write_text("sealed")
+
+    files = _members(backup_service.create_backup(dest, data_dir=data_dir))
+    assert "LocalBook.keys/dev-a/credentials.wrapped" in files
+
+
+def test_a_restore_hands_the_old_macs_keys_to_keyvault(data_dir):
+    """A restored archive lands its keys in the data dir's legacy spot. They must
+    reach the keys dir — without touching this Mac's own set."""
+    from services import keyvault
+
+    keys = keyvault._keys_dir()
+    (keys / "this-mac").mkdir(parents=True, exist_ok=True)
+    (keys / "this-mac" / "backup.wrapped").write_text("mine")
+    restored = data_dir / "LocalBook.keys"
+    for dev, body in (("old-mac", "theirs"), ("this-mac", "stale")):
+        (restored / dev).mkdir(parents=True, exist_ok=True)
+        (restored / dev / "backup.wrapped").write_text(body)
+
+    assert keyvault.adopt_restored_keys(data_dir) == ["old-mac"]
+    assert (keys / "old-mac" / "backup.wrapped").read_text() == "theirs"
+    assert (keys / "this-mac" / "backup.wrapped").read_text() == "mine"

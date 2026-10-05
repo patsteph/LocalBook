@@ -242,13 +242,13 @@ def _stage(data_dir: Path, staging: Path, include_blobs: bool) -> Dict[str, obje
 
     trees = list(INCLUDED_TREES) + (list(BLOB_TREES) if include_blobs else [])
     for tree in trees:
-        source = data_dir / tree
-        if not source.is_dir():
+        source = _tree_source(data_dir, tree)
+        if source is None:
             continue
         for entry in source.rglob("*"):
             if not entry.is_file():
                 continue
-            rel = entry.relative_to(data_dir)
+            rel = Path(tree) / entry.relative_to(source)
             if _is_excluded(rel):
                 continue
             if str(rel) in SQLITE_DBS:
@@ -410,6 +410,26 @@ def _write_archive(tar_bytes: bytes, destination: Path, manifest: Dict) -> int:
 
 
 # ── the entry point ─────────────────────────────────────────────────────────
+
+
+def _tree_source(data_dir: Path, tree: str) -> Optional[Path]:
+    """Where a backed-up tree actually lives on this Mac.
+
+    The wrapped keys moved OUT of the data dir in LB-11 (`keyvault._keys_dir`, beside
+    it — they must not be sealed in the volume they unlock), so reading
+    `data_dir/LocalBook.keys` backed up a stale legacy copy, or nothing. Archived
+    under the same name either way; restore hands them back to keyvault.
+    """
+    if tree == "LocalBook.keys":
+        try:
+            from services import keyvault
+            current = keyvault._keys_dir()
+            if current.is_dir():
+                return current
+        except Exception as exc:
+            logger.warning("[backup] keys dir unavailable, using the legacy copy: %s", exc)
+    source = data_dir / tree
+    return source if source.is_dir() else None
 
 
 def create_backup(

@@ -173,6 +173,36 @@ def _keys_dir() -> Path:
     return current
 
 
+def adopt_restored_keys(data_dir: Path) -> list:
+    """Hand a restored archive's wrapped key sets to the keys dir.
+
+    A restore puts the archive's `LocalBook.keys` inside the data dir — the legacy
+    spot, which `_migrate_keys_dir` ignores once this Mac has its own keys dir.
+    Merge each device's set in, never overwriting: this Mac's own keys and its
+    recovery.pub stay as they are, and the old Mac's set becomes reachable for
+    `restore_from_phrase(device=…)`. Returns the device ids adopted.
+    """
+    restored = Path(data_dir) / LEGACY_KEYS_DIRNAME
+    if not restored.is_dir():
+        return []
+    target = _keys_dir()
+    target.mkdir(parents=True, exist_ok=True)
+    adopted = []
+    for device in restored.iterdir():
+        if not device.is_dir():
+            continue
+        dest = target / device.name
+        for f in device.iterdir():
+            if f.is_file() and not (dest / f.name).exists():
+                dest.mkdir(mode=0o700, exist_ok=True)
+                shutil.copy2(f, dest / f.name)
+                if device.name not in adopted:
+                    adopted.append(device.name)
+    if adopted:
+        logger.warning("[keyvault] adopted wrapped keys from a restored archive: %s", adopted)
+    return adopted
+
+
 def _migrate_keys_dir(data_dir: Path, target: Path) -> None:
     """Move a pre-LB-11 keys directory out of the data dir, once.
 

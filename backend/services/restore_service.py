@@ -344,6 +344,11 @@ def apply_pending(data_dir: Optional[Path] = None) -> Optional[Dict[str, object]
         return {"applied": False, "error": str(exc)}
 
     (data_dir / MARKER_NAME).unlink(missing_ok=True)
+    try:
+        from services import keyvault
+        keyvault.adopt_restored_keys(data_dir)
+    except Exception as exc:                     # never fail the swap over this
+        logger.error("[restore] wrapped keys not adopted: %s", exc)
     logger.warning(
         "[restore] applied %s; previous data kept at %s",
         marker_info.get("archive"), aside,
