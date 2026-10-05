@@ -202,6 +202,27 @@ def test_attaching_refuses_to_mount_over_existing_files(vol, tmp_path):
     assert (mount / "localbook.db").read_bytes() == b"pre-migration data"
 
 
+def test_with_encryption_on_a_locked_launchs_leftovers_are_moved_aside_not_mounted_over(vol, tmp_path):
+    """LB-11 matrix 2026-10-05: a launch while locked writes its stores and token
+    into the BARE mount point. Refusing to mount over them locked the Mac out for
+    good. With encryption on, they are set aside (never deleted) and it mounts."""
+    from config import encryption_flag_path
+
+    vol.create()
+    vol.attach(initialise_sentinel=True)
+    vol.detach()
+    mount = tmp_path / "LocalBook"
+    encryption_flag_path(mount).write_text("1")
+    (mount / "localbook.db").write_bytes(b"written while locked")
+    (mount / ".app_token").write_text("t")
+
+    vol.attach()
+    assert vol.is_mounted()
+    aside = next(tmp_path.glob("LocalBook.locked-leftovers-*"))
+    assert (aside / "localbook.db").read_bytes() == b"written while locked"
+    assert (aside / ".app_token").exists()
+
+
 def test_a_volume_with_no_sentinel_is_refused_after_mounting(vol):
     """An image that was never initialised, or somebody else's. Proceeding would
     write a fresh corpus into a stranger's volume."""
