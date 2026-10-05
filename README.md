@@ -59,7 +59,19 @@ installed beside the app.
 - **Tighter Macs get a compact model setup.** On a Mac whose GPU budget can't hold separate main
   and fast models with room to spare, fast tasks share the main model — one model in memory
   instead of two. Chosen automatically; LLM Studio shows which setup is in use and lets you pick.
+- **Recovery doesn't depend on one disk.** Each Mac's recovery copies of its keys are now held
+  by its paired Macs and included in every backup — useless to anyone without that Mac's phrase.
+  Settings › Recovery can restore another Mac's keys onto a replacement Mac, and never replaces
+  this Mac's own volume key or sync identity. Data Health reminds you to check your phrase every
+  90 days, and replacing the phrase warns that older backups still need the old one.
+- **Companions can ask across all notebooks.** `ask_notebook` with no notebook named answers
+  from every notebook and cites which notebook each point came from.
 ### Fixed
+- **The encrypted volume survives the bad days.** Tested against the built app: the backend
+  force-killed mid-write (every acknowledged write kept), the volume ejected while open, a wrong
+  or missing key recovered with the phrase, and the image moved away — each ends locked and
+  recoverable, never an empty library. LocalBook now also opens straight back up after a launch
+  where the volume wasn't available, instead of waiting on the recovery screen.
 - **Generating an image no longer pushes the Mac into swap.** The image model loaded outside the
   GPU budget; it now shares it with the chat models, makes room by unloading what is idle, and
   waits or declines rather than overcommitting. Every memory decision uses the budget after your
