@@ -400,9 +400,11 @@ async def get_ollama_models():
             logger.debug(f"[settings] MLX model enumeration failed: {_mlx_e}")
 
     # Active role → model. Each attribute IS the live checkpoint since the role collapse.
+    # The fast role shows the user's CHOICE; in compact it runs on the main model.
+    from services import model_profile as _profile
     active = {
         "main": app_settings.main_model,
-        "fast": app_settings.fast_model,
+        "fast": _profile.configured_fast(),
         "embeddings": app_settings.embedding_model,
         "vision": app_settings.vision_model,
     }
@@ -425,7 +427,7 @@ async def get_ollama_models():
             None,
         )
 
-    result = {"models": list(enriched), "active": active}
+    result = {"models": list(enriched), "active": active, "fast_shared": _profile.shares_fast()}
     with _ollama_models_lock:
         _ollama_models_cache["data"] = result
         _ollama_models_cache["ts"] = now

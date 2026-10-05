@@ -22,6 +22,7 @@ MAIN_CTX = 16384
 FAST_CTX = 8192
 HEADROOM = 1.10          # standard must fit with 10% to spare, or the Mac goes compact
 _configured_fast: str = ""
+_compact = False         # set at startup; the fast role is routed to the main model
 
 
 def _need(model_id: str, ctx: int) -> float:
@@ -59,12 +60,13 @@ def decide() -> Dict[str, Any]:
 
 def apply_at_startup() -> Dict[str, Any]:
     """Run once after the saved model choices are restored. Never raises."""
-    global _configured_fast
+    global _configured_fast, _compact
     from config import settings
     try:
         _configured_fast = settings.fast_model
         d = decide()
-        if d["profile"] == "compact" and settings.fast_model != settings.main_model:
+        _compact = d["profile"] == "compact"
+        if _compact and settings.fast_model != settings.main_model:
             settings.fast_model = settings.main_model
             print(f"[SafeStart] Compact setup: the fast role shares the main model ({d['reason']})")
         else:
@@ -73,3 +75,32 @@ def apply_at_startup() -> Dict[str, Any]:
     except Exception as exc:
         logger.warning(f"[model-profile] not applied: {exc}")
         return {"profile": "standard", "reason": f"error: {exc}"}
+
+
+# ── configured vs. running ────────────────────────────────────────────────────
+# In compact, `settings.fast_model` is the RUNTIME routing (= the main model). What the
+# user chose for the fast role is `_configured_fast`. Anything that shows, saves or
+# swaps the user's choice must use these, or compact leaks into it: LLM Studio stopped
+# marking the chosen fast model, "Save as default" would have saved the main model as
+# fast, and a fast swap would have silently loaded a second model.
+
+
+def shares_fast() -> bool:
+    """Compact is in force: fast-role work runs on the main model."""
+    return _compact
+
+
+def configured_fast() -> str:
+    from config import settings
+    return (_configured_fast if _compact and _configured_fast else settings.fast_model) or ""
+
+
+def after_swap(changes: Dict[str, Any]) -> None:
+    """Keep compact's routing after a Locker swap has written `changes` to settings."""
+    global _configured_fast
+    if not _compact:
+        return
+    from config import settings
+    if "fast_model" in changes:
+        _configured_fast = changes["fast_model"]
+    settings.fast_model = settings.main_model

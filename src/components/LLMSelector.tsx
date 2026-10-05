@@ -114,6 +114,8 @@ export const LLMSelector: React.FC<LLMSelectorProps> = ({ selectedProvider, onPr
   const [mode, setMode] = useState<'local' | 'cloud'>('local');
   const [models, setModels] = useState<OllamaModel[]>([]);
   const [active, setActive] = useState<ActiveModels>({ main: '', fast: '', embeddings: '', vision: '' });
+  // Compact setup: the fast role runs on the main model; `active.fast` is still the user's choice.
+  const [fastShared, setFastShared] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [switching, setSwitching] = useState<string | null>(null);
@@ -239,6 +241,7 @@ export const LLMSelector: React.FC<LLMSelectorProps> = ({ selectedProvider, onPr
       const data = await res.json();
       setModels(data.models ?? []);
       setActive(data.active ?? {});
+      setFastShared(!!data.fast_shared);
     } catch (e: any) {
       setError(e.message ?? 'Could not load the model list');
     } finally {
@@ -581,6 +584,11 @@ export const LLMSelector: React.FC<LLMSelectorProps> = ({ selectedProvider, onPr
             </span>
           </div>
           <div className="text-xs opacity-75 mt-0.5">{meta.desc}</div>
+          {role === 'fast' && fastShared && (
+            <div className="text-xs mt-1" title="Set in the GPU budget bar. Restart LocalBook after changing it.">
+              Compact setup — fast tasks run on the Main model; this choice applies in Standard.
+            </div>
+          )}
         </div>
         <div className="p-2 space-y-1.5">
           {roleModels.length === 0 ? (

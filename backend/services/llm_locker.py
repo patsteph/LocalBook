@@ -384,7 +384,13 @@ class LLMLocker:
                       "embedding_model"):
             if _attr in changes:
                 setattr(settings, _attr, changes[_attr])
-            
+        # Compact routes the fast role to the main model; the swap changed the CHOICE.
+        try:
+            from services.model_profile import after_swap
+            after_swap(changes)
+        except Exception as e:
+            logger.debug(f"[LLMLocker] profile re-apply skipped: {e}")
+
         # Invalidate the settings/ollama/models cache so the next fetch reflects changes
         try:
             from api.settings import _ollama_models_cache, _ollama_models_lock

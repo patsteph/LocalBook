@@ -19,6 +19,7 @@ def env(monkeypatch):
     monkeypatch.setattr(settings, "embedding_model", "embed")
     monkeypatch.setattr(settings, "model_profile", "auto")
     monkeypatch.setattr(model_profile, "_configured_fast", "")
+    monkeypatch.setattr(model_profile, "_compact", False)
     monkeypatch.setattr("services.model_sizing.exact_weight_gb", lambda m: W.get(m))
     monkeypatch.setattr("services.model_sizing.load_config", lambda m: {"m": m})
     monkeypatch.setattr("services.model_sizing.kv_cache_gb", lambda cfg, ctx: KV.get(cfg["m"], 0))
@@ -60,3 +61,37 @@ def test_standard_leaves_the_roles_alone(env):
     budget["gb"] = 20.0
     model_profile.apply_at_startup()
     assert settings.fast_model == "fast"
+
+
+def test_compact_still_shows_the_chosen_fast_model(env):
+    """LLM Studio marked no model as Fast on the mini: it read the runtime routing
+    (= the main model), not the user's choice. Save-as-default read it too."""
+    settings, budget = env
+    budget["gb"] = 9.3
+    model_profile.apply_at_startup()
+    assert settings.fast_model == "main"                 # routing
+    assert model_profile.configured_fast() == "fast"     # what the user chose
+    assert model_profile.shares_fast() is True
+
+
+def test_a_fast_swap_in_compact_changes_the_choice_not_the_routing(env):
+    settings, budget = env
+    budget["gb"] = 9.3
+    model_profile.apply_at_startup()
+    settings.fast_model = "other-fast"                   # what the Locker writes
+    model_profile.after_swap({"fast_model": "other-fast"})
+    assert settings.fast_model == "main"
+    assert model_profile.configured_fast() == "other-fast"
+    settings.main_model = "new-main"                     # a main swap: fast follows it
+    model_profile.after_swap({"main_model": "new-main"})
+    assert settings.fast_model == "new-main"
+
+
+def test_standard_shows_and_swaps_the_fast_model_directly(env):
+    settings, budget = env
+    budget["gb"] = 20.0
+    model_profile.apply_at_startup()
+    settings.fast_model = "other-fast"
+    model_profile.after_swap({"fast_model": "other-fast"})
+    assert settings.fast_model == model_profile.configured_fast() == "other-fast"
+    assert model_profile.shares_fast() is False

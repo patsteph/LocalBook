@@ -580,8 +580,14 @@ async def engine_truth():
     # The engine can no longer disagree (there is one), but the MODEL still can: prefs are
     # re-applied at every launch and win over config.
     conflicts = []
+    from services.model_profile import configured_fast, shares_fast
+    if shares_fast():
+        roles["fast"]["shared_with_main"] = True        # compact: routing, not drift
+        roles["fast"]["configured"] = configured_fast()
     for role, v in roles.items():
         want = (prefs.get("models") or {}).get(role)
+        if role == "fast" and v.get("shared_with_main"):
+            want = want if want != v.get("configured") else None
         if want and want != v["model"]:
             conflicts.append({
                 "role": role, "resolved": v["model"], "prefs_say": want,
