@@ -426,6 +426,31 @@ fn compact_volume_if_due(image: &PathBuf, passphrase: &str) {
     }
 }
 
+/// Move what a locked launch wrote into the bare mount point to a dated sibling
+/// folder (`<name>.unmounted-writes-<unix secs>`, as `volume_gate._move_strays_aside`
+/// names it), keeping `.volume_id`. Nothing is deleted. Ok(()) when nothing to move.
+fn set_aside_leftovers(mount_point: &std::path::Path) -> std::io::Result<()> {
+    let stray: Vec<_> = std::fs::read_dir(mount_point)?
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_name() != std::ffi::OsStr::new(".volume_id"))
+        .collect();
+    if stray.is_empty() {
+        return Ok(());
+    }
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let name = mount_point.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+    let aside = mount_point.with_file_name(format!("{}.unmounted-writes-{}", name, secs));
+    std::fs::create_dir_all(&aside)?;
+    for e in &stray {
+        std::fs::rename(e.path(), aside.join(e.file_name()))?;
+    }
+    println!("[Volume] moved {} item(s) written while unmounted to {:?}", stray.len(), aside);
+    Ok(())
+}
+
 /// Attach the volume if there is one and it is not already up.
 ///
 /// Returns true when the data directory is usable — either it was mounted, or
@@ -475,11 +500,21 @@ fn ensure_volume_mounted() -> bool {
 
     let _ = std::fs::create_dir_all(&mount_point);
 
-    // Refuse to mount over real files: mounting HIDES them, and a user who then
-    // adds a source is writing into the volume while their old data sits
-    // invisible underneath. The backend enforces this too; doing it here means
-    // we never even try.
-    if let Ok(entries) = std::fs::read_dir(&mount_point) {
+    // Never mount over real files: mounting HIDES them. Reaching here, either the
+    // mount point is empty or the encryption flag is set (the no-flag-with-files
+    // case returned above). With the flag set, the library is inside the image and
+    // whatever sits at the bare mount point was written while it was NOT mounted —
+    // a locked launch's stores and token. Refusing here meant every launch after a
+    // locked one came up on the recovery screen until the user clicked Unlock (LB-11
+    // matrix, 2026-10-05). Move it aside to a dated sibling folder — never delete —
+    // then mount: exactly what the backend's `volume_gate._move_strays_aside` does
+    // on Unlock, with the same folder name.
+    if flag_set {
+        if let Err(e) = set_aside_leftovers(&mount_point) {
+            eprintln!("[Volume] {:?} is not empty and could not be cleared ({}) — not mounting", mount_point, e);
+            return false;
+        }
+    } else if let Ok(entries) = std::fs::read_dir(&mount_point) {
         let stray = entries
             .filter_map(|e| e.ok())
             .any(|e| e.file_name() != std::ffi::OsStr::new(".volume_id"));

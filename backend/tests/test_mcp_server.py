@@ -747,3 +747,40 @@ def test_an_mcp_client_can_initialize_and_list_the_tools(mounted, store):
     for tool in ("list_notebooks", "search_notebooks", "ask_notebook",
                  "get_source", "web_search", "fetch_page"):
         assert tool in listed.text, f"{tool} not listed"
+
+
+def test_ask_notebook_with_no_notebook_answers_from_all_of_them(store, caller, tools, monkeypatch):
+    """It used to refuse when more than one notebook existed. Now it answers from
+    every notebook, and each citation names the notebook it came from."""
+    async def free(model):
+        return True
+
+    monkeypatch.setattr(mcp_server, "_model_is_available", free)
+    from storage.notebook_store import notebook_store
+
+    async def books():
+        return [{"id": "n1", "title": "Leadership"}, {"id": "n2", "title": "Hiring"}]
+
+    monkeypatch.setattr(notebook_store, "list", books)
+    from services.cross_notebook_search import cross_notebook_search
+
+    async def search(**kw):
+        return {"notebooks_searched": 2, "results": [
+            {"notebook_id": "n1", "notebook_title": "Leadership", "source_id": "s1",
+             "filename": "a.md", "chunk_index": 0, "text": "Delegate outcomes."},
+            {"notebook_id": "n2", "notebook_title": "Hiring", "source_id": "s2",
+             "filename": "b.md", "chunk_index": 3, "text": "Hire for slope."}]}
+
+    monkeypatch.setattr(cross_notebook_search, "search", search)
+    seen = {}
+
+    async def gen(**kw):
+        seen.update(kw)
+        return "Delegate outcomes [1] and hire for slope [2]."
+
+    monkeypatch.setattr("services.llm_service.generate_text", gen)
+    out = _call(tools, "ask_notebook", question="how do I build a team?")
+    assert out["answer"].startswith("Delegate")
+    assert [s["notebook_title"] for s in out["sources"]] == ["Leadership", "Hiring"]
+    assert "[1] Leadership" in seen["prompt"] and "[2] Hiring" in seen["prompt"]
+    assert out["notebook_id"] is None

@@ -280,7 +280,6 @@ python -W ignore -m PyInstaller \
     --hidden-import=services.knowledge_graph \
     --hidden-import=services.memory_agent \
     --hidden-import=services.memory_manager \
-    --hidden-import=services.migration_manager \
     --hidden-import=services.model_warmup \
     --hidden-import=services.multimodal_extractor \
     --hidden-import=services.output_templates \

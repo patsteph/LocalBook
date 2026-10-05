@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api } from '../../services/api';
 import { RecoveryPhraseStep } from '../encryption/RecoveryPhraseStep';
+import { RestoreFromOtherMac, type KeySet } from './RestoreFromOtherMac';
 
 /**
  * Recovery phrase setup (K-1).
@@ -40,8 +41,11 @@ export function RecoveryKeySection() {
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [done, setDone] = useState<string[] | null>(null);
+    const [replaced, setReplaced] = useState(false);
     const [checkPhrase, setCheckPhrase] = useState('');
     const [checkResult, setCheckResult] = useState<boolean | null>(null);
+    const [sets, setSets] = useState<KeySet[]>([]);
+    const [phraseCheck, setPhraseCheck] = useState<{ days: number | null; due: boolean } | null>(null);
 
     const refresh = useCallback(async () => {
         try {
@@ -49,6 +53,14 @@ export function RecoveryKeySection() {
             setStatus(data);
         } catch {
             setStatus(null);
+        }
+        try {
+            const { data } = await api.get<{ sets: KeySet[]; phrase_check: { days: number | null; due: boolean } }>(
+                '/keyvault/key-sets');
+            setSets(data.sets);
+            setPhraseCheck(data.phrase_check);
+        } catch {
+            setSets([]);
         }
     }, []);
 
@@ -71,6 +83,7 @@ export function RecoveryKeySection() {
         try {
             const { data } = await api.post('/keyvault/recovery/check', { phrase: checkPhrase });
             setCheckResult(data.matches);
+            if (data.phrase_check) setPhraseCheck(data.phrase_check);
         } catch (e: any) {
             setError(e?.response?.data?.detail ?? 'Could not check that phrase.');
         } finally {
@@ -138,13 +151,18 @@ export function RecoveryKeySection() {
                     <strong>Recovery phrase saved.</strong> {done.length} key
                     {done.length === 1 ? '' : 's'} protected. Keep the phrase somewhere safe and offline —
                     it is not stored on this Mac and cannot be shown again.
+                    {replaced && (
+                        <> Your paired Macs now hold copies for the new phrase. Backups taken before
+                        today still need the old one — keep it until they age out, or take a fresh
+                        backup now.</>
+                    )}
                 </div>
             )}
 
             {/* ── setup ── */}
             {!creating && (
                 <button
-                    onClick={() => { setError(null); setDone(null); setCreating(true); }}
+                    onClick={() => { setError(null); setDone(null); setReplaced(!!status?.recovery_key_configured); setCreating(true); }}
                     disabled={busy}
                     className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-500 disabled:opacity-50"
                 >
@@ -190,6 +208,13 @@ export function RecoveryKeySection() {
                         Type your phrase to confirm it still matches this Mac. Nothing is changed, and the
                         phrase is not stored.
                     </p>
+                    {phraseCheck?.days != null && (
+                        <p className={`mt-1 text-xs ${phraseCheck.due ? 'text-amber-300' : 'text-gray-500'}`}>
+                            {phraseCheck.due
+                                ? `Last confirmed ${phraseCheck.days} days ago — worth checking now.`
+                                : `Last confirmed ${phraseCheck.days === 0 ? 'today' : `${phraseCheck.days} days ago`}.`}
+                        </p>
+                    )}
                     <div className="mt-3 flex gap-2">
                         <input
                             type="password"
@@ -216,6 +241,8 @@ export function RecoveryKeySection() {
                     )}
                 </div>
             )}
+
+            <RestoreFromOtherMac sets={sets} onDone={refresh} />
         </div>
     );
 }
