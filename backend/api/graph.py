@@ -14,7 +14,6 @@ from models.knowledge_graph import (
     ConceptExtractionRequest
 )
 # NOTE: knowledge_graph_service is legacy (1395 lines) - replaced by BERTopic
-# Keeping services/knowledge_graph.py for now as migration_manager references it
 from services.topic_modeling import topic_modeling_service
 import logging
 logger = logging.getLogger(__name__)

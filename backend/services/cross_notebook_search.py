@@ -137,5 +137,33 @@ class CrossNotebookSearch:
 
         return "\n\n".join(lines)
 
+    async def answer(self, question: str, top_k: int = 8, max_chars: int = 8000) -> Dict:
+        """A written, cited answer drawn from EVERY notebook — `ask_notebook` with no
+        notebook named. Citations carry the notebook each passage came from, so an
+        answer that blends two notebooks says which said what."""
+        from config import settings
+        from services import llm_service
+
+        found = await self.search(query=question, top_k=top_k, top_k_per_notebook=3)
+        results = found.get("results", [])
+        if not results:
+            return {"answer": None, "sources": [], "notebooks_searched": found.get("notebooks_searched", 0)}
+        sources, numbered = [], []
+        for r in results:
+            sources.append({"number": len(sources) + 1, "notebook_id": r.get("notebook_id"),
+                            "notebook_title": r.get("notebook_title"), "source_id": r.get("source_id"),
+                            "filename": r.get("filename"), "chunk_index": r.get("chunk_index")})
+            numbered.append({**r, "notebook_title": f"[{len(sources)}] {r.get('notebook_title', 'Notebook')}"})
+        context = self.build_context(numbered, max_chars=max_chars)
+        reply = await llm_service.generate_text(
+            system_prompt=("Answer only from the passages given. Cite them as [1], [2] by their "
+                           "numbers, and say which notebook a point comes from when they differ."),
+            prompt=f"Question: {question}\n\nPassages from {found.get('notebooks_searched', 0)} notebooks:\n\n"
+                   f"{context}\n\nAnswer:",
+            model=settings.main_model,
+        )
+        return {"answer": reply or None, "sources": sources,
+                "notebooks_searched": found.get("notebooks_searched", 0)}
+
 
 cross_notebook_search = CrossNotebookSearch()

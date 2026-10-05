@@ -336,6 +336,9 @@ def build_server():
     ) -> Dict[str, Any]:
         """Ask a question and get a written, cited answer from the user's own material.
 
+        With no notebook_id, the answer draws on every notebook and each citation
+        names the notebook it came from.
+
         Returns {"status": "busy", "retry_after": N} when the model is in use —
         the person sitting at the machine comes first.
         """
@@ -357,13 +360,11 @@ def build_server():
                 if not books:
                     return {"error": "there are no notebooks yet"}
                 if len(books) > 1:
-                    return {
-                        "error": "more than one notebook exists; name one",
-                        "notebooks": [
-                            {"id": b.get("id"), "title": b.get("title") or b.get("name")}
-                            for b in books
-                        ],
-                    }
+                    # No notebook named: answer from all of them, citing which said what.
+                    from services.cross_notebook_search import cross_notebook_search
+
+                    out = await cross_notebook_search.answer(question, top_k=max(top_k * 2, 8))
+                    return {**out, "notebook_id": None}
                 target = books[0].get("id")
 
             from services.rag_engine import rag_engine

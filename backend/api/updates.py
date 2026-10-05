@@ -10,13 +10,22 @@ import tempfile
 import zipfile
 import shutil
 
-from version import APP_VERSION, DATA_SCHEMA_VERSION
+from version import APP_VERSION
 
 router = APIRouter(prefix="/updates", tags=["updates"])
 
 # Current version - update this when releasing new versions
 CURRENT_VERSION = APP_VERSION
-DATA_VERSION = DATA_SCHEMA_VERSION
+
+
+def _data_version() -> str:
+    """The data schema version, DERIVED from the migration ledger (never a constant:
+    a hand-kept one is how a build claims a version its data never reached)."""
+    try:
+        from services import migration_ledger
+        return migration_ledger.schema_version()
+    except Exception:
+        return "unknown"
 
 # Track startup state
 _startup_state = {
@@ -139,7 +148,7 @@ async def check_for_updates():
                 
                 return VersionInfo(
                     current_version=CURRENT_VERSION,
-                    data_version=DATA_VERSION,
+                    data_version=_data_version(),
                     latest_version=latest_version,
                     update_available=update_available,
                     release_notes=release_notes[:500] if release_notes else None,
@@ -150,7 +159,7 @@ async def check_for_updates():
                 # No releases yet
                 return VersionInfo(
                     current_version=CURRENT_VERSION,
-                    data_version=DATA_VERSION,
+                    data_version=_data_version(),
                     latest_version=None,
                     update_available=False,
                     error="No releases found on GitHub"
@@ -158,13 +167,13 @@ async def check_for_updates():
             else:
                 return VersionInfo(
                     current_version=CURRENT_VERSION,
-                    data_version=DATA_VERSION,
+                    data_version=_data_version(),
                     error=f"GitHub API error: {response.status_code}"
                 )
     except Exception as e:
         return VersionInfo(
             current_version=CURRENT_VERSION,
-            data_version=DATA_VERSION,
+            data_version=_data_version(),
             error=f"Failed to check for updates: {str(e)}"
         )
 
@@ -193,7 +202,7 @@ async def get_startup_status():
         message=_startup_state["message"],
         progress=_startup_state["progress"],
         current_version=CURRENT_VERSION,
-        data_version=DATA_VERSION,
+        data_version=_data_version(),
         previous_version=_startup_state["previous_version"],
         is_upgrade=_startup_state["is_upgrade"]
     )

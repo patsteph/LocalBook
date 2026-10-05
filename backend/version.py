@@ -22,7 +22,6 @@ from pathlib import Path
 from typing import Optional
 
 _FALLBACK = "2.5.0"
-DATA_SCHEMA_VERSION = "0.6.5"
 
 
 def _from_bundle() -> Optional[str]:
