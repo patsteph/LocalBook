@@ -758,11 +758,19 @@ def _embed_max_length(model_id: str) -> int:
     return val
 
 
+class MemoryBudgetError(RuntimeError):
+    """A model could not be given room within the GPU budget (LB-1) — refused, not swapped."""
+
+
 class MLXEngine:
     def __init__(self) -> None:
         self._resident: Dict[str, Any] = {}              # model_id -> (model, tokenizer/processor)
         self._embed_resident: Dict[str, Any] = {}        # embedding model_id -> (model, tokenizer)
+        self._asr_resident: Dict[str, Any] = {}          # speech-to-text model_id -> model (mlx_asr)
         self._last_used: Dict[str, float] = {}           # model_id -> monotonic ts (LRU order)
+        # Models that live OUTSIDE this engine but share the GPU (the image model, via mflux):
+        # counted in the same budget and evictable the same way (LB-1, 2026-10-03).
+        self._external: Dict[str, Dict[str, Any]] = {}   # model_id -> {weight, release, busy}
         self._vlm_config: Dict[str, Any] = {}            # model_id -> config (vlm only)
         self._kind: Dict[str, str] = {}                  # model_id -> "lm" | "vlm"
         self._model_locks: Dict[str, asyncio.Lock] = {}  # per-model serialization
@@ -809,14 +817,37 @@ class MLXEngine:
                 limit_gb = float(_env)
                 _src = "env override"
             else:
-                from services.model_sizing import working_set_gb
+                from services.model_sizing import external_reserve_gb, working_set_gb
                 _ws = working_set_gb()
                 # 90 % of the working set: mlx-lm warns above this, and the ecosystem's
                 # posture is to refuse rather than warn (mlx-lm#883 — wired memory blocks
                 # Jetsam, so exhaustion panics the driver instead of killing the process).
-                limit_gb = round(_ws * 0.90, 2) if _ws > 0 else 12.0
-                _src = f"90% of {_ws:.2f} GiB working set" if _ws > 0 else "fallback"
+                #
+                # LB-1: minus whatever is reserved for another process on this
+                # machine. Without this the cap describes a machine LocalBook
+                # does not actually have to itself, and the agent brain and
+                # LocalBook both size themselves against the same memory.
+                _ext = external_reserve_gb()
+                limit_gb = round(max(_ws * 0.90 - _ext, 1.0), 2) if _ws > 0 else 12.0
+                _src = (f"90% of {_ws:.2f} GiB working set"
+                        + (f" less {_ext:.2f} GiB reserved for other apps" if _ext else "")
+                        ) if _ws > 0 else "fallback"
             mx.set_memory_limit(int(limit_gb * 1024 ** 3))
+
+            # LB-1: bound MLX's internal buffer cache. Unbounded it holds on to
+            # every buffer it has ever allocated, which looks exactly like
+            # LocalBook hoarding memory the moment something else wants some —
+            # and on a shared machine that is the difference between the agent
+            # brain loading and the machine swapping.
+            try:
+                from config import settings as _settings
+                _cache_gb = float(getattr(_settings, "mlx_cache_limit_gb", 2.0) or 0)
+                if _cache_gb > 0:
+                    mx.set_cache_limit(int(_cache_gb * 1024 ** 3))
+                    logger.info(f"[mlx-engine] buffer cache limit {_cache_gb} GB")
+            except Exception as _ce:
+                logger.debug(f"[mlx-engine] could not set cache limit: {_ce}")
+
             logger.info(f"[mlx-engine] memory limit {limit_gb} GB ({_src})")
         except Exception as e:
             logger.debug(f"[mlx-engine] could not set memory limit: {e}")
@@ -856,11 +887,46 @@ class MLXEngine:
         except Exception:
             return 0.0
         total = 0.0
-        for mid in list(self._resident) + list(self._embed_resident):
+        for mid in list(self._resident) + list(self._embed_resident) + list(self._asr_resident):
             w = exact_weight_gb(mid)
             if w:
                 total += w
+        total += sum(float(e.get("weight") or 0.0) for e in self._external.values())
         return round(total, 3)
+
+    # -- models held outside the engine (LB-1) -------------------------------------
+    def register_external(self, model_id: str, weight_gb: float, release, is_busy) -> None:
+        """A model another component loaded on the GPU: count it, and let LRU evict it.
+        `release` is an async callable that frees it; `is_busy()` → True while it is working."""
+        self._external[model_id] = {"weight": float(weight_gb or 0.0), "release": release, "busy": is_busy}
+        self._last_used[model_id] = time.monotonic()
+
+    def unregister_external(self, model_id: str) -> None:
+        self._external.pop(model_id, None)
+        self._last_used.pop(model_id, None)
+
+    def touch(self, model_id: str) -> None:
+        self._last_used[model_id] = time.monotonic()
+
+    async def admit(self, model_id: str, *, need_gb: Optional[float] = None, wait_s: float = 90.0) -> bool:
+        """Make room for a model that is about to be loaded outside the engine. True if it fits."""
+        self._ensure_memory_limit()
+        async with self._load_lock:
+            return await self._make_room_for(model_id, need_gb=need_gb, wait_s=wait_s)
+
+    async def _evict(self, victim: str) -> bool:
+        ext = self._external.get(victim)
+        if ext is not None:
+            try:
+                if ext["busy"]():
+                    return False
+                await ext["release"]()
+            except Exception as e:
+                logger.warning(f"[mlx-engine] could not release {victim}: {e}")
+                return False
+            self.unregister_external(victim)
+            return True
+        return await self.unload(victim, wait=1.0)
 
     def _budget_gb(self) -> float:
         """The ceiling for resident weights + the incoming model's KV.
@@ -879,60 +945,87 @@ class MLXEngine:
         except Exception:
             return 0.0
 
-    async def _make_room_for(self, model_id: str) -> None:
-        """Evict LRU models until the incoming one fits the budget. Never raises.
+    async def _make_room_for(self, model_id: str, *, need_gb: Optional[float] = None,
+                             wait_s: float = 0.0) -> bool:
+        """Evict LRU models until the incoming one fits the budget. True if it fits.
 
         Counts the incoming model's KV at its DEPLOYED context, not its native one: phi
         declares a 262144 window it cannot use and costs ~8× gemma per token of KV (32 kv-head
         layers vs 7), so judging by weights alone under-counts the model that actually hurts.
+
+        A busy model is never freed mid-answer; with `wait_s` the eviction is retried while
+        busy models finish. If it still can't fit: False — unless nothing else is resident
+        (refusing a model that would be alone would make the app unusable), in which case it
+        loads with a warning. It used to load anyway in every case — the condition that
+        precedes swap on a tight machine (an image during a RAG answer, LB-1's done-when).
         """
         try:
             from services.model_sizing import exact_weight_gb, kv_cache_gb, load_config
             budget = self._budget_gb()
             if budget <= 0:
-                return
-            incoming_w = exact_weight_gb(model_id) or 0.0
-            if incoming_w <= 0:
-                return          # unknown size — do not evict on a guess
-            cfg = load_config(model_id)
-            ctx = int(os.environ.get("LOCALBOOK_MLX_BUDGET_CTX", "16384"))
-            incoming_kv = (kv_cache_gb(cfg, ctx) if cfg else None) or 0.0
-            need = incoming_w * 1.2 + incoming_kv        # ×1.2 for activations/scratch
+                return True
+            if need_gb is None:
+                incoming_w = exact_weight_gb(model_id) or 0.0
+                if incoming_w <= 0:
+                    return True          # unknown size — do not evict on a guess
+                cfg = load_config(model_id)
+                ctx = int(os.environ.get("LOCALBOOK_MLX_BUDGET_CTX", "16384"))
+                incoming_kv = (kv_cache_gb(cfg, ctx) if cfg else None) or 0.0
+                need = incoming_w * 1.2 + incoming_kv        # ×1.2 for activations/scratch
+            else:
+                need = float(need_gb)
 
-            resident = self._resident_cost_gb()
-            if resident + need <= budget:
-                return
+            deadline = time.monotonic() + max(0.0, wait_s)
+            announced = False
+            while True:
+                resident = self._resident_cost_gb()
+                if resident + need <= budget:
+                    return True
+                if not announced:
+                    logger.info(f"[mlx-engine] budget: resident {resident} GB + incoming "
+                                f"{round(need, 2)} GB > {budget} GB — evicting LRU to make room")
+                    announced = True
+                # LRU first — the model used longest ago is the cheapest to lose.
+                order = sorted(
+                    (m for m in list(self._resident) + list(self._embed_resident)
+                     + list(self._asr_resident) + list(self._external) if m != model_id),
+                    key=lambda m: self._last_used.get(m, 0.0),
+                )
+                for victim in order:
+                    if await self._evict(victim):
+                        resident = self._resident_cost_gb()
+                        if resident + need <= budget:
+                            return True
+                if time.monotonic() >= deadline:
+                    break
+                await asyncio.sleep(1.0)          # a busy model may be finishing its answer
 
-            # LRU first — the model used longest ago is the cheapest to lose.
-            order = sorted(
-                (m for m in list(self._resident) + list(self._embed_resident) if m != model_id),
-                key=lambda m: self._last_used.get(m, 0.0),
-            )
-            logger.info(f"[mlx-engine] budget: resident {resident} GB + incoming {round(need,2)} GB "
-                        f"> {budget} GB — evicting LRU to make room")
-            for victim in order:
-                if await self.unload(victim, wait=1.0):
-                    self._last_used.pop(victim, None)
-                    resident = self._resident_cost_gb()
-                    if resident + need <= budget:
-                        return
-            if resident + need > budget:
-                # Proceed anyway rather than refuse the user's request — but say so, because
-                # this is the condition that precedes swap-death on a tight machine.
-                logger.warning(
-                    f"[mlx-engine] budget EXCEEDED after eviction: resident {resident} GB + "
-                    f"incoming {round(need,2)} GB > {budget} GB. Loading anyway; expect "
-                    f"memory pressure.")
-                try:
-                    from services.quality_signals import record_signal
-                    record_signal("degraded", "mlx_engine",
-                                  f"resident budget exceeded loading {model_id} "
-                                  f"({resident}+{round(need,2)} > {budget} GB)",
-                                  severity="warn", key="mlx_budget_exceeded")
-                except Exception:
-                    pass
+            alone = not (self._resident or self._external)
+            msg = (f"resident {resident} GB + incoming {round(need, 2)} GB > budget {budget} GB "
+                   f"(external reserve {self._external_reserve()} GB)")
+            if alone:
+                logger.warning(f"[mlx-engine] {model_id} alone exceeds the budget ({msg}); "
+                               f"loading anyway — nothing else to evict")
+                return True
+            logger.warning(f"[mlx-engine] not loading {model_id}: {msg}")
+            try:
+                from services.quality_signals import record_signal
+                record_signal("degraded", "mlx_engine", f"refused {model_id}: {msg}",
+                              severity="warn", key="mlx_budget_exceeded")
+            except Exception:
+                pass
+            return False
         except Exception as e:
             logger.debug(f"[mlx-engine] budget check skipped: {e}")
+            return True
+
+    @staticmethod
+    def _external_reserve() -> float:
+        try:
+            from services.model_sizing import external_reserve_gb
+            return external_reserve_gb()
+        except Exception:
+            return 0.0
 
     async def _load(self, model_id: str) -> Tuple[Any, Any]:
         """Load (cache) an MLX model — mlx-vlm for gemma, mlx-lm for phi. Loads run
@@ -944,7 +1037,10 @@ class MLXEngine:
             if model_id in self._resident:
                 return self._resident[model_id]
             self._ensure_memory_limit()
-            await self._make_room_for(model_id)
+            if not await self._make_room_for(model_id, wait_s=60.0):
+                raise MemoryBudgetError(
+                    f"Not enough memory right now to load {model_id} — other models are busy "
+                    f"(reserve for other apps: {self._external_reserve()} GB). Try again in a moment.")
             logger.info(f"[mlx-engine] loading {model_id} ({kind}) …")
             t0 = time.perf_counter()
 
@@ -974,6 +1070,7 @@ class MLXEngine:
         out: Dict[str, Any] = {
             "text": sorted(self._resident.keys()),
             "embed": sorted(self._embed_resident.keys()),
+            "asr": sorted(self._asr_resident.keys()),
         }
         try:
             import mlx.core as mx
@@ -1004,7 +1101,8 @@ class MLXEngine:
           last Python reference is gone, and dropping the dict entry is not enough on its own.
         · Short-circuit when nothing is loaded: touching Metal to free nothing still costs.
         """
-        if model_id not in self._resident and model_id not in self._embed_resident:
+        if (model_id not in self._resident and model_id not in self._embed_resident
+                and model_id not in self._asr_resident):
             return False
 
         lock = self._model_locks.setdefault(model_id, asyncio.Lock())
@@ -1018,6 +1116,7 @@ class MLXEngine:
             before = self._active_gb()
             self._resident.pop(model_id, None)
             self._embed_resident.pop(model_id, None)
+            self._asr_resident.pop(model_id, None)
             self._vlm_config.pop(model_id, None)
 
             def _free() -> None:
@@ -1041,7 +1140,7 @@ class MLXEngine:
     async def unload_all(self, *, keep: Optional[List[str]] = None, wait: float = 2.0) -> List[str]:
         """Unload every resident model except `keep`. Returns what was actually freed."""
         keep_set = set(keep or [])
-        targets = [m for m in list(self._resident) + list(self._embed_resident)
+        targets = [m for m in list(self._resident) + list(self._embed_resident) + list(self._asr_resident)
                    if m not in keep_set]
         if not targets:
             return []

@@ -70,40 +70,94 @@ def test_the_meeting_notes_manifest_points_at_our_engine():
 def test_placeholders_resolve_to_real_values():
     from config import settings
     m = svc.get_manifest("meeting-notes")
-    desired = svc.desired_config(m)
+    desired = svc.desired_config(m, companion_key="lb-example")
     assert desired["BASE_URL"].endswith("/v1")
     assert str(settings.api_port) in desired["BASE_URL"]
     assert desired["LLM"] == settings.main_model
-    assert desired["API_KEY"].startswith("lb-")
+    assert desired["API_KEY"] == "lb-example"
+
+
+def test_rendering_config_does_not_issue_a_key():
+    """LB-0: keys are hashed at rest, so producing one means minting a new one —
+    and `is_connected` renders config on every status poll. If this ever starts
+    issuing, a connected companion's key rotates out from under it every few
+    seconds."""
+    from services import companion_keys
+
+    m = svc.get_manifest("meeting-notes")
+    desired = svc.desired_config(m)
+    assert "API_KEY" not in desired      # empty values are dropped
+    assert companion_keys.list_keys() == []
+    assert svc.is_connected(m) in (True, False)   # still answerable
+    assert companion_keys.list_keys() == []
 
 
 # ── the companion key ───────────────────────────────────────────────────────
 
-def test_the_key_is_stable_across_reads():
-    """Unlike the app token, which rotates every launch — a companion holds a
-    config file on disk, so a rotating secret would break it on every restart."""
-    a = svc.get_companion_key()
-    b = svc.get_companion_key()
-    assert a and a == b
+def test_a_key_keeps_working_until_it_is_rotated():
+    """A companion holds a config file on disk, so the key it was given has to
+    keep verifying. Reissuing is an explicit rotation, not a side effect."""
+    key = svc.issue_companion_key("meeting-notes", ["llm"])
+    assert svc.verify_companion_key(key).companion_id == "meeting-notes"
+    assert svc.verify_companion_key(key).companion_id == "meeting-notes"
+
+    rotated = svc.issue_companion_key("meeting-notes", ["llm"])
+    assert rotated != key
+    assert svc.verify_companion_key(rotated) is not None
+    assert svc.verify_companion_key(key) is None
 
 
-def test_the_key_file_is_not_world_readable(tmp_path):
-    svc.get_companion_key()
-    mode = (tmp_path / "companion_key").stat().st_mode & 0o777
-    assert mode == 0o600, f"companion key is {oct(mode)}"
+def test_the_key_store_is_not_world_readable(tmp_path):
+    from services import companion_keys
+
+    svc.issue_companion_key("meeting-notes", ["llm"])
+    mode = (tmp_path / companion_keys.STORE_FILE).stat().st_mode & 0o777
+    assert mode == 0o600, f"companion key store is {oct(mode)}"
+
+
+def test_no_plaintext_key_is_ever_written_to_disk(tmp_path):
+    from services import companion_keys
+
+    key = svc.issue_companion_key("meeting-notes", ["llm"])
+    blob = (tmp_path / companion_keys.STORE_FILE).read_text()
+    assert key not in blob
+    assert "key_hash" in blob
 
 
 def test_only_the_real_key_verifies():
-    key = svc.get_companion_key()
-    assert svc.verify_companion_key(key) is True
-    assert svc.verify_companion_key("lb-wrong") is False
-    assert svc.verify_companion_key("") is False
+    key = svc.issue_companion_key("meeting-notes", ["llm"])
+    assert svc.verify_companion_key(key) is not None
+    assert svc.verify_companion_key("lb-wrong") is None
+    assert svc.verify_companion_key("") is None
 
 
-def test_revoking_cuts_everything_off_at_once():
-    svc.get_companion_key()
+def test_a_key_carries_only_the_scopes_it_was_issued():
+    key = svc.issue_companion_key("meeting-notes", ["llm"])
+    identity = svc.verify_companion_key(key)
+    assert identity.has("llm") is True
+    assert identity.has("mcp") is False
+    assert identity.has("memory") is False
+
+
+def test_revoking_one_companion_leaves_the_other_working():
+    """The thing the single shared key could not do."""
+    recorder = svc.issue_companion_key("meeting-notes", ["llm"])
+    jocasta = svc.issue_companion_key("jocasta", ["llm", "mcp"])
+
+    svc.revoke_companion_key("jocasta")
+
+    assert svc.verify_companion_key(jocasta) is None
+    assert svc.verify_companion_key(recorder).companion_id == "meeting-notes"
+
+
+def test_revoking_everything_still_cuts_everything_off_at_once():
+    svc.issue_companion_key("meeting-notes", ["llm"])
+    svc.issue_companion_key("jocasta", ["mcp"])
     svc.revoke_companion_key()
-    assert svc.verify_companion_key("anything") is False
+    assert svc.verify_companion_key("anything") is None
+
+    from services import companion_keys
+    assert companion_keys.list_keys() == []
 
 
 # ── editing a file we do not own ────────────────────────────────────────────
@@ -223,6 +277,61 @@ def test_a_stale_pidfile_does_not_read_as_recording(fake_companion, tmp_path):
     pid.write_text("999999")        # a PID that cannot be alive
     m["control"]["state"]["pidfile"] = str(pid)
     assert svc.is_running(m) is False
+
+
+def test_start_opens_the_helper_app_so_the_mic_is_its_own(fake_companion, tmp_path, monkeypatch):
+    """The menu-bar plugin starts a recording with `open -a` on the helper app:
+    macOS attributes the microphone to the helper (it has the entitlement and
+    asks), not to whoever launched it. LocalBook's Start must do the same."""
+    m, _ = fake_companion
+    helper = tmp_path / "Helper.app"
+    helper.mkdir()
+    m["control"]["launch_app"] = str(helper)
+    m["control"]["state"]["pidfile"] = str(tmp_path / "none.pid")
+    calls = []
+
+    class _P:
+        returncode, stdout, stderr = 0, "", ""
+
+    monkeypatch.setattr(svc, "_run_as_user", lambda args, timeout=900: calls.append(args) or _P())
+    assert svc.run_control(m, "start")["ok"] is True
+    assert calls == [["/usr/bin/open", "-a", str(helper)]]
+
+
+def test_a_foreground_start_command_is_left_running_not_killed(fake_companion, tmp_path, monkeypatch):
+    """Without a helper, the start command records until stopped. Waiting on it
+    meant killing it at the timeout — the recording would die after 30 s."""
+    m, _ = fake_companion
+    m["control"].pop("launch_app", None)
+    m["control"]["state"]["pidfile"] = str(tmp_path / "none.pid")
+    script = tmp_path / "rec"
+    script.write_text("#!/bin/sh\nsleep 5\n")
+    script.chmod(0o755)
+    monkeypatch.setattr(svc, "_which", lambda b: str(script))
+    out = svc.run_control(m, "start")
+    assert out["ok"] is True and out["output"] == "Recording started."
+
+
+def test_a_start_command_that_fails_at_once_says_so(fake_companion, tmp_path, monkeypatch):
+    m, _ = fake_companion
+    m["control"].pop("launch_app", None)
+    m["control"]["state"]["pidfile"] = str(tmp_path / "none.pid")
+    script = tmp_path / "rec"
+    script.write_text("#!/bin/sh\necho 'no microphone' >&2\nexit 3\n")
+    script.chmod(0o755)
+    monkeypatch.setattr(svc, "_which", lambda b: str(script))
+    out = svc.run_control(m, "start")
+    assert out["ok"] is False and "no microphone" in out["error"]
+
+
+def test_a_live_recording_reports_when_it_started(fake_companion, tmp_path):
+    import os
+    m, _ = fake_companion
+    pid = tmp_path / "recording.pid"
+    pid.write_text(str(os.getpid()))           # alive
+    m["control"]["state"]["pidfile"] = str(pid)
+    assert abs(svc.recording_since(m) - pid.stat().st_mtime) < 1e-6
+    assert svc.run_control(m, "start")["output"] == "Already recording."
 
 
 def test_the_manifest_directory_ships_in_the_built_app():

@@ -147,11 +147,11 @@ def _main_lane_cap() -> int:
     if override and override.strip().isdigit():
         return max(1, int(override))
     try:
-        import psutil
-        total_gb = psutil.virtual_memory().total / (1024 ** 3)
-        return 2 if total_gb >= 24 else 1
+        # From the reserve-aware GPU budget (a 24 GB Mac ≈ 15 GB budget), not total RAM.
+        from services.model_sizing import budget_gb
+        return 2 if budget_gb() >= 15 else 1
     except Exception:
-        return 1  # psutil missing → assume constrained, stay safe
+        return 1  # unknown → assume constrained, stay safe
 
 
 # ── LLM-activity tracker (for SYSTEM-idle gating of enrichment) ─────────
@@ -327,6 +327,16 @@ def _ram_ctx_multiplier() -> float:
     model's native window). A smooth ramp — no artificial tier cliffs — so every
     extra GB of hardware translates to proportionally more capability, and the
     evaluator's 'soft testing' reflects the SAME window a box actually gets."""
+    # From the GPU budget, not total RAM (LB-1, 2026-10-03): with memory reserved for another
+    # app the window must shrink, not grow — a 48 GB Mac reserving 26 GB got 3× context. At
+    # zero reserve budget/10.5 ≈ RAM/16 (16 GB → 1×, 32 GB → 2×, 48 GB → 3×).
+    try:
+        from services.model_sizing import budget_gb
+        b = budget_gb()
+        if b > 0:
+            return max(1.0, min(8.0, b / 10.5))
+    except Exception:
+        pass
     ram = _total_ram_gb()
     return max(1.0, min(8.0, ram / 16.0))
 

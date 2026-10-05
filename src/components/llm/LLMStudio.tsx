@@ -4,6 +4,7 @@ import { EvaluatorPanel } from './EvaluatorPanel';
 import { EvalHistoryPanel } from './EvalHistoryPanel';
 import { EvalComparePanel } from './EvalComparePanel';
 import { ModelBrowser } from './ModelBrowser';
+import { GpuBudgetBar } from './GpuBudgetBar';
 
 type StudioTab = 'locker' | 'browse' | 'evaluator' | 'history' | 'compare';
 
@@ -44,6 +45,11 @@ export function LLMStudio({ selectedProvider, onProviderChange }: LLMStudioProps
           </button>
         ))}
       </div>
+
+      {/* LB-1: "will this model fit?" is asked on these tabs, and the answer is
+          meaningless without the reason — a 48 GB Mac showing a 7 GB budget
+          reads as a bug until you can see 26 GB was reserved on purpose. */}
+      {(tab === 'locker' || tab === 'browse') && <GpuBudgetBar />}
 
       {tab === 'locker' && (
         <LLMSelector

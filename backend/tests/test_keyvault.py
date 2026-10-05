@@ -1,0 +1,517 @@
+"""K-1 key custody tests.
+
+These touch the REAL login keychain, because the whole point of the module is the
+permissive ACL that only a real keychain item has — a mocked `security(1)` would
+prove nothing about the property under test, which is the lesson recorded as
+"verify the artifact, not the step".
+
+They stay safe by writing under a throwaway, per-run service name and deleting
+every item afterwards, and by pointing `settings.data_dir` at a tmp_path. Nothing
+here may touch the production data dir: `backend/.venv` resolves `settings.data_dir`
+to the user's real one.
+"""
+
+import base64
+import json
+import secrets
+import subprocess
+
+import pytest
+
+from services import keyvault
+from services.keyvault import KeyVaultError
+
+
+@pytest.fixture
+def vault(tmp_path, monkeypatch):
+    """Isolate the vault: temp data dir + a throwaway keychain service name."""
+    service = f"LocalBook-keyvault-test-{secrets.token_hex(6)}"
+    monkeypatch.setattr(keyvault, "SERVICE_NAME", service)
+
+    from config import settings
+
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+
+    # Pinned before the test body can monkeypatch subprocess.run. Cleanup runs
+    # before monkeypatch unwinds, and a throwaway keychain item that outlives its
+    # test is exactly the litter this fixture exists to prevent.
+    real_run = subprocess.run
+    try:
+        yield keyvault
+    finally:
+        for purpose in keyvault.PURPOSES:
+            real_run(
+                ["security", "delete-generic-password", "-a", purpose, "-s", keyvault.service_name()],
+                capture_output=True,
+            )
+
+
+@pytest.fixture
+def phrase():
+    return keyvault.generate_recovery_phrase()
+
+
+# ── basics ──────────────────────────────────────────────────────────────────
+
+
+def test_generate_recovery_phrase_is_24_valid_words():
+    from mnemonic import Mnemonic
+
+    p = keyvault.generate_recovery_phrase()
+    assert len(p.split()) == 24
+    assert Mnemonic("english").check(p)
+    assert p != keyvault.generate_recovery_phrase()
+
+
+def test_get_or_create_is_stable_and_isolated_per_purpose(vault):
+    first = vault.get_or_create("credentials")
+    assert len(first) == vault.KEY_BYTES
+    assert vault.get_or_create("credentials") == first
+    assert vault.get_or_create("backup") != first
+
+
+def test_unknown_purpose_is_refused(vault):
+    with pytest.raises(KeyVaultError, match="unknown purpose"):
+        vault.get_or_create("disk")
+
+
+def test_volume_is_a_real_purpose_now(vault):
+    """Reconciled 2026-09-29. K-1 said the volume password was "held by macOS,
+    not by us"; LB-11 said it "comes from keyvault". Both describe what is built,
+    because this module's storage IS D20's mechanism — `security -A` writes an
+    ordinary login-keychain item with a permissive ACL, so no app identity is
+    consulted. What K-1 ruled out was SecItemAdd and the data-protection
+    keychain, which an ad-hoc build cannot use at all.
+
+    Routing it here also gives K-1(c)'s wrapped recovery copy of the volume
+    password for free.
+    """
+    assert "volume" in vault.PURPOSES
+    key = vault.get_or_create("volume")
+    assert len(key) == vault.KEY_BYTES
+
+
+def test_the_volume_password_gets_a_wrapped_copy(vault, phrase):
+    """K-1(c): a copy of EVERY key, including the volume password, is wrapped to
+    the recovery key. Without it, a wiped Keychain means an unopenable volume."""
+    vault.set_recovery_key(phrase)
+    key = vault.get_or_create("volume")
+
+    assert vault.wrapped_path("volume").exists()
+    assert vault.unwrap_with_phrase(phrase, "volume") == key
+
+
+def test_device_id_is_stable_and_not_the_hostname(vault, tmp_path):
+    import platform
+
+    first = vault.device_id()
+    assert first == vault.device_id()
+    assert platform.node() not in first
+    # Beside the data dir, not inside it — see the D6' section below.
+    assert (vault._keys_dir() / "device_id").exists()
+    assert not (tmp_path / "LocalBook.keys" / "device_id").exists()
+
+
+# ── recovery: the round trip ────────────────────────────────────────────────
+
+
+def test_wrap_then_unwrap_round_trips(vault, phrase):
+    vault.set_recovery_key(phrase)
+    key = vault.get_or_create("credentials")
+
+    path = vault.wrap_for_recovery("credentials")
+    assert path.exists()
+
+    assert vault.unwrap_with_phrase(phrase, "credentials") == key
+
+
+def test_only_the_public_half_is_ever_written(vault, phrase):
+    """D6': the private key must not exist anywhere on the device."""
+    vault.set_recovery_key(phrase)
+    vault.get_or_create("backup")
+    vault.wrap_for_recovery("backup")
+
+    priv_raw = vault._recovery_private_key(phrase).private_bytes_raw()
+    words = phrase.split()
+    # Consecutive PAIRS, not single words. Scanning for individual words was
+    # flaky at roughly 1 run in 5: the envelope JSON contains the field name
+    # `device_id`, and `device` is itself a BIP-39 word — so the test failed on
+    # a structural key name while no secret had leaked at all. A real leak
+    # preserves word ORDER, which a pair catches and a lone common word does not.
+    pairs = [f"{a} {b}".encode() for a, b in zip(words, words[1:])]
+
+    for path in (vault._keys_dir()).rglob("*"):
+        if path.is_file():
+            blob = path.read_bytes()
+            assert priv_raw not in blob
+            assert base64.b64encode(priv_raw) not in blob
+            assert phrase.encode() not in blob
+            for pair in pairs:
+                assert pair not in blob
+
+
+def test_wrong_phrase_is_refused(vault, phrase):
+    vault.set_recovery_key(phrase)
+    vault.get_or_create("credentials")
+    vault.wrap_for_recovery("credentials")
+
+    other = vault.generate_recovery_phrase()
+    with pytest.raises(KeyVaultError, match="does not match"):
+        vault.unwrap_with_phrase(other, "credentials")
+
+
+def test_an_invalid_phrase_is_refused_before_any_crypto(vault):
+    with pytest.raises(KeyVaultError, match="not a valid 24-word"):
+        vault.unwrap_with_phrase("not actually a bip39 phrase at all", "credentials")
+
+
+def test_phrase_is_case_and_whitespace_insensitive(vault, phrase):
+    vault.set_recovery_key(phrase)
+    key = vault.get_or_create("credentials")
+    vault.wrap_for_recovery("credentials")
+
+    messy = "  " + "   ".join(phrase.upper().split()) + "\n"
+    assert vault.unwrap_with_phrase(messy, "credentials") == key
+
+
+def test_the_same_phrase_gives_the_same_public_key(phrase):
+    """A replacement Mac must derive the identical key from the phrase alone."""
+    assert keyvault.recovery_public_key_from_phrase(
+        phrase
+    ) == keyvault.recovery_public_key_from_phrase(phrase)
+
+
+# ── recovery: the failure modes that matter ─────────────────────────────────
+
+
+def test_a_missing_keychain_item_with_a_wrapped_copy_routes_to_recovery(vault, phrase):
+    """The one that protects the data: never mint a new key over a recoverable one."""
+    vault.set_recovery_key(phrase)
+    original = vault.get_or_create("credentials")
+    vault.wrap_for_recovery("credentials")
+
+    vault.delete("credentials")  # simulate a wiped Keychain
+
+    with pytest.raises(KeyVaultError, match="RECOVERABLE"):
+        vault.get_or_create("credentials")
+
+    # ...and the recovery flow puts the ORIGINAL key back, not a new one.
+    assert vault.restore_from_phrase(phrase, "credentials") == original
+    assert vault.get_or_create("credentials") == original
+
+
+def test_a_missing_keychain_item_with_no_wrapped_copy_creates_one(vault):
+    """The genuine first-run case still has to work."""
+    key = vault.get_or_create("backup")
+    assert len(key) == vault.KEY_BYTES
+
+
+def test_a_renamed_envelope_is_caught_by_its_purpose_field(vault, phrase):
+    """Copying backup.wrapped over credentials.wrapped must not pass one off as
+    the other."""
+    vault.set_recovery_key(phrase)
+    vault.get_or_create("backup")
+    envelope = vault.wrapped_path("backup").read_text()
+    (vault._keys_dir() / vault.device_id() / "credentials.wrapped").write_text(envelope)
+
+    with pytest.raises(KeyVaultError, match="is for 'backup'"):
+        vault.unwrap_with_phrase(phrase, "credentials")
+
+
+def test_editing_the_purpose_field_is_caught_by_the_aead(vault, phrase):
+    """And editing the field to match doesn't help: purpose is authenticated as
+    AES-GCM associated data, so the ciphertext itself refuses."""
+    vault.set_recovery_key(phrase)
+    vault.get_or_create("backup")
+
+    envelope = json.loads(vault.wrapped_path("backup").read_text())
+    envelope["purpose"] = "credentials"
+    (vault._keys_dir() / vault.device_id() / "credentials.wrapped").write_text(
+        json.dumps(envelope)
+    )
+
+    with pytest.raises(KeyVaultError, match="does not match"):
+        vault.unwrap_with_phrase(phrase, "credentials")
+
+
+def test_a_future_envelope_version_is_refused_not_guessed(vault, phrase):
+    vault.set_recovery_key(phrase)
+    vault.get_or_create("backup")
+    path = vault.wrap_for_recovery("backup")
+
+    envelope = json.loads(path.read_text())
+    envelope["version"] = 99
+    path.write_text(json.dumps(envelope))
+
+    with pytest.raises(KeyVaultError, match="version 99"):
+        vault.unwrap_with_phrase(phrase, "backup")
+
+
+def test_wrapping_without_a_recovery_key_is_refused(vault):
+    vault.get_or_create("credentials")
+    with pytest.raises(KeyVaultError, match="no recovery key is configured"):
+        vault.wrap_for_recovery("credentials")
+
+
+def test_another_devices_keys_can_be_recovered(vault, phrase):
+    """A replacement Mac recovers the dead machine's key set by device id."""
+    vault.set_recovery_key(phrase)
+    key = vault.get_or_create("credentials")
+    vault.wrap_for_recovery("credentials")
+    dead_device = vault.device_id()
+
+    # A new machine: same data dir (restored from backup), different device id.
+    (vault._keys_dir() / "device_id").write_text(secrets.token_hex(8))
+    assert vault.device_id() != dead_device
+
+    assert vault.unwrap_with_phrase(phrase, "credentials", device=dead_device) == key
+
+
+# ── fail closed ─────────────────────────────────────────────────────────────
+
+
+def test_a_keychain_error_raises_rather_than_minting_a_key(vault, monkeypatch):
+    """keyvault fails CLOSED. keychain_manager's fail-open is deliberate and separate."""
+
+    def boom(args):
+        return subprocess.CompletedProcess(args, 1, "", "keychain is locked")
+
+    monkeypatch.setattr(vault, "_run_security", boom)
+    with pytest.raises(KeyVaultError, match="keychain read"):
+        vault.get_or_create("credentials")
+
+
+def test_a_prompting_security_call_times_out_rather_than_hanging(vault, monkeypatch):
+    """A prompt means the permissive ACL was lost. Startup must fail fast and say
+    so, not block forever on a dialog nobody is looking at."""
+
+    killed = []
+
+    class Hung:
+        args = ["security"]
+        returncode = None
+
+        def __init__(self, *a, **k):
+            pass
+
+        def communicate(self, timeout=None):
+            raise subprocess.TimeoutExpired(cmd="security", timeout=timeout)
+
+        def kill(self):
+            killed.append(True)
+
+        terminate = kill
+
+    real_popen = subprocess.Popen
+    monkeypatch.setattr(subprocess, "Popen", Hung)
+    try:
+        with pytest.raises(KeyVaultError, match="showing a prompt"):
+            vault.get_or_create("credentials")
+    finally:
+        # The fixture's keychain cleanup runs subprocess.run, which uses Popen.
+        monkeypatch.setattr(subprocess, "Popen", real_popen)
+    # Killing `security` while its dialog is pending crashes securityd, which
+    # re-locks the login keychain for every service on the Mac (2026-09-30).
+    assert killed == []
+
+
+def test_a_truncated_key_is_refused(vault, monkeypatch):
+    monkeypatch.setattr(vault, "_keychain_read", lambda purpose: b"tooshort")
+    with pytest.raises(KeyVaultError, match="expected 32"):
+        vault.get_or_create("credentials")
+
+
+# ── the item really is permissive-ACL ───────────────────────────────────────
+
+
+def test_the_item_is_readable_by_an_unrelated_binary_with_no_prompt(vault):
+    """D20's actual claim: no app identity is consulted, so any build reads it.
+
+    Guarded by a timeout — if the ACL were not permissive this would prompt, and a
+    prompt in CI is a hang, not a failure.
+    """
+    key = vault.get_or_create("credentials")
+    proc = subprocess.run(
+        [
+            "/usr/bin/python3",
+            "-c",
+            "import subprocess,sys;"
+            f"r=subprocess.run(['security','find-generic-password','-a','credentials',"
+            f"'-s','{vault.service_name()}','-w'],capture_output=True,text=True);"
+            "sys.stdout.write(r.stdout.strip())",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    assert proc.returncode == 0
+    assert base64.b64decode(proc.stdout.strip(), validate=True) == key
+
+
+def test_the_bip39_wordlist_is_loadable_and_will_be_bundled():
+    """Two halves, deliberately in one test.
+
+    The functional half loads the real wordlist, so this proves something runs
+    rather than that a string appears in a file. The structural half asserts the
+    build collects it: `mnemonic` ships its wordlists as package DATA, which
+    PyInstaller does not pick up from the import alone — without `--collect-all`
+    the bundle would raise on `Mnemonic("english")` while every test here passed.
+    That is the "verify the artifact, not the step" failure exactly.
+    """
+    from pathlib import Path
+
+    from mnemonic import Mnemonic
+
+    assert len(Mnemonic("english").wordlist) == 2048
+
+    build_sh = Path(__file__).resolve().parents[1] / "build_backend.sh"
+    contents = build_sh.read_text()
+    assert "--collect-all=mnemonic" in contents
+    assert "--hidden-import=services.keyvault" in contents
+
+
+def test_status_reports_without_leaking_key_material(vault, phrase):
+    vault.set_recovery_key(phrase)
+    key = vault.get_or_create("credentials")
+    vault.wrap_for_recovery("credentials")
+
+    st = vault.status()
+    assert st["recovery_key_configured"] is True
+    assert st["purposes"]["credentials"] == {
+        "in_keychain": True,
+        "wrapped": True,
+        "error": None,
+    }
+    assert st["purposes"]["backup"]["in_keychain"] is False
+    assert base64.b64encode(key).decode() not in json.dumps(st)
+
+
+# ── where the wrapped keys live (D6', prerequisite for LB-11) ───────────────
+
+
+def test_wrapped_keys_live_beside_the_data_dir_not_inside_it(vault, tmp_path):
+    """LB-11 makes the data dir a mount point for an encrypted sparsebundle.
+    Wrapped keys stored inside it would be sealed in the very volume they exist
+    to unlock — unrecoverable at exactly the moment recovery is needed, while
+    the UI reported "protected"."""
+    keys = vault._keys_dir()
+    assert keys.parent == tmp_path.parent
+    assert tmp_path not in keys.parents
+    assert keys != tmp_path / "LocalBook.keys"
+
+
+def test_the_keys_dir_is_named_after_the_data_dir(vault, tmp_path):
+    """A fixed `LocalBook.keys` would have had the dev sandbox reading and
+    wrapping against the real machine's keys."""
+    assert vault._keys_dir().name == f"{tmp_path.name}.keys"
+
+
+def test_two_data_dirs_do_not_share_a_keys_dir(tmp_path, monkeypatch):
+    from config import settings
+
+    monkeypatch.setattr(settings, "data_dir", tmp_path / "LocalBook")
+    prod = keyvault._keys_dir()
+    monkeypatch.setattr(settings, "data_dir", tmp_path / "LocalBook-dev")
+    dev = keyvault._keys_dir()
+    assert prod != dev
+
+
+def test_a_legacy_keys_dir_is_copied_out_and_the_original_kept(tmp_path, monkeypatch):
+    """The wrapped keys are the last line of recovery — a half-finished MOVE of
+    them is the one failure with nothing behind it. So: copy, and keep."""
+    from config import settings
+
+    data_dir = tmp_path / "LocalBook"
+    legacy = data_dir / keyvault.LEGACY_KEYS_DIRNAME
+    (legacy / "abc123").mkdir(parents=True)
+    (legacy / "device_id").write_text("abc123\n")
+    (legacy / "recovery.pub").write_text("cHVibGljCg==\n")
+    (legacy / "abc123" / "credentials.wrapped").write_text('{"purpose": "credentials"}')
+
+    monkeypatch.setattr(settings, "data_dir", data_dir)
+    relocated = keyvault._keys_dir()
+
+    assert relocated == tmp_path / "LocalBook.keys"
+    assert (relocated / "device_id").read_text().strip() == "abc123"
+    assert (relocated / "abc123" / "credentials.wrapped").is_file()
+    assert legacy.is_dir(), "the original must be kept until LB-11 proves the volume"
+
+
+def test_the_relocation_does_not_overwrite_an_existing_keys_dir(tmp_path, monkeypatch):
+    from config import settings
+
+    data_dir = tmp_path / "LocalBook"
+    legacy = data_dir / keyvault.LEGACY_KEYS_DIRNAME
+    legacy.mkdir(parents=True)
+    (legacy / "device_id").write_text("old\n")
+
+    target = tmp_path / "LocalBook.keys"
+    target.mkdir()
+    (target / "device_id").write_text("current\n")
+
+    monkeypatch.setattr(settings, "data_dir", data_dir)
+    assert (keyvault._keys_dir() / "device_id").read_text().strip() == "current"
+
+
+def test_the_relocated_keys_dir_is_owner_only(tmp_path, monkeypatch):
+    from config import settings
+
+    data_dir = tmp_path / "LocalBook"
+    legacy = data_dir / keyvault.LEGACY_KEYS_DIRNAME
+    legacy.mkdir(parents=True)
+    (legacy / "device_id").write_text("x\n")
+
+    monkeypatch.setattr(settings, "data_dir", data_dir)
+    assert keyvault._keys_dir().stat().st_mode & 0o777 == 0o700
+
+
+def test_a_failed_relocation_does_not_break_key_access(tmp_path, monkeypatch):
+    """Raising here would make the app unable to read keys it can still read
+    perfectly well in the old place."""
+    import shutil as _shutil
+
+    from config import settings
+
+    data_dir = tmp_path / "LocalBook"
+    (data_dir / keyvault.LEGACY_KEYS_DIRNAME).mkdir(parents=True)
+    monkeypatch.setattr(settings, "data_dir", data_dir)
+    monkeypatch.setattr(
+        _shutil, "copytree",
+        lambda *a, **k: (_ for _ in ()).throw(OSError("read-only filesystem")),
+    )
+
+    assert keyvault._keys_dir() == tmp_path / "LocalBook.keys"   # must not raise
+
+
+# ── one Keychain namespace per data dir ─────────────────────────────────────
+
+
+def test_production_keeps_its_existing_service_name(monkeypatch):
+    """Renaming it would orphan every key already stored on every machine, and
+    lib.rs reads the volume key under exactly this name."""
+    from config import PRODUCTION_DATA_DIR, settings
+
+    monkeypatch.setattr(settings, "data_dir", PRODUCTION_DATA_DIR)
+    assert keyvault.service_name() == "LocalBook-keyvault"
+
+
+def test_any_other_data_dir_gets_its_own_service(tmp_path, monkeypatch):
+    """A second install must never read or write production's items — even one
+    whose data dir happens to be called `LocalBook`."""
+    from config import settings
+
+    a, b = tmp_path / "a" / "LocalBook", tmp_path / "b" / "LocalBook"
+    monkeypatch.setattr(settings, "data_dir", a)
+    name_a = keyvault.service_name()
+    assert name_a != "LocalBook-keyvault" and name_a.startswith("LocalBook-keyvault.")
+    assert keyvault.service_name() == name_a                 # stable
+    monkeypatch.setattr(settings, "data_dir", b)
+    assert keyvault.service_name() != name_a
+
+
+def test_the_rust_mount_path_reads_the_production_name():
+    """lib.rs hardcodes the service it reads the volume key from; it must match."""
+    from pathlib import Path
+
+    lib = (Path(__file__).parents[2] / "src-tauri" / "src" / "lib.rs").read_text()
+    assert '"-s", "LocalBook-keyvault"' in lib

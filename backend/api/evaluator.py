@@ -398,7 +398,8 @@ async def save_default_combo(payload: dict):
     from evaluator.model_registry import model_registry
     
     main_model = payload.get("main_model") or settings.main_model
-    fast_model = payload.get("fast_model") or settings.fast_model
+    from services.model_profile import configured_fast
+    fast_model = payload.get("fast_model") or configured_fast()
     vision_model = payload.get("vision_model") or settings.vision_model
     embeddings_model = settings.embedding_model
     
@@ -434,7 +435,7 @@ async def save_default_combo(payload: dict):
     # second silently won.
     existing["default_combo"] = {
         "main_model": main_model or settings.main_model,
-        "fast_model": fast_model or settings.fast_model,
+        "fast_model": fast_model or configured_fast(),
         "vision_model": vision_model or settings.vision_model,
         "image_model": settings.image_model,
         "embedding_model": embeddings_model or settings.embedding_model,

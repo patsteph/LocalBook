@@ -22,3 +22,6 @@ pandas
 # go in requirements.in or it ships inside the app for nothing. Without it that test skips
 # silently, which is how five NameErrors reached a release build at once.
 pyflakes
+# LB-12 sync harness (tests/test_sync_harness.py): property tests over three replicas.
+# Test-tier only — never in requirements.in.
+hypothesis

@@ -161,6 +161,7 @@ class RAGEngine:
         reporter=None,
         enable_hyde: bool = True,
         precomputed_summary=None,
+        deferred: bool = False,
     ) -> Dict:
         """Ingest a document into the RAG system.
 
@@ -171,6 +172,7 @@ class RAGEngine:
         return await rag_storage.ingest_document(
             notebook_id, source_id, text, filename, source_type, reporter=reporter,
             enable_hyde=enable_hyde, precomputed_summary=precomputed_summary,
+            deferred=deferred,
         )
 
     async def append_to_document(

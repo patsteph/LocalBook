@@ -182,6 +182,21 @@ USER_PROFILE_PATH = settings.data_dir / "user_profile.json"
 # App preferences storage path
 APP_PREFERENCES_PATH = settings.data_dir / "app_preferences.json"
 
+
+# LB-12 D1: both live in the synced `documents` table; the files above are
+# imported once and kept only as history.
+def _load_profile() -> dict:
+    from storage import documents
+
+    body = documents.import_file("user_profile", "main", USER_PROFILE_PATH, documents.read_json)
+    return body or documents.get("user_profile", "main", {}) or {}
+
+
+def _save_profile(data: dict) -> None:
+    from storage import documents
+
+    documents.put("user_profile", "main", data)
+
 class SetAPIKeyRequest(BaseModel):
     key_name: str
     value: str
@@ -385,9 +400,11 @@ async def get_ollama_models():
             logger.debug(f"[settings] MLX model enumeration failed: {_mlx_e}")
 
     # Active role → model. Each attribute IS the live checkpoint since the role collapse.
+    # The fast role shows the user's CHOICE; in compact it runs on the main model.
+    from services import model_profile as _profile
     active = {
         "main": app_settings.main_model,
-        "fast": app_settings.fast_model,
+        "fast": _profile.configured_fast(),
         "embeddings": app_settings.embedding_model,
         "vision": app_settings.vision_model,
     }
@@ -410,7 +427,7 @@ async def get_ollama_models():
             None,
         )
 
-    result = {"models": list(enriched), "active": active}
+    result = {"models": list(enriched), "active": active, "fast_shared": _profile.shares_fast()}
     with _ollama_models_lock:
         _ollama_models_cache["data"] = result
         _ollama_models_cache["ts"] = now
@@ -441,11 +458,8 @@ def get_api_key(key_name: str) -> str | None:
 async def get_user_profile():
     """Get the user profile for personalization"""
     try:
-        if USER_PROFILE_PATH.exists():
-            with open(USER_PROFILE_PATH, 'r') as f:
-                data = json.load(f)
-                return UserProfile(**data)
-        return UserProfile()
+        data = _load_profile()
+        return UserProfile(**data) if data else UserProfile()
     except Exception as e:
         print(f"Error loading user profile: {e}")
         return UserProfile()
@@ -455,12 +469,7 @@ async def get_user_profile():
 async def save_user_profile(profile: UserProfile):
     """Save the user profile for personalization"""
     try:
-        # Ensure data directory exists
-        USER_PROFILE_PATH.parent.mkdir(parents=True, exist_ok=True)
-        
-        with open(USER_PROFILE_PATH, 'w') as f:
-            json.dump(profile.model_dump(exclude_none=True), f, indent=2)
-        
+        _save_profile(profile.model_dump(exclude_none=True))
         return {"message": "User profile saved successfully"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to save user profile: {str(e)}")
@@ -470,6 +479,10 @@ async def save_user_profile(profile: UserProfile):
 async def delete_user_profile():
     """Delete the user profile"""
     try:
+        from storage import documents
+
+        _load_profile()                     # import first, so the old file cannot resurrect it
+        documents.delete("user_profile", "main")
         if USER_PROFILE_PATH.exists():
             USER_PROFILE_PATH.unlink()
         return {"message": "User profile deleted"}
@@ -480,10 +493,7 @@ async def delete_user_profile():
 def get_user_profile_sync() -> dict:
     """Helper function to get user profile synchronously (for use in RAG engine)"""
     try:
-        if USER_PROFILE_PATH.exists():
-            with open(USER_PROFILE_PATH, 'r') as f:
-                return json.load(f)
-        return {}
+        return _load_profile()
     except Exception:
         return {}
 
@@ -539,21 +549,21 @@ def build_user_context(profile: dict) -> str:
 # ==================== App Preferences Endpoints ====================
 
 def _load_app_preferences() -> dict:
-    """Load app preferences from disk"""
+    """App preferences (synced `documents`, LB-12 D1)."""
     try:
-        if APP_PREFERENCES_PATH.exists():
-            with open(APP_PREFERENCES_PATH, 'r') as f:
-                return json.load(f)
-        return {}
+        from storage import documents
+
+        body = documents.import_file("app_preferences", "main", APP_PREFERENCES_PATH, documents.read_json)
+        return body or documents.get("app_preferences", "main", {}) or {}
     except Exception:
         return {}
 
 
 def _save_app_preferences(prefs: dict):
-    """Save app preferences to disk"""
-    APP_PREFERENCES_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with open(APP_PREFERENCES_PATH, 'w') as f:
-        json.dump(prefs, f, indent=2)
+    """Save app preferences (synced `documents`, LB-12 D1)."""
+    from storage import documents
+
+    documents.put("app_preferences", "main", prefs)
 
 
 @router.get("/preferences", response_model=AppPreferences)
@@ -607,3 +617,226 @@ async def get_voice_profile():
     profile = voice_engine.get_profile()
     return profile or {}
 
+
+
+# ── Shared GPU budget (LB-1) ────────────────────────────────────────────────
+
+class ExternalReserveRequest(BaseModel):
+    gb: float
+
+
+class BackupDestinationRequest(BaseModel):
+    path: str
+    # The encryption wizard's pre-filled default may not exist yet. Only ever
+    # sent for a path the user has seen and accepted.
+    create: bool = False
+
+
+def _write_env(key: str, value: str) -> None:
+    """Persist one setting to the data-dir `.env`, preserving everything else.
+
+    The data-dir `.env` and NOT the CWD one: `config.py` reads the former in a
+    bundle, and a packaged app's CWD is read-only, so writing there silently
+    does nothing in production.
+    """
+    from pathlib import Path
+
+    from config import get_data_directory
+
+    env_path = Path(get_data_directory()) / ".env"
+    lines = env_path.read_text().splitlines() if env_path.exists() else []
+    out, replaced = [], False
+    for line in lines:
+        if line.strip().startswith(f"{key}="):
+            out.append(f"{key}={value}")
+            replaced = True
+        else:
+            out.append(line)
+    if not replaced:
+        out.append(f"{key}={value}")
+    env_path.parent.mkdir(parents=True, exist_ok=True)
+    env_path.write_text("\n".join(out) + "\n")
+
+
+@router.post("/backup-destination")
+async def set_backup_destination(req: BackupDestinationRequest):
+    """Remember where backups go.
+
+    This was the bug behind "nothing is configured" while a 551 MB archive sat
+    in the folder: the UI passed a destination with each backup request but
+    never SAVED it, so `configured_destination()` — which the panel, the
+    nightly job and the drill all key off — stayed empty.
+
+    Per-machine, never synced: the three Macs back up to different places.
+    """
+    from pathlib import Path
+
+    from config import settings
+
+    raw = (req.path or "").strip()
+    if raw:
+        folder = Path(raw).expanduser()
+        from services.encryption_setup import backup_destination_problem
+
+        problem = backup_destination_problem(folder)
+        if problem:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Backups must go outside LocalBook's own data: {problem}.",
+            )
+        if req.create and not folder.exists():
+            try:
+                folder.mkdir(parents=True)
+            except OSError as exc:
+                raise HTTPException(status_code=400, detail=f"could not create {folder}: {exc}")
+        if not folder.is_dir():
+            raise HTTPException(
+                status_code=400,
+                detail=f"{folder} is not a folder. Choose one that exists, outside "
+                       f"LocalBook's own data.",
+            )
+        data_dir = Path(settings.data_dir).expanduser().resolve()
+        if folder.resolve() == data_dir or data_dir in folder.resolve().parents:
+            raise HTTPException(
+                status_code=400,
+                detail="Backups must go outside LocalBook's data folder — an archive "
+                       "stored inside what it backs up is not a backup.",
+            )
+        raw = str(folder)
+
+    try:
+        _write_env("LOCALBOOK_BACKUP_DESTINATION", raw)
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"could not save: {exc}")
+
+    settings.backup_destination = raw
+    logger.info(f"[backup] destination set to {raw or '(none)'}")
+    return {"ok": True, "destination": raw}
+
+
+@router.get("/gpu-budget")
+async def get_gpu_budget():
+    """How LocalBook's memory budget is arrived at, in its parts.
+
+    Three numbers rather than one: "budget 6.7 GB" on a 48 GB Mac reads as a bug
+    until you can see that 26 of it was deliberately handed to something else.
+    """
+    from services.model_sizing import (
+        RESIDENT_RESERVE_GB, budget_gb, external_reserve_gb, working_set_gb,
+    )
+
+    from services.model_profile import decide
+
+    try:
+        profile = decide()
+    except Exception as exc:
+        profile = {"profile": "standard", "setting": "auto", "reason": f"unavailable: {exc}"}
+    return {
+        "working_set_gb": round(working_set_gb(), 2),
+        "resident_reserve_gb": RESIDENT_RESERVE_GB,
+        "external_reserve_gb": external_reserve_gb(),
+        "budget_gb": budget_gb(),
+        "profile": profile,
+    }
+
+
+def _write_data_env(key: str, value: str) -> None:
+    """Set one key in the data-dir `.env` (what config.py reads in a bundle), keeping
+    every other line. Per machine, never synced."""
+    from pathlib import Path
+
+    from config import get_data_directory
+
+    env_path = Path(get_data_directory()) / ".env"
+    lines = env_path.read_text().splitlines() if env_path.exists() else []
+    out, replaced = [], False
+    for line in lines:
+        if line.strip().startswith(f"{key}="):
+            out.append(f"{key}={value}")
+            replaced = True
+        else:
+            out.append(line)
+    if not replaced:
+        out.append(f"{key}={value}")
+    env_path.parent.mkdir(parents=True, exist_ok=True)
+    env_path.write_text("\n".join(out) + "\n")
+
+
+class ModelProfileRequest(BaseModel):
+    profile: str
+
+
+@router.post("/gpu-budget/profile")
+async def set_model_profile(req: ModelProfileRequest):
+    """auto | standard | compact for THIS Mac. Takes effect on the next launch, when the
+    model roles are resolved."""
+    from config import settings
+
+    value = (req.profile or "").strip().lower()
+    if value not in ("auto", "standard", "compact"):
+        raise HTTPException(status_code=400, detail="profile must be auto, standard or compact")
+    try:
+        _write_data_env("LOCALBOOK_MODEL_PROFILE", value)
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"could not save the setting: {exc}")
+    settings.model_profile = value
+    out = await get_gpu_budget()
+    out["restart_required"] = True
+    return out
+
+
+@router.post("/gpu-budget/external-reserve")
+async def set_external_reserve(req: ExternalReserveRequest):
+    """Set how much of the GPU belongs to something other than LocalBook.
+
+    Written to the data-dir `.env`, which is the file `config.py` actually reads
+    in a bundle — `llm_locker` writes to the CWD `.env`, and a packaged app's
+    CWD is read-only, so that path silently does nothing in production.
+
+    PER-MACHINE, NEVER SYNCED (LB-12h). The mini needs 0; a Mac also running a
+    ~26 GB agent brain needs about 26. A synced value would be wrong on at least
+    one machine by construction.
+
+    Applied to the live settings object too, so it takes effect without a
+    restart — `external_reserve_gb()` is read per call for exactly this reason.
+    """
+    from pathlib import Path
+
+    from config import settings, get_data_directory
+    from services.model_sizing import working_set_gb
+
+    gb = float(req.gb)
+    if gb < 0:
+        raise HTTPException(status_code=400, detail="a reserve cannot be negative")
+
+    ws = working_set_gb()
+    if ws > 0 and gb >= ws:
+        raise HTTPException(
+            status_code=400,
+            detail=f"a reserve of {gb} GB leaves nothing for LocalBook on this "
+                   f"machine ({ws:.1f} GB addressable).",
+        )
+
+    key = "LOCALBOOK_EXTERNAL_RESERVE_GB"
+    env_path = Path(get_data_directory()) / ".env"
+    try:
+        # Read-modify-write, preserving every other line including comments.
+        # This file is the user's, and other settings live in it.
+        lines = env_path.read_text().splitlines() if env_path.exists() else []
+        out, replaced = [], False
+        for line in lines:
+            if line.strip().startswith(f"{key}="):
+                out.append(f"{key}={gb}")
+                replaced = True
+            else:
+                out.append(line)
+        if not replaced:
+            out.append(f"{key}={gb}")
+        env_path.parent.mkdir(parents=True, exist_ok=True)
+        env_path.write_text("\n".join(out) + "\n")
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"could not save the reserve: {exc}")
+
+    settings.external_reserve_gb = gb
+    logger.info(f"[gpu-budget] external reserve set to {gb} GB")
+    return await get_gpu_budget()

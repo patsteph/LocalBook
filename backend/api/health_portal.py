@@ -974,49 +974,15 @@ async def full_health_check():
         if results["overall"] == "healthy":
             results["overall"] = "degraded"
     
-    # ffmpeg Check - required for audio/video transcription
-    ffmpeg_path = find_binary("ffmpeg")
-    if ffmpeg_path:
-        try:
-            result = subprocess.run([ffmpeg_path, "-version"], capture_output=True, timeout=5)
-            if result.returncode == 0:
-                version_line = result.stdout.decode().split('\n')[0]
-                add_check("functional_tests", {
-                    "name": "ffmpeg",
-                    "display": "FFmpeg (Audio/Video)",
-                    "status": "pass",
-                    "details": {"installed": True, "path": ffmpeg_path, "info": version_line[:50]}
-                })
-            else:
-                add_check("functional_tests", {
-                    "name": "ffmpeg",
-                    "display": "FFmpeg (Audio/Video)",
-                    "status": "warn",
-                    "error": f"Found at {ffmpeg_path} but not working properly"
-                })
-        except Exception as e:
-            add_check("functional_tests", {
-                "name": "ffmpeg",
-                "display": "FFmpeg (Audio/Video)",
-                "status": "warn",
-                "error": str(e)[:30]
-            })
-    else:
-        add_check("functional_tests", {
-            "name": "ffmpeg",
-            "display": "FFmpeg (Audio/Video)",
-            "status": "warn",
-            "error": "Not installed"
-        })
-        results["issues"].append({
-            "severity": "medium",
-            "title": "FFmpeg Not Installed",
-            "message": "Audio/video transcription won't work. Run: brew install ffmpeg",
-            "repair": None
-        })
-        if results["overall"] == "healthy":
-            results["overall"] = "degraded"
-    
+    # Speech codec (LB-3): PyAV ships in the app — transcription needs no Homebrew.
+    from services.audio_codec import codec_ok
+    add_check("functional_tests", {
+        "name": "speech_codec",
+        "display": "Speech codec (PyAV)",
+        "status": "pass" if codec_ok() else "fail",
+        **({} if codec_ok() else {"error": "PyAV failed to load — transcription and /v1/audio will not work"}),
+    })
+
     # Tesseract Check - required for OCR (optional but commonly needed)
     tesseract_path = find_binary("tesseract")
     if tesseract_path:
@@ -1638,6 +1604,7 @@ async def execute_repair(request: RepairRequest, background_tasks: BackgroundTas
                 "AND LENGTH(content) < ?",
                 (SHALLOW_MAX_CHARS,)
             )
+            conn.commit()      # never hold the write lock through the re-scrape below
             if cursor.rowcount > 0:
                 add_log("INFO", f"Cleared remediated flags from {cursor.rowcount} sources for retry", "health_portal")
             rows = conn.execute(

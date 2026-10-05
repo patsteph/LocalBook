@@ -228,3 +228,52 @@ def test_llm_provider_is_not_an_engine_name():
 
     assert not hasattr(settings, "llm_provider"), "the provider axis is gone from config"
     assert settings.main_model.startswith("mlx-community/")
+
+
+# ── superseded ids (2026-10-01: the MBP ran the 8-bit embedder, the mini bf16) ─────────────
+
+_OLD_EMBED = "mlx-community/snowflake-arctic-embed-l-v2.0-8bit"
+_NEW_EMBED = "mlx-community/snowflake-arctic-embed-l-v2.0-bf16"
+
+
+def _v4_with_8bit(tmp_path):
+    return _write(tmp_path, {"schema_version": 4, "default_combo": {
+        "main_model": "mlx-community/gemma-4-e4b-it-4bit",
+        "embeddings": _OLD_EMBED, "embedding_model": _OLD_EMBED}})
+
+
+def test_a_superseded_embedder_is_retired_on_an_already_migrated_file(tmp_path, all_present):
+    p = _v4_with_8bit(tmp_path)
+    out = mig.run(p)
+    combo = json.loads(open(p).read())["default_combo"]
+    assert combo["embedding_model"] == combo["embeddings"] == _NEW_EMBED
+    assert combo["main_model"] == "mlx-community/gemma-4-e4b-it-4bit"
+    assert set(out["retired"]) == {"embeddings", "embedding_model"}
+    assert list(tmp_path.glob("*.pre-superseded-backup-*")), "backed up before rewriting"
+    assert mig.run(p)["retired"] == {}, "idempotent"
+
+
+def test_a_superseded_id_stays_while_its_replacement_is_not_downloaded(tmp_path, monkeypatch):
+    monkeypatch.setattr("services.model_presence.is_present", lambda m: m != _NEW_EMBED)
+    p = _v4_with_8bit(tmp_path)
+    assert mig.run(p)["retired"] == {}
+    assert json.loads(open(p).read())["default_combo"]["embedding_model"] == _OLD_EMBED
+
+
+def test_sync_reports_which_roles_differ_between_macs(monkeypatch):
+    from config import settings
+    from services.sync import peer
+
+    monkeypatch.setattr(settings, "embedding_model", _NEW_EMBED)
+    theirs = peer.models() | {"embedding_model": _OLD_EMBED}
+    assert peer.model_mismatch(theirs) == {"embedding": {"here": _NEW_EMBED, "there": _OLD_EMBED}}
+    assert peer.model_mismatch(peer.models()) == {}
+    assert peer.model_mismatch(None) == {}, "an older peer sends no models: nothing to report"
+
+
+def test_friendly_names_keep_the_quantization():
+    from utils.model_display import friendly_model_name as f
+
+    assert f(_OLD_EMBED) != f(_NEW_EMBED)
+    assert f(_NEW_EMBED).endswith("(MLX · bf16)")
+    assert f("mlx-community/gemma-4-e4b-it-4bit") == "Gemma 4 e4b (MLX · 4bit)"

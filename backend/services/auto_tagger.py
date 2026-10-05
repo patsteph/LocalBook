@@ -252,20 +252,20 @@ def _load_notebook_context(notebook_id: str) -> tuple:
     Returns (subject: str, focus_areas: list[str])
     """
     from pathlib import Path
-    config_path = Path(settings.data_dir) / "notebooks" / notebook_id / "collector.yaml"
-    
+    from storage import documents
+
     subject = ""
     focus_areas = []
-    
-    if config_path.exists():
-        try:
-            import yaml
-            with open(config_path, 'r') as f:
-                data = yaml.safe_load(f) or {}
-            subject = data.get("subject", "")
-            focus_areas = data.get("focus_areas", [])
-        except Exception as e:
-            print(f"[AutoTagger] Could not load config for {notebook_id}: {e}")
+    try:
+        # The Collector's configuration (synced documents, LB-12 D1).
+        data = documents.import_file(
+            "collector_config", notebook_id,
+            Path(settings.data_dir) / "notebooks" / notebook_id / "collector.yaml",
+            documents.read_yaml) or documents.get("collector_config", notebook_id) or {}
+        subject = data.get("subject", "")
+        focus_areas = data.get("focus_areas", [])
+    except Exception as e:
+        print(f"[AutoTagger] Could not load config for {notebook_id}: {e}")
     
     return subject, focus_areas
 

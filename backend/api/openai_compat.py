@@ -63,17 +63,32 @@ class ChatRequest(BaseModel):
     n: Optional[int] = None
 
 
-def _require_companion_key(authorization: Optional[str]) -> None:
+def _require_companion_key(authorization: Optional[str], scope: str = "llm"):
+    """Authenticate the caller and check it holds `scope`. Returns its identity.
+
+    LB-0 made keys per-companion and scoped, so a real key is no longer enough:
+    the meeting recorder holds `llm` and must not reach anything else. 401 for
+    "who are you", 403 for "not with that key" — a companion that is connected
+    but under-scoped needs to be told which of the two it is.
+    """
     from services.companions import verify_companion_key
     token = ""
     if authorization and authorization.lower().startswith("bearer "):
         token = authorization[7:].strip()
-    if not verify_companion_key(token):
+    identity = verify_companion_key(token)
+    if identity is None:
         raise HTTPException(
             status_code=401,
             detail="Invalid API key. LocalBook issues a companion key per tool — "
                    "connect the tool from Settings → Companions.",
         )
+    if not identity.has(scope):
+        raise HTTPException(
+            status_code=403,
+            detail=f"This companion key does not carry the '{scope}' scope. "
+                   f"Reconnect {identity.companion_id} from Settings → Companions.",
+        )
+    return identity
 
 
 def _flatten(content: Any) -> str:

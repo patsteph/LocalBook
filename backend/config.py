@@ -1,22 +1,59 @@
 """Application configuration"""
+import os
 import sys
 from typing import Optional
 from pathlib import Path
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings
 
+PRODUCTION_DATA_DIR = Path.home() / "Library" / "Application Support" / "LocalBook"
+DEV_DATA_DIR = Path.home() / "Library" / "Application Support" / "LocalBook-dev"
+
+# Set when an unfrozen process has been pointed at the real data dir on purpose.
+# main.py reads it to show a banner: the danger is doing it by accident and not
+# noticing, so the escape hatch has to be loud.
+DEV_USING_PRODUCTION_DATA = False
+
+
 def get_data_directory() -> Path:
-    """Get the data directory - ALWAYS uses production location.
-    
-    All environments (dev, bundled) use: ~/Library/Application Support/LocalBook/
-    This ensures consistent data across development and production.
+    """Where LocalBook keeps its data.
+
+    A BUNDLED app always uses `~/Library/Application Support/LocalBook`.
+
+    An UNFROZEN process — a dev run, a script, a test, anything started from
+    `backend/.venv` — defaults to `LocalBook-dev` instead (LB-10 item 7).
+
+    This used to return the production path unconditionally, with the comment
+    "ensures consistent data across development and production". That
+    consistency is precisely the hazard: every script, REPL and stray
+    `TestClient(main.app)` ran against the user's real notebooks, credentials and
+    keys. It has bitten this project repeatedly — `save_default_combo({})` once
+    overwrote `user_preferences.json`, and on 2026-09-29 two separate ad-hoc
+    checks wrote a stray companion key and rotated `.app_token`.
+
+    The override is deliberately explicit and deliberately loud:
+
+        LOCALBOOK_DATA_DIR=/some/path            use that path
+        LOCALBOOK_USE_PRODUCTION_DATA=1          use the real data dir, with a banner
+
+    Nothing here changes behaviour for the shipped app.
     """
-    app_support = Path.home() / "Library" / "Application Support" / "LocalBook"
-    
-    # Auto-migrate from old bundle location if needed (for bundled apps)
-    if getattr(sys, 'frozen', False):
-        _migrate_old_data(app_support)
-    
-    return app_support
+    global DEV_USING_PRODUCTION_DATA
+
+    explicit = os.environ.get("LOCALBOOK_DATA_DIR", "").strip()
+    if explicit:
+        return Path(explicit).expanduser()
+
+    frozen = getattr(sys, "frozen", False)
+    if frozen:
+        _migrate_old_data(PRODUCTION_DATA_DIR)
+        return PRODUCTION_DATA_DIR
+
+    if os.environ.get("LOCALBOOK_USE_PRODUCTION_DATA", "").strip().lower() in ("1", "true", "yes"):
+        DEV_USING_PRODUCTION_DATA = True
+        return PRODUCTION_DATA_DIR
+
+    return DEV_DATA_DIR
 
 
 def _migrate_old_data(new_data_dir: Path) -> None:
@@ -50,6 +87,10 @@ def _migrate_old_data(new_data_dir: Path) -> None:
 class Settings(BaseSettings):
     # API settings
     api_port: int = 8000
+    # LB-12: Mac-to-Mac sync. The sync listener (mutual TLS, paired Macs only)
+    # uses this port on all interfaces; pairing uses port + 1, only while a
+    # pairing window is open. Nothing listens unless sync is on.
+    sync_port: int = 47600
     api_host: str = "127.0.0.1"
 
     # Browser extension — pinned ID derived from extension/.key.pem manifest key.
@@ -78,6 +119,11 @@ class Settings(BaseSettings):
     # the SAME checkpoint — one gemma resident, not two.
     vision_model: str = "mlx-community/gemma-4-e4b-it-4bit"
     image_model: str = "Runpod/FLUX.2-klein-4B-mflux-4bit"      # FLUX.2 Klein via mflux
+    # Speech-to-text (LB-3). Parakeet TDT v3 (NVIDIA, CC-BY-4.0, 25 European languages) runs in
+    # the MLX engine; whisper is the fallback when Parakeet fails. Both get pre-decoded audio
+    # (services/audio_codec.py), so neither shells out to an ffmpeg on PATH.
+    stt_model: str = "mlx-community/parakeet-tdt-0.6b-v3"
+    stt_fallback_model: str = "mlx-community/whisper-base-mlx"
 
     # arctic-embed-l-v2.0 — the SAME model and the SAME 1024 dim as the old Ollama
     # `snowflake-arctic-embed2`, so the existing index needed no re-embedding.
@@ -174,6 +220,75 @@ class Settings(BaseSettings):
     mlx_kv_group_size: int = 64
     mlx_quantized_kv_start: int = 4096
 
+    # ── Shared GPU budget (LB-1, 2026-09-29) ─────────────────────────
+    # How much of the GPU's working set belongs to something OTHER than
+    # LocalBook — an agent brain sharing the machine, chiefly. LocalBook
+    # subtracts this before deciding what it may load, so the other process
+    # is not competing for memory LocalBook has already committed.
+    #
+    # PER-MACHINE, NEVER SYNCED (LB-12h). The Mac mini needs 0; the MBP that
+    # also runs a ~24-28 GB agent brain needs about 26. A synced value would
+    # be wrong on at least one machine by construction.
+    #
+    # 0.0 means "LocalBook has the machine to itself", which is the honest
+    # default and exactly what was assumed before this existed.
+    # The alias keeps the LOCALBOOK_ prefix the rest of the app's env vars use,
+    # while still being settable from the data-dir .env like every other
+    # setting — a bare os.getenv here would be read at import and would ignore
+    # that file entirely.
+    external_reserve_gb: float = Field(
+        0.0,
+        validation_alias=AliasChoices(
+            "LOCALBOOK_EXTERNAL_RESERVE_GB", "external_reserve_gb"
+        ),
+    )
+    # auto | standard | compact — per Mac, never synced (services/model_profile.py).
+    model_profile: str = Field(
+        "auto", validation_alias=AliasChoices("LOCALBOOK_MODEL_PROFILE", "model_profile"),
+    )
+
+    # ── Backups (LB-10) ──────────────────────────────────────────────
+    # A folder OUTSIDE the data dir: iCloud Drive, an external disk, a NAS.
+    # Empty means backups are OFF — there is no sensible default, and guessing
+    # one would write the archive inside the thing it is backing up.
+    # PER-MACHINE, never synced.
+    backup_destination: str = Field(
+        "",
+        validation_alias=AliasChoices(
+            "LOCALBOOK_BACKUP_DESTINATION", "backup_destination"
+        ),
+    )
+    # Off for the nightly run: a real data dir is ~600 MB with generated audio
+    # and ~80 MB without, and 7 daily + 4 weekly is the difference between
+    # ~6 GB and ~900 MB. Audio is regenerable from its notebook. A manual
+    # backup still includes them by default.
+    backup_include_blobs_nightly: bool = False
+    # How many archives to keep. Two by default: at ~550 MB each, the old
+    # 7-daily + 4-weekly scheme was ~6 GB for a slowly-growing corpus.
+    # ⚠️ This is also the "how long until you notice" window — with two archives
+    # on a daily cadence, a corruption unnoticed for three days is in both.
+    backup_keep: int = 2
+
+    # ── Encryption at rest (LB-11) ───────────────────────────────────
+    # A sparsebundle's size is a CEILING, not an allocation: bands on disk only
+    # ever total what the data needs. Generous so it never has to be resized,
+    # which is an operation with its own failure modes.
+    volume_max_size_gb: int = 512
+    # Per-machine, NEVER synced (D11). The plan rolls encryption out one Mac at
+    # a time; a synced flag would switch it on for a machine with no volume and
+    # lock that machine out of its own data.
+    encryption_enabled: bool = Field(
+        False,
+        validation_alias=AliasChoices(
+            "LOCALBOOK_ENCRYPTION_ENABLED", "encryption_enabled"
+        ),
+    )
+
+    # MLX's internal buffer cache. Unbounded it will happily hold on to every
+    # buffer it has ever allocated, which reads as LocalBook hoarding memory
+    # the moment anything else on the machine wants some.
+    mlx_cache_limit_gb: float = 2.0
+
     # ── Linked Folders (2026-09-16) ──────────────────────────────────
     # How often the watcher loop wakes. This is NOT the scan cadence: each
     # link carries its own frequency (hourly … weekly) and the loop only acts
@@ -210,6 +325,32 @@ class Settings(BaseSettings):
 
 settings = Settings()
 
-# Ensure data directories exist
-settings.data_dir.mkdir(parents=True, exist_ok=True)
-settings.db_path.mkdir(parents=True, exist_ok=True)
+
+def encryption_flag_path(data_dir: Path) -> Path:
+    """Where `encryption_enabled` is persisted: BESIDE the data dir, never inside.
+
+    It used to be written to `<data dir>/.env` — which, once encrypted, is inside
+    the volume. A failed mount then hid the very flag that says a mount is
+    required, the gate read "encryption off", and the app came up empty and
+    started writing into the mount point: the exact failure measure 1 exists to
+    prevent. The flag has to survive the volume being unavailable.
+    """
+    data_dir = Path(data_dir)
+    return data_dir.parent / f"{data_dir.name}.encryption-enabled"
+
+
+if encryption_flag_path(settings.data_dir).exists():
+    settings.encryption_enabled = True
+
+# ── LB-11 measure 1: do NOT create the data directory at import ─────────────
+# When encryption is on, `data_dir` is a MOUNT POINT. Creating it here — which
+# this did unconditionally — is precisely what made a failed mount
+# indistinguishable from a new install: an empty directory appears, nothing above
+# can tell why, and LocalBook comes up blank and starts writing a fresh corpus
+# over the top of encrypted data it simply could not open.
+#
+# With encryption off, nothing has changed. With it on, the directories are
+# created AFTER a successful mount, by `volume_gate.ensure_subdirs()`.
+if not bool(getattr(settings, "encryption_enabled", False)):
+    settings.data_dir.mkdir(parents=True, exist_ok=True)
+    settings.db_path.mkdir(parents=True, exist_ok=True)

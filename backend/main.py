@@ -7,6 +7,15 @@ import sys
 if getattr(sys, 'frozen', False):
     multiprocessing.freeze_support()
 
+    # In the frozen app sys.executable is THIS binary, so a library that starts a helper
+    # as `sys.executable -m <module>` / `-c <code>` (joblib's loky pool does) boots a whole
+    # second LocalBook backend instead — a Dock icon and a Keychain prompt per worker
+    # (MBP, 2026-10-01). Never boot for that: exit at once, and keep joblib in-process.
+    if len(sys.argv) > 1 and sys.argv[1] in ("-m", "-c"):
+        sys.stderr.write(f"[frozen] refusing interpreter invocation {sys.argv[1:3]}\n")
+        sys.exit(2)
+    os.environ.setdefault("JOBLIB_MULTIPROCESSING", "0")
+
 # ── Fix SSL certificates for the bundled (PyInstaller) app + fresh macOS Python ──
 # The frozen app's Python has no usable default CA bundle, so HTTPS (HuggingFace model
 # downloads, FlashRank, etc.) fails with CERTIFICATE_VERIFY_FAILED. Point ssl/requests/httpx at a
@@ -30,6 +39,105 @@ if _ca:
         _cur = os.environ.get(_var)
         if not _cur or not os.path.exists(_cur):   # override a missing/broken pre-set value
             os.environ[_var] = _ca
+
+# ── LB-11: apply a prepared encryption migration, before ANYTHING else ──────
+# Ahead of the volume gate, because a successful swap is what makes the gate
+# find a mounted volume. Ahead of every `from api import ...` below, because
+# those reach storage.database — by lifespan time the databases are open and
+# the data directory cannot be moved.
+#
+# The plaintext copy is MOVED ASIDE and kept. Nothing here deletes anything.
+try:
+    from services.encryption_migration import apply_pending as _apply_encryption
+    _enc = _apply_encryption()
+    if _enc and _enc.get("applied"):
+        print("=" * 72)
+        print("🔐 YOUR DATA DIRECTORY IS NOW ENCRYPTED")
+        print(f"    plaintext copy kept at: {_enc.get('plaintext_kept_at')}")
+        print("    Check your notebooks, then remove it from Settings → Data Health.")
+        print("=" * 72)
+    elif _enc and _enc.get("needs_manual_recovery"):
+        print("=" * 72)
+        print("⚠️  ENCRYPTION SWAP FAILED AND COULD NOT BE ROLLED BACK")
+        print(f"    Your data is intact at: {_enc.get('plaintext_at')}")
+        print("    Move it back to the data directory to continue.")
+        print("=" * 72)
+    elif _enc:
+        print(f"⚠️  encryption migration not applied: {_enc.get('error')}")
+except Exception as _e:
+    print(f"⚠️  encryption migration skipped: {_e}")
+
+# The databases half of the post-swap check (LB-11 simplified flow). HERE, before
+# anything opens a database, because this is the only moment the row counts
+# cannot have drifted. The files half runs after startup (`_run_startup_tasks`).
+try:
+    from services import encryption_verify as _ev
+    if _ev.needs_databases():
+        _ev.verify_databases()
+except Exception as _e:
+    print(f"⚠️  post-swap database check skipped: {_e}")
+
+# ── LB-11: apply a staged DEcryption (the escape hatch), same constraints ───
+try:
+    from services.encryption_rollback import apply_pending as _apply_decryption
+    _dec = _apply_decryption()
+    if _dec and _dec.get("applied"):
+        print("=" * 72)
+        print("🔓 ENCRYPTION IS OFF — the data directory is plaintext again")
+        print(f"    encrypted image kept at: {_dec.get('image_kept_at')}")
+        print("=" * 72)
+    elif _dec:
+        print(f"⚠️  decryption not applied: {_dec.get('error')}")
+except Exception as _e:
+    print(f"⚠️  decryption skipped: {_e}")
+
+# ── LB-11: decide whether we may serve at all, before ANY store opens ───────
+# Ordered before the restore pre-flight and before every `from api import ...`
+# below, because importing those reaches `storage.database`. If the encrypted
+# volume is not mounted, nothing may open, create or migrate anything — the app
+# comes up in a locked state serving only a recovery screen.
+try:
+    from services.volume_gate import evaluate as _evaluate_volume_gate
+    _gate = _evaluate_volume_gate()
+    if _gate.locked:
+        print("=" * 72)
+        print("🔒 LOCALBOOK IS LOCKED — the encrypted volume is not open")
+        print(f"    {_gate.reason}")
+        print(f"    {_gate.detail}")
+        print("    Your notebooks have NOT been touched.")
+        print("=" * 72)
+except Exception as _e:
+    print(f"⚠️  volume gate check failed: {_e}")
+
+# ── LB-10: apply a staged restore BEFORE anything opens a database ──────────
+# This has to be the first real thing that happens. `storage.database.Database`
+# opens the SQLite connection on first use, and importing the API modules below
+# reaches it — so by the time the lifespan runs, the directory is already in
+# use. Swapping it then would be the torn state a restore exists to escape.
+#
+# Deliberately quiet and non-fatal when there is nothing staged: the common case
+# is every launch, forever.
+try:
+    from services.volume_gate import current as _gate_now
+    if _gate_now().locked:
+        # Unpacking a restore into an unmounted mount point would put a whole
+        # data directory where the volume belongs, and the next successful
+        # attach would then refuse because the mount point is not empty.
+        raise RuntimeError("locked — a staged restore cannot be applied yet")
+    from services.restore_service import apply_pending as _apply_pending_restore
+    _restore_result = _apply_pending_restore()
+    if _restore_result:
+        if _restore_result.get("applied"):
+            print("=" * 72)
+            print("♻️  RESTORED FROM BACKUP")
+            print(f"    archive:  {_restore_result.get('archive')}")
+            print(f"    previous data kept at: {_restore_result.get('previous_data_kept_at')}")
+            print("    Run a full re-index — the vector store is not in a backup (D19).")
+            print("=" * 72)
+        else:
+            print(f"⚠️  staged restore could not be applied: {_restore_result.get('error')}")
+except Exception as _e:
+    print(f"⚠️  restore pre-flight skipped: {_e}")
 
 # ── Rich logging: colored output + better tracebacks ──
 from utils.logging_config import setup_logging
@@ -113,19 +221,33 @@ if _prefs_path.exists():
         #
         # The migration (run above, BEFORE this) is what guarantees the keys are already in
         # the new shape — a v3-or-older file still stores mlx_main_model etc.
+        # Every role is named, and every override of a config default is called out: this
+        # line printing only main+fast is how the MBP ran an 8-bit embedder for weeks unseen.
         for _k in ("main_model", "fast_model", "vision_model", "image_model", "embedding_model"):
             if _default_combo.get(_k):
+                if _default_combo[_k] != getattr(settings, _k):
+                    print(f"[SafeStart] ⚠️ user_preferences.json overrides {_k}: "
+                          f"{getattr(settings, _k)} → {_default_combo[_k]}")
                 setattr(settings, _k, _default_combo[_k])
-        print(f"[SafeStart] Applied user default combo: "
-              f"main={settings.main_model} fast={settings.fast_model}")
+        print("[SafeStart] Models: " + " ".join(
+            f"{_k.replace('_model', '')}={getattr(settings, _k)}"
+            for _k in ("main_model", "fast_model", "vision_model", "image_model", "embedding_model")))
     except Exception as e:
         print(f"[SafeStart] Failed to load user preferences, using built-in defaults: {e}")
+
+# Compact Macs: the fast role shares the main model (LB-1) — after the saved choices are
+# restored (or not: a fresh install needs it most), before anything loads a model.
+from services.model_profile import apply_at_startup as _apply_profile
+_apply_profile()
 
 from utils.tasks import safe_create_task
 from utils.diagnostics import install_signal_handlers, start_heartbeat, stop_heartbeat, record_endpoint
 
 # Layer 1: Install crash signal handlers before anything else
 install_signal_handlers()
+# Force Quit / a crash of the app skips its backend cleanup; stop with it anyway.
+from utils import parent_watch as _parent_watch
+_parent_watch.start()
 
 # ── SQLite migration: MUST run before store singletons are created ──────────
 # Stores read settings.use_sqlite at import time and cache it. If we delay
@@ -157,7 +279,7 @@ from storage.findings_store import init_findings_store
 init_findings_store(settings.data_dir)
 
 # NOW import API modules — stores will read the (possibly corrected) use_sqlite flag
-from api import notebooks, sources, chat, skills, audio, source_viewer, web, settings as settings_api, embeddings, timeline, export, reindex, memory, graph, constellation_ws, updates, content, exploration, quiz, visual, writing, voice, site_search, contradictions, credentials, browser, browser_transform, audio_llm, rag_health, health_portal, jobs, agent_browser, rlm, curator, collector, source_discovery, people, video, evaluator, flashcards, canvas_notes as canvas_notes_api, scan as scan_api, comparison, correspondent as correspondent_api, synthesis as synthesis_api, articles as articles_api, system as system_api, signals as signals_api, incidents as incidents_api, canvas as canvas_api, folders as folders_api, companions as companions_api, openai_compat
+from api import notebooks, sources, chat, skills, audio, source_viewer, web, settings as settings_api, embeddings, timeline, export, reindex, memory, graph, constellation_ws, updates, content, exploration, quiz, visual, writing, voice, site_search, contradictions, credentials, browser, browser_transform, audio_llm, rag_health, health_portal, jobs, agent_browser, rlm, curator, collector, source_discovery, people, video, evaluator, flashcards, canvas_notes as canvas_notes_api, scan as scan_api, comparison, correspondent as correspondent_api, synthesis as synthesis_api, articles as articles_api, system as system_api, signals as signals_api, incidents as incidents_api, canvas as canvas_api, folders as folders_api, companions as companions_api, openai_compat, openai_audio, memory_bridge as memory_bridge_api, sync as sync_api
 from api.capture import capture_router
 from api.updates import check_if_upgrade, set_startup_status, mark_startup_complete, CURRENT_VERSION
 from services.model_warmup import initial_warmup, start_warmup_task, stop_warmup_task
@@ -185,7 +307,101 @@ async def _run_startup_tasks():
         else:
             await asyncio.sleep(MIN_STEP_MS)
 
+    # ── Post-swap file check (LB-11) ──────────────────────────────────────
+    # Fire and forget, off the loop: hashing a large corpus must not hold up
+    # startup (the wizard polls for the result).
+    try:
+        from services import encryption_verify
+        if encryption_verify.needs_files():
+            safe_create_task(asyncio.to_thread(encryption_verify.verify_files),
+                             name="lb11-verify-files")
+    except Exception as _e:
+        logger.warning(f"[main] post-swap file check skipped: {_e}")
+
+    # ── Data health (LB-10 item 6) ────────────────────────────────────────
+    # Before the schema ledger, before anything writes. If the last run did not
+    # exit cleanly, every database gets an integrity_check first. Non-fatal on
+    # purpose: a corrupt database should stop the USER, not the process — if the
+    # app refuses to boot they cannot reach the restore screen, which is the one
+    # thing that would help.
+    try:
+        from services import data_health
+        _integrity = await asyncio.to_thread(data_health.startup_check)
+        if _integrity and not _integrity.get("ok"):
+            print("=" * 72)
+            print("⚠️  DATABASE INTEGRITY PROBLEMS after an unclean shutdown")
+            for _db, _why in (_integrity.get("problems") or {}).items():
+                print(f"    {_db}: {_why}")
+            print("    Restore from a backup — Settings → Data Health.")
+            print("=" * 72)
+    except Exception as _e:
+        logger.warning(f"[main] data-health startup check skipped: {_e}")
+
+    # ── Data schema (LB-10) ───────────────────────────────────────────────
+    # Before anything reads or writes a format. A failure here does NOT advance
+    # the ledger and does not stop the app: the honest state is "running at the
+    # version the data actually reached", which /health and Data Health report,
+    # rather than a half-migrated store the app pretends is current.
+    try:
+        from services import migration_ledger
+        _mig = await asyncio.to_thread(migration_ledger.run_pending)
+        if _mig.get("ran"):
+            print(f"[Startup] applied migrations: {', '.join(_mig['ran'])}")
+        if _mig.get("failed"):
+            print(f"[Startup] ⚠️  migration {_mig['failed']} FAILED: {_mig['error']}")
+            logger.error("[main] migration %s failed: %s", _mig["failed"], _mig["error"])
+    except Exception as _e:
+        logger.error(f"[main] migration ledger could not run (non-fatal): {_e}")
+
+    # ── Key custody (K-1) ─────────────────────────────────────────────────
+    # Run the credential migration and the legacy-backup cleanup HERE rather
+    # than lazily on first locker use. Both were originally triggered by
+    # `credential_locker._ensure_initialized()`, which only fires when
+    # something actually reads a credential — so on a machine with no IMAP
+    # account and no saved site login, neither ever ran. The 2026-09-29 build
+    # proved it: every cleanup gate passed and the `.pre-keyvault` file was
+    # still sitting there two launches later.
+    #
+    # That matters because those backups are encrypted with the OLD key —
+    # PBKDF2(hostname + username, a literal) — every input of which is public.
+    # Leaving them undoes K-1 for exactly the data K-1 protects, and waiting
+    # for the user to happen to open Settings is not a policy.
+    #
+    # Never fatal: a locker that cannot initialize must not stop the app.
+    try:
+        from services.credential_locker import credential_locker
+        await asyncio.to_thread(credential_locker._ensure_initialized)
+    except Exception as _e:
+        print(f"[Startup] credential key custody deferred: {_e}")
+
+    # Same shape, same reason: the legacy shared companion key is a PLAINTEXT
+    # secret on disk, and its migration used to run only inside
+    # `companion_keys.verify()` — i.e. only once a companion happened to call
+    # in. On this machine that fired by luck; on one with no companion
+    # connected it would have sat there indefinitely.
+    try:
+        from services import companion_keys
+        await asyncio.to_thread(companion_keys.migrate_legacy_key)
+    except Exception as _e:
+        print(f"[Startup] companion key migration deferred: {_e}")
+
     # ── Banner ────────────────────────────────────────────────────────────
+    # LB-10 item 7: an unfrozen process pointed at the real data dir has to say
+    # so, every time. The hazard was never doing it deliberately — it was doing
+    # it by accident and not noticing until something had been overwritten.
+    try:
+        import config as _config
+        if getattr(_config, "DEV_USING_PRODUCTION_DATA", False):
+            print("=" * 72)
+            print("⚠️  DEV BUILD IS USING THE PRODUCTION DATA DIRECTORY")
+            print(f"    {settings.data_dir}")
+            print("    Writes here affect your real notebooks, credentials and keys.")
+            print("    Unset LOCALBOOK_USE_PRODUCTION_DATA to use the dev sandbox.")
+            print("=" * 72)
+            logger.warning("[main] DEV BUILD USING PRODUCTION DATA DIR: %s", settings.data_dir)
+    except Exception:
+        pass
+
     print(f"🚀 LocalBook API starting on {settings.api_host}:{settings.api_port}")
     print(f"📁 Data directory: {settings.data_dir}")
     print(f"🔥 Models: {settings.main_model} (main), {settings.fast_model} (fast)")
@@ -337,6 +553,30 @@ async def _run_startup_tasks():
         # Companion update checks — pinned installers must not mean frozen ones.
         from services.companion_updates import companion_update_checker
         companion_update_checker.start_background_task()
+
+        # LB-10: nightly backup + restore drill. Does nothing until a
+        # destination is set in Settings — there is no safe default.
+        from services.backup_scheduler import nightly_backup
+        nightly_backup.start()
+        # Research jobs a companion started must survive a restart (Jocasta contract).
+        try:
+            from services import research_jobs
+            _resumed = await asyncio.to_thread(research_jobs.resume_interrupted)
+            for _job_id in _resumed:
+                research_jobs.launch(_job_id)          # on the loop, not the worker thread
+            if _resumed:
+                logger.info(f"[main] resumed {len(_resumed)} research job(s)")
+        except Exception as _e:
+            logger.warning(f"[main] research job resume skipped: {_e}")
+        # LB-11: lock if the encrypted volume vanishes mid-session.
+        from services.volume_watch import volume_watch
+        volume_watch.start()
+        # LB-12: resume sync if this Mac had it on (listener + loop).
+        try:
+            from services.sync import service as _sync_service
+            await _sync_service.startup()
+        except Exception as _e:
+            logger.warning(f"[main] sync startup skipped: {_e}")
         from services.memory_manager import memory_manager
         safe_create_task(memory_manager.start_scheduler(), name="memory-scheduler")
         print("📝 Memory consolidation manager started")
@@ -387,6 +627,11 @@ async def _run_startup_tasks():
                     "AND (json_extract(metadata_json, '$.remediated_shallow_scrape') IS NULL "
                     "     OR json_extract(metadata_json, '$.remediated_shallow_scrape') = false)"
                 )
+                # The shared connection's implicit transaction must end HERE: left
+                # open, it write-locked localbook.db for every other connection on a
+                # fresh install's first launch (found 2026-10-01 — sync, the engine
+                # and every worker thread got "database is locked").
+                conn.commit()
                 if cursor.rowcount > 0:
                     print(f"🔧 Migration: marked {cursor.rowcount} previously-attempted shallow sources as remediated")
                 sentinel.write_text("done")
@@ -487,7 +732,33 @@ async def lifespan(app: FastAPI):
     except Exception as _e:
         logger.warning(f"[main] curator event bus start failed (non-fatal): {_e}")
 
+    # LB-2: the MCP app mounted at /mcp carries its OWN lifespan, and that is
+    # what starts its session manager. Mounting without running it gives a
+    # server that accepts a connection and then fails at runtime. Entered here
+    # and exited on the way out, around the same yield as everything else.
+    #
+    # NOTE this is fastmcp 2.x, where `http_app()` returns a Starlette app with
+    # a lifespan. The older low-level SDK's `session_manager.run()` does not
+    # exist on this version.
+    _mcp_lifespan = None
+    try:
+        from services.mcp_server import lifespan_context as _mcp_lifespan_context
+        _mcp_lifespan = _mcp_lifespan_context(app)
+        await _mcp_lifespan.__aenter__()
+        logger.info("[main] MCP server ready at /mcp")
+    except Exception as _e:
+        # Non-fatal: LocalBook itself must still start. A companion that cannot
+        # reach /mcp gets a clear failure; the user's app does not.
+        _mcp_lifespan = None
+        logger.error(f"[main] MCP server failed to start (non-fatal): {_e}")
+
     yield
+
+    if _mcp_lifespan is not None:
+        try:
+            await _mcp_lifespan.__aexit__(None, None, None)
+        except Exception as _e:
+            logger.warning(f"[main] MCP shutdown: {_e}")
     
     # Wait for startup task to complete if still running
     if _startup_task and not _startup_task.done():
@@ -554,6 +825,14 @@ async def lifespan(app: FastAPI):
     # Stop diagnostics heartbeat
     stop_heartbeat()
     
+    # LB-10 item 6: written LAST, after the WAL flush. Its ABSENCE on the next
+    # launch is what says the previous run did not get this far.
+    try:
+        from services import data_health
+        data_health.mark_clean_shutdown()
+    except Exception as _e:
+        print(f"⚠️ could not record a clean shutdown: {_e}")
+
     print("👋 LocalBook API shutdown complete")
 
 app = FastAPI(
@@ -604,6 +883,10 @@ from utils.auth_middleware import AppTokenAuthMiddleware
 # (set AUTH_ENFORCE=false in ~/Library/Application Support/LocalBook/.env)
 # while diagnosing 401 regressions, then flip back when fixed.
 app.add_middleware(AppTokenAuthMiddleware, enforce=settings.auth_enforce)
+# LB-11: added LAST so Starlette makes it OUTERMOST — it must not be bypassable
+# by any other middleware, and it costs nothing once the gate is open.
+from services.volume_gate import LockedGateMiddleware as _LockedGateMiddleware
+app.add_middleware(_LockedGateMiddleware)
 logger.info(f"[main] auth middleware enforce={settings.auth_enforce}")
 
 # CORS middleware — added LAST so it's the OUTERMOST wrapper. This is
@@ -659,11 +942,56 @@ app.include_router(timeline.router, prefix="/timeline", tags=["timeline"])
 app.include_router(export.router, prefix="/export", tags=["export"])
 app.include_router(reindex.router, prefix="/reindex", tags=["reindex"])
 app.include_router(folders_api.router, prefix="/folders", tags=["linked-folders"])
+# Any error a route did not handle: written to backend.log WITH its traceback, and
+# returned as a JSON `detail` the UI can show. Before this, FastAPI answered a bare
+# "Internal Server Error" and the traceback went only to the console — on
+# 2026-10-01 the Encrypt banner failed on the MBP with "Could not generate a
+# recovery phrase" and backend.log said nothing at all (a missing package).
+from fastapi import Request as _Request
+from fastapi.responses import JSONResponse as _JSONResponse
+
+
+@app.exception_handler(Exception)
+async def _unhandled_error(request: _Request, exc: Exception):
+    # exc_info=exc, not logger.exception(): a handler is not inside the `except`,
+    # so .exception() would log the message and silently drop the traceback.
+    logger.error(f"[main] unhandled error on {request.method} {request.url.path}: {exc!r}",
+                 exc_info=exc)
+    return _JSONResponse(status_code=500,
+                         content={"detail": f"{type(exc).__name__}: {exc}"[:500]})
+
+
+# LB-4 before companions + memory: Starlette matches in definition order, and a
+# later wildcard on either router must not swallow these (cf. /companions/keys).
+app.include_router(memory_bridge_api.router, tags=["memory-bridge"])
+app.include_router(sync_api.router)
 app.include_router(companions_api.router, tags=["companions"])
+# K-1: recovery-phrase setup and key recovery. Without this the move off
+# the old machine-derived key is a DOWNGRADE in durability — see api/keyvault.py.
+from api import keyvault as keyvault_api
+app.include_router(keyvault_api.router, tags=["keyvault"])
+# LB-10: backup + verify. The destination is always outside the data dir.
+from api import backup as backup_api
+app.include_router(backup_api.router, tags=["backup"])
+# LB-11: the encrypted volume and the recovery surface. These stay reachable
+# while the app is locked — they are how the user gets back in.
+from api import volume as volume_api
+app.include_router(volume_api.router, tags=["volume"])
 # OpenAI-compatible surface so companion tools can use LocalBook's engine
 # instead of loading a second copy of the same model. Auth is the companion
 # key, checked inside the router (see utils/auth_middleware EXEMPT_PREFIXES).
 app.include_router(openai_compat.router, prefix="/v1", tags=["openai-compat"])
+app.include_router(openai_audio.router, prefix="/v1", tags=["openai-compat"])
+# LB-2: MCP for agent companions (Jocasta). Loopback-only, and gated on a
+# companion key carrying scope `mcp` — both enforced in the ASGI middleware
+# inside services/mcp_server.py, not here. Its lifespan is entered above.
+try:
+    from services.mcp_server import ExactMountPath, get_app as _mcp_app
+    app.mount("/mcp", _mcp_app())
+    # Exactly `/mcp` (no slash) must not 307 — Hermes posts there.
+    app.add_middleware(ExactMountPath, path="/mcp")
+except Exception as _e:
+    logger.error(f"[main] could not mount /mcp (non-fatal): {_e}")
 app.include_router(memory.router, tags=["memory"])
 app.include_router(graph.router, tags=["knowledge-graph"])
 app.include_router(constellation_ws.router, tags=["constellation"])
@@ -712,8 +1040,70 @@ async def root():
 
 @app.get("/health")
 async def health():
-    """Health check endpoint"""
-    return {"status": "healthy"}
+    """Health check endpoint.
+
+    Stays cheap and never raises: the Tauri shell polls this for readiness, and
+    it is exempt from the app token, so anything slow or throwing here shows up
+    as "LocalBook won't start".
+    """
+    out = {"status": "healthy"}
+    try:
+        from services.model_sizing import (
+            RESIDENT_RESERVE_GB, budget_gb, external_reserve_gb, working_set_gb,
+        )
+        # LB-1: what LocalBook thinks it may use, and why. Three numbers rather
+        # than one, because "budget 6.7 GB" on a 48 GB Mac is alarming until you
+        # can see that 26 of it was deliberately handed to something else.
+        out["memory"] = {
+            "working_set_gb": round(working_set_gb(), 2),
+            "resident_reserve_gb": RESIDENT_RESERVE_GB,
+            "external_reserve_gb": external_reserve_gb(),
+            "budget_gb": budget_gb(),
+        }
+        # Read at the TOP level by companions that share the GPU: a companion's memory
+        # governor sizes its own models from `resident_gb` (model-agnostic — whatever
+        # runs alongside LocalBook on this Mac).
+        out["budget_gb"] = out["memory"]["budget_gb"]
+        out["reserve_gb"] = out["memory"]["external_reserve_gb"]
+    except Exception as exc:
+        out["memory"] = {"error": str(exc)}
+    try:
+        import sys
+        # What LocalBook holds on the GPU right now: MLX active memory plus its
+        # buffer cache — both are unavailable to anything else. Only if MLX is
+        # already loaded: /health must stay cheap, and 0 is the truth before then.
+        if "mlx.core" in sys.modules:
+            mx = sys.modules["mlx.core"]
+            active = mx.get_active_memory()
+            try:
+                active += mx.get_cache_memory()
+            except Exception:
+                pass
+            out["resident_gb"] = round(active / 1024 ** 3, 2)
+        else:
+            out["resident_gb"] = 0.0
+    except Exception as exc:
+        out["resident_gb"] = None
+        out["resident_error"] = str(exc)
+    try:
+        from services import migration_ledger
+        # The head is what two LB-12 peers compare before syncing: the one that
+        # is behind pauses rather than applying records it cannot interpret.
+        out["schema"] = {
+            "version": migration_ledger.schema_version(),
+            "ledger_head": migration_ledger.head(),
+        }
+    except Exception as exc:
+        out["schema"] = {"error": str(exc)}
+    try:
+        from services.audio_codec import codec_ok
+        # LB-3: speech needs no Homebrew. A False here on a built app means the
+        # PyAV wheel did not make it into the bundle.
+        out["codec_ok"] = codec_ok()
+    except Exception as exc:
+        out["codec_ok"] = False
+        out["codec_error"] = str(exc)
+    return out
 
 if __name__ == "__main__":
     import uvicorn

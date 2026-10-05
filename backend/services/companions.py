@@ -54,52 +54,58 @@ _KEY_FILE = "companion_key"
 
 
 # ── the companion key ───────────────────────────────────────────────────────
-
-def _key_path() -> Path:
-    return Path(settings.data_dir) / _KEY_FILE
-
-
-def get_companion_key(create: bool = True) -> Optional[str]:
-    """The long-lived key companions use against `/v1`. 0600, created on demand."""
-    p = _key_path()
-    try:
-        if p.exists():
-            key = p.read_text().strip()
-            if key:
-                return key
-        if not create:
-            return None
-        key = "lb-" + secrets.token_urlsafe(32)
-        p.parent.mkdir(parents=True, exist_ok=True)
-        fd = os.open(str(p), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        try:
-            os.write(fd, key.encode("ascii"))
-        finally:
-            os.close(fd)
-        logger.info("[companions] issued a new companion key")
-        return key
-    except Exception as e:
-        logger.warning(f"[companions] could not read/create companion key: {e}")
-        return None
+#
+# LB-0 (2026-09-29): keys moved to `services/companion_keys.py` — one per
+# companion, hashed at rest, scoped, independently revocable. What lives here
+# now is only the thin seam the rest of this module and `/v1` already call.
+#
+# The old model was ONE plaintext key shared by every companion. It could not
+# express "the recorder may use the model but not read my notebooks", and
+# revoking it disconnected everything at once. Both mattered the moment a second
+# companion (Jocasta) and MCP arrived.
 
 
-def verify_companion_key(provided: str) -> bool:
-    import hmac
-    expected = get_companion_key(create=False)
-    if not expected or not provided:
-        return False
-    return hmac.compare_digest(expected, provided)
+def issue_companion_key(companion_id: str, scopes: Optional[List[str]] = None) -> str:
+    """Mint a key and return it once. Rotates if one already exists."""
+    from services import companion_keys
+    return companion_keys.issue(companion_id, scopes)
 
 
-def revoke_companion_key() -> None:
-    """Invalidate every connected companion at once. The next `/v1` call fails,
-    and reconnecting reissues — which is the point of it being separate."""
-    try:
-        _key_path().unlink(missing_ok=True)
-        logger.info("[companions] companion key revoked")
-    except Exception as e:
-        logger.warning(f"[companions] revoke failed: {e}")
+def verify_companion_key(provided: str):
+    """Return the calling CompanionIdentity, or None.
 
+    NOTE the changed return type: this used to be a bool. Callers must check
+    scopes now — `verify_companion_key(t)` being truthy only says the key is
+    real, not that it may do the thing being asked.
+    """
+    from services import companion_keys
+    return companion_keys.verify(provided)
+
+
+def revoke_companion_key(companion_id: Optional[str] = None) -> None:
+    """Revoke one companion, or every companion when given nothing.
+
+    The no-argument form keeps the old "disconnect everything" behaviour that
+    Settings → Companions already exposes.
+    """
+    from services import companion_keys
+    if companion_id:
+        companion_keys.revoke(companion_id)
+    else:
+        companion_keys.revoke_all()
+
+
+def companion_scopes(manifest: Dict[str, Any]) -> List[str]:
+    """Scopes a manifest asks for, defaulting to the narrowest useful grant.
+
+    A manifest that declares nothing gets `llm` — what every companion needed
+    before scopes existed. Widening is opt-in, per tool, and unknown scopes are
+    refused at issue time rather than ignored.
+    """
+    declared = manifest.get("scopes")
+    if isinstance(declared, list) and declared:
+        return [str(s) for s in declared]
+    return ["llm"]
 
 # ── manifests ───────────────────────────────────────────────────────────────
 
@@ -445,7 +451,7 @@ def fetch_and_verify_script(manifest: Dict[str, Any]) -> Dict[str, Any]:
 
 # ── configuration: we own named keys, nothing else ──────────────────────────
 
-def _substitutions() -> Dict[str, str]:
+def _substitutions(companion_key: str = "") -> Dict[str, str]:
     port = getattr(settings, "api_port", 8000)
     mic = ""
     try:
@@ -462,7 +468,10 @@ def _substitutions() -> Dict[str, str]:
         "localbook_openai_base": f"http://127.0.0.1:{port}/v1",
         "localbook_main_model": settings.main_model or "",
         "localbook_fast_model": settings.fast_model or "",
-        "companion_key": get_companion_key() or "",
+        # Empty unless the caller is actually WRITING config. Keys are
+        # hashed at rest, so there is nothing to read back — see
+        # desired_config below for why that matters.
+        "companion_key": companion_key,
     }
 
 
@@ -472,15 +481,22 @@ def _render(value: str, subs: Dict[str, str]) -> str:
     return re.sub(r"\{(\w+)\}", repl, str(value))
 
 
-def desired_config(manifest: Dict[str, Any]) -> Dict[str, str]:
+def desired_config(manifest: Dict[str, Any], companion_key: str = "") -> Dict[str, str]:
     """The keys we own, resolved. Keys that resolve to nothing are DROPPED.
 
     Writing MIC_DEVICE="" on a Mac with no microphone would replace the
     companion's own fallback chain with a guaranteed failure. Leaving their
     value alone is strictly better than ours when we have nothing to offer.
+
+    ⚠️ This does NOT issue a companion key, and must not start doing so. Keys are
+    hashed at rest (LB-0), so the only way to produce one is to mint a new one —
+    and `is_connected` calls this on every status poll. Issuing here would rotate
+    a working companion's key every few seconds. `write_config` issues; this
+    renders API_KEY as empty, which drops it, which is harmless because
+    `is_connected` only compares BASE_URL.
     """
     cfg = manifest.get("configure") or {}
-    subs = _substitutions()
+    subs = _substitutions(companion_key)
     rendered = {k: _render(v, subs) for k, v in (cfg.get("keys") or {}).items()}
     return {k: v for k, v in rendered.items() if str(v).strip()}
 
@@ -532,7 +548,17 @@ def write_config(manifest: Dict[str, Any]) -> Dict[str, Any]:
         return {"ok": False,
                 "error": f"{p} does not exist — install the tool first, then connect it."}
 
-    desired = desired_config(manifest)
+    # Issue HERE, and only here: this is the one moment we can write the
+    # plaintext somewhere the companion will read it.
+    try:
+        key = issue_companion_key(
+            manifest.get("id") or "companion", companion_scopes(manifest)
+        )
+    except Exception as e:
+        logger.warning(f"[companions] could not issue a companion key: {e}")
+        return {"ok": False, "error": "could not issue a companion key"}
+
+    desired = desired_config(manifest, companion_key=key)
     if not desired.get("API_KEY"):
         return {"ok": False, "error": "could not issue a companion key"}
 
@@ -1419,14 +1445,39 @@ def remove_extra(manifest: Dict[str, Any], extra_id: str) -> Dict[str, Any]:
 # ── control ─────────────────────────────────────────────────────────────────
 
 def run_control(manifest: Dict[str, Any], action: str) -> Dict[str, Any]:
-    """Start or stop the companion via the command it publishes."""
+    """Start or stop the companion via the command it publishes.
+
+    Start goes through the companion's own helper app when it ships one
+    (`control.launch_app`), with `open -a` — exactly what its menu-bar plugin
+    does. macOS then attributes the microphone to that helper, which carries the
+    mic entitlement and asks for it, rather than to LocalBook. `open` returns at
+    once; the recording runs on its own.
+
+    Without a helper, the start command records in the FOREGROUND for the whole
+    meeting, so it is started and left running (a child of the backend, so the
+    mic prompt still has an app to attribute to) — never waited on, which would
+    kill it at the timeout.
+    """
     control = manifest.get("control") or {}
+    if action == "start" and is_running(manifest):
+        return {"ok": True, "output": "Already recording.", "error": None}
+    app = control.get("launch_app") if action == "start" else None
+    if app and Path(app).expanduser().is_dir():
+        try:
+            proc = _run_as_user(["/usr/bin/open", "-a", str(Path(app).expanduser())], timeout=30)
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+        if proc.returncode != 0:
+            return {"ok": False, "error": (proc.stderr or "").strip()[:200] or "could not open the recorder"}
+        return {"ok": True, "output": "Recording started.", "error": None}
     binary = control.get(action)
     if not binary:
         return {"ok": False, "error": f"'{action}' is not supported by this companion"}
     resolved = _which(binary)
     if not resolved:
         return {"ok": False, "error": f"{binary} is not installed"}
+    if action == "start":
+        return _start_detached(resolved, binary)
     try:
         proc = _run_as_user([resolved], timeout=30)
         ok = proc.returncode == 0
@@ -1437,6 +1488,38 @@ def run_control(manifest: Dict[str, Any], action: str) -> Dict[str, Any]:
         return {"ok": False, "error": f"{binary} did not return within 30s"}
     except Exception as e:
         return {"ok": False, "error": str(e)}
+
+
+def _start_detached(resolved: str, binary: str, settle_s: float = 2.0) -> Dict[str, Any]:
+    """Run a long-lived start command; report only an immediate failure."""
+    import threading
+    from utils.subprocess_env import clean_child_env
+
+    try:
+        proc = subprocess.Popen([resolved], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                stderr=subprocess.PIPE, env=clean_child_env({}))
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+    try:
+        code = proc.wait(timeout=settle_s)
+    except subprocess.TimeoutExpired:
+        threading.Thread(target=proc.communicate, daemon=True).start()   # reap when it ends
+        return {"ok": True, "output": "Recording started.", "error": None}
+    err = (proc.stderr.read().decode(errors="replace") if proc.stderr else "").strip()
+    if code == 0:                     # returned quickly and cleanly (e.g. "already recording")
+        return {"ok": True, "output": err[:400], "error": None}
+    return {"ok": False, "error": err[:200] or f"{binary} exited {code}"}
+
+
+def recording_since(manifest: Dict[str, Any]) -> Optional[float]:
+    """When the current recording began — the pidfile is written at start."""
+    pidfile = ((manifest.get("control") or {}).get("state") or {}).get("pidfile")
+    if not pidfile or not is_running(manifest):
+        return None
+    try:
+        return Path(pidfile).expanduser().stat().st_mtime
+    except OSError:
+        return None
 
 
 # ── the view the UI renders ─────────────────────────────────────────────────
@@ -1492,6 +1575,7 @@ def status(manifest: Dict[str, Any]) -> Dict[str, Any]:
         "using_model": read_config(manifest).get("LLM") if connected else None,
         "install": install_source(manifest),
         "can_control": bool(manifest.get("control", {}).get("start")),
+        "recording_since": recording_since(manifest) if running else None,
         "has_checks": bool(manifest.get("verify")),
         "extras": extras_status(manifest),
         "audio": _audio_summary(manifest),

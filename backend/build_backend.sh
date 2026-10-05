@@ -49,6 +49,21 @@ if ! python -c "import pyinstaller" 2>/dev/null; then
     pip install -q -r requirements.txt
 fi
 
+# Packages the app cannot work without, imported LAZILY — so a bundle missing one
+# starts, passes /health, and fails only when that feature is used. 2026-10-01: a
+# fresh MBP build shipped without `mnemonic` (the Encrypt banner's recovery phrase)
+# and `fastmcp` (Jocasta's /mcp). Install the lock file, then refuse to build
+# without them rather than ship a quietly broken app.
+pip install -q -r requirements.txt
+REQUIRED_IMPORTS="mnemonic fastmcp cryptography av librosa dacite espeakng_loader"
+for mod in $REQUIRED_IMPORTS; do
+    if ! python -c "import $mod" 2>/dev/null; then
+        echo -e "${RED}✗ Required package '$mod' is not importable in the build venv — refusing to build.${NC}"
+        echo -e "${RED}  Fix: backend/.venv/bin/pip install -r backend/requirements.txt${NC}"
+        exit 1
+    fi
+done
+
 # kokoro-mlx: Kokoro-82M TTS on Apple Silicon via MLX.
 # Install --no-deps because it declares misaki>=0.9.4 but PyPI only has 0.7.4
 # (works fine at runtime). Also avoids pulling unnecessary transitive deps.
@@ -62,6 +77,20 @@ if ! python -c "import kokoro_mlx; import misaki; import soundfile" 2>/dev/null;
     echo -e "${RED}⚠ WARNING: kokoro-mlx TTS packages not importable after install.${NC}"
     echo -e "${RED}  Audio generation (podcasts, video narration) will not work.${NC}"
     echo -e "${RED}  Try: pip install --no-deps kokoro-mlx && pip install misaki soundfile${NC}"
+fi
+
+# parakeet-mlx: LB-3 speech-to-text (Parakeet TDT v3). --no-deps because it declares
+# numpy>=2.2.5 and the stack is validated on numpy 1.26 — it runs fine there (verified
+# 2026-09-30). Its real needs (librosa<1.0, dacite, huggingface-hub, mlx) are in
+# requirements.in. PINNED, with the same version-aware guard as mlx-lm below.
+PARAKEET_VER="0.5.2"
+if ! python -c "import importlib.metadata as m; assert m.version('parakeet-mlx')=='$PARAKEET_VER'" 2>/dev/null; then
+    echo -e "${YELLOW}Installing parakeet-mlx==$PARAKEET_VER (--no-deps, LB-3 speech-to-text)...${NC}"
+    pip install -q --no-deps "parakeet-mlx==$PARAKEET_VER" 2>/dev/null || echo -e "${YELLOW}  parakeet-mlx install warning — STT falls back to whisper${NC}"
+fi
+if ! python -c "import parakeet_mlx, librosa, dacite, av" 2>/dev/null; then
+    echo -e "${RED}⚠ WARNING: speech packages (parakeet-mlx / librosa / dacite / av) not importable.${NC}"
+    echo -e "${RED}  Transcription falls back to whisper; /v1/audio and codec_ok need av.${NC}"
 fi
 
 # mlx-lm / mlx-vlm: Wave 9 in-process MLX LLM engine (opt-in, dual-engine).
@@ -168,6 +197,17 @@ python -W ignore -m PyInstaller \
     --add-data="$SCRIPT_DIR/config.py:." \
     --hidden-import=api \
     --hidden-import=api.openai_compat \
+    --hidden-import=api.openai_audio \
+    --hidden-import=services.audio_codec \
+    --hidden-import=services.speech_to_text \
+    --hidden-import=services.mlx_asr \
+    --hidden-import=api.memory_bridge \
+    --hidden-import=services.memory_bridge \
+    --hidden-import=storage.companion_memory \
+    --hidden-import=services.mcp_tools_more \
+    --hidden-import=services.research_jobs \
+    --hidden-import=api.sync \
+    --collect-submodules=services.sync \
     --hidden-import=api.companions \
     --hidden-import=api.folders \
     --hidden-import=api.agent_browser \
@@ -269,6 +309,24 @@ python -W ignore -m PyInstaller \
     --hidden-import=services.mlx_download \
     --hidden-import=services.stuck_source_recovery \
     --hidden-import=services.keychain_manager \
+    --hidden-import=services.keyvault \
+    --hidden-import=api.keyvault \
+    --hidden-import=services.mcp_server \
+    --hidden-import=services.event_feed \
+    --hidden-import=services.model_sizing \
+    --hidden-import=services.migration_ledger \
+    --hidden-import=services.backup_service \
+    --hidden-import=services.restore_service \
+    --hidden-import=services.backup_scheduler \
+    --hidden-import=services.data_health \
+    --hidden-import=services.volume_service \
+    --hidden-import=services.volume_gate \
+    --hidden-import=api.volume \
+    --hidden-import=services.encryption_migration \
+    --hidden-import=api.backup \
+    --hidden-import=services.companion_keys \
+    --hidden-import=services.companion_audit \
+    --hidden-import=utils.url_guard \
     --hidden-import=services.shallow_scrape_remediation \
     --hidden-import=services.svg_templates \
     --hidden-import=services.template_scorer \
@@ -336,10 +394,19 @@ python -W ignore -m PyInstaller \
     --collect-all=sentence_transformers \
     --collect-all=evaluator \
     --collect-all=kokoro_mlx \
+    --collect-all=mnemonic \
+    --collect-all=fastmcp \
+    --collect-all=mcp \
+    --collect-all=fakeredis \
+    --collect-all=lupa \
     --collect-all=trafilatura \
     --collect-all=justext \
     --collect-all=mlx \
     --collect-all=mlx_whisper \
+    --collect-all=parakeet_mlx \
+    --collect-all=av \
+    --collect-all=librosa \
+    --collect-all=dacite \
     --collect-all=mlx_lm \
     --collect-all=mlx_vlm \
     --collect-all=mlx_embeddings \
@@ -350,6 +417,7 @@ python -W ignore -m PyInstaller \
     --collect-all=spacy \
     --collect-all=en_core_web_sm \
     --collect-all=phonemizer \
+    --collect-all=espeakng_loader \
     --collect-all=num2words \
     --collect-data=tld \
     --hidden-import=soundfile \

@@ -1,0 +1,340 @@
+"""K-1: migrating the credential locker off the machine-derived key.
+
+The old key was `PBKDF2(hostname + username, "LocalBook-Default-Key")` — every
+input public, and invalidated by renaming the Mac. These tests cover the move to
+the keyvault key, and in particular the ways it must refuse to proceed: the
+files hold the user's IMAP and SMTP passwords, and a half-finished migration
+that eats the only copy is the failure that actually matters.
+
+Isolation: `settings.data_dir` is a tmp_path and the keychain service name is a
+throwaway. `backend/.venv` resolves `settings.data_dir` to the REAL production
+data dir, so neither may be left at its default.
+"""
+
+import asyncio
+import base64
+import json
+import secrets
+import subprocess
+
+import pytest
+from cryptography.fernet import Fernet
+
+from services import keyvault
+from services.credential_locker import CredentialLocker
+
+
+@pytest.fixture
+def locker(tmp_path, monkeypatch):
+    service = f"LocalBook-keyvault-test-{secrets.token_hex(6)}"
+    monkeypatch.setattr(keyvault, "SERVICE_NAME", service)
+
+    from config import settings
+
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    real_run = subprocess.run
+    try:
+        yield CredentialLocker()
+    finally:
+        for purpose in keyvault.PURPOSES:
+            real_run(
+                ["security", "delete-generic-password", "-a", purpose, "-s", keyvault.service_name()],
+                capture_output=True,
+            )
+
+
+def _write_legacy(locker, payload: dict) -> bytes:
+    """Write credentials.enc exactly as a pre-K-1 build would have."""
+    legacy = Fernet(locker._derive_key())
+    blob = legacy.encrypt(json.dumps(payload).encode())
+    locker._data_dir.mkdir(parents=True, exist_ok=True)
+    locker._credentials_file.write_bytes(blob)
+    return blob
+
+
+IMAP_ENTRY = {
+    "imap:person@example.com": {
+        "site_domain": "imap:person@example.com",
+        "site_name": "IMAP: person@example.com",
+        "username": "person@example.com",
+        "password": "app-specific-password-that-must-survive",
+        "login_method": "imap_app_password",
+        "notes": json.dumps({"imap_host": "imap.example.com", "last_uid": 41}),
+    }
+}
+
+
+# ── the happy paths ─────────────────────────────────────────────────────────
+
+
+def test_a_fresh_install_claims_the_marker_without_migrating(locker):
+    result = locker.migrate_to_keyvault()
+    assert result["migrated"] is False
+    assert result["reason"] == "nothing to migrate"
+    assert locker._keyvault_marker.exists()
+
+
+def test_a_real_legacy_file_migrates_and_the_password_survives(locker):
+    _write_legacy(locker, IMAP_ENTRY)
+
+    result = locker.migrate_to_keyvault()
+    assert result["migrated"] is True
+    assert "credentials.enc" in result["files"]
+
+    # Readable under the NEW key...
+    new = Fernet(locker._keyvault_key())
+    restored = json.loads(new.decrypt(locker._credentials_file.read_bytes()))
+    assert (
+        restored["imap:person@example.com"]["password"]
+        == "app-specific-password-that-must-survive"
+    )
+
+    # ...and no longer under the old one.
+    with pytest.raises(Exception):
+        Fernet(locker._derive_key()).decrypt(locker._credentials_file.read_bytes())
+
+
+def test_the_original_is_kept(locker):
+    original = _write_legacy(locker, IMAP_ENTRY)
+    locker.migrate_to_keyvault()
+
+    kept = locker._credentials_file.with_suffix(".enc.pre-keyvault")
+    assert kept.exists()
+    assert kept.read_bytes() == original
+
+
+def test_auth_state_files_migrate_too(locker):
+    """social_auth reuses the locker's Fernet, so its .enc files move with it."""
+    _write_legacy(locker, IMAP_ENTRY)
+    auth_dir = locker._data_dir / "auth"
+    auth_dir.mkdir(parents=True, exist_ok=True)
+    state = {"cookies": [{"name": "session", "value": "abc"}]}
+    (auth_dir / "linkedin_state.enc").write_bytes(
+        Fernet(locker._derive_key()).encrypt(json.dumps(state).encode())
+    )
+
+    result = locker.migrate_to_keyvault()
+    assert sorted(result["files"]) == ["credentials.enc", "linkedin_state.enc"]
+
+    new = Fernet(locker._keyvault_key())
+    assert json.loads(new.decrypt((auth_dir / "linkedin_state.enc").read_bytes())) == state
+
+
+def test_migration_is_idempotent(locker):
+    _write_legacy(locker, IMAP_ENTRY)
+    assert locker.migrate_to_keyvault()["migrated"] is True
+
+    second = locker.migrate_to_keyvault()
+    assert second["migrated"] is False
+    assert second["reason"] == "already migrated"
+
+    # And it did not re-wrap an already-wrapped file.
+    new = Fernet(locker._keyvault_key())
+    assert json.loads(new.decrypt(locker._credentials_file.read_bytes())) == IMAP_ENTRY
+
+
+def test_the_locker_reads_and_writes_across_the_migration(locker):
+    _write_legacy(locker, IMAP_ENTRY)
+
+    async def exercise():
+        existing = await locker.get_credential("imap:person@example.com")
+        assert existing["password"] == "app-specific-password-that-must-survive"
+
+        await locker.add_credential(
+            site_domain="example.org",
+            site_name="Example",
+            username="someone",
+            password="hunter2",
+        )
+        fresh = CredentialLocker()  # a new process, reading what we just wrote
+        assert (await fresh.get_credential("example.org"))["password"] == "hunter2"
+        assert (await fresh.get_credential("imap:person@example.com")) is not None
+
+    asyncio.run(exercise())
+
+
+# ── the refusals ────────────────────────────────────────────────────────────
+
+
+def test_an_undecryptable_legacy_file_aborts_and_changes_nothing(locker):
+    """The renamed-Mac case. Better to stop than to write an empty store over it."""
+    locker._data_dir.mkdir(parents=True, exist_ok=True)
+    locker._credentials_file.write_bytes(b"not fernet ciphertext at all")
+
+    with pytest.raises(RuntimeError, match="cannot decrypt"):
+        locker.migrate_to_keyvault()
+
+    assert locker._credentials_file.read_bytes() == b"not fernet ciphertext at all"
+    assert not locker._keyvault_marker.exists()
+    assert not locker._credentials_file.with_suffix(".enc.pre-keyvault").exists()
+
+
+def test_it_fails_closed_when_the_keyvault_key_is_unavailable(locker, monkeypatch):
+    """It must NOT quietly fall back to the legacy key — that would undo K-1 and
+    say nothing."""
+    _write_legacy(locker, IMAP_ENTRY)
+    monkeypatch.setattr(
+        keyvault, "get_or_create", lambda purpose: (_ for _ in ()).throw(
+            keyvault.KeyVaultError("keychain is locked")
+        )
+    )
+
+    with pytest.raises(keyvault.KeyVaultError):
+        locker._ensure_initialized()
+
+    assert not locker._keyvault_marker.exists()
+    # Still decryptable with the legacy key: nothing was rewritten.
+    assert json.loads(
+        Fernet(locker._derive_key()).decrypt(locker._credentials_file.read_bytes())
+    ) == IMAP_ENTRY
+
+
+def test_a_partial_batch_leaves_every_original_in_place(locker, monkeypatch):
+    """One unreadable file in the batch must not half-migrate the others."""
+    _write_legacy(locker, IMAP_ENTRY)
+    auth_dir = locker._data_dir / "auth"
+    auth_dir.mkdir(parents=True, exist_ok=True)
+    (auth_dir / "broken_state.enc").write_bytes(b"corrupt")
+
+    with pytest.raises(RuntimeError, match="cannot decrypt"):
+        locker.migrate_to_keyvault()
+
+    # credentials.enc was decryptable, but nothing was swapped.
+    assert json.loads(
+        Fernet(locker._derive_key()).decrypt(locker._credentials_file.read_bytes())
+    ) == IMAP_ENTRY
+    assert not list(locker._data_dir.glob("*.keyvault-tmp"))
+    assert not list(auth_dir.glob("*.keyvault-tmp"))
+
+
+def test_the_legacy_key_is_still_the_public_value_it_always_was(locker):
+    """Guards the premise K-1 rests on. If this ever stops holding, the migration
+    path above can no longer read old files and needs revisiting."""
+    import getpass
+    import hashlib
+    import platform
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+
+    salt = hashlib.sha256(
+        f"{platform.node()}-{getpass.getuser()}-LocalBook-v1".encode()
+    ).digest()
+    expected = base64.urlsafe_b64encode(
+        PBKDF2HMAC(algorithm=hashes.SHA256(), length=32, salt=salt, iterations=100000)
+        .derive(b"LocalBook-Default-Key")
+    )
+    assert locker._derive_key() == expected
+
+
+# ── cleaning up the legacy backups ──────────────────────────────────────────
+#
+# The `.pre-keyvault` originals are encrypted with the OLD key, every input of
+# which is public. Leaving them behind undoes K-1 for exactly the data K-1 was
+# protecting. But they are the only way back until a recovery copy exists, so
+# the gating is what these tests are really about.
+
+
+def _set_up_recovery(locker, monkeypatch):
+    from services import keyvault
+
+    phrase = keyvault.generate_recovery_phrase()
+    keyvault.set_recovery_key(phrase)
+    keyvault.wrap_all()
+    return phrase
+
+
+def test_backups_are_kept_while_there_is_no_recovery_copy(locker):
+    """The one that matters: never delete the fallback before a way back exists."""
+    _write_legacy(locker, IMAP_ENTRY)
+    locker.migrate_to_keyvault()
+
+    result = locker.cleanup_legacy_backups()
+
+    assert result["deleted"] == []
+    assert "credentials.enc.pre-keyvault" in result["kept"]
+    assert "recovery" in result["reason"]
+    assert locker._credentials_file.with_suffix(".enc.pre-keyvault").exists()
+
+
+def test_backups_are_removed_once_recovery_is_configured(locker, monkeypatch):
+    _write_legacy(locker, IMAP_ENTRY)
+    locker.migrate_to_keyvault()
+    _set_up_recovery(locker, monkeypatch)
+
+    result = locker.cleanup_legacy_backups()
+
+    assert "credentials.enc.pre-keyvault" in result["deleted"]
+    assert not locker._credentials_file.with_suffix(".enc.pre-keyvault").exists()
+    # ...and the live file is untouched and still readable.
+    new = Fernet(locker._keyvault_key())
+    assert json.loads(new.decrypt(locker._credentials_file.read_bytes())) == IMAP_ENTRY
+
+
+def test_a_backup_is_kept_when_its_live_file_does_not_decrypt(locker, monkeypatch):
+    """Proving the migrated copy is GOOD, not merely present, before dropping
+    the only other copy."""
+    _write_legacy(locker, IMAP_ENTRY)
+    locker.migrate_to_keyvault()
+    _set_up_recovery(locker, monkeypatch)
+
+    locker._credentials_file.write_bytes(b"corrupted since migration")
+    result = locker.cleanup_legacy_backups()
+
+    assert result["deleted"] == []
+    assert "credentials.enc.pre-keyvault" in result["kept"]
+    assert locker._credentials_file.with_suffix(".enc.pre-keyvault").exists()
+
+
+def test_cleanup_before_migration_does_nothing(locker):
+    result = locker.cleanup_legacy_backups()
+    assert result["deleted"] == []
+    assert result["reason"] == "nothing to clean up"
+
+
+def test_cleanup_is_idempotent(locker, monkeypatch):
+    _write_legacy(locker, IMAP_ENTRY)
+    locker.migrate_to_keyvault()
+    _set_up_recovery(locker, monkeypatch)
+
+    assert locker.cleanup_legacy_backups()["deleted"]
+    second = locker.cleanup_legacy_backups()
+    assert second["deleted"] == []
+    assert second["reason"] == "nothing to clean up"
+
+
+def test_auth_backups_are_cleaned_too(locker, monkeypatch):
+    _write_legacy(locker, IMAP_ENTRY)
+    auth_dir = locker._data_dir / "auth"
+    auth_dir.mkdir(parents=True, exist_ok=True)
+    (auth_dir / "linkedin_state.enc").write_bytes(
+        Fernet(locker._derive_key()).encrypt(b'{"cookies": []}')
+    )
+    locker.migrate_to_keyvault()
+    _set_up_recovery(locker, monkeypatch)
+
+    result = locker.cleanup_legacy_backups()
+    assert sorted(result["deleted"]) == [
+        "credentials.enc.pre-keyvault",
+        "linkedin_state.enc.pre-keyvault",
+    ]
+    assert not list(locker._data_dir.rglob("*.pre-keyvault"))
+
+
+def test_ensure_initialized_runs_both_migration_and_cleanup(locker, monkeypatch):
+    """Both used to wait for someone to read a credential.
+
+    On a machine with no IMAP account and no saved site login, nothing ever
+    calls the locker, so on 2026-09-29 a `.pre-keyvault` backup — encrypted
+    with the public machine-derived key — was still on disk two launches after
+    every gate had started passing. `main.py` now calls `_ensure_initialized`
+    at startup; this pins that one call doing both jobs.
+    """
+    _write_legacy(locker, IMAP_ENTRY)
+    _set_up_recovery(locker, monkeypatch)
+
+    locker._ensure_initialized()
+
+    assert locker._keyvault_marker.exists()                  # migrated
+    assert not list(locker._data_dir.rglob("*.pre-keyvault"))  # and cleaned up
+    new = Fernet(locker._keyvault_key())
+    assert json.loads(new.decrypt(locker._credentials_file.read_bytes())) == IMAP_ENTRY

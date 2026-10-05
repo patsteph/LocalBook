@@ -147,8 +147,6 @@ class SocialCollectorService:
         self, platform_key: str, url: str
     ) -> Optional[Dict[str, Any]]:
         """Collect data from a single platform URL."""
-        from playwright.async_api import async_playwright
-
         # Determine if we need auth
         needs_auth = platform_key in (
             SocialPlatform.LINKEDIN.value,
@@ -166,30 +164,28 @@ class SocialCollectorService:
                 return None
 
         try:
-            async with async_playwright() as p:
-                try:
-                    browser = await p.chromium.launch(headless=True)
-                except Exception as launch_err:
-                    err_str = str(launch_err)
-                    if "Executable doesn't exist" in err_str or "browserType.launch" in err_str.lower():
-                        raise RuntimeError(
-                            "Chromium browser not found. Please authenticate first via the People panel, "
-                            "or run: playwright install chromium"
-                        ) from launch_err
-                    raise
-                context_opts = {
-                    "viewport": {"width": 1280, "height": 900},
-                    "user_agent": (
-                        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                        "AppleWebKit/537.36 (KHTML, like Gecko) "
-                        "Chrome/120.0.0.0 Safari/537.36"
-                    ),
-                }
+            # The shared browser (one per app, see playwright_utils) — not a launch per profile.
+            from services.playwright_utils import get_shared_browser
 
-                if session_state:
-                    context_opts["storage_state"] = session_state
+            browser = await get_shared_browser()
+            if browser is None:
+                raise RuntimeError(
+                    "Chromium browser not found. Please authenticate first via the People panel, "
+                    "or run: playwright install chromium")
+            context_opts = {
+                "viewport": {"width": 1280, "height": 900},
+                "user_agent": (
+                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/120.0.0.0 Safari/537.36"
+                ),
+            }
 
-                context = await browser.new_context(**context_opts)
+            if session_state:
+                context_opts["storage_state"] = session_state
+
+            context = await browser.new_context(**context_opts)
+            try:
                 page = await context.new_page()
 
                 logger.info(f"Navigating to {url} for {platform_key}...")
@@ -215,23 +211,22 @@ class SocialCollectorService:
                     data = await self._extract_generic(page, url)
                 else:
                     data = await self._extract_generic(page, url)
-
+            finally:
                 await context.close()
-                await browser.close()
 
-                # If platform extractors returned little data, try LLM fallback
-                if data and len([v for v in data.values() if v]) < 2:
-                    logger.info(f"Sparse data from {platform_key}, trying LLM extraction...")
-                    page_text = data.get("_raw_text", "")
-                    if page_text:
-                        llm_data = await self._llm_extract(page_text, platform_key)
-                        if llm_data:
-                            data.update(llm_data)
+            # If platform extractors returned little data, try LLM fallback
+            if data and len([v for v in data.values() if v]) < 2:
+                logger.info(f"Sparse data from {platform_key}, trying LLM extraction...")
+                page_text = data.get("_raw_text", "")
+                if page_text:
+                    llm_data = await self._llm_extract(page_text, platform_key)
+                    if llm_data:
+                        data.update(llm_data)
 
-                # Remove internal fields
-                data.pop("_raw_text", None)
+            # Remove internal fields
+            data.pop("_raw_text", None)
 
-                return data if data else None
+            return data if data else None
 
         except Exception as e:
             logger.error(f"Playwright collection error for {platform_key}: {e}")

@@ -33,6 +33,10 @@ logger = logging.getLogger(__name__)
 RAM_CONCURRENT_THRESHOLD = 32 * 1024**3  # 32 GB+ → can co-load Gemma + Klein
 RAM_SWAP_THRESHOLD = 18 * 1024**3        # 18-31 GB → swap mode for Setup B
 # <18 GB → swap-strict; Klein gets skipped on allocation failure
+# Preferred: the same cut-offs as GPU budgets (model_sizing.budget_gb), which honour the
+# external reserve; total RAM is only the fallback when the budget can't be read.
+BUDGET_CONCURRENT_GB = 21.0
+BUDGET_SWAP_GB = 10.5
 
 CACHE_TTL_SEC = 60.0
 
@@ -161,8 +165,18 @@ async def _detect() -> VisualCapability:
     # UNKNOWN semantics preserved (the degraded-probe last-good guard relies on it).
     setup = Setup.SETUP_B if gemma else Setup.UNKNOWN
 
-    # Concurrency mode based on total RAM
-    if total_ram >= RAM_CONCURRENT_THRESHOLD:
+    # Concurrency mode from the reserve-aware GPU budget (LB-1, 2026-10-03), not total RAM:
+    # a 48 GB Mac reserving 26 GB for another app was "concurrent" and never freed the chat
+    # model before an image. Same cut-offs at zero reserve (32 GB ≈ 21 GB budget, 18 GB ≈ 10.5).
+    try:
+        from services.model_sizing import budget_gb
+        budget = budget_gb()
+    except Exception:
+        budget = 0.0
+    if budget > 0:
+        mode = (ConcurrencyMode.CONCURRENT if budget >= BUDGET_CONCURRENT_GB
+                else ConcurrencyMode.SWAP if budget >= BUDGET_SWAP_GB else ConcurrencyMode.SWAP_STRICT)
+    elif total_ram >= RAM_CONCURRENT_THRESHOLD:
         mode = ConcurrencyMode.CONCURRENT
     elif total_ram >= RAM_SWAP_THRESHOLD:
         mode = ConcurrencyMode.SWAP

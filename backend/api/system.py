@@ -77,6 +77,14 @@ async def get_tray_status():
         out["enrichment"] = {"queue_depth": int(enrichment_worker.queue_depth() or 0)}
     except Exception as e:
         logger.debug(f"[system.tray] enrichment snapshot failed: {e}")
+    try:
+        # LB-12: the menu-bar kill switch reads its state from here.
+        from services.sync import store as _sync_store
+        from services.sync import progress as _sync_progress
+        out["sync"] = {"enabled": _sync_store.enabled(), "paired": len(_sync_store.devices()),
+                       **_sync_progress.summary()}
+    except Exception as e:
+        logger.debug(f"[system.tray] sync snapshot failed: {e}")
     return out
 
 
@@ -572,8 +580,14 @@ async def engine_truth():
     # The engine can no longer disagree (there is one), but the MODEL still can: prefs are
     # re-applied at every launch and win over config.
     conflicts = []
+    from services.model_profile import configured_fast, shares_fast
+    if shares_fast():
+        roles["fast"]["shared_with_main"] = True        # compact: routing, not drift
+        roles["fast"]["configured"] = configured_fast()
     for role, v in roles.items():
         want = (prefs.get("models") or {}).get(role)
+        if role == "fast" and v.get("shared_with_main"):
+            want = want if want != v.get("configured") else None
         if want and want != v["model"]:
             conflicts.append({
                 "role": role, "resolved": v["model"], "prefs_say": want,

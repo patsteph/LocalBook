@@ -211,20 +211,34 @@ class SourceStore:
         if self._use_sqlite:
             known_fields = {'id', 'notebook_id', 'filename', 'content', 'url', 'author',
                             'date', 'format', 'type', 'notes', 'notes_updated_at',
-                            'tags', 'tags_updated_at', 'created_at'}
+                            'tags', 'tags_updated_at', 'created_at', 'content_hash', 'updated_at'}
             extra = {k: v for k, v in source.items() if k not in known_fields}
             tags = json.dumps(source.get('tags', []))
+            from services.migration_ledger import text_hash
             conn = self._get_db()
+            # An upsert, not INSERT OR REPLACE: REPLACE is delete-then-insert, so
+            # re-creating a source by id cascaded its highlights away (FK), and
+            # the sync journal saw an insert where there was an update (LB-12).
             conn.execute(
-                """INSERT OR REPLACE INTO sources
+                """INSERT INTO sources
                    (id, notebook_id, filename, content, url, author, date, format, type,
-                    notes, notes_updated_at, tags, tags_updated_at, created_at, metadata_json)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    notes, notes_updated_at, tags, tags_updated_at, created_at, metadata_json,
+                    content_hash, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(id) DO UPDATE SET
+                    notebook_id=excluded.notebook_id, filename=excluded.filename,
+                    content=excluded.content, url=excluded.url, author=excluded.author,
+                    date=excluded.date, format=excluded.format, type=excluded.type,
+                    notes=excluded.notes, notes_updated_at=excluded.notes_updated_at,
+                    tags=excluded.tags, tags_updated_at=excluded.tags_updated_at,
+                    created_at=excluded.created_at, metadata_json=excluded.metadata_json,
+                    content_hash=excluded.content_hash, updated_at=excluded.updated_at""",
                 (source_id, notebook_id, filename, source.get('content'),
                  source.get('url'), source.get('author'), source.get('date'),
                  source.get('format'), source.get('type'),
                  source.get('notes'), source.get('notes_updated_at'),
-                 tags, source.get('tags_updated_at'), now, json.dumps(extra))
+                 tags, source.get('tags_updated_at'), now, json.dumps(extra),
+                 text_hash(source.get('content')), now)
             )
             conn.commit()
         else:
@@ -297,6 +311,12 @@ class SourceStore:
             if not sets:
                 result = await self.get(source_id)
             else:
+                if 'content' in updates:
+                    from services.migration_ledger import text_hash
+                    sets.append("content_hash = ?")
+                    params.append(text_hash(updates.get('content')))
+                sets.append("updated_at = ?")
+                params.append(datetime.utcnow().isoformat())
                 params.extend([source_id, notebook_id])
                 conn = self._get_db()
                 conn.execute(f"UPDATE sources SET {', '.join(sets)} WHERE id = ? AND notebook_id = ?", params)

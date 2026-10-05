@@ -1788,9 +1788,9 @@ Write at least {phase_exchanges} back-and-forth exchanges between {name_a} and {
 
     def _concatenate_with_jingles(self, speech_path: Path, output_path: Path,
                                    add_intro: bool = True, add_outro: bool = True) -> Path:
-        """Concatenate intro jingle + speech + outro jingle using ffmpeg.
-        
-        Falls back to speech-only if ffmpeg is not available.
+        """Concatenate intro jingle + speech + outro jingle (in-process).
+
+        Falls back to speech-only if anything fails.
         """
         jingle_dir = self.audio_dir / "jingles"
         jingle_dir.mkdir(parents=True, exist_ok=True)
@@ -1807,49 +1807,26 @@ Write at least {phase_exchanges} back-and-forth exchanges between {name_a} and {
             self._generate_jingle(outro_path, duration_sec=3.5, fade_in=True, fade_out=True)
             print(f"   Generated outro jingle: {outro_path}")
         
-        # Build ffmpeg concat filter
-        inputs = []
-        filter_parts = []
-        idx = 0
-        
-        if add_intro and intro_path.exists():
-            inputs.extend(["-i", str(intro_path)])
-            filter_parts.append(f"[{idx}:a]aformat=sample_rates=24000:channel_layouts=mono[a{idx}]")
-            idx += 1
-        
-        inputs.extend(["-i", str(speech_path)])
-        filter_parts.append(f"[{idx}:a]aformat=sample_rates=24000:channel_layouts=mono[a{idx}]")
-        speech_idx = idx
-        idx += 1
-        
-        if add_outro and outro_path.exists():
-            inputs.extend(["-i", str(outro_path)])
-            filter_parts.append(f"[{idx}:a]aformat=sample_rates=24000:channel_layouts=mono[a{idx}]")
-            idx += 1
-        
-        # Concat all streams
-        concat_inputs = ''.join(f'[a{i}]' for i in range(idx))
-        filter_str = ';'.join(filter_parts) + f';{concat_inputs}concat=n={idx}:v=0:a=1[out]'
-        
+        # In-process (PyAV, already bundled for speech): every part decoded to 24 kHz mono and
+        # joined. This shelled out to `ffmpeg`, which the bundled app's PATH usually lacks, so
+        # podcasts silently shipped without their jingles (2026-10-03).
         try:
-            cmd = [
-                "ffmpeg", "-y",
-                *inputs,
-                "-filter_complex", filter_str,
-                "-map", "[out]",
-                str(output_path)
-            ]
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-            if result.returncode == 0 and output_path.exists():
-                print(f"   Assembled final audio with jingles: {output_path}")
-                return output_path
-            else:
-                print(f"   ffmpeg concat failed: {result.stderr[:200]}")
-        except FileNotFoundError:
-            print("   ffmpeg not found, skipping jingle concatenation")
+            import numpy as np
+
+            from services.audio_codec import decode_pcm, encode
+
+            parts = []
+            if add_intro and intro_path.exists():
+                parts.append(decode_pcm(intro_path, 24000))
+            parts.append(decode_pcm(speech_path, 24000))
+            if add_outro and outro_path.exists():
+                parts.append(decode_pcm(outro_path, 24000))
+            output_path.write_bytes(encode(np.concatenate(parts), 24000, "wav"))
+            print(f"   Assembled final audio with jingles: {output_path}")
+            return output_path
         except Exception as e:
             print(f"   Jingle concat error: {e}")
-        
+
         # Fallback: just use the speech file directly
         if speech_path != output_path:
             import shutil
@@ -2717,23 +2694,17 @@ Write at least {phase_exchanges} back-and-forth exchanges between {name_a} and {
         return chunks
 
     def _get_audio_duration(self, audio_file: Path) -> int:
-        """Get audio duration in seconds via ffprobe, with wave fallback."""
-        # Try ffprobe first
+        """Get audio duration in seconds via PyAV, with a WAV-header fallback."""
         try:
-            result = subprocess.run(
-                ["ffprobe", "-v", "error", "-show_entries", "format=duration",
-                 "-of", "default=noprint_wrappers=1:nokey=1", str(audio_file)],
-                capture_output=True,
-                text=True
-            )
-            if result.returncode == 0 and result.stdout.strip():
-                duration = int(float(result.stdout.strip()))
-                if duration > 0:
-                    return duration
-            print(f"[AudioGen] ffprobe returned no duration (rc={result.returncode}, stderr={result.stderr.strip()})")
+            import av
+            with av.open(str(audio_file)) as c:
+                if c.duration:
+                    duration = int(c.duration / 1_000_000)          # av.time_base is µs
+                    if duration > 0:
+                        return duration
         except Exception as e:
-            print(f"[AudioGen] ffprobe failed: {e}")
-        
+            print(f"[AudioGen] PyAV duration failed: {e}")
+
         # Fallback: read WAV header directly
         try:
             with wave.open(str(audio_file), 'r') as wf:

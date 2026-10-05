@@ -13,6 +13,7 @@
  * cannot finish would be worse than handing over a command to paste.
  */
 import { useCallback, useEffect, useState } from 'react';
+import { AgentKeysPanel } from './AgentKeysPanel';
 import {
   STATE_DOT,
   acceptCompanionUpdate,
@@ -639,6 +640,21 @@ function UpdatesPanel({ c, onChanged, onClose }: {
   );
 }
 
+/** Elapsed time of the current recording, ticking once a second. */
+function RecordingClock({ since }: { since: number }) {
+  const [now, setNow] = useState(() => Date.now() / 1000);
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now() / 1000), 1000);
+    return () => clearInterval(t);
+  }, []);
+  const s = Math.max(0, Math.floor(now - since));
+  const hms = [Math.floor(s / 3600), Math.floor(s / 60) % 60, s % 60]
+    .map((n, i) => (i === 0 ? String(n) : String(n).padStart(2, '0')))
+    .join(':')
+    .replace(/^0:/, '');
+  return <span className="tabular-nums text-red-500">· {hms}</span>;
+}
+
 function Card({ c, notebooks, onChanged, onWatch }: {
   c: Companion;
   notebooks: Array<{ id: string; title: string }>;
@@ -691,6 +707,9 @@ function Card({ c, notebooks, onChanged, onWatch }: {
             <span className="font-medium text-gray-700 dark:text-gray-300">
               {STATE_LABEL[c.state]}
             </span>
+            {c.state === 'recording' && c.recording_since && (
+              <RecordingClock since={c.recording_since} />
+            )}
             {c.connected && c.using_model && (
               <span className="text-gray-400 dark:text-gray-500">
                 · using your {shortModel(c.using_model)}
@@ -784,6 +803,14 @@ function Card({ c, notebooks, onChanged, onWatch }: {
                 Connect
               </button>
             )
+          )}
+          {c.state === 'connected' && c.can_control && panel === 'none' && (
+            <button disabled={busy}
+                    onClick={() => act(() => controlCompanion(c.id, 'start'))}
+                    title="The first time, macOS asks to let the recorder use the microphone."
+                    className="px-3 py-1.5 text-xs font-medium rounded-lg bg-red-600 text-white hover:bg-red-700 disabled:opacity-40">
+              ● Record
+            </button>
           )}
           {c.state === 'recording' && c.can_control && (
             <button disabled={busy}
@@ -905,6 +932,13 @@ export function CompanionsSection() {
       {data && data.companions.length === 0 && (
         <p className="text-sm text-gray-500 dark:text-gray-400">No companions available.</p>
       )}
+
+      {/* Agents are a different shape from the tools above: no installer, no
+          config file to rewrite, so the only way one can hold a key is to be
+          handed one. Its own component — this file is already ~900 lines. */}
+      <div className="mt-8 border-t border-gray-200 pt-6 dark:border-gray-700">
+        <AgentKeysPanel />
+      </div>
     </div>
   );
 }

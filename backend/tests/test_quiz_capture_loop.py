@@ -19,7 +19,17 @@ from api import quiz as q
 
 @pytest.fixture
 def card_store(tmp_path, monkeypatch):
-    """Isolated card store seeded with three unreviewed cards, as generation leaves them."""
+    """Isolated card store seeded with three unreviewed cards, as generation leaves them.
+
+    Since LB-12 D1 the cards live in localbook.db `documents` (the JSON file is
+    imported once), so the Database singleton is pointed at this test's dir too.
+    """
+    import importlib
+
+    from config import settings
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    import storage.database as _db
+    importlib.reload(_db)
     monkeypatch.setattr(q, "_get_quiz_dir", lambda: tmp_path)
     nb = "nb-test"
     data = {"cards": {}, "reviews": []}
@@ -34,7 +44,7 @@ def card_store(tmp_path, monkeypatch):
 
 
 def _load(tmp_path, nb):
-    return json.loads((tmp_path / f"{nb}_cards.json").read_text())
+    return q._load_cards(nb)          # the store, not the imported-once file
 
 
 def _deck(nb, results):

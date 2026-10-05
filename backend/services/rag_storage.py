@@ -135,8 +135,14 @@ async def ingest_document(
     reporter: Optional[ProgressReporter] = None,
     enable_hyde: bool = True,
     precomputed_summary: Optional[str] = None,
+    deferred: bool = False,
 ) -> Dict:
     """Ingest a document into the RAG system.
+
+    deferred: make it searchable now, and leave the topic model and entity graph
+    to sustained idle (DEEP jobs). For BULK re-indexing — sync's catch-up indexed
+    100+ synced sources in a row and the immediate per-source BERTopic update +
+    entity extraction ran the MBP's fans flat out (2026-10-01).
 
     reporter (optional): emits progress events during chunking, summarization,
     HyDE question generation, embedding, and indexing. When omitted, a no-op
@@ -253,15 +259,28 @@ async def ingest_document(
         details={"rows_written": len(data)},
     )
 
-    # Fire-and-forget topic modeling in background
-    from utils.tasks import safe_create_task
-    safe_create_task(_add_to_topic_model(
-        notebook_id=notebook_id,
-        source_id=source_id,
-        chunks=chunks,
-        embeddings=embeddings
-    ))
-    print(f"[RAG] Queued topic modeling for {filename} (background)")
+    from services.enrichment_worker import enrichment_worker
+    from services.enrichment_jobs import EnrichmentJob, JobTier
+
+    if deferred:
+        enrichment_worker.enqueue(EnrichmentJob(
+            key=f"topic-add:{notebook_id}:{source_id}",
+            tier=JobTier.DEEP,
+            factory=lambda: _add_to_topic_model(notebook_id=notebook_id, source_id=source_id,
+                                                chunks=chunks, embeddings=embeddings),
+            label="topic-add",
+            notebook_id=notebook_id,
+        ))
+    else:
+        # Fire-and-forget topic modeling in background
+        from utils.tasks import safe_create_task
+        safe_create_task(_add_to_topic_model(
+            notebook_id=notebook_id,
+            source_id=source_id,
+            chunks=chunks,
+            embeddings=embeddings
+        ))
+        print(f"[RAG] Queued topic modeling for {filename} (background)")
 
     # Phase 3 (2026-06-24) — instant/daydream/deep reclassification.
     # The post-ingest enrichment splits along the design's "skeleton fast,
@@ -271,9 +290,6 @@ async def ingest_document(
     #     short idle. On success it enqueues the DEEP job below.
     #   • DEEP (corpus-global): relationships + community detection/summaries —
     #     a function of the WHOLE (growing) notebook; runs during sustained idle.
-    from services.enrichment_worker import enrichment_worker
-    from services.enrichment_jobs import EnrichmentJob, JobTier
-
     async def _graph_deep(entity_dicts):
         """DEEP: corpus-global relationships + community detection/summaries.
         Runs INLINE inside one worker job so cancellation reaches the in-flight
@@ -339,7 +355,7 @@ async def ingest_document(
     # deferred second-brain work routed through the presence-aware worker.
     enrichment_worker.enqueue(EnrichmentJob(
         key=f"entities-daydream:{notebook_id}:{source_id}",
-        tier=JobTier.DAYDREAM,
+        tier=JobTier.DEEP if deferred else JobTier.DAYDREAM,
         factory=_entities_daydream,
         label="entities-daydream",
         notebook_id=notebook_id,
@@ -355,7 +371,7 @@ async def ingest_document(
         print(f"[RAG] answer-cache invalidate failed (non-fatal): {_e}")
 
     # Auto-refresh people coaching insights when new sources are added
-    if source_type not in ("people_profile", "coaching_notes", "summary"):
+    if not deferred and source_type not in ("people_profile", "coaching_notes", "summary"):
         try:
             from services.coaching_insights import schedule_insight_refresh
             schedule_insight_refresh(notebook_id)
@@ -447,6 +463,21 @@ async def append_to_document(
 
 
 # ─── Source Deletion ─────────────────────────────────────────────────────────────
+
+def drop_notebook_table(notebook_id: str) -> bool:
+    """Drop a deleted notebook's vector table. True if one existed.
+
+    Deleting a notebook never did this, so every notebook ever created left its
+    table behind — 74 of 79 tables in one real data dir belonged to notebooks
+    that no longer exist.
+    """
+    db = _get_db()
+    table_name = f"notebook_{notebook_id}"
+    if table_name not in db.table_names():
+        return False
+    db.drop_table(table_name)
+    return True
+
 
 async def delete_source(notebook_id: str, source_id: str) -> bool:
     """Delete all chunks for a source from LanceDB.

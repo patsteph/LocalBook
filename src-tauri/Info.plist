@@ -20,5 +20,20 @@
     <string>LocalBook reads folders you choose to link, so new files in them become sources in your notebooks. It never modifies your files.</string>
     <key>NSRemovableVolumesUsageDescription</key>
     <string>LocalBook reads folders you choose to link, including ones on external drives. It never modifies your files.</string>
+
+    <!-- Multi-machine sync, K-1 / LB-12 (2026-09-29). macOS refuses local-network
+         discovery outright when the bundle declares no usage description, and the
+         refusal is silent — the peer simply never appears. entitlements.plist
+         already grants com.apple.security.network.server; these are the Info.plist
+         half, which was the only piece actually missing.
+         Nothing here gates data access: per D20 the volume password is an ordinary
+         disk-image password held by macOS, so an ad-hoc build still opens its own
+         data. These keys only affect finding other Macs. -->
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>LocalBook finds your other Macs on this network to keep your notebooks in sync. Your data is sent directly between your own machines and never to a server.</string>
+    <key>NSBonjourServices</key>
+    <array>
+        <string>_localbook-sync._tcp</string>
+    </array>
 </dict>
 </plist>

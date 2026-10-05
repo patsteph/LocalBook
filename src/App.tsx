@@ -16,11 +16,13 @@ import { useCanvasLayout, useDrawerState } from './hooks/useLayoutPersistence';
 import { ToastContainer, ToastMessage } from './components/shared/Toast';
 import { ErrorBoundary } from './components/shared/ErrorBoundary';
 import { Modal } from './components/shared/Modal';
-import { Settings } from './components/Settings';
+import { Settings, type SectionId } from './components/Settings';
 import { LLMStudio } from './components/llm/LLMStudio';
 import { HealthPanel } from './components/health/HealthPanel';
 import { EmbeddingSelector } from './components/EmbeddingSelector';
-import { API_BASE_URL, localFetch } from './services/api';
+import { API_BASE_URL, getLocked, localFetch, onLockedChange, type LockedDetail } from './services/api';
+import { VolumeRecovery } from './components/VolumeRecovery';
+import { EncryptionPrompt } from './components/EncryptionPrompt';
 import { useConstellationWS } from './hooks/useConstellationWS';
 import { useMorningBriefFetcher } from './hooks/useMorningBriefFetcher';
 import { emitEvent, onEvent } from './lib/events';
@@ -35,6 +37,12 @@ function App() {
   const [backendReady, setBackendReady] = useState(false);
   const [backendError, setBackendError] = useState<string | null>(null);
   const [backendStatusMessage, setBackendStatusMessage] = useState<string>('Initializing backend services...');
+  // LB-11: the encrypted volume is not open. Comes from the fetch layer, where
+  // the 503 + x-localbook-locked arrives — there is no component there to own
+  // it, so the signal is a module-level subscription.
+  const [volumeLocked, setVolumeLocked] = useState<LockedDetail | null>(() => getLocked());
+  useEffect(() => onLockedChange(setVolumeLocked), []);
+
   const [startupProgress, setStartupProgress] = useState(0);
   const [startupStage, setStartupStage] = useState<string>('starting');
   const [isUpgrade, setIsUpgrade] = useState(false);
@@ -60,6 +68,7 @@ function App() {
   useMorningBriefFetcher({ backendReady, morningBrief, weeklyWrap, setMorningBrief, setWeeklyWrap });
   const [curatorBriefData, setCuratorBriefData] = useState<any>(null);
   const [showSettingsModal, setShowSettingsModal] = useState(false);
+  const [settingsSection, setSettingsSection] = useState<SectionId | undefined>(undefined);
   const [showLLMModal, setShowLLMModal] = useState(false);
   const [showHealthModal, setShowHealthModal] = useState(false);
   const [showEmbeddingModal, setShowEmbeddingModal] = useState(false);
@@ -412,6 +421,12 @@ function App() {
       // Result: badges moved only on a UI reload.
       const scope = refreshScopeFor(message, selectedNotebookId);
       if (scope.notebooks) scheduleNotebooksRefresh();
+      if (message.type === 'sync_applied') {
+        // Another Mac's changes landed: refresh what is on screen, no reload needed.
+        if (scope.selectedNotebook) setRefreshSources(prev => prev + 1);
+        scope.pulses?.forEach((e) => emitEvent(e));
+        return;
+      }
 
       if (message.type === 'source_updated' && scope.selectedNotebook) {
         setRefreshSources(prev => prev + 1);
@@ -536,6 +551,12 @@ function App() {
   // canvas tombstone with the item's content + flip back to the Chat view
   // so the canvas comes back into focus. Library's "browse" is always a
   // detour from the canvas; this listener completes the round-trip.
+  // The encryption wizard (owned by EncryptionPrompt) replaces Settings while it runs.
+  useEffect(() => onEvent('lb:openEncryptionWizard', () => {
+    setShowSettingsModal(false);
+    setSettingsSection(undefined);
+  }), []);
+
   useEffect(() => {
     return onEvent('lb:openLibraryItem', (item) => {
       const raw = item.raw || {};
@@ -1027,6 +1048,13 @@ function App() {
     );
   }
 
+  // Before the shell, before the splash, before anything that would fire more
+  // requests: if the volume is locked there is nothing to show but the way back
+  // in, and every other panel would just render its own failure.
+  if (volumeLocked) {
+    return <VolumeRecovery locked={volumeLocked} />;
+  }
+
   return (
     <AppShellProvider value={appShellCtx}>
     <CanvasItemsProvider value={canvasItemsCtx}>
@@ -1058,6 +1086,9 @@ function App() {
             )}
           </div>
         )}
+
+        {/* LB-11: the encryption offer — the only road into the setup flow */}
+        <EncryptionPrompt />
 
         {/* Morning Brief — floats above canvas */}
         {morningBrief && (
@@ -1266,8 +1297,8 @@ function App() {
         </div>
 
         {/* Settings Modal */}
-        <Modal isOpen={showSettingsModal} onClose={() => setShowSettingsModal(false)} title="Settings" size="lg">
-          <Settings />
+        <Modal isOpen={showSettingsModal} onClose={() => { setShowSettingsModal(false); setSettingsSection(undefined); }} title="Settings" size="lg">
+          <Settings initialSection={settingsSection} />
         </Modal>
 
         {/* LLM Studio Modal — Locker + Evaluator + History in one place */}

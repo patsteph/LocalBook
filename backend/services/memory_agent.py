@@ -76,21 +76,32 @@ class MemoryAgent:
     # Memory Extraction
     # =========================================================================
     
-    async def extract_memories(self, request: MemoryExtractionRequest) -> MemoryExtractionResult:
+    async def extract_memories(
+        self,
+        request: MemoryExtractionRequest,
+        *,
+        store_recall: bool = True,
+        namespace=None,
+    ) -> MemoryExtractionResult:
         """
         Extract memorable information from a message.
         Uses LLM to identify facts, preferences, and important information.
+
+        LB-4 companions pass `store_recall=False` (the bridge already stored the
+        turn, idempotently) and `namespace="companion:<id>"` for archival writes.
         """
         result = MemoryExtractionResult()
         
         # Only extract from user messages (AI responses don't contain new user info)
         if request.role != "user":
             # Still store in recall memory
-            await self._store_in_recall(request)
+            if store_recall:
+                await self._store_in_recall(request)
             return result
         
         # Store in recall memory first
-        await self._store_in_recall(request)
+        if store_recall:
+            await self._store_in_recall(request)
         
         # Use LLM to extract memorable information
         extraction_prompt = self._build_extraction_prompt(request)
@@ -100,7 +111,7 @@ class MemoryAgent:
             
             if extracted:
                 # Process extracted memories
-                await self._process_extracted_memories(extracted, request, result)
+                await self._process_extracted_memories(extracted, request, result, namespace=namespace)
         except Exception as e:
             print(f"Memory extraction error: {e}")
         
@@ -181,7 +192,8 @@ Respond ONLY with the JSON, no other text."""
         self, 
         extracted: Dict, 
         request: MemoryExtractionRequest,
-        result: MemoryExtractionResult
+        result: MemoryExtractionResult,
+        namespace=None,
     ) -> None:
         """Process extracted memories and store them"""
         
@@ -231,7 +243,10 @@ Respond ONLY with the JSON, no other text."""
                 topics=extracted.get("topics_mentioned", []),
                 entities=extracted.get("entities_mentioned", []),
             )
-            await memory_store.add_archival_memory_async(archival_entry)
+            if namespace is None:
+                await memory_store.add_archival_memory_async(archival_entry)
+            else:
+                await memory_store.add_archival_memory_async(archival_entry, namespace=namespace)
             result.archival_memories.append(archival_entry)
     
     async def _store_in_recall(self, request: MemoryExtractionRequest) -> None:
@@ -478,46 +493,60 @@ Respond ONLY with the JSON, no other text."""
             if len(entries) < 2:
                 continue
             
-            # Summarize conversation into structured checkpoint
-            summary_result = await self._summarize_conversation(entries)
-            if summary_result:
-                summary, critical_ctx = summary_result
-                # Save summary to conversation_summaries table
-                memory_store.save_conversation_summary(summary)
-                
-                # Build structured checkpoint for archival (Improvement 3)
-                # This format preserves more actionable information per token
-                checkpoint_parts = []
-                if summary.summary:
-                    checkpoint_parts.append(f"Goal: {summary.summary}")
-                if summary.key_points:
-                    checkpoint_parts.append(f"Progress: {'; '.join(summary.key_points)}")
-                if summary.decisions_made:
-                    checkpoint_parts.append(f"Decisions: {'; '.join(summary.decisions_made)}")
-                if summary.action_items:
-                    checkpoint_parts.append(f"Open Items: {'; '.join(summary.action_items)}")
-                # Include critical context (names, paths, values) if available
-                if critical_ctx:
-                    checkpoint_parts.append(f"Context: {'; '.join(critical_ctx)}")
-                
-                structured_content = "\n".join(checkpoint_parts) if checkpoint_parts else summary.summary
-                
-                archival_entry = ArchivalMemoryEntry(
-                    content=structured_content,
-                    content_type="structured_checkpoint",
-                    source_type=MemorySourceType.AI_INFERRED,
-                    source_id=conv_id,
-                    source_notebook_id=entries[0].notebook_id,
-                    topics=entries[0].topics,
-                )
-                await memory_store.add_archival_memory_async(archival_entry)
-                
-                # Mark as summarized
-                memory_store.mark_entries_summarized(conv_id)
+            # A companion's conversation (LB-4) checkpoints into its own namespace.
+            ns = ":".join(conv_id.split(":")[:2]) if conv_id.startswith("companion:") else None
+            if await self.checkpoint_conversation(conv_id, entries, namespace=ns):
                 compressed_count += 1
         
         return compressed_count
     
+    async def checkpoint_conversation(self, conv_id: str, entries: List[RecallMemoryEntry],
+                                      namespace=None) -> bool:
+        """Summarise one conversation into a structured archival checkpoint and
+        mark its turns summarized. True if a checkpoint was written.
+
+        Shared by the 7-day compressor and LB-4's `session-end` (which passes the
+        companion's namespace so the checkpoint is purgeable with the rest)."""
+        summary_result = await self._summarize_conversation(entries)
+        if not summary_result:
+            return False
+        summary, critical_ctx = summary_result
+        memory_store.save_conversation_summary(summary)
+
+        # Build structured checkpoint for archival (Improvement 3)
+        # This format preserves more actionable information per token
+        checkpoint_parts = []
+        if summary.summary:
+            checkpoint_parts.append(f"Goal: {summary.summary}")
+        if summary.key_points:
+            checkpoint_parts.append(f"Progress: {'; '.join(summary.key_points)}")
+        if summary.decisions_made:
+            checkpoint_parts.append(f"Decisions: {'; '.join(summary.decisions_made)}")
+        if summary.action_items:
+            checkpoint_parts.append(f"Open Items: {'; '.join(summary.action_items)}")
+        # Include critical context (names, paths, values) if available
+        if critical_ctx:
+            checkpoint_parts.append(f"Context: {'; '.join(critical_ctx)}")
+
+        structured_content = "\n".join(checkpoint_parts) if checkpoint_parts else summary.summary
+
+        archival_entry = ArchivalMemoryEntry(
+            content=structured_content,
+            content_type="structured_checkpoint",
+            source_type=MemorySourceType.AI_INFERRED,
+            source_id=conv_id,
+            source_notebook_id=entries[0].notebook_id,
+            topics=entries[0].topics,
+        )
+        if namespace is None:
+            await memory_store.add_archival_memory_async(archival_entry)
+        else:
+            await memory_store.add_archival_memory_async(archival_entry, namespace=namespace)
+
+        # Mark as summarized
+        memory_store.mark_entries_summarized(conv_id)
+        return True
+
     async def _summarize_conversation(self, entries: List[RecallMemoryEntry]) -> Optional[tuple]:
         """Produce a structured context checkpoint from a conversation.
         

@@ -47,4 +47,20 @@ describe('refreshScopeFor', () => {
     expect(refreshScopeFor(undefined, 'nb-a')).toEqual(NO_REFRESH);
     expect(refreshScopeFor({}, 'nb-a')).toEqual(NO_REFRESH);
   });
+
+  it('a sync that changed sources and audio refreshes the lists and pulses both', () => {
+    // 2026-10-01: after a sync the screens showed the old data until a manual reload.
+    const scope = refreshScopeFor(
+      { type: 'sync_applied', data: { tables: ['notebooks', 'sources', 'audio_generations', 'highlights'] } } as any,
+      'nb-selected',
+    );
+    expect(scope.notebooks).toBe(true);
+    expect(scope.selectedNotebook).toBe(true);
+    expect(scope.pulses).toEqual(['sourcesUpdated', 'audioUpdated']);
+  });
+
+  it('a sync with nothing selected still refreshes the notebook list', () => {
+    const scope = refreshScopeFor({ type: 'sync_applied', data: { tables: ['notebooks'] } } as any, null);
+    expect(scope).toEqual({ notebooks: true, selectedNotebook: false, pulses: [] });
+  });
 });

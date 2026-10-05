@@ -1127,79 +1127,25 @@ class DocumentProcessor:
                 rows.append(" | ".join(cells))
             return "\n".join(rows)
 
-    @off_loop
+    # NOT @off_loop: speech_to_text.transcribe is genuinely non-blocking (decode in a worker
+    # thread, Parakeet on the MLX engine's executor), and off_loop drives coroutines that
+    # never await — this one must await the engine on the main loop.
     async def _extract_from_audio(self, content: bytes, filename: str) -> str:
-        """Extract text from audio files using speech-to-text"""
-        import tempfile
-        import os
-        
+        """Extract text from audio files using speech-to-text (LB-3)."""
+        from services.speech_to_text import transcribe
+
         try:
-            import mlx_whisper
-            
-            # Save to temp file (whisper needs file path)
-            with tempfile.NamedTemporaryFile(suffix=Path(filename).suffix, delete=False) as tmp:
-                tmp.write(content)
-                tmp_path = tmp.name
-            
-            try:
-                result = mlx_whisper.transcribe(tmp_path, path_or_hf_repo="mlx-community/whisper-base-mlx")
-                return result["text"]
-            finally:
-                # Clean up temp file
-                os.unlink(tmp_path)
-                
-        except ImportError:
-            raise ValueError("Audio transcription requires mlx-whisper. Install with: pip install mlx-whisper")
+            return (await transcribe(content))["text"]
         except Exception as e:
             raise ValueError(f"Failed to transcribe audio: {str(e)}")
 
-    @off_loop
     async def _extract_from_video(self, content: bytes, filename: str) -> str:
-        """Extract text from video files by extracting audio and transcribing"""
-        import tempfile
-        import subprocess
-        import os
-        
+        """Extract text from a video's audio track. PyAV reads the track in-process,
+        so no ffmpeg binary is needed (the MDM Mac has none)."""
+        from services.speech_to_text import transcribe
+
         try:
-            import mlx_whisper
-            
-            # Save video to temp file
-            with tempfile.NamedTemporaryFile(suffix=Path(filename).suffix, delete=False) as tmp_video:
-                tmp_video.write(content)
-                video_path = tmp_video.name
-            
-            # Extract audio using ffmpeg
-            audio_path = video_path + ".wav"
-            
-            try:
-                from utils.binary_finder import find_binary
-                ffmpeg_path = find_binary("ffmpeg")
-                if not ffmpeg_path:
-                    raise FileNotFoundError(
-                        "ffmpeg not found. Install with: brew install ffmpeg"
-                    )
-                subprocess.run(
-                    [ffmpeg_path, "-i", video_path, "-vn", "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1", "-y", audio_path],
-                    check=True,
-                    capture_output=True,
-                    timeout=300  # 5 min timeout for long videos
-                )
-                
-                # Transcribe the extracted audio
-                result = mlx_whisper.transcribe(audio_path, path_or_hf_repo="mlx-community/whisper-base-mlx")
-                return result["text"]
-                
-            finally:
-                # Clean up temp files
-                if os.path.exists(video_path):
-                    os.unlink(video_path)
-                if os.path.exists(audio_path):
-                    os.unlink(audio_path)
-                    
-        except ImportError:
-            raise ValueError("Video transcription requires mlx-whisper and ffmpeg. Install with: pip install mlx-whisper")
-        except subprocess.CalledProcessError:
-            raise ValueError("Video processing requires ffmpeg. Install with: brew install ffmpeg")
+            return (await transcribe(content))["text"]
         except Exception as e:
             raise ValueError(f"Failed to transcribe video: {str(e)}")
 

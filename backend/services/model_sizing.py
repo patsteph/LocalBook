@@ -51,9 +51,11 @@ _CACHE: Dict[str, Any] = {}
 # ── hardware ────────────────────────────────────────────────────────────────────
 def working_set_gb() -> float:
     """What the GPU can actually address, in GiB. Apple's own number, per-device."""
-    hit = _CACHE.get("working_set")
-    if hit:
-        return hit
+    # `is not None`, not truthiness: a genuine 0.0 (no MLX, sysctl unavailable)
+    # is a real answer, and treating it as a cache miss meant re-shelling out to
+    # sysctl on every call forever.
+    if "working_set" in _CACHE:
+        return _CACHE["working_set"]
     val = 0.0
     try:
         import mlx.core as mx
@@ -78,6 +80,20 @@ def working_set_gb() -> float:
 RESIDENT_RESERVE_GB = 2.5
 
 
+def external_reserve_gb() -> float:
+    """Memory set aside for something else on this machine (LB-1).
+
+    Read per call rather than captured, so changing it in Settings takes effect
+    without a restart. Per-machine and never synced: the mini needs 0, the MBP
+    running an agent brain needs about 26.
+    """
+    try:
+        from config import settings
+        return max(0.0, float(getattr(settings, "external_reserve_gb", 0.0) or 0.0))
+    except Exception:
+        return 0.0
+
+
 def budget_gb(fraction: Optional[float] = None) -> float:
     """How much memory a chat model may have on this machine.
 
@@ -86,7 +102,16 @@ def budget_gb(fraction: Optional[float] = None) -> float:
     this did, applies caution twice and made the answer needlessly pessimistic:
     a 48 GB Mac was budgeted 26.6 GB when Apple says 35.5 GB is addressable.
 
-    So: working set minus a NAMED reserve for what we keep resident anyway.
+    So: working set, minus a NAMED reserve for what we keep resident anyway,
+    minus whatever is reserved for another process (LB-1).
+
+    ⚠️ **The 50% floor is now capped by what is actually available.** It used to
+    be `max(ws - RESIDENT, ws * 0.5)` — a floor that stopped small machines
+    being budgeted absurdly low. With an external reserve that floor becomes
+    actively dangerous: on a 48 GB MBP reserving 26 GB for an agent, `ws * 0.5`
+    is 17.75 while only ~7 is genuinely free, and the old `max()` would have
+    handed back 17.75 and overcommitted the machine into swap. An explicit
+    reserve always wins over an optimistic floor.
 
     `fraction` is accepted for callers that want the old proportional behaviour.
     """
@@ -94,8 +119,11 @@ def budget_gb(fraction: Optional[float] = None) -> float:
     if ws <= 0:
         return 0.0
     if fraction is not None:
-        return round(ws * fraction, 2)
-    return round(max(ws - RESIDENT_RESERVE_GB, ws * 0.5), 2)
+        # The reserve applies here too — it skipped it (LB-1 open item).
+        return round(max(ws * fraction - external_reserve_gb(), 0.0), 2)
+    available = ws - RESIDENT_RESERVE_GB - external_reserve_gb()
+    floor = min(ws * 0.5, available)
+    return round(max(max(available, floor), 0.0), 2)
 
 
 # ── model files ─────────────────────────────────────────────────────────────────
@@ -210,7 +238,10 @@ def exact_weight_gb(model_id: str) -> Optional[float]:
                     val = round(tot / GB, 3)
             except Exception:
                 val = None
-    _CACHE[key] = val
+    # Never cache "absent": a model sized before its first download (the budget check runs
+    # just ahead of the load) would stay invisible to the budget for the whole process.
+    if val is not None:
+        _CACHE[key] = val
     return val
 
 

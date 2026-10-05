@@ -141,14 +141,21 @@ def _get_lock():
 
 async def get_shared_browser():
     """Return the process-wide headless chromium, launching it on first use.
-    Returns None on launch failure (callers fall back / degrade)."""
+    Returns None on launch failure (callers fall back / degrade).
+
+    Every background browser use goes through here. On macOS each chromium LAUNCH
+    registers with LaunchServices and bounces in the Dock before it settles as a
+    background element — the web scraper launching one per page put 10-12 bouncing
+    icons in the Dock during a collection (2026-10-01). One long-lived browser
+    bounces once, at most."""
     global _shared_browser
     async with _get_lock():
         if _shared_browser is not None and _shared_browser.is_connected():
             return _shared_browser
         try:
             from playwright.async_api import async_playwright
-            ensure_playwright_browsers_path()
+            # May run a 180 s install on a Mac without browsers — never on the loop.
+            await asyncio.to_thread(ensure_playwright_browsers_path)
             pw = await async_playwright().start()
             _shared_browser = await pw.chromium.launch(
                 headless=True,

@@ -56,23 +56,12 @@ class VideoGeneration(BaseModel):
 
 
 def _preflight_check():
-    """Verify FFmpeg and Playwright are available before starting pipeline.
+    """Verify Playwright is available before starting the pipeline (encoding is PyAV, in-process).
 
     Uses the same Playwright browser detection paths as health_portal.py.
     """
-    import shutil
     import sys
     errors = []
-
-    # ── FFmpeg ──
-    if not shutil.which("ffmpeg"):
-        found = False
-        for p in ["/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg"]:
-            if Path(p).exists():
-                found = True
-                break
-        if not found:
-            errors.append("FFmpeg not found. Install with: brew install ffmpeg")
 
     # ── Playwright: check package, then auto-install browsers if needed ──
     try:
@@ -188,7 +177,13 @@ async def stream_video(video_id: str, request: Request):
 
     video_path = generation.get("video_file_path")
     if not video_path or not Path(video_path).exists():
-        raise HTTPException(status_code=404, detail="Video file not found")
+        # Same fallback api/audio.py has: a row synced from another Mac (or a moved
+        # data dir) still finds its file under this Mac's data dir.
+        from config import settings
+        fallback = Path(settings.data_dir) / "video" / f"{video_id}.mp4"
+        if not fallback.exists():
+            raise HTTPException(status_code=404, detail="Video file not found")
+        video_path = str(fallback)
 
     file_path = Path(video_path)
     file_size = file_path.stat().st_size

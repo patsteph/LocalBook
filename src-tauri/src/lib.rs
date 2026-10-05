@@ -158,33 +158,35 @@ fn kill_existing_backend() {
             .output();
 
         // 2. Kill by port (catches dev-mode python, orphaned processes, etc.)
-        //    lsof -t -i:8000 returns PIDs; kill sends SIGTERM to each
-        if let Ok(output) = std::process::Command::new("lsof")
-            .args(["-t", "-i:8000"])
-            .output()
-        {
-            let pids = String::from_utf8_lossy(&output.stdout);
-            for pid in pids.split_whitespace() {
-                let _ = std::process::Command::new("kill")
-                    .arg(pid)
-                    .output();
-            }
+        //    the LISTENING pids only (never this app — see port_8000_holders); SIGTERM each
+        for pid in port_8000_holders() {
+            let _ = std::process::Command::new("kill").arg(&pid).output();
         }
 
-        // Wait for graceful shutdown (3s is enough for DB flush + model save)
-        std::thread::sleep(Duration::from_secs(3));
+        // Wait for the graceful shutdown to FINISH, not for a fixed guess. It
+        // was a flat 3 s, and the lifespan shutdown (stop workers, unload
+        // models, WAL checkpoint, then the clean-shutdown marker LAST) can take
+        // longer — so a normal Restart got SIGKILLed and the next launch ran its
+        // post-crash integrity check (seen on the mini, 2026-09-30). Returns as
+        // soon as the process is gone; a genuinely frozen backend still gets
+        // SIGKILL below after GRACEFUL_SHUTDOWN_SECS.
+        const GRACEFUL_SHUTDOWN_SECS: u64 = 15;
+        let deadline = std::time::Instant::now() + Duration::from_secs(GRACEFUL_SHUTDOWN_SECS);
+        while std::time::Instant::now() < deadline {
+            let alive = std::process::Command::new("pgrep")
+                .args(["-f", "localbook-backend"])
+                .output()
+                .map(|o| !o.stdout.is_empty())
+                .unwrap_or(false);
+            if !alive && port_8000_holders().is_empty() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(250));
+        }
 
         // 3. Force-kill stragglers on port 8000
-        if let Ok(output) = std::process::Command::new("lsof")
-            .args(["-t", "-i:8000"])
-            .output()
-        {
-            let pids = String::from_utf8_lossy(&output.stdout);
-            for pid in pids.split_whitespace() {
-                let _ = std::process::Command::new("kill")
-                    .args(["-9", pid])
-                    .output();
-            }
+        for pid in port_8000_holders() {
+            let _ = std::process::Command::new("kill").args(["-9", &pid]).output();
         }
 
         // SIGKILL any localbook-backend stragglers too
@@ -228,22 +230,30 @@ fn kill_existing_backend() {
             eprintln!(
                 "[Backend] FATAL: port 8000 still held by PID(s) {:?} after six SIGKILL \
                  attempts. The new backend cannot bind and will not start. Recover with \
-                 `kill -9 $(lsof -t -i:8000)`.",
+                 `kill -9 $(lsof -t -iTCP:8000 -sTCP:LISTEN)`.",
                 stuck
             );
         }
     }
 }
 
-/// PIDs currently listening on the backend port. Empty means the port is free.
+/// PIDs LISTENING on the backend port — never this app. Empty means the port is free.
+///
+/// Plain `lsof -i:8000` also lists every process CONNECTED to the port, and this app
+/// connects to it (the tray poll starts before the backend is restarted). With an
+/// orphaned backend still serving, the app found its own pid in that list and
+/// SIGTERMed itself on every launch: the window flashed and nothing opened
+/// (both Macs, 2026-10-01).
 #[cfg(unix)]
 fn port_8000_holders() -> Vec<String> {
+    let me = std::process::id().to_string();
     std::process::Command::new("lsof")
-        .args(["-t", "-i:8000"])
+        .args(["-t", "-nP", "-iTCP:8000", "-sTCP:LISTEN"])
         .output()
         .map(|o| {
             String::from_utf8_lossy(&o.stdout)
                 .split_whitespace()
+                .filter(|pid| *pid != me)
                 .map(str::to_string)
                 .collect()
         })
@@ -251,7 +261,305 @@ fn port_8000_holders() -> Vec<String> {
 }
 
 // Function to start the backend from resources
+// ── LB-11: mount the encrypted volume BEFORE the sidecar spawns ─────────────
+//
+// The data directory is a mount point. If the backend starts before the volume
+// is attached, it sees an empty directory — and an empty data directory is
+// indistinguishable from a new install. The backend has its own fail-closed
+// gate for exactly that case (`services/volume_gate.py`), but the gate is a
+// safety net; this is the thing that normally means it never fires.
+//
+// Called from `start_backend`, which is the single funnel for first launch,
+// the watchdog respawn and the tray "Restart Backend". LB-11 requires this to
+// be safe across five watchdog restarts in a row, so it is idempotent: an
+// already-mounted volume is a success, not an error.
+//
+// Does NOTHING when there is no image, which is every install that has not
+// turned encryption on. That is the common case and it must stay free.
+
+fn app_support_dir() -> Option<PathBuf> {
+    std::env::var_os("HOME")
+        .map(|home| PathBuf::from(home).join("Library").join("Application Support"))
+}
+
+fn volume_image_path() -> Option<PathBuf> {
+    app_support_dir().map(|d| d.join("LocalBook.sparsebundle"))
+}
+
+fn volume_mount_point() -> Option<PathBuf> {
+    app_support_dir().map(|d| d.join("LocalBook"))
+}
+
+/// This Mac's "encryption is on" flag. Mirrors `config.encryption_flag_path` —
+/// BESIDE the data dir, so it is readable while the volume is not. An image
+/// with no flag is a prepared-but-abandoned migration, not a volume to mount:
+/// the data dir still holds the plaintext.
+fn volume_flag_path() -> Option<PathBuf> {
+    app_support_dir().map(|d| d.join("LocalBook.encryption-enabled"))
+}
+
+/// A staged migration. The swap belongs to the backend (`apply_pending`), which
+/// moves the plaintext aside first; mounting here would only be refused.
+fn volume_swap_pending() -> bool {
+    app_support_dir()
+        .map(|d| d.join("LocalBook.encryption-pending.json").is_file())
+        .unwrap_or(false)
+}
+
+/// Mounted AND ours. Never merely "the directory exists" — a failed attach
+/// leaves an ordinary empty directory behind, and treating that as mounted is
+/// the whole failure this guards against. Mirrors `volume_service.SENTINEL`.
+fn volume_is_mounted() -> bool {
+    volume_mount_point()
+        .map(|mp| mp.join(".volume_id").is_file())
+        .unwrap_or(false)
+}
+
+/// Read the volume passphrase from the login keychain.
+///
+/// The item's value IS the passphrase — `keyvault._keychain_write` stores the
+/// base64 form and `volume_service.passphrase()` returns that same string, so
+/// nothing here needs to know the encoding. It is a pass-through on purpose: if
+/// Rust re-derived it, a change on the Python side would break mounting
+/// silently.
+///
+/// `-A` (permissive ACL, D20) is why this works from an ad-hoc build with no
+/// prompt.
+fn volume_passphrase() -> Option<String> {
+    let out = std::process::Command::new("security")
+        .args([
+            "find-generic-password",
+            "-s", "LocalBook-keyvault",
+            "-a", "volume",
+            "-w",
+        ])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let pw = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if pw.is_empty() { None } else { Some(pw) }
+}
+
+/// Default days between compactions; `LOCALBOOK_VOLUME_COMPACT_DAYS` overrides
+/// (0 disables). Not in `schedule_store`: that lives INSIDE the volume, which is
+/// exactly what is not readable here.
+const VOLUME_COMPACT_DEFAULT_DAYS: u64 = 7;
+
+/// Stamp of the last successful compact. Beside the data dir, like the flag.
+fn volume_compact_stamp_path() -> Option<PathBuf> {
+    app_support_dir().map(|d| d.join("LocalBook.encryption-last-compact"))
+}
+
+/// LB-11 measure 7: reclaim the bands of deleted data. `hdiutil compact` needs
+/// the image DETACHED, and the app never detaches it — so the only safe moment
+/// is here, on a cold launch before the attach (after a reboot or logout).
+///
+/// Best effort, never fatal. A sparsebundle compact only deletes unused band
+/// files, and macOS itself cancels it on sleep, so an interrupted run is safe;
+/// no stamp is written, and the next cold launch retries. It refuses on battery
+/// power by default — also fine, it retries. Not killed on a timeout: the work
+/// is done by a `diskimages-helper` child that would outlive `hdiutil` and hold
+/// the image, and the attach right after would then fail.
+fn compact_volume_if_due(image: &PathBuf, passphrase: &str) {
+    let days = std::env::var("LOCALBOOK_VOLUME_COMPACT_DAYS")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .unwrap_or(VOLUME_COMPACT_DEFAULT_DAYS);
+    if days == 0 {
+        return;
+    }
+    let stamp = match volume_compact_stamp_path() {
+        Some(p) => p,
+        None => return,
+    };
+    let due = std::fs::metadata(&stamp)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.elapsed().ok())
+        .map(|age| age >= Duration::from_secs(days * 86_400))
+        .unwrap_or(true);
+    if !due {
+        return;
+    }
+
+    println!("[Volume] compacting {:?} (last compact over {} days ago)", image, days);
+    let started = std::time::Instant::now();
+    let mut child = match std::process::Command::new("hdiutil")
+        // -stdinpass is required: without it hdiutil ignores stdin and raises
+        // a GUI password prompt instead.
+        .args(["compact", "-stdinpass"])
+        .arg(image)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("[Volume] could not run hdiutil compact: {}", e);
+            return;
+        }
+    };
+    if let Some(mut stdin) = child.stdin.take() {
+        use std::io::Write;
+        let _ = stdin.write_all(passphrase.as_bytes());
+    }
+    match child.wait_with_output() {
+        Ok(out) if out.status.success() => {
+            let _ = std::fs::write(
+                &stamp,
+                String::from_utf8_lossy(&out.stdout).trim().as_bytes(),
+            );
+            println!(
+                "[Volume] compacted in {:.1}s: {}",
+                started.elapsed().as_secs_f64(),
+                String::from_utf8_lossy(&out.stdout).trim()
+            );
+        }
+        Ok(out) => eprintln!(
+            "[Volume] compact skipped: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ),
+        Err(e) => eprintln!("[Volume] compact failed: {}", e),
+    }
+}
+
+/// Attach the volume if there is one and it is not already up.
+///
+/// Returns true when the data directory is usable — either it was mounted, or
+/// there is no encrypted volume on this machine at all.
+fn ensure_volume_mounted() -> bool {
+    let image = match volume_image_path() {
+        Some(p) => p,
+        None => return true,
+    };
+    if !image.exists() {
+        return true; // encryption not in use here
+    }
+    if volume_swap_pending() {
+        println!("[Volume] a migration is staged — the backend performs the swap");
+        return true;
+    }
+    // No flag AND real files at the mount point = an abandoned prepare; the
+    // plaintext is live. No flag but an EMPTY mount point is different: that is
+    // an encrypted install that lost its flag, and starting fresh there is the
+    // one unrecoverable outcome. Mount it.
+    let flag_set = volume_flag_path().map(|p| p.is_file()).unwrap_or(false);
+    let mount_point_has_files = volume_mount_point()
+        .and_then(|mp| std::fs::read_dir(mp).ok())
+        .map(|mut it| it.next().is_some())
+        .unwrap_or(false);
+    if !flag_set && mount_point_has_files {
+        println!("[Volume] an image exists but encryption is not enabled on this Mac");
+        return true;
+    }
+    if volume_is_mounted() {
+        println!("[Volume] already mounted");
+        return true;
+    }
+
+    let mount_point = match volume_mount_point() {
+        Some(p) => p,
+        None => return false,
+    };
+    let passphrase = match volume_passphrase() {
+        Some(p) => p,
+        None => {
+            eprintln!("[Volume] no key in this Mac's Keychain — the backend will \
+                       show the recovery screen");
+            return false;
+        }
+    };
+
+    let _ = std::fs::create_dir_all(&mount_point);
+
+    // Refuse to mount over real files: mounting HIDES them, and a user who then
+    // adds a source is writing into the volume while their old data sits
+    // invisible underneath. The backend enforces this too; doing it here means
+    // we never even try.
+    if let Ok(entries) = std::fs::read_dir(&mount_point) {
+        let stray = entries
+            .filter_map(|e| e.ok())
+            .any(|e| e.file_name() != std::ffi::OsStr::new(".volume_id"));
+        if stray {
+            eprintln!("[Volume] {:?} is not empty — refusing to mount over it", mount_point);
+            return false;
+        }
+    }
+
+    compact_volume_if_due(&image, &passphrase);
+
+    println!("[Volume] attaching {:?}", image);
+    let mut child = match std::process::Command::new("hdiutil")
+        .args(["attach", "-stdinpass", "-nobrowse", "-mountpoint"])
+        .arg(&mount_point)
+        .arg(&image)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("[Volume] could not run hdiutil: {}", e);
+            return false;
+        }
+    };
+
+    // `hdiutil attach` does NOT resolve a keychain password by itself — with no
+    // password source it blocks waiting to prompt, which is unusable here.
+    // Verified during the K-1 spike, 2026-09-29.
+    if let Some(mut stdin) = child.stdin.take() {
+        use std::io::Write;
+        let _ = stdin.write_all(passphrase.as_bytes());
+    }
+
+    match child.wait_with_output() {
+        Ok(out) if out.status.success() => {
+            if volume_is_mounted() {
+                println!("[Volume] mounted at {:?}", mount_point);
+                // LB-11 measure 9. Best effort: it saves CPU, and the index
+                // would live inside the image anyway.
+                let _ = std::process::Command::new("mdutil")
+                    .args(["-i", "off"])
+                    .arg(&mount_point)
+                    .output();
+                true
+            } else {
+                eprintln!("[Volume] attached but no .volume_id — not LocalBook's volume");
+                let _ = std::process::Command::new("hdiutil")
+                    .arg("detach")
+                    .arg(&mount_point)
+                    .output();
+                false
+            }
+        }
+        Ok(out) => {
+            eprintln!(
+                "[Volume] attach failed: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            );
+            false
+        }
+        Err(e) => {
+            eprintln!("[Volume] attach failed: {}", e);
+            false
+        }
+    }
+}
+
 async fn start_backend(app_handle: &AppHandle) -> Result<Option<std::process::Child>, String> {
+    // Before anything else. If this returns false the backend still starts —
+    // it has its own fail-closed gate and will serve the recovery screen, which
+    // is far better than not starting at all and leaving the user with a window
+    // that never appears.
+    let volume_ready = ensure_volume_mounted();
+    if !volume_ready {
+        eprintln!("[Volume] starting the backend in recovery mode");
+    }
+
     println!("Attempting to start backend...");
     
     // Kill any existing backend first to avoid port conflicts
@@ -297,12 +605,33 @@ async fn start_backend(app_handle: &AppHandle) -> Result<Option<std::process::Ch
             .ok_or_else(|| "Backend path has no parent directory".to_string())?;
         println!("Backend working directory: {:?}", backend_dir);
 
-        return match std::process::Command::new(&candidate)
-            .current_dir(backend_dir)
+        let mut cmd = std::process::Command::new(&candidate);
+        // The backend stops itself when this pid is gone (utils/parent_watch.py):
+        // a Force Quit or a crash skips RunEvent::Exit, and an orphaned backend
+        // kept collecting and scraping with no window (MBP, 2026-10-01).
+        cmd.env("LOCALBOOK_PARENT_PID", std::process::id().to_string());
+        cmd.current_dir(backend_dir)
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::inherit())
-            .stderr(std::process::Stdio::inherit())
-            .spawn()
+            .stderr(std::process::Stdio::inherit());
+
+        // LB-11 measure 8: temp files go INSIDE the volume. Otherwise every
+        // extracted PDF, every audio chunk and every scratch file lands in
+        // /tmp as plaintext — outside the encryption that exists to cover
+        // exactly that content. Only when the volume is genuinely mounted;
+        // pointing TMPDIR at an unmounted mount point would be worse than
+        // leaving it alone.
+        if volume_ready && volume_is_mounted() {
+            if let Some(mp) = volume_mount_point() {
+                let tmp = mp.join("tmp");
+                if std::fs::create_dir_all(&tmp).is_ok() {
+                    println!("[Volume] sidecar TMPDIR -> {:?}", tmp);
+                    cmd.env("TMPDIR", &tmp);
+                }
+            }
+        }
+
+        return match cmd.spawn()
         {
             Ok(child) => {
                 println!("Backend spawned with PID: {:?}", child.id());

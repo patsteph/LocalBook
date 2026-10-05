@@ -85,15 +85,72 @@ async def get_notebook(notebook_id: str):
         raise HTTPException(status_code=404, detail="Notebook not found")
     return notebook
 
+async def _media_ids_for(notebook_id: str) -> dict:
+    ids = {"audio": [], "video": []}
+    try:
+        from storage.audio_store import audio_store
+        ids["audio"] = [g["audio_id"] for g in await audio_store.list(notebook_id)]
+    except Exception as e:
+        print(f"[CLEANUP] could not list audio for {notebook_id}: {e}")
+    try:
+        from storage.video_store import video_store
+        ids["video"] = [g["video_id"] for g in await video_store.list(notebook_id)]
+    except Exception as e:
+        print(f"[CLEANUP] could not list video for {notebook_id}: {e}")
+    return ids
+
+
+def remove_media_files(media_ids: dict) -> int:
+    """Remove `<id>*` in the audio / video dirs — the output plus its `_speech`,
+    `_parts`, `_slides` and `_narration` siblings. Ids are UUIDs, so the prefix
+    glob cannot reach another generation's files."""
+    removed = 0
+    for kind, ids in media_ids.items():
+        base = Path(settings.data_dir) / kind
+        if not base.is_dir():
+            continue
+        for media_id in ids:
+            if not media_id:
+                continue
+            for path in base.glob(f"{media_id}*"):
+                if path.is_dir():
+                    shutil.rmtree(path, ignore_errors=True)
+                else:
+                    path.unlink(missing_ok=True)
+                removed += 1
+    return removed
+
+
 @router.delete("/{notebook_id}")
 async def delete_notebook(notebook_id: str):
     """Delete a notebook and all associated data"""
+    # Collected BEFORE the delete: `audio_generations` and `video_generations`
+    # cascade on the notebook FK, so once the row goes the ids that name the
+    # media files are gone with it — and the files stayed behind forever. That is
+    # how 49 orphaned podcasts (~300 MB) accumulated in one data dir.
+    media_ids = await _media_ids_for(notebook_id)
+
     success = await notebook_store.delete(notebook_id)
     if not success:
         raise HTTPException(status_code=404, detail="Notebook not found")
     
     # Clean up all associated data
     cleanup_errors = []
+
+    # 0. Generated media files + the vector table, neither of which the DB
+    #    cascade can reach.
+    try:
+        removed = remove_media_files(media_ids)
+        if removed:
+            print(f"[CLEANUP] Removed {removed} media file(s) for {notebook_id}")
+    except Exception as e:
+        cleanup_errors.append(f"media files: {e}")
+    try:
+        from services import rag_storage
+        if rag_storage.drop_notebook_table(notebook_id):
+            print(f"[CLEANUP] Dropped vector table for {notebook_id}")
+    except Exception as e:
+        cleanup_errors.append(f"vector table: {e}")
 
     # 1. Remove collector config + data directory
     try:
@@ -103,7 +160,19 @@ async def delete_notebook(notebook_id: str):
             print(f"[CLEANUP] Deleted notebook data dir: {notebook_data_dir}")
     except Exception as e:
         cleanup_errors.append(f"data dir: {e}")
-    
+
+    # 1b. The notebook's synced documents (LB-12 D1): collector + people config,
+    # approval items, quiz cards and reviews. Deleting them ships the delete.
+    try:
+        from storage import documents
+        for kind in ("collector_config", "people_config", "approval_queue_imported", "quiz_cards_imported"):
+            documents.delete(kind, notebook_id)
+        for kind in ("approval_item", "quiz_card", "quiz_review"):
+            for key, _ in documents.items(kind, f"{notebook_id}/"):
+                documents.delete(kind, key)
+    except Exception as e:
+        cleanup_errors.append(f"documents: {e}")
+
     # 2. Clear collector from in-memory registry
     try:
         from agents.collector import clear_collector_cache

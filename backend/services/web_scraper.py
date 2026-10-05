@@ -533,26 +533,29 @@ class WebScraper:
         
         Returns HTML string or None on failure.
         """
-        # Strategy 1: Playwright (real Chromium — bypasses Cloudflare)
+        # Strategy 1: Playwright (real Chromium — bypasses Cloudflare). The SHARED
+        # browser, one context per page: launching a browser per page bounced a
+        # Dock icon per page during collections (see playwright_utils).
         try:
-            from playwright.async_api import async_playwright
-            
-            async with async_playwright() as p:
-                browser = await p.chromium.launch(headless=True)
+            from services.playwright_utils import get_shared_browser
+
+            browser = await get_shared_browser()
+            if browser is not None:
                 context = await browser.new_context(
                     user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
                                "AppleWebKit/537.36 (KHTML, like Gecko) "
                                "Chrome/120.0.0.0 Safari/537.36"
                 )
-                page = await context.new_page()
-                await page.goto(url, wait_until="networkidle", timeout=30000)
-                html = await page.content()
-                await browser.close()
-                
-            if html and len(html) > 200:
-                return html
+                try:
+                    page = await context.new_page()
+                    await page.goto(url, wait_until="networkidle", timeout=30000)
+                    html = await page.content()
+                finally:
+                    await context.close()
+                if html and len(html) > 200:
+                    return html
         except Exception as e:
-            print(f"[WebScraper] Playwright failed for {url}: {e}")
+            logger.info(f"[WebScraper] Playwright failed for {url}: {e}")
 
         # Strategy 2: httpx with browser headers
         try:

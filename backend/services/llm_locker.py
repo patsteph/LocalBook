@@ -15,21 +15,15 @@ logger = logging.getLogger(__name__)
 
 
 def _get_default_vision_model() -> str:
-    """
-    Return the best available standalone vision model from the registry.
+    """The vision model to restore when the main/fast model it shared no longer sees.
 
-    Selection order is conservative on purpose: we pick a model that we
-    KNOW the current Ollama runner can serve, and treat newer-but-flaky
-    models as opt-in via Settings → Models.
-
-    granite3.2-vision:2b is the stable floor. granite3.3 was removed after
-    Ollama 0.23.x llama-runner segfaults on Apple Silicon. Users can select
-    any installed vision model (gemma3:4b, gemma4:e2b, llava, moondream)
-    via the Vision column in the LLM Selector.
+    The shipped default from config.py — an MLX checkpoint id. This used to return
+    "granite3.2-vision:2b", an Ollama tag the MLX engine cannot load, so swapping to a
+    non-vision model silently broke every image task (found 2026-10-01).
     """
-    if registry.get_model("granite3.2-vision:2b"):
-        return "granite3.2-vision:2b"
-    return "granite3.2-vision:2b"
+    from config import Settings
+
+    return Settings.model_fields["vision_model"].default
 
 
 class ModelSwapError(Exception):
@@ -217,32 +211,28 @@ class LLMLocker:
                 return info.disk_size_gb * 1.2
             return 3.0  # conservative default for an unknown, unmeasurable model
         
-        if role == "main_model":
-            main_vram = _model_vram(target_ollama_name)
-            # Ollama rotates between fast/vision — use the larger one as concurrent estimate
-            final_vision = changes.get("vision_model", current_vision)
-            secondary_vram = max(
-                _model_vram(current_fast),
-                _model_vram(final_vision) if final_vision != target_ollama_name else 0
-            )
-            combined_vram = main_vram + secondary_vram
-        elif role == "fast_model":
-            main_vram = _model_vram(current_main)
-            fast_vram = _model_vram(target_ollama_name)
-            # Use post-collapse vision value: if fast model supports vision, vision is now the fast model itself
-            final_vision = changes.get("vision_model", current_vision)
-            vision_vram = _model_vram(final_vision) if final_vision not in (current_main, target_ollama_name) else 0
-            combined_vram = main_vram + max(fast_vram, vision_vram)
-        else:
-            combined_vram = _model_vram(current_main) + max(
-                _model_vram(current_fast), _model_vram(target_ollama_name)
-            )
+        # The distinct models that would be resident after the swap. A role that shares a
+        # model with another (vision on main, or fast == main on a compact Mac) costs nothing
+        # extra — this used to add them twice (2026-10-03).
+        after = {"main_model": current_main, "fast_model": current_fast,
+                 "vision_model": changes.get("vision_model", current_vision)}
+        if role in after:
+            after[role] = target_ollama_name
+        combined_vram = sum(_model_vram(m) for m in {m for m in after.values() if m})
 
-        if combined_vram + OS_HEADROOM_GB > sys_ram:
+        # Against the reserve-aware GPU budget (LB-1) — memory set aside for another app on
+        # this Mac counts — falling back to total RAM minus OS headroom.
+        try:
+            from services.model_sizing import budget_gb
+            ceiling = budget_gb() or (sys_ram - OS_HEADROOM_GB)
+        except Exception:
+            ceiling = sys_ram - OS_HEADROOM_GB
+        if combined_vram > ceiling:
             return False, (
-                f"INSUFFICIENT MEMORY HEADROOM. Estimated concurrent VRAM = {combined_vram:.1f}GB + "
-                f"{OS_HEADROOM_GB}GB OS headroom = {combined_vram + OS_HEADROOM_GB:.1f}GB, but your Mac has {sys_ram}GB. "
-                f"This combination would likely cause crashes or extreme swapping."
+                f"INSUFFICIENT MEMORY HEADROOM. These models together need about "
+                f"{combined_vram:.1f} GB, but LocalBook's budget on this Mac is {ceiling:.1f} GB "
+                f"(after macOS and any memory reserved for other apps). This combination would "
+                f"cause crashes or heavy swapping."
             ), {}
 
         # Warning cap for recommended RAM
@@ -394,7 +384,13 @@ class LLMLocker:
                       "embedding_model"):
             if _attr in changes:
                 setattr(settings, _attr, changes[_attr])
-            
+        # Compact routes the fast role to the main model; the swap changed the CHOICE.
+        try:
+            from services.model_profile import after_swap
+            after_swap(changes)
+        except Exception as e:
+            logger.debug(f"[LLMLocker] profile re-apply skipped: {e}")
+
         # Invalidate the settings/ollama/models cache so the next fetch reflects changes
         try:
             from api.settings import _ollama_models_cache, _ollama_models_lock

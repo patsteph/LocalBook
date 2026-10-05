@@ -9,6 +9,10 @@ import { CredentialLocker } from './CredentialLocker';
 import { ProfileSection } from './settings/ProfileSection';
 import { UpdatesSection } from './settings/UpdatesSection';
 import { APIKeysSection } from './settings/APIKeysSection';
+import { RecoveryKeySection } from './settings/RecoveryKeySection';
+import { SyncSection } from './settings/SyncSection';
+import { EncryptionSection } from './settings/EncryptionSection';
+import { DataHealthSection } from './settings/DataHealthSection';
 import { CuratorSettings } from './CuratorSettings';
 import { CorrespondentSettings } from './CorrespondentSettings';
 import { TemplatesSection } from './settings/TemplatesSection';
@@ -46,9 +50,9 @@ class SettingsErrorBoundary extends React.Component<
   }
 }
 
-type SectionId =
+export type SectionId =
     | 'profile' | 'voice'
-    | 'api-keys' | 'credentials' | 'correspondent'
+    | 'api-keys' | 'credentials' | 'correspondent' | 'recovery' | 'encryption' | 'data-health' | 'sync'
     | 'curator' | 'memory'
     | 'schedules'
     | 'folders' | 'companions'
@@ -77,6 +81,10 @@ const SECTION_GROUPS: { title: string; items: SectionDef[] }[] = [
         items: [
             { id: 'api-keys',      label: 'API Keys',      icon: '🔑', accent: 'blue' },
             { id: 'credentials',   label: 'Site Logins',   icon: '🔐', accent: 'blue' },
+            { id: 'recovery',      label: 'Recovery',      icon: '🔑', accent: 'amber' },
+            { id: 'encryption',    label: 'Encryption',    icon: '🔒', accent: 'amber' },
+            { id: 'data-health',   label: 'Data Health',   icon: '🩺', accent: 'amber' },
+            { id: 'sync',          label: 'Sync',          icon: '🔄', accent: 'amber' },
             { id: 'correspondent', label: 'Correspondent', icon: '📬', accent: 'amber' },
         ],
     },
@@ -105,10 +113,10 @@ const ACCENT_CLASSES: Record<SectionDef['accent'], string> = {
     amber:  'border-amber-600 bg-amber-50 text-amber-700 dark:bg-amber-900/20 dark:text-amber-300',
 };
 
-export const Settings: React.FC = () => {
+export const Settings: React.FC<{ initialSection?: SectionId }> = ({ initialSection }) => {
     const [error, setError] = useState<string | null>(null);
     const [success, setSuccess] = useState<string | null>(null);
-    const [activeSection, setActiveSection] = useState<SectionId>('api-keys');
+    const [activeSection, setActiveSection] = useState<SectionId>(initialSection ?? 'api-keys');
 
     return (
         <div className="p-4 max-w-5xl mx-auto">
@@ -156,6 +164,10 @@ export const Settings: React.FC = () => {
                         </div>
                     )}
 
+                    {activeSection === 'recovery' && <SettingsErrorBoundary fallbackLabel="Recovery"><RecoveryKeySection /></SettingsErrorBoundary>}
+                    {activeSection === 'sync' && <SettingsErrorBoundary fallbackLabel="Sync"><SyncSection /></SettingsErrorBoundary>}
+                    {activeSection === 'encryption' && <SettingsErrorBoundary fallbackLabel="Encryption"><EncryptionSection /></SettingsErrorBoundary>}
+                    {activeSection === 'data-health' && <SettingsErrorBoundary fallbackLabel="Data Health"><DataHealthSection /></SettingsErrorBoundary>}
                     {activeSection === 'profile' && <ProfileSection setError={setError} setSuccess={setSuccess} />}
                     {activeSection === 'voice' && <SettingsErrorBoundary fallbackLabel="Voice Profile"><VoiceProfileSection /></SettingsErrorBoundary>}
                     {activeSection === 'api-keys' && <APIKeysSection setError={setError} setSuccess={setSuccess} />}

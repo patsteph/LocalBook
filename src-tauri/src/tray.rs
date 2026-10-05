@@ -40,8 +40,22 @@ struct Enrich {
     #[serde(default)]
     queue_depth: u64,
 }
+#[derive(Deserialize, Default, Clone)]
+struct SyncState {
+    #[serde(default)]
+    enabled: bool,
+    #[serde(default)]
+    paired: u32,
+    // A run in progress: the item shows "Syncing with … 45%" instead of the toggle text.
+    #[serde(default)]
+    running: bool,
+    #[serde(default)]
+    label: String,
+}
 #[derive(Deserialize, Default)]
 struct Status {
+    #[serde(default)]
+    sync: SyncState,
     #[serde(default)]
     models: Models,
     #[serde(default)]
@@ -68,6 +82,8 @@ pub(crate) fn init(app: &AppHandle) -> tauri::Result<()> {
     let labs = MenuItem::with_id(app, "labs", "Labs (LLM)", true, None::<&str>)?;
     let settings = MenuItem::with_id(app, "settings", "Settings", true, None::<&str>)?;
     let restart = MenuItem::with_id(app, "restart", "🔄 Backend", true, None::<&str>)?;
+    // LB-12 kill switch: pause/resume sync without opening the app.
+    let sync = MenuItem::with_id(app, "sync", "Sync: …", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
 
     let sep1 = PredefinedMenuItem::separator(app)?;
@@ -76,7 +92,7 @@ pub(crate) fn init(app: &AppHandle) -> tauri::Result<()> {
         app,
         &[
             &status, &models, &models2, &metrics, &synth, &sep1, &open, &portal, &labs, &settings,
-            &sep2, &restart, &quit,
+            &sep2, &sync, &restart, &quit,
         ],
     )?;
 
@@ -98,6 +114,7 @@ pub(crate) fn init(app: &AppHandle) -> tauri::Result<()> {
     // — a 2–9s stall shouldn't read as "dead"). Only ≥2 consecutive failures show
     // stopped; a lone blip keeps the last-good state.
     let (s, m, m2, me, sy) = (status.clone(), models.clone(), models2.clone(), metrics.clone(), synth.clone());
+    let sync_item = sync.clone();
     tauri::async_runtime::spawn(async move {
         let client = reqwest::Client::new();
         let mut fails: u32 = 0;
@@ -106,11 +123,13 @@ pub(crate) fn init(app: &AppHandle) -> tauri::Result<()> {
                 Some(st) => {
                     fails = 0;
                     render_up(&s, &m, &m2, &me, &sy, &st);
+                    render_sync(&sync_item, &st.sync);
                 }
                 None => {
                     fails += 1;
                     if fails >= 2 {
                         render_down(&s, &m, &m2, &me, &sy);
+                        let _ = sync_item.set_text("Sync: —");
                     }
                     // else: single blip — leave the last-good state untouched.
                 }
@@ -174,6 +193,46 @@ fn render_up(
     });
 }
 
+/// What the sync item says, and therefore what clicking it does.
+static SYNC_ON: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn render_sync(item: &MenuItem<Wry>, st: &SyncState) {
+    SYNC_ON.store(st.enabled, std::sync::atomic::Ordering::Relaxed);
+    let _ = item.set_text(if st.enabled && st.running && !st.label.is_empty() {
+        // Still a click target: clicking pauses sync, which stops the run safely.
+        format!("⏸ {}", st.label)
+    } else if st.enabled {
+        format!("⏸ Pause sync ({} Mac{})", st.paired, if st.paired == 1 { "" } else { "s" })
+    } else {
+        "▶︎ Resume sync".to_string()
+    });
+}
+
+/// The kill switch: POST /sync/disable (or /sync/enable) with the app token.
+/// Takes effect at once; the next status poll relabels the item.
+fn toggle_sync() {
+    let pause = SYNC_ON.load(std::sync::atomic::Ordering::Relaxed);
+    tauri::async_runtime::spawn(async move {
+        let token = crate::read_app_token().await.unwrap_or_default();
+        let url = if pause {
+            "http://localhost:8000/sync/disable"
+        } else {
+            "http://localhost:8000/sync/enable"
+        };
+        let result = reqwest::Client::new()
+            .post(url)
+            .header("X-LocalBook-Token", &token)
+            .timeout(Duration::from_secs(30))
+            .send()
+            .await;
+        match result {
+            Ok(r) if r.status().is_success() => println!("[Tray] sync {}", if pause { "paused" } else { "resumed" }),
+            Ok(r) => eprintln!("[Tray] sync toggle refused: {}", r.status()),
+            Err(e) => eprintln!("[Tray] sync toggle failed: {}", e),
+        }
+    });
+}
+
 fn render_down(
     status: &MenuItem<Wry>,
     models: &MenuItem<Wry>,
@@ -199,6 +258,7 @@ fn on_menu(app: &AppHandle, id: &str) {
             }
         }
         "restart" => crate::restart_backend_from_tray(app),
+        "sync" => toggle_sync(),
         "quit" => app.exit(0),
         _ => {}
     }

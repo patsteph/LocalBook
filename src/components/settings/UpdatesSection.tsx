@@ -168,6 +168,9 @@ export const UpdatesSection: React.FC = () => {
                                             <p className="text-sm text-amber-700 dark:text-amber-300 mb-3">
                                                 The upgrade pulls the latest code, rebuilds the app, and relaunches automatically. Your data is safe.
                                             </p>
+                                            <p className="text-xs text-amber-700 dark:text-amber-300 mb-3">
+                                                macOS may ask once for your login password on the first launch while LocalBook moves your saved API keys to their new Keychain item — that is expected, and it does not recur.
+                                            </p>
                                             <div className="flex gap-2">
                                                 <button
                                                     onClick={handleUpgrade}

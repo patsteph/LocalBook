@@ -16,7 +16,7 @@ def _prettify(text: str) -> str:
 
 
 def friendly_model_name(model_id: str) -> str:
-    """'mlx-community/gemma-4-e4b-it-4bit' → 'Gemma 4 e4b (MLX)';
+    """'mlx-community/gemma-4-e4b-it-4bit' → 'Gemma 4 e4b (MLX · 4bit)';
     'gemma4:e4b' → registry display_name ('Gemma 4 e4b') or a prettified fallback;
     '' → ''."""
     if not model_id:
@@ -24,9 +24,13 @@ def friendly_model_name(model_id: str) -> str:
     # MLX / HuggingFace path form
     if "/" in model_id:
         base = model_id.split("/")[-1]
-        base = re.sub(r'-(4bit|8bit|bf16|fp16|q4|q8|q4_k_m|q8_0)$', '', base, flags=re.I)
+        # The quantization stays visible: two builds of one model (8-bit vs bf16) are
+        # different weights, and hiding the suffix made them look identical in LLM Labs.
+        m = re.search(r'-(4bit|8bit|bf16|fp16|q4|q8|q4_k_m|q8_0)$', base, flags=re.I)
+        base = base[:m.start()] if m else base
         base = re.sub(r'-(it|instruct|chat)$', '', base, flags=re.I)
-        return (_prettify(base) + " (MLX)").strip()
+        tag = f"MLX · {m.group(1)}" if m else "MLX"
+        return f"{_prettify(base)} ({tag})".strip()
     # Ollama "family:tag" — prefer the registry's curated display name
     try:
         from evaluator.model_registry import model_registry

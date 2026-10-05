@@ -96,6 +96,42 @@ interface ApiConfig {
   headers?: Record<string, string>;
 }
 
+
+// ── LB-11: the locked-volume signal ─────────────────────────────────────────
+//
+// Kept here rather than in a React context because the signal arrives from the
+// fetch layer, where there is no component to own it. Anything that cares
+// subscribes; App renders the recovery screen from it.
+
+export type LockedDetail = {
+  locked: boolean;
+  detail?: string;
+  reason?: string | null;
+};
+
+let lockedState: LockedDetail | null = null;
+const lockedListeners = new Set<(s: LockedDetail | null) => void>();
+
+function setLocked(next: LockedDetail | null) {
+  const changed = (lockedState === null) !== (next === null)
+    || lockedState?.detail !== next?.detail;
+  lockedState = next;
+  if (changed) lockedListeners.forEach((fn) => fn(next));
+}
+
+export function getLocked(): LockedDetail | null {
+  return lockedState;
+}
+
+export function onLockedChange(fn: (s: LockedDetail | null) => void): () => void {
+  lockedListeners.add(fn);
+  return () => { lockedListeners.delete(fn); };
+}
+
+export function clearLocked() {
+  setLocked(null);
+}
+
 async function apiRequest<T = any>(
   method: string,
   path: string,
@@ -124,11 +160,30 @@ async function apiRequest<T = any>(
   if (Object.keys(headers).length) init.headers = headers;
 
   const response = await localFetch(url, init);
+
+  // LB-11: the backend is up but its encrypted volume is not open. This is NOT
+  // an outage and must not be reported as one — the data is intact inside an
+  // image that did not mount, and the app needs to show the recovery screen
+  // rather than a wall of failed requests. The backend marks it with a header
+  // precisely so a client can tell the two apart.
+  if (response.status === 503 && response.headers.get('x-localbook-locked') === '1') {
+    let detail: LockedDetail = { locked: true };
+    try { detail = { ...detail, ...(await response.clone().json()) }; } catch { /* no body */ }
+    setLocked(detail);
+  } else if (response.ok) {
+    // Any successful call means the volume is open again — clear a stale lock
+    // rather than leaving the user staring at a recovery screen after they
+    // have already recovered.
+    if (lockedState) setLocked(null);
+  }
+
   if (!response.ok) {
     const err: any = new Error(`API ${method} ${path} failed: HTTP ${response.status}`);
     err.response = { status: response.status };
     try { err.response.data = await response.json(); } catch { /* non-JSON error body */ }
-    console.error('API Error:', err);
+    if (!(response.status === 503 && response.headers.get('x-localbook-locked') === '1')) {
+      console.error('API Error:', err);
+    }
     throw err;
   }
   const text = await response.text();
