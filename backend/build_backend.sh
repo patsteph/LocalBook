@@ -96,14 +96,14 @@ fi
 # mlx-lm / mlx-vlm: Wave 9 in-process MLX LLM engine (opt-in, dual-engine).
 # Install --no-deps because their declared trees conflict with LocalBook's (mlx-vlm pins
 # starlette>=1.0.1 vs fastapi <0.51.0; both pin transformers 5.x) — but they run fine on the
-# existing transformers 5.12.1. Real runtime needs (mlx, torchvision, sentencepiece, protobuf)
+# existing transformers 5.19.0. Real runtime needs (mlx, torchvision, sentencepiece, protobuf)
 # are in requirements.in. Lazy-imported: only loaded when a role's engine == "mlx".
 #
 # PIN EXACT VERSIONS. Unpinned `>=` let a fresh machine pull *latest* — mlx-vlm 0.6.5 (2026-07)
-# requires transformers>=5.14, but our validated lock is 5.12.1 (0.6.4 caps at <5.13). That drift
+# required transformers>=5.14 while our lock was 5.12.1. That drift
 # is the source of the "rebuild flagging errors" reports. The version-aware guard reinstalls the
 # pinned build even when a WRONG version is already present (downgrades 0.6.5 → 0.6.4).
-MLXLM_VER="0.31.3"; MLXVLM_VER="0.6.4"
+MLXLM_VER="0.31.3"; MLXVLM_VER="0.7.8"   # 0.7.8 (2026-10-14): embedding_loader for EmbeddingGemma 2
 if ! python -c "import importlib.metadata as m; assert m.version('mlx-lm')=='$MLXLM_VER' and m.version('mlx-vlm')=='$MLXVLM_VER'" 2>/dev/null; then
     echo -e "${YELLOW}Installing mlx-lm==$MLXLM_VER + mlx-vlm==$MLXVLM_VER (--no-deps, Wave 9 MLX engine)...${NC}"
     pip install -q --no-deps "mlx-lm==$MLXLM_VER" "mlx-vlm==$MLXVLM_VER" 2>/dev/null || echo -e "${YELLOW}  mlx-lm/mlx-vlm install warning (non-fatal — MLX opt-in only)${NC}"
