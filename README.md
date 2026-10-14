@@ -132,7 +132,6 @@ installed beside the app.
   selected at all.
 
 ---
----
 
 ## What arrived in v2.4.0
 **Point LocalBook at a folder and anything that lands in it becomes a source.** Built for a user
@@ -289,7 +288,6 @@ never tagged; its notes are kept in full below.
 - `ebooklib` (AGPL-3.0), which was shipping inside the signed app. EPUB is read with the standard
   library and `lxml`.
 
----
 ---
 
 ## v1.8.0 — Studio Redesign, iPhone Scan Capture, Sidecar Lifecycle, Multi-Provider LLM
