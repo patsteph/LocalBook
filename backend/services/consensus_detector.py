@@ -137,7 +137,7 @@ async def detect_consensus(
     *,
     since_days: int = 3,
     min_cluster_size: int = 3,
-    similarity_threshold: float = 0.72,
+    similarity_threshold: Optional[float] = None,
     max_events: int = 300,
 ) -> List[ConsensusCluster]:
     """Find consensus topics across recently-ingested sources.
@@ -152,6 +152,9 @@ async def detect_consensus(
         logger.debug(f"[consensus_detector] curator_brain import failed: {e}")
         return []
 
+    if similarity_threshold is None:
+        from services.embedding_profile import threshold as _thr
+        similarity_threshold = _thr("consensus", 0.72)
     since_iso = (datetime.now(timezone.utc) - timedelta(days=since_days)).isoformat()
     raw = curator_brain.recent_events(limit=max_events, since_iso=since_iso) or []
     # P14.C (2026-06-10) — also consume per-article ingest events. The

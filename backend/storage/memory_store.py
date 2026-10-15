@@ -267,8 +267,11 @@ class MemoryStore:
         memory = self.load_core_memory()
         return [e for e in memory.entries if e.category == category]
     
-    def find_similar_core_memory(self, content: str, threshold: float = 0.85) -> Optional[CoreMemoryEntry]:
+    def find_similar_core_memory(self, content: str, threshold: Optional[float] = None) -> Optional[CoreMemoryEntry]:
         """Find core memory with similar content using embeddings"""
+        if threshold is None:
+            from services.embedding_profile import threshold as _thr
+            threshold = _thr("core_memory", 0.85)
         memory = self.load_core_memory()
         if not memory.entries:
             return None

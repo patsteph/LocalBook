@@ -66,7 +66,7 @@ async def _embed(text: str, task: Optional[str] = None) -> List[float]:
 
 
 async def route(classification_summary: str, *, topic_tags: Optional[List[str]] = None,
-                threshold: float = ROUTING_THRESHOLD,
+                threshold: Optional[float] = None,
                 sender: Optional[str] = None,
                 source_entities: Optional[List[Dict[str, Any]]] = None) -> RoutingDecision:
     """Decide which notebook this newsletter belongs to.
@@ -86,6 +86,9 @@ async def route(classification_summary: str, *, topic_tags: Optional[List[str]] 
     """
     if not classification_summary:
         return RoutingDecision(decision="no_match", reason="empty summary")
+    if threshold is None:
+        from services.embedding_profile import threshold as _thr
+        threshold = _thr("router", ROUTING_THRESHOLD)
 
     try:
         from services.curator_brain import curator_brain

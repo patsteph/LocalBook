@@ -108,3 +108,13 @@ def test_embed_batch_formats_for_the_task_before_the_engine(monkeypatch):
     asyncio.run(llm_runtime.embed("c", task="similarity"))
     assert seen == ["task: clustering | query: a", "task: clustering | query: b",
                     "task: sentence similarity | query: c"]
+
+
+def test_thresholds_are_per_model_and_default_to_todays_values(monkeypatch):
+    from services.embedding_profile import EmbeddingProfile
+    monkeypatch.setattr(ep, "active", lambda: ep.for_model(ARCTIC))
+    assert ep.threshold("router", 0.75) == 0.75                # arctic: nothing changes
+    tuned = EmbeddingProfile(model_id="g", thresholds=(("router", 0.81),))
+    monkeypatch.setattr(ep, "active", lambda: tuned)
+    assert ep.threshold("router", 0.75) == 0.81
+    assert ep.threshold("consensus", 0.72) == 0.72             # not calibrated → default

@@ -212,7 +212,8 @@ async def reassign_one(notebook_id: str, node: Dict[str, Any],
         out["suggestions"] = [{"id": r["id"], "title": r["title"], "score": round(r["score"], 4)}
                               for r in ranked[:3]]
 
-        if ranked and ranked[0]["score"] >= ASSIGN_THRESHOLD:
+        from services.embedding_profile import threshold
+        if ranked and ranked[0]["score"] >= threshold("canvas_assign", ASSIGN_THRESHOLD):
             best = ranked[0]
             n, old = best["member_count"], best["centroid"]
             # Incremental running mean — the thread was an orphan (not a member), so adding one is
@@ -253,7 +254,9 @@ async def assign_and_persist(notebook_id: str, nodes: List[Dict[str, Any]]) -> L
         existing = topics_store.list_topics(notebook_id)
         stand_ins = set(await _localise_centroids(existing))
         existing_by_id = {t["id"]: t for t in existing}
-        result = cluster(vecs, existing)
+        from services.embedding_profile import threshold
+        result = cluster(vecs, existing, assign_thr=threshold("canvas_assign", ASSIGN_THRESHOLD),
+                         seed_thr=threshold("canvas_seed", SEED_THRESHOLD))
 
         surviving: List[Dict[str, Any]] = []
         keep_ids: List[str] = []

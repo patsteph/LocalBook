@@ -68,6 +68,9 @@ class EmbeddingProfile:
     # "clustering", "similarity", "classification" → template. A model without one embeds
     # the text as-is (arctic: unchanged).
     task_templates: Tuple[Tuple[str, str], ...] = field(default_factory=tuple)
+    # Cosine cut-offs are a property of the MODEL's similarity scale, not of the feature:
+    # every one was tuned on arctic. name → value; absent = the caller's (arctic) default.
+    thresholds: Tuple[Tuple[str, float], ...] = field(default_factory=tuple)
 
     @property
     def query_prefix(self) -> str:
@@ -169,6 +172,7 @@ def for_model(model_id: str) -> EmbeddingProfile:
                 min_dtype=prof.get("min_dtype", ""),
                 source=source,
                 task_templates=tuple(sorted((prof.get("task_templates") or {}).items())),
+                thresholds=tuple(sorted((k, float(v)) for k, v in (prof.get("thresholds") or {}).items())),
             )
     return EmbeddingProfile(model_id=model_id)
 
@@ -211,3 +215,13 @@ def format_task_list(texts: List[str], task: Optional[str],
         return texts
     p = profile or active()
     return [p.format_task(t, task) for t in texts]
+
+
+def threshold(name: str, default: float) -> float:
+    """The live embedder's value for a named similarity cut-off, else `default` (the value
+    tuned on arctic). Names: canvas_assign, canvas_seed, router, consensus, perspectives,
+    articles, contradiction, answer_cache, core_memory."""
+    try:
+        return float(dict(active().thresholds).get(name, default))
+    except Exception:
+        return default

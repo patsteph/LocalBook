@@ -296,6 +296,8 @@ If they do NOT contradict (they agree, are unrelated, or compatible), respond:
         embeddings = await self._get_embeddings(claim_texts)
         
         # Find similar claim pairs (candidates for contradiction)
+        from services.embedding_profile import threshold as _thr
+        _pair_threshold = _thr("contradiction", 0.6)
         candidates = []
         for i in range(len(all_claims)):
             for j in range(i + 1, len(all_claims)):
@@ -304,7 +306,7 @@ If they do NOT contradict (they agree, are unrelated, or compatible), respond:
                     continue
                 
                 sim = self._cosine_similarity(embeddings[i], embeddings[j])
-                if sim > 0.6:  # High similarity = about same topic
+                if sim > _pair_threshold:  # High similarity = about same topic
                     candidates.append((all_claims[i], all_claims[j], sim))
         
         # Sort by similarity and check top candidates

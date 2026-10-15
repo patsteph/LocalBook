@@ -1095,6 +1095,17 @@
           "clustering": "task: clustering | query: {text}",
           "similarity": "task: sentence similarity | query: {text}",
           "classification": "task: classification | query: {text}"
+        },
+        "thresholds": {
+          "router": 0.928,
+          "consensus": 0.915,
+          "perspectives": 0.936,
+          "contradiction": 0.855,
+          "articles": 0.91,
+          "canvas_assign": 0.893,
+          "canvas_seed": 0.923,
+          "answer_cache": 0.963,
+          "core_memory": 0.953
         }
       }
     }

@@ -142,7 +142,7 @@ async def _embed_missing(since_iso: str, cap: int = 500, batch: int = 32) -> int
 async def recluster_all(
     *,
     lookback_days: int = DEFAULT_LOOKBACK_DAYS,
-    sim_threshold: float = DEFAULT_SIM_THRESHOLD,
+    sim_threshold: Optional[float] = None,
     min_size: int = DEFAULT_MIN_CLUSTER_SIZE,
 ) -> int:
     """Rebuild the topic_clusters table from current article embeddings.
@@ -153,6 +153,9 @@ async def recluster_all(
     from storage.article_store import article_store
     from storage.database import get_db
 
+    if sim_threshold is None:
+        from services.embedding_profile import threshold as _thr
+        sim_threshold = _thr("articles", DEFAULT_SIM_THRESHOLD)
     since = (datetime.utcnow() - timedelta(days=lookback_days)).isoformat()
     # Vectors are per Mac: articles synced in from another Mac, or embedded before an
     # embedder switch, have no vector from THIS Mac's model. Embed them first.

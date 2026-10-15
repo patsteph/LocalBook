@@ -299,6 +299,8 @@ async def _cluster_claims(perspectives: List[SourcePerspective]) -> List[ClaimCl
         return []
 
     vectors = await asyncio.gather(*[_embed(p["claim"]) for p in pool])
+    from services.embedding_profile import threshold as _thr
+    _cluster_threshold = _thr("perspectives", DEFAULT_CLUSTER_THRESHOLD)
 
     clusters: List[Dict[str, Any]] = []
     for entry, vec in zip(pool, vectors):
@@ -311,7 +313,7 @@ async def _cluster_claims(perspectives: List[SourcePerspective]) -> List[ClaimCl
             if sim > best_sim:
                 best_sim = sim
                 best_idx = i
-        if best_idx >= 0 and best_sim >= DEFAULT_CLUSTER_THRESHOLD:
+        if best_idx >= 0 and best_sim >= _cluster_threshold:
             cl = clusters[best_idx]
             cl["members"].append(entry)
             cl["vectors"].append(vec)

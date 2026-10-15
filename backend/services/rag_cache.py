@@ -346,6 +346,8 @@ class AnswerCache:
             
             best_match = None
             best_similarity = 0
+            from services.embedding_profile import threshold as _profile_thr
+            _thr = _profile_thr("answer_cache", self.similarity_threshold)
             
             for key, cached_emb in self._embeddings.items():
                 if key not in self._cache:
@@ -363,7 +365,7 @@ class AnswerCache:
                     continue
                 
                 similarity = self._cosine_similarity(query_emb, cached_emb)
-                if similarity > best_similarity and similarity >= self.similarity_threshold:
+                if similarity > best_similarity and similarity >= _thr:
                     best_similarity = similarity
                     best_match = (key, entry)
             
