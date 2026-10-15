@@ -54,3 +54,17 @@ def test_reindex_drops_only_tables_it_cannot_reuse(tmp_path, monkeypatch):
 
     assert reindex._drop_unusable_tables(drop_all=False) == ["notebook_old"]
     assert reindex._drop_unusable_tables(drop_all=True) == ["notebook_new"]
+
+
+def test_memory_search_embeds_its_question_as_a_query(monkeypatch):
+    import numpy as np
+    from services import rag_embeddings
+    from storage.memory_store import MemoryStore
+
+    seen = []
+    monkeypatch.setattr(rag_embeddings, "encode",
+                        lambda text, is_query=False: seen.append(is_query) or np.ones((1, 4)))
+    store = object.__new__(MemoryStore)
+    store.get_embedding("what did I say about maps?", is_query=True)
+    store.get_embedding("a stored memory")
+    assert seen == [True, False]

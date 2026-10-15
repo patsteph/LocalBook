@@ -534,7 +534,7 @@ class ContextBuilder:
             table = rag_engine._get_table(notebook_id)
             
             # Encode the topic for vector search (async — sync encode blocks the loop)
-            topic_embedding = (await rag_engine.encode_async([topic]))[0].tolist()
+            topic_embedding = (await rag_engine.encode_async([topic], is_query=True))[0].tolist()
             
             # Build source ID filter
             source_id_set = {s["id"] for s in sources}

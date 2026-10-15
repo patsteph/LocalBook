@@ -118,7 +118,7 @@ class MemoryStore:
     # Embedding Model - Uses Ollama (same as RAG engine for consistency)
     # =========================================================================
     
-    def get_embedding(self, text: str) -> List[float]:
+    def get_embedding(self, text: str, *, is_query: bool = False) -> List[float]:
         """Generate embedding via the shared RAG embedding path (batched /api/embed).
 
         Routes through rag_embeddings.encode so memory uses the same model AND the
@@ -134,7 +134,9 @@ class MemoryStore:
         """
         try:
             from services import rag_embeddings
-            arr = rag_embeddings.encode(text)
+            # A search asks a QUESTION of stored memories (query format); everything else
+            # embeds a memory itself (document format) — the two must not be mixed.
+            arr = rag_embeddings.encode(text, is_query=is_query)
             emb = arr[0].tolist() if len(arr) else []
             return emb if emb else [0.0] * settings.embedding_dim
         except Exception as e:
@@ -933,7 +935,7 @@ class MemoryStore:
         table = self.archival_db.open_table("archival_memories")
         
         # Generate query embedding
-        query_embedding = self.get_embedding(query)
+        query_embedding = self.get_embedding(query, is_query=True)
         
         # Vector search - get more results to filter
         results = table.search(query_embedding).limit(limit * 3).to_list()
