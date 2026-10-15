@@ -19,7 +19,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
-# Tunable (arctic-1024 cosine). Assigning to an EXISTING topic is a slightly lower bar than seeding a
+# Tunable (arctic-1024 cosine; per-model values: phase 1 thresholds step). Assigning to an EXISTING topic is a slightly lower bar than seeding a
 # brand-new one (existing identity is worth preserving); a new topic needs ≥2 threads to exist at all
 # (a single unmatched thread is an orphan, not a topic).
 ASSIGN_THRESHOLD = 0.58
@@ -155,6 +155,30 @@ async def _title_synthesis(member_titles: List[str]) -> Tuple[str, str]:
         return fallback, ""
 
 
+async def _localise_centroids(topics: List[Dict[str, Any]]) -> List[str]:
+    """Give every topic a centroid from THIS Mac's embedder. Centroids are per Mac (never
+    synced): a topic created on another Mac, or before an embedder switch, arrives with none
+    or a foreign one — and a topic no thread can match is emptied and deleted, a deletion
+    that would then sync back. Its title + synthesis stand in until real members re-form
+    it. Returns the ids that got a stand-in (callers must not delete those this pass)."""
+    from services.embedding_profile import is_current
+    stale = [t for t in topics if not t.get("centroid") or not is_current(t.get("centroid_model"))]
+    if not stale:
+        return []
+    from services.llm_runtime import llm_runtime
+    texts = [f"{t.get('title') or ''}\n{t.get('synthesis') or ''}".strip() or "untitled topic" for t in stale]
+    vecs = await llm_runtime.embed_batch(texts)
+    out = []
+    for t, v in zip(stale, vecs or []):
+        if v and any(v):
+            t["centroid"] = list(v)
+            t["centroid_model"] = None          # stamped with the live model when persisted
+            out.append(t["id"])
+        else:
+            t["centroid"] = []
+    return out
+
+
 async def reassign_one(notebook_id: str, node: Dict[str, Any],
                        extra_text: str = "") -> Dict[str, Any]:
     """P4 — re-embed ONE thread (its snapshot text + the user's elicited intent) and try to JOIN the
@@ -178,6 +202,7 @@ async def reassign_one(notebook_id: str, node: Dict[str, Any],
             return out
 
         topics = topics_store.list_topics(notebook_id)
+        await _localise_centroids(topics)
         ranked = sorted(
             ({"id": t["id"], "title": t.get("title", ""), "synthesis": t.get("synthesis", ""),
               "centroid": t.get("centroid") or [], "member_count": int(t.get("member_count") or 0),
@@ -226,6 +251,7 @@ async def assign_and_persist(notebook_id: str, nodes: List[Dict[str, Any]]) -> L
             return []
 
         existing = topics_store.list_topics(notebook_id)
+        stand_ins = set(await _localise_centroids(existing))
         existing_by_id = {t["id"]: t for t in existing}
         result = cluster(vecs, existing)
 
@@ -257,7 +283,8 @@ async def assign_and_persist(notebook_id: str, nodes: List[Dict[str, Any]]) -> L
             surviving.append({"id": tid, "title": title, "synthesis": synthesis,
                               "member_ids": [nodes[i].get("id") for i in members],
                               "member_count": len(members)})
-        topics_store.delete_missing(notebook_id, keep_ids)
+        # A topic that only had a stand-in centroid this pass is kept even if nothing joined it.
+        topics_store.delete_missing(notebook_id, keep_ids + [t for t in stand_ins if t not in keep_ids])
         n_orphan = sum(1 for n in nodes if not n.get("topic_id"))
         logger.info(f"[canvas_subtopics] nb={notebook_id}: {len(surviving)} sub-topics, "
                     f"{n_orphan} orphans over {len(nodes)} threads")

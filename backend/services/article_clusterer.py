@@ -115,6 +115,30 @@ async def _label_cluster(article_titles: List[str], article_summaries: List[str]
     return (article_titles[0] if article_titles else "(unlabeled)")[:80]
 
 
+async def _embed_missing(since_iso: str, cap: int = 500, batch: int = 32) -> int:
+    """Embed recent articles lacking a vector from the live model. Capped per run (a big
+    backlog — a model switch — spreads over a few nightly runs). Never stores a zero vector."""
+    import struct as _struct
+
+    from services.llm_runtime import llm_runtime
+    from storage.article_store import article_store
+
+    rows = await article_store.list_needing_embedding(since_iso, limit=cap)
+    done = 0
+    for i in range(0, len(rows), batch):
+        part = rows[i:i + batch]
+        texts = [(f"{r.get('title') or ''}\n\n{r.get('summary') or ''}\n\n"
+                  f"{(r.get('body_text') or '')[:2000]}").strip() or (r.get("title") or "") for r in part]
+        vecs = await llm_runtime.embed_batch(texts)
+        for r, v in zip(part, vecs):
+            if v and any(v):
+                await article_store.update_embedding(r["id"], _struct.pack(f"{len(v)}f", *v))
+                done += 1
+    if done:
+        logger.info(f"[article_clusterer] embedded {done} article(s) with the live model")
+    return done
+
+
 async def recluster_all(
     *,
     lookback_days: int = DEFAULT_LOOKBACK_DAYS,
@@ -130,6 +154,12 @@ async def recluster_all(
     from storage.database import get_db
 
     since = (datetime.utcnow() - timedelta(days=lookback_days)).isoformat()
+    # Vectors are per Mac: articles synced in from another Mac, or embedded before an
+    # embedder switch, have no vector from THIS Mac's model. Embed them first.
+    try:
+        await _embed_missing(since)
+    except Exception as e:
+        logger.warning(f"[article_clusterer] catch-up embedding skipped: {e}")
     articles = await article_store.list_with_embeddings(since_iso=since, limit=5000)
     if not articles:
         logger.info("[article_clusterer] no embedded articles to cluster")

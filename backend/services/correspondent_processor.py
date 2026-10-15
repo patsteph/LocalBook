@@ -538,7 +538,8 @@ async def _summarize_articles_background_unlocked(source_id: str) -> None:
                 f"{a.get('title') or ''}\n\n{a.get('summary') or ''}\n\n"
                 f"{(a.get('body_text') or '')[:2000]}"
             ).strip()
-            if embed_input and not a.get("embedding"):
+            from services.embedding_profile import is_current as _embed_current
+            if embed_input and (not a.get("embedding") or not _embed_current(a.get("embed_model"))):
                 result = await llm_runtime.embed(text=embed_input)
                 vecs = (result or {}).get("embeddings") or []
                 vec = vecs[0] if vecs and isinstance(vecs[0], list) else []

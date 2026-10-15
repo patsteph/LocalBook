@@ -31,6 +31,10 @@ logger = logging.getLogger(__name__)
 
 TEXT = "{text}"
 
+# Every vector persisted before tagging (2026-10-15) was made by this model — arctic was the
+# only embedder LocalBook ever shipped in this vector space (Ollama's arctic-embed2 included).
+LEGACY_EMBED_MODEL = "mlx-community/snowflake-arctic-embed-l-v2.0-bf16"
+
 # Family → query prefix, for embedders with no registry profile (moved from rag_embeddings).
 # Documents are never prefixed for these, so no existing index goes stale.
 _LEGACY_QUERY_PREFIXES = {
@@ -172,3 +176,13 @@ def format_documents(texts: List[str], profile: Optional[EmbeddingProfile] = Non
         return texts
     titles = titles or [None] * len(texts)
     return [p.format_document(t, title) for t, title in zip(texts, titles)]
+
+
+def is_current(model_tag: Optional[str]) -> bool:
+    """Whether a stored vector was made by the LIVE embedder (an untagged one is legacy)."""
+    try:
+        from config import settings
+        live = getattr(settings, "embedding_model", "") or ""
+    except Exception:
+        return False
+    return (model_tag or LEGACY_EMBED_MODEL) == live
