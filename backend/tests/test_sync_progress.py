@@ -328,3 +328,20 @@ def test_duplicate_chunks_are_found_in_a_real_index(tmp_path, monkeypatch):
     monkeypatch.setattr(rag_storage, "_get_db", lambda: db)
     have, dupes = indexer._index_state("nb1")
     assert have == {"clean", "twice"} and dupes == {"twice"}
+
+
+def test_appended_content_is_never_counted_as_a_duplicate(tmp_path, monkeypatch):
+    """Re-indexing rebuilds a source from its TEXT; appended content (image descriptions)
+    lives only in the index and would be lost — so it must not trigger the repair."""
+    lancedb = pytest.importorskip("lancedb")
+    from services import rag_storage
+
+    db = lancedb.connect(str(tmp_path))
+    rows = [{"source_id": "pdf", "chunk_index": ci, "source_type": st, "vector": [0.1, 0.2]}
+            for ci, st in ((0, "pdf"), (1, "pdf"), (1, "supplementary"), (2, "supplementary"))]
+    rows += [{"source_id": "raced", "chunk_index": ci, "source_type": "pdf", "vector": [0.1, 0.2]}
+             for ci in (0, 1, 0, 1)]
+    db.create_table("notebook_nb1", data=rows)
+    monkeypatch.setattr(rag_storage, "_get_db", lambda: db)
+    have, dupes = indexer._index_state("nb1")
+    assert have == {"pdf", "raced"} and dupes == {"raced"}

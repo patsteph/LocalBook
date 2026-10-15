@@ -427,14 +427,18 @@ async def append_to_document(
     # Get existing table
     table = get_table(notebook_id)
 
-    # Get existing chunk count for this source to continue numbering
+    # Continue numbering after this source's HIGHEST chunk. A filtered scan, not a vector
+    # search: `.where` after a vector search post-filters the 1000 nearest rows of the whole
+    # notebook, so in a big notebook it missed this source's chunks and the appended ones
+    # reused their numbers (and on any error this fell back to 0 — the same collision).
     try:
-        existing = table.search([0.0] * settings.embedding_dim).where(
-            f"source_id = '{source_id}'"
-        ).limit(1000).to_list()
-        max_chunk_index = max((r.get("chunk_index", 0) for r in existing), default=0)
-    except Exception:
-        max_chunk_index = 0
+        existing = table.search().where(f"source_id = '{source_id}'").select(["chunk_index"]) \
+            .limit(1_000_000).to_list()
+        max_chunk_index = max((int(r.get("chunk_index") or 0) for r in existing), default=0)
+    except Exception as e:
+        logger.warning(f"[rag_storage] could not read chunk numbering for {source_id} ({e}); "
+                       f"appending after a safe offset")
+        max_chunk_index = 100_000
 
     # Check if table supports legacy columns
     has_parent_text = table_has_parent_text(table)

@@ -85,16 +85,25 @@ def _index_state(notebook_id: str):
         return set(), set()
     t = db.open_table(name)
     try:
-        cols = ["source_id", "chunk_index"] if "chunk_index" in t.schema.names else ["source_id"]
+        names = t.schema.names
+        cols = [c for c in ("source_id", "chunk_index", "source_type") if c in names]
         tbl = t.to_arrow().select(cols)
         sids = tbl.column("source_id").to_pylist()
-        if len(cols) == 1:
+        if "chunk_index" not in cols:
             return set(sids), set()
+        # MAIN chunks only. Appended content (image descriptions etc., `supplementary`)
+        # exists only in the index — re-indexing from the source text would drop it — and
+        # its numbering could collide with the main chunks' (rag_storage.append_to_document
+        # once estimated the next index from a post-filtered vector search). The race this
+        # repairs only ever duplicates main chunks and the summary.
+        kinds = tbl.column("source_type").to_pylist() if "source_type" in cols else [None] * len(sids)
         seen, dupes = set(), set()
-        for key in zip(sids, tbl.column("chunk_index").to_pylist()):
-            if key in seen:
-                dupes.add(key[0])
-            seen.add(key)
+        for sid, ci, kind in zip(sids, tbl.column("chunk_index").to_pylist(), kinds):
+            if kind == "supplementary":
+                continue
+            if (sid, ci) in seen:
+                dupes.add(sid)
+            seen.add((sid, ci))
         return set(sids), dupes
     except Exception as exc:
         logger.debug("[sync-index] could not read %s: %s", name, exc)
