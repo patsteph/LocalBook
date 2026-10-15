@@ -44,7 +44,7 @@ def mem(tmp_path, monkeypatch):
     migration_ledger.run_pending(_db.Database().get_connection(), tmp_path)
     monkeypatch.setattr(ms.MemoryStore, "_instance", None)
     store = ms.MemoryStore()
-    monkeypatch.setattr(store, "get_embedding", lambda text: _embed(text, settings.embedding_dim))
+    monkeypatch.setattr(store, "get_embedding", lambda text, **kw: _embed(text, settings.embedding_dim))
     monkeypatch.setattr(ms, "memory_store", store)
     import services.memory_agent as ma
     monkeypatch.setattr(ma, "memory_store", store)

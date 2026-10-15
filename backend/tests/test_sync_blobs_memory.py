@@ -102,7 +102,7 @@ def mem(tmp_path, monkeypatch):
     importlib.reload(_db)
     monkeypatch.setattr(ms.MemoryStore, "_instance", None)
     store = ms.MemoryStore()
-    monkeypatch.setattr(store, "get_embedding", lambda text: _embed(text, settings.embedding_dim))
+    monkeypatch.setattr(store, "get_embedding", lambda text, **kw: _embed(text, settings.embedding_dim))
     monkeypatch.setattr(ms, "memory_store", store)
     return store
 
