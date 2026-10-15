@@ -60,6 +60,13 @@ def _scoped_to_data_dir(base: Path) -> Path:
         data_dir = Path(get_data_directory()).expanduser().resolve()
         if data_dir == PRODUCTION_DATA_DIR.resolve():
             return base
+        # A throwaway data dir (end-to-end runs, scratch backends) under a temp directory
+        # logs BESIDE itself, so its logs go when it goes — ~90 test-run folders piled up
+        # in ~/Library/Logs/LocalBook before this (2026-10-15).
+        import tempfile
+        temps = {Path(tempfile.gettempdir()).resolve(), Path("/private/tmp"), Path("/tmp").resolve()}
+        if any(t == data_dir or t in data_dir.parents for t in temps):
+            return data_dir.parent / f"{data_dir.name}.logs"
         digest = hashlib.sha256(str(data_dir).encode()).hexdigest()[:12]
         return base / f"{data_dir.name}.{digest}"
     except Exception:
