@@ -123,7 +123,7 @@ class KnowledgeGraphService:
                 pa.field("cluster_id", pa.string()),
                 pa.field("created_at", pa.string()),
                 pa.field("updated_at", pa.string()),
-                pa.field("vector", pa.list_(pa.float32(), 1024)),  # snowflake-arctic-embed2 dimensions
+                pa.field("vector", pa.list_(pa.float32(), int(settings.embedding_dim or 1024))),  # live embedder
             ])
             self.db.create_table("concepts", schema=schema)
         

@@ -777,8 +777,16 @@ class MemoryStore:
     # =========================================================================
     
     def _init_archival_db(self) -> None:
-        """Initialize LanceDB for archival memory with namespace support"""
+        """Initialize LanceDB for archival memory with namespace support.
+
+        The table is an INDEX over `archival_records` (the synced SQLite text, LB-12 D2), so
+        a table that has to be recreated — a missing column, or vectors of another dimension
+        after an embedder switch — loses nothing: `archival_needs_reembed` is set and startup
+        re-embeds every record (`archival_records.reconcile`). The dimension is the LIVE
+        embedder's, never a constant (this was a fixed 1024)."""
         self.archival_db = lancedb.connect(str(self.archival_db_path))
+        self.archival_needs_reembed = False
+        dim = int(getattr(settings, "embedding_dim", 0) or 1024)
         
         import pyarrow as pa
         required_schema = pa.schema([
@@ -795,7 +803,7 @@ class MemoryStore:
             pa.field("created_at", pa.string()),
             pa.field("last_accessed", pa.string()),
             pa.field("access_count", pa.int32()),
-            pa.field("vector", pa.list_(pa.float32(), 1024)),  # snowflake-arctic-embed2 dimensions
+            pa.field("vector", pa.list_(pa.float32(), dim)),
         ])
         
         if "archival_memories" not in self.archival_db.table_names():
@@ -807,10 +815,14 @@ class MemoryStore:
                 existing_names = set(table.schema.names)
                 required_names = set(required_schema.names)
                 missing = required_names - existing_names
-                if missing:
-                    print(f"[MEMORY] Archival table missing columns {missing}, recreating with new schema")
+                vec = table.schema.field("vector").type if "vector" in existing_names else None
+                stored_dim = getattr(vec, "list_size", None)
+                if missing or (stored_dim and stored_dim != dim):
+                    why = f"missing columns {missing}" if missing else f"{stored_dim}-dim vectors, live model is {dim}"
+                    print(f"[MEMORY] Archival index rebuilt ({why}); records re-embed at startup")
                     self.archival_db.drop_table("archival_memories")
                     self.archival_db.create_table("archival_memories", schema=required_schema)
+                    self.archival_needs_reembed = True
             except Exception as e:
                 print(f"[MEMORY] Archival table migration check failed ({e}), recreating")
                 try:
@@ -818,6 +830,7 @@ class MemoryStore:
                 except Exception as _e:
                     logger.warning(f"[memory-store] {type(_e).__name__}: {_e}")
                 self.archival_db.create_table("archival_memories", schema=required_schema)
+                self.archival_needs_reembed = True
     
     def add_archival_memory(
         self, 

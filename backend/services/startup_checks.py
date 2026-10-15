@@ -128,11 +128,11 @@ async def run_all_startup_checks(status_callback=None) -> Dict[str, Any]:
         update_status("checking", "Checking memory store...", 90)
         memory_needs_migration = check_memory_store_dimensions()
         if memory_needs_migration:
-            update_status("migrating", "Resetting memory store for new embeddings...", 95)
-            await reset_memory_store_tables()
-            # The archival TEXT lives in SQLite (archival_records); LanceDB is only its index.
-            # Rebuild the index now — `reconcile` otherwise only runs after a sync, so a Mac
-            # without sync would have kept an empty archival search forever.
+            update_status("migrating", "Re-embedding archival memory...", 95)
+            # The archival TEXT lives in SQLite (archival_records); LanceDB is only its index,
+            # which memory_store has already rebuilt empty. Re-embed it now — `reconcile`
+            # otherwise only runs after a sync, so a Mac without sync would keep an empty
+            # archival search forever.
             try:
                 from storage import archival_records
                 from storage.memory_store import memory_store
@@ -368,69 +368,15 @@ async def reset_knowledge_graph_tables():
 
 
 def check_memory_store_dimensions() -> bool:
-    """
-    Check if memory store has wrong embedding dimensions.
-    Returns True if reset is needed.
-    """
+    """Whether archival memory's index must be re-embedded. `memory_store` owns the table and
+    its schema; it rebuilds the table itself when the dimension or columns are wrong and
+    flags it here. (This used to inspect `memory/archival_db` — a path the store never used —
+    so it could never fire.)"""
     try:
-        memory_path = settings.data_dir / "memory" / "archival_db"
-        if not memory_path.exists():
-            return False
-        
-        db = lancedb.connect(str(memory_path))
-        
-        if "archival_memories" not in db.table_names():
-            return False
-        
-        table = db.open_table("archival_memories")
-        if table.count_rows() == 0:
-            return False
-        
-        schema = table.schema
-        for field in schema:
-            if field.name == "vector":
-                if hasattr(field.type, 'list_size'):
-                    stored_dim = field.type.list_size
-                    if stored_dim != expected_embedding_dim():
-                        print(f"[Startup] Memory store has {stored_dim}-dim vectors, need {expected_embedding_dim()}")
-                        return True
-        return False
+        from storage.memory_store import memory_store
+        return bool(getattr(memory_store, "archival_needs_reembed", False))
     except Exception as e:
         print(f"[Startup] Error checking memory dimensions: {e}")
         return False
 
 
-async def reset_memory_store_tables():
-    """Drop and recreate memory store tables with correct schema."""
-    try:
-        memory_path = settings.data_dir / "memory" / "archival_db"
-        if not memory_path.exists():
-            return
-        
-        db = lancedb.connect(str(memory_path))
-        
-        if "archival_memories" in db.table_names():
-            db.drop_table("archival_memories")
-            print("[Startup] Dropped archival_memories table")
-        
-        # Recreate with correct embedding dimensions
-        schema = pa.schema([
-            pa.field("id", pa.string()),
-            pa.field("content", pa.string()),
-            pa.field("content_type", pa.string()),
-            pa.field("source_type", pa.string()),
-            pa.field("source_id", pa.string()),
-            pa.field("source_notebook_id", pa.string()),
-            pa.field("topics", pa.string()),
-            pa.field("entities", pa.string()),
-            pa.field("importance", pa.string()),
-            pa.field("created_at", pa.string()),
-            pa.field("last_accessed", pa.string()),
-            pa.field("access_count", pa.int32()),
-            pa.field("vector", pa.list_(pa.float32(), expected_embedding_dim())),
-        ])
-        db.create_table("archival_memories", schema=schema)
-        print(f"[Startup] Memory store table recreated with {expected_embedding_dim()}-dim schema")
-        
-    except Exception as e:
-        print(f"[Startup] Error resetting memory tables: {e}")
