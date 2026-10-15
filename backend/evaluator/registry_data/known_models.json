@@ -1090,7 +1090,12 @@
           256,
           128
         ],
-        "min_dtype": "bfloat16"
+        "min_dtype": "bfloat16",
+        "task_templates": {
+          "clustering": "task: clustering | query: {text}",
+          "similarity": "task: sentence similarity | query: {text}",
+          "classification": "task: classification | query: {text}"
+        }
       }
     }
   ]

@@ -80,7 +80,7 @@ class KnowledgeGraphService:
         """Generate embedding for text via the canonical Ollama service."""
         try:
             from services.llm_runtime import llm_runtime
-            data = await llm_runtime.embed(text, model=self.embedding_model_name)
+            data = await llm_runtime.embed(text, model=self.embedding_model_name, task="similarity")
             embs = data.get("embeddings") or []
             if embs:
                 return embs[0]

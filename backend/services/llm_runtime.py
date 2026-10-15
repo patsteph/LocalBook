@@ -717,6 +717,7 @@ class LLMRuntime:
         model: Optional[str] = None,
         timeout: Optional[float] = None,
         keep_alive: Optional[Any] = None,
+        task: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Embed a single text.
 
@@ -734,6 +735,8 @@ class LLMRuntime:
             `_mlx_embed_or_none` for why this raises instead of returning an empty result.
         """
         _ = (model, timeout, keep_alive)
+        from services.embedding_profile import format_task_list
+        text = format_task_list([text], task)[0]          # see embed_batch for `task`
 
         _mlx = await self._mlx_embed_or_none([text])
         if _mlx is not None:
@@ -753,6 +756,7 @@ class LLMRuntime:
         timeout: Optional[float] = None,
         keep_alive: Optional[Any] = None,
         max_batch: int = 64,
+        task: Optional[str] = None,
     ) -> List[List[float]]:
         """Embed many texts in one in-process call.
 
@@ -770,6 +774,11 @@ class LLMRuntime:
         if not texts:
             return []
         _ = (model, timeout, keep_alive, max_batch)
+        # `task` = what KIND of embedding (embedding_profile): "clustering" / "similarity" for
+        # texts compared with each other, "query" / "document" for retrieval. Formats it for
+        # the live model; None (and any model without that format, e.g. arctic) = text as-is.
+        from services.embedding_profile import format_task_list
+        texts = format_task_list(list(texts), task)
         zero = [0.0] * settings.embedding_dim
 
         _mlx = await self._mlx_embed_or_none(texts)

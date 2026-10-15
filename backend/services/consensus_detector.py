@@ -71,7 +71,7 @@ async def _embed(text: str) -> List[float]:
         return []
     try:
         from services.llm_runtime import llm_runtime
-        result = await llm_runtime.embed(text=text[:2000])
+        result = await llm_runtime.embed(text=text[:2000], task="clustering")
     except Exception as e:
         logger.debug(f"[consensus_detector] embed failed: {e}")
         return []
@@ -90,7 +90,7 @@ async def _embed_many(texts: List[str]) -> List[List[float]]:
     if not idx:
         return out
     try:
-        vecs = await llm_runtime.embed_batch([t for _, t in idx])
+        vecs = await llm_runtime.embed_batch([t for _, t in idx], task="clustering")
     except Exception as e:
         logger.debug(f"[consensus_detector] batch embed failed: {e}")
         return out

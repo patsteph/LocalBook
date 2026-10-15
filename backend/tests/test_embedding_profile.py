@@ -79,3 +79,32 @@ def test_the_locker_persists_the_dimension_under_a_key_config_reads():
     from services import llm_locker
     src = inspect.getsource(llm_locker.LLMLocker._patch_environment)
     assert '"embedding_dim": "embedding_dim"' in src and '"embedding_dim": "LOCALBOOK_EMBEDDING_DIM"' not in src
+
+
+def test_symmetric_tasks_use_embeddinggemmas_prompts_and_leave_arctic_alone():
+    g, a = ep.for_model(GEMMA2), ep.for_model(ARCTIC)
+    assert g.format_task("x", "clustering") == "task: clustering | query: x"
+    assert g.format_task("x", "similarity") == "task: sentence similarity | query: x"
+    assert g.format_task("x", "query") == "task: search result | query: x"
+    assert g.format_task("x", "document") == "title: none | text: x"
+    for task in ("clustering", "similarity", "classification", "document"):
+        assert a.format_task("x", task) == "x"               # arctic vectors unchanged
+    assert ep.format_task_list(["x"], None, g) == ["x"]       # no task → as-is
+
+
+def test_embed_batch_formats_for_the_task_before_the_engine(monkeypatch):
+    import asyncio
+    from config import settings
+    from services.llm_runtime import llm_runtime
+
+    seen = []
+
+    async def fake(texts):
+        seen.extend(texts)
+        return [[1.0] * settings.embedding_dim for _ in texts]
+    monkeypatch.setattr(llm_runtime, "_mlx_embed_or_none", fake)
+    monkeypatch.setattr(settings, "embedding_model", GEMMA2)
+    asyncio.run(llm_runtime.embed_batch(["a", "b"], task="clustering"))
+    asyncio.run(llm_runtime.embed("c", task="similarity"))
+    assert seen == ["task: clustering | query: a", "task: clustering | query: b",
+                    "task: sentence similarity | query: c"]

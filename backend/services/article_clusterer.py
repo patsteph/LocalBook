@@ -129,7 +129,7 @@ async def _embed_missing(since_iso: str, cap: int = 500, batch: int = 32) -> int
         part = rows[i:i + batch]
         texts = [(f"{r.get('title') or ''}\n\n{r.get('summary') or ''}\n\n"
                   f"{(r.get('body_text') or '')[:2000]}").strip() or (r.get("title") or "") for r in part]
-        vecs = await llm_runtime.embed_batch(texts)
+        vecs = await llm_runtime.embed_batch(texts, task="clustering")
         for r, v in zip(part, vecs):
             if v and any(v):
                 await article_store.update_embedding(r["id"], _struct.pack(f"{len(v)}f", *v))

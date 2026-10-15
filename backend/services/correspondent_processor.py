@@ -540,7 +540,7 @@ async def _summarize_articles_background_unlocked(source_id: str) -> None:
             ).strip()
             from services.embedding_profile import is_current as _embed_current
             if embed_input and (not a.get("embedding") or not _embed_current(a.get("embed_model"))):
-                result = await llm_runtime.embed(text=embed_input)
+                result = await llm_runtime.embed(text=embed_input, task="clustering")
                 vecs = (result or {}).get("embeddings") or []
                 vec = vecs[0] if vecs and isinstance(vecs[0], list) else []
                 if vec:

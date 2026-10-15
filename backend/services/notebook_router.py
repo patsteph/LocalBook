@@ -54,12 +54,13 @@ def _cosine(a: List[float], b: List[float]) -> float:
     return dot / (na * nb)
 
 
-async def _embed(text: str) -> List[float]:
-    """Embed text via llm_runtime. Returns empty list on failure."""
+async def _embed(text: str, task: Optional[str] = None) -> List[float]:
+    """Embed text via llm_runtime (`task`: "query" for the incoming item, "document" for a
+    notebook's digest — EmbeddingGemma formats the two differently). [] on failure."""
     if not text or not text.strip():
         return []
     from services.llm_runtime import llm_runtime
-    result = await llm_runtime.embed(text=text[:6000])
+    result = await llm_runtime.embed(text=text[:6000], task=task)
     vecs = (result or {}).get("embeddings") or []
     return list(vecs[0]) if vecs and isinstance(vecs[0], list) else []
 
@@ -102,13 +103,13 @@ async def route(classification_summary: str, *, topic_tags: Optional[List[str]] 
     if topic_tags:
         query_text += "\n\nTopics: " + ", ".join(topic_tags)
 
-    q_vec = await _embed(query_text)
+    q_vec = await _embed(query_text, task="query")
     if not q_vec:
         return RoutingDecision(decision="no_match", reason="embedding failed")
 
     scored: List[RoutingCandidate] = []
     for d in digests:
-        nb_vec = await _embed(d.get("current_summary") or "")
+        nb_vec = await _embed(d.get("current_summary") or "", task="document")
         if not nb_vec:
             continue
         score = _cosine(q_vec, nb_vec)

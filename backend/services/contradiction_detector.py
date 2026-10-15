@@ -221,7 +221,7 @@ If they do NOT contradict (they agree, are unrelated, or compatible), respond:
         embeddings = []
         for text in texts:
             try:
-                data = await llm_runtime.embed(text[:1000])
+                data = await llm_runtime.embed(text[:1000], task="similarity")
                 if data.get("embeddings"):
                     embeddings.append(data["embeddings"][0])
                 elif data.get("embedding"):

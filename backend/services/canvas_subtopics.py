@@ -167,7 +167,7 @@ async def _localise_centroids(topics: List[Dict[str, Any]]) -> List[str]:
         return []
     from services.llm_runtime import llm_runtime
     texts = [f"{t.get('title') or ''}\n{t.get('synthesis') or ''}".strip() or "untitled topic" for t in stale]
-    vecs = await llm_runtime.embed_batch(texts)
+    vecs = await llm_runtime.embed_batch(texts, task="clustering")
     out = []
     for t, v in zip(stale, vecs or []):
         if v and any(v):
@@ -196,7 +196,7 @@ async def reassign_one(notebook_id: str, node: Dict[str, Any],
         if not text:
             return out
         from services.llm_runtime import llm_runtime
-        vecs = await llm_runtime.embed_batch([text])
+        vecs = await llm_runtime.embed_batch([text], task="clustering")
         vec = list(vecs[0]) if vecs and vecs[0] else []
         if not vec:
             return out
@@ -242,7 +242,7 @@ async def assign_and_persist(notebook_id: str, nodes: List[Dict[str, Any]]) -> L
         vecs: List[List[float]] = []
         try:
             from services.llm_runtime import llm_runtime
-            vecs = await llm_runtime.embed_batch(texts)
+            vecs = await llm_runtime.embed_batch(texts, task="clustering")
         except Exception as e:
             logger.warning(f"[canvas_subtopics] embedding failed ({notebook_id}): {e}")
             return []

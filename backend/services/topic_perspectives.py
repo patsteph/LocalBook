@@ -102,7 +102,7 @@ async def _embed(text: str) -> List[float]:
         return []
     try:
         from services.llm_runtime import llm_runtime
-        result = await llm_runtime.embed(text=text[:2000])
+        result = await llm_runtime.embed(text=text[:2000], task="clustering")
     except Exception as e:
         logger.debug(f"[topic_perspectives] embed failed: {e}")
         return []

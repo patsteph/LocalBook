@@ -64,6 +64,10 @@ class EmbeddingProfile:
     mrl_dims: Tuple[int, ...] = field(default_factory=tuple)
     min_dtype: str = ""                     # "bfloat16" → refuse a float16 checkpoint
     source: str = "default"                 # where this was resolved from (shown in the Locker)
+    # Symmetric tasks (two texts compared with each other, not a question against passages):
+    # "clustering", "similarity", "classification" → template. A model without one embeds
+    # the text as-is (arctic: unchanged).
+    task_templates: Tuple[Tuple[str, str], ...] = field(default_factory=tuple)
 
     @property
     def query_prefix(self) -> str:
@@ -74,6 +78,14 @@ class EmbeddingProfile:
 
     def format_document(self, text: str, title: Optional[str] = None) -> str:
         return _fill(self.document_template, text, title=title)
+
+    def format_task(self, text: str, task: str) -> str:
+        """The format for one KIND of embedding: "query", "document", or a symmetric task."""
+        if task == "query":
+            return self.format_query(text)
+        if task == "document":
+            return self.format_document(text)
+        return _fill(dict(self.task_templates).get(task, TEXT), text, title=None)
 
 
 def _fill(template: str, text: str, *, title: Optional[str]) -> str:
@@ -125,6 +137,10 @@ def _from_checkpoint(model_id: str) -> Optional[dict]:
     if d is not None:
         # "title: none | text: " — keep the title slot so a real title can go in.
         out["document_template"] = d.replace("title: none |", "title: {title} |") + TEXT
+    tasks = {k: prompts[v] + TEXT for k, v in (("clustering", "Clustering"), ("similarity", "STS"),
+                                                ("classification", "Classification")) if prompts.get(v)}
+    if tasks:
+        out["task_templates"] = tasks
     return out or None
 
 
@@ -152,6 +168,7 @@ def for_model(model_id: str) -> EmbeddingProfile:
                 mrl_dims=tuple(int(d) for d in prof.get("mrl_dims", []) or []),
                 min_dtype=prof.get("min_dtype", ""),
                 source=source,
+                task_templates=tuple(sorted((prof.get("task_templates") or {}).items())),
             )
     return EmbeddingProfile(model_id=model_id)
 
@@ -186,3 +203,11 @@ def is_current(model_tag: Optional[str]) -> bool:
     except Exception:
         return False
     return (model_tag or LEGACY_EMBED_MODEL) == live
+
+
+def format_task_list(texts: List[str], task: Optional[str],
+                     profile: Optional[EmbeddingProfile] = None) -> List[str]:
+    if not task:
+        return texts
+    p = profile or active()
+    return [p.format_task(t, task) for t in texts]
