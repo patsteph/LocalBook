@@ -210,6 +210,19 @@ try:
 except Exception as e:
     print(f"⚠️ prefs migration skipped: {e}")
 
+# A requested embedding-model switch (or roll back) is applied HERE: after the volume gate,
+# before the saved models are restored and before anything opens LanceDB — it renames index
+# folders and rewrites the saved embedder (services/embedding_migration.py).
+try:
+    from services.volume_gate import current as _gate_for_switch
+    if not _gate_for_switch().locked:
+        from services.embedding_migration import apply_pending_at_startup as _apply_embedder_switch
+        _switch = _apply_embedder_switch()
+        if _switch:
+            print(f"[SafeStart] embedding model switch: {_switch}")
+except Exception as _e:
+    print(f"[SafeStart] embedding model switch skipped: {_e}")
+
 if _prefs_path.exists():
     try:
         _prefs = _json.loads(_prefs_path.read_text())

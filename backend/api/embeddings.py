@@ -113,3 +113,60 @@ async def get_reembed_progress(notebook_id: str):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to get progress: {str(e)}")
+
+
+# ── switching the embedding model (shadow build → switch at next launch) ─────
+# services/embedding_migration.py. The Locker's "Use" on an embedder starts here; a direct
+# swap is refused (/evaluator/swap) because it drops and rebuilds every index in place.
+
+
+@router.get("/migration")
+async def migration_status():
+    from services import embedding_migration
+    return embedding_migration.status()
+
+
+@router.get("/migration/preflight")
+async def migration_preflight(model: str):
+    from services import embedding_migration
+    return embedding_migration.preflight(model)
+
+
+@router.post("/migration/start")
+async def migration_start(payload: dict):
+    from services import embedding_migration
+    model = (payload or {}).get("model") or ""
+    if not model:
+        raise HTTPException(status_code=400, detail="model is required")
+    return await embedding_migration.start(model)
+
+
+@router.post("/migration/stop")
+async def migration_stop():
+    from services import embedding_migration
+    return {"stopping": embedding_migration.stop()}
+
+
+@router.post("/migration/switch")
+async def migration_switch():
+    from services import embedding_migration
+    return await embedding_migration.request_switch()
+
+
+@router.post("/migration/rollback")
+async def migration_rollback():
+    from services import embedding_migration
+    return embedding_migration.request_rollback()
+
+
+@router.post("/migration/cancel")
+async def migration_cancel():
+    from services import embedding_migration
+    embedding_migration.cancel_pending()
+    return {"ok": True}
+
+
+@router.delete("/migration/previous")
+async def migration_remove_previous():
+    from services import embedding_migration
+    return embedding_migration.remove_previous()

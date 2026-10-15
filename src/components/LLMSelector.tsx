@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { settingsService } from '../services/settings';
 import { API_BASE_URL, localFetch } from '../services/api';
+import { EmbeddingSwitchPanel } from './llm/EmbeddingSwitchPanel';
 
 interface LLMSelectorProps {
   selectedProvider: string;
@@ -115,6 +116,8 @@ export const LLMSelector: React.FC<LLMSelectorProps> = ({ selectedProvider, onPr
   const [mode, setMode] = useState<'local' | 'cloud'>('local');
   const [models, setModels] = useState<OllamaModel[]>([]);
   const [active, setActive] = useState<ActiveModels>({ main: '', fast: '', embeddings: '', vision: '' });
+  // Embedders switch through a shadow build (EmbeddingSwitchPanel), never a plain swap.
+  const [switchTarget, setSwitchTarget] = useState<string | null | undefined>(undefined);
   // Compact setup: the fast role runs on the main model; `active.fast` is still the user's choice.
   const [fastShared, setFastShared] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -284,11 +287,9 @@ export const LLMSelector: React.FC<LLMSelectorProps> = ({ selectedProvider, onPr
   // Wave 9.6 — selecting a not-yet-downloaded MLX model downloads it immediately with a
   // progress bar, then swaps automatically (user #3). Installed models swap directly.
   const handleUse = useCallback(async (m: OllamaModel, role: Role) => {
-    // An embedder switch is not a preference: every notebook is re-indexed and search is
-    // degraded until that finishes. Ask — the tooltip alone was easy to miss.
-    if (role === 'embeddings' && m.installed !== false && !window.confirm(
-      `Switch Embeddings to ${m.display_name}?\n\nEvery notebook will be re-indexed with the new model. ` +
-      `Search is incomplete until that finishes.`)) {
+    // An embedder switch builds the new index first, then switches at the next launch.
+    if (role === 'embeddings' && m.installed !== false) {
+      setSwitchTarget(m.name);
       return;
     }
     if (m.provider === 'mlx' && m.installed === false) {
@@ -592,6 +593,12 @@ export const LLMSelector: React.FC<LLMSelectorProps> = ({ selectedProvider, onPr
             </span>
           </div>
           <div className="text-xs opacity-75 mt-0.5">{meta.desc}</div>
+          {role === 'embeddings' && (
+            <button onClick={() => setSwitchTarget(null)}
+                    className="text-xs mt-1 underline underline-offset-2 opacity-75 hover:opacity-100">
+              Search model upgrade…
+            </button>
+          )}
           {role === 'fast' && fastShared && (
             <div className="text-xs mt-1" title="Set in the GPU budget bar. Restart LocalBook after changing it.">
               Compact setup — fast tasks run on the Main model; this choice applies in Standard.
@@ -613,6 +620,9 @@ export const LLMSelector: React.FC<LLMSelectorProps> = ({ selectedProvider, onPr
 
   return (
     <div className="p-4 space-y-4">
+      {switchTarget !== undefined && (
+        <EmbeddingSwitchPanel target={switchTarget} onClose={() => setSwitchTarget(undefined)} />
+      )}
       {/* Local/Cloud toggle intentionally hidden — no cloud provider is in use. */}
 
       {/* A refused removal names the role still using the model, which is the
