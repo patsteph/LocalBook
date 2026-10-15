@@ -138,39 +138,23 @@ def _get_embeddings_batch_sync(texts: List[str]) -> List[List[float]]:
 
 # ─── Asymmetric embedding: queries are not documents ────────────────────────────
 #
-# Arctic Embed v2.0 is trained ASYMMETRICALLY — a query is embedded with a "query: " prefix,
-# a document with none. We were sending both sides unprefixed, so every search embedded the
-# question in the document space and asked for the nearest passage to a passage. It still
-# works (the spaces are close), which is why it went unnoticed; it just ranks worse.
-#
-# Identified in the 2026-08-21 research and deferred ever since because nothing could measure
-# whether it helped. The Phase 3 retrieval harness is that measurement.
-#
-# Keyed by model family, NOT applied blindly: a model trained symmetrically would be made WORSE
-# by a prefix it never saw in training, so an unrecognised embedder gets "" and behaves exactly
-# as before. DOCUMENTS ARE NEVER PREFIXED — that is what makes this query-side only and means
-# no existing index needs rebuilding.
-_QUERY_PREFIXES = {
-    "arctic-embed": "query: ",   # Snowflake Arctic Embed v1 / v2
-    "e5-": "query: ",            # intfloat E5 family ("query: " / "passage: ")
-    "multilingual-e5": "query: ",
-    "bge-": "Represent this sentence for searching relevant passages: ",
-    "gte-": "",                  # symmetric — explicitly none
-    "nomic-embed": "search_query: ",
-}
+# Query / document formats are per model and live in ONE place: services/embedding_profile.py
+# (registry `embedding_profile` → the checkpoint's own prompts → the legacy family table).
+# Arctic: "query: " on queries, documents untouched — unchanged since 2026-08. EmbeddingGemma:
+# "task: search result | query: " and "title: none | text: ". An unknown embedder gets nothing.
 
 
 def query_prefix() -> str:
     """The prefix the ACTIVE embedding model expects on a query, or "" if unknown."""
-    try:
-        from config import settings
-        model = (getattr(settings, "embedding_model", "") or "").lower()
-    except Exception:
-        return ""
-    for key, prefix in _QUERY_PREFIXES.items():
-        if key in model:
-            return prefix
-    return ""
+    from services import embedding_profile
+    return embedding_profile.active().query_prefix
+
+
+def _apply_document_template(texts: List[str]) -> List[str]:
+    """The active model's document format. A no-op for models without one (arctic), so no
+    existing index changes."""
+    from services import embedding_profile
+    return embedding_profile.format_documents(texts)
 
 
 def _apply_query_prefix(texts: List[str]) -> List[str]:
@@ -194,8 +178,7 @@ def encode(texts: Union[str, List[str]], *, is_query: bool = False) -> np.ndarra
     """
     if isinstance(texts, str):
         texts = [texts]
-    if is_query:
-        texts = _apply_query_prefix(texts)
+    texts = _apply_query_prefix(texts) if is_query else _apply_document_template(texts)
 
     if _use_ollama:
         embeddings = _get_embeddings_batch_sync(texts)
@@ -261,8 +244,7 @@ async def encode_async(texts: Union[str, List[str]], *, is_query: bool = False) 
     """
     if isinstance(texts, str):
         texts = [texts]
-    if is_query:
-        texts = _apply_query_prefix(texts)
+    texts = _apply_query_prefix(texts) if is_query else _apply_document_template(texts)
 
     if _use_ollama:
         embeddings = await _get_embeddings_batch_async(texts)

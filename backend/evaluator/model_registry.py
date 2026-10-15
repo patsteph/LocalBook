@@ -52,6 +52,7 @@ class ModelRegistry:
                     vision_profile=entry.get("vision_profile", {}),
                     audio_profile=entry.get("audio_profile", {}),
                     structured_profile=entry.get("structured_profile", {}),
+                    embedding_profile=entry.get("embedding_profile", {}),
                     provider=entry.get("provider", "ollama"),
                 )
                 self._models[info.ollama_name] = info
