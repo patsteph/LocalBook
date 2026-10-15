@@ -29,7 +29,7 @@ from services.rag_metrics import rag_metrics
 from utils.binary_finder import find_binary
 from services.rag_cache import embedding_cache, answer_cache
 from services.startup_checks import (
-    REQUIRED_MODELS, EXPECTED_EMBEDDING_DIM,
+    REQUIRED_MODELS, expected_embedding_dim,
     check_models_present,
     check_rag_embedding_dimensions, check_knowledge_graph_dimensions
 )
@@ -372,21 +372,21 @@ async def full_health_check():
           add_check("ai_models", {
               "name": "embedding_test",
               "display": "Embedding Generation",
-              "status": "pass" if (emb_dim == EXPECTED_EMBEDDING_DIM and not _all_zero) else "fail",
+              "status": "pass" if (emb_dim == expected_embedding_dim() and not _all_zero) else "fail",
               "details": {
                   "model": settings.embedding_model,
                   "dimension": emb_dim,
-                  "expected": EXPECTED_EMBEDDING_DIM,
+                  "expected": expected_embedding_dim(),
                   "zero_vector": _all_zero,
               },
           })
-          if emb_dim != EXPECTED_EMBEDDING_DIM or _all_zero:
+          if emb_dim != expected_embedding_dim() or _all_zero:
               results["issues"].append({
                   "severity": "high",
                   "title": "Embedding Model Not Working",
                   "message": (f"Returned a zero vector — those are unretrievable and poison the index."
                               if _all_zero else
-                              f"Wrong dimension {emb_dim}, expected {EXPECTED_EMBEDDING_DIM}. Search will not work."),
+                              f"Wrong dimension {emb_dim}, expected {expected_embedding_dim()}. Search will not work."),
                   "repair": None,
               })
               if results["overall"] == "healthy":
@@ -824,7 +824,7 @@ async def full_health_check():
         "name": "embeddings_config",
         "display": "Embedding Config",
         "status": "pass" if not needs_migration else "warn",
-        "details": {"expected_dim": EXPECTED_EMBEDDING_DIM, "model": settings.embedding_model, "needs_migration": needs_migration}
+        "details": {"expected_dim": expected_embedding_dim(), "model": settings.embedding_model, "needs_migration": needs_migration}
     })
     if needs_migration:
         results["issues"].append({

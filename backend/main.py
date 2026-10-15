@@ -240,6 +240,20 @@ if _prefs_path.exists():
 from services.model_profile import apply_at_startup as _apply_profile
 _apply_profile()
 
+# The embedding dimension follows the embedding MODEL (its registry profile), never a
+# remembered number: the Locker's .env write lands in the working directory — inside the app
+# bundle — and the old key was ignored anyway, so after a restart a 768-dim model ran against
+# a 1024 setting and every vector was zero-filled. Startup checks act on this value.
+try:
+    from services.embedding_profile import for_model as _embed_profile
+    _dims = _embed_profile(settings.embedding_model).dims
+    if _dims and _dims != settings.embedding_dim:
+        print(f"[SafeStart] embedding_dim {settings.embedding_dim} → {_dims} "
+              f"(from {settings.embedding_model}'s profile)")
+        settings.embedding_dim = _dims
+except Exception as _e:
+    print(f"[SafeStart] embedding dim not derived (keeping {settings.embedding_dim}): {_e}")
+
 from utils.tasks import safe_create_task
 from utils.diagnostics import install_signal_handlers, start_heartbeat, stop_heartbeat, record_endpoint
 

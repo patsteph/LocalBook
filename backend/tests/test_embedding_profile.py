@@ -55,3 +55,27 @@ def test_an_unknown_embedder_gets_nothing(monkeypatch):
     p = ep.for_model("some-org/mystery-embedder-v9")
     assert (p.source, p.pooling, p.query_prefix) == ("default", "cls", "")
     assert p.format_document("x") == "x"
+
+
+def test_startup_checks_expect_the_live_dimension_not_a_constant(monkeypatch):
+    """A hardcoded 1024 drove a forced re-index + table drops on every launch after a switch
+    to a 768-dim model. The checks must expect whatever the live embedder produces."""
+    from config import settings
+    from services import startup_checks
+    monkeypatch.setattr(settings, "embedding_dim", 768)
+    assert startup_checks.expected_embedding_dim() == 768
+    monkeypatch.setattr(settings, "embedding_dim", 1024)
+    assert startup_checks.expected_embedding_dim() == 1024
+
+
+def test_every_registered_embedder_knows_its_dimension():
+    """main.py derives settings.embedding_dim from the active model's profile at startup."""
+    assert ep.for_model(ARCTIC).dims == 1024
+    assert ep.for_model(GEMMA2).dims == 768
+
+
+def test_the_locker_persists_the_dimension_under_a_key_config_reads():
+    import inspect
+    from services import llm_locker
+    src = inspect.getsource(llm_locker.LLMLocker._patch_environment)
+    assert '"embedding_dim": "embedding_dim"' in src and '"embedding_dim": "LOCALBOOK_EMBEDDING_DIM"' not in src

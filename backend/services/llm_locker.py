@@ -356,7 +356,9 @@ class LLMLocker:
                 "vision_model": "vision_model",
                 "image_model": "image_model",
                 "embedding_model": "embedding_model",
-                "embedding_dim": "LOCALBOOK_EMBEDDING_DIM",
+                # Bare field name, like the rest: config has no env prefix, so the old
+                # LOCALBOOK_EMBEDDING_DIM key was ignored and the dim reverted to 1024 on restart.
+                "embedding_dim": "embedding_dim",
                 "MAX_RAG_CONTEXT": "LOCALBOOK_MAX_RAG_CONTEXT",
             }
             env_key = key_map.get(k, k.upper())
