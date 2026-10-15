@@ -29,6 +29,17 @@ logger = logging.getLogger(__name__)
 _PCA_RANDOM_STATE = 42
 
 
+_EMBED_TAG = "embed_model.txt"     # which embedder fitted the saved model (written on every save)
+
+
+def _live_embed_model() -> str:
+    try:
+        from config import settings
+        return settings.embedding_model or ""
+    except Exception:
+        return ""
+
+
 @dataclass
 class Topic:
     """Represents a discovered topic/theme."""
@@ -120,6 +131,11 @@ class TopicModelingService:
             from sklearn.decomposition import PCA
             from sklearn.cluster import HDBSCAN
             
+            # A model fitted by ANOTHER embedder holds topic vectors in another space (and
+            # dimension) — comparing new documents against them raises or mis-assigns. It is
+            # derived data: set it aside and start fresh; topics re-form from new ingests.
+            self._set_aside_if_other_embedder()
+
             # Check if we have a saved model
             if self.model_path.exists():
                 print("[TopicModel] Loading existing model...")
@@ -260,6 +276,7 @@ class TopicModelingService:
             # Save BERTopic model
             if self._model is not None and hasattr(self._model, 'save'):
                 self._model.save(str(self.model_path), serialization="safetensors", save_ctfidf=True)
+                (self.model_path / _EMBED_TAG).write_text(_live_embed_model())
                 
         except Exception as e:
             print(f"[TopicModel] Error saving state: {e}")
@@ -1282,6 +1299,29 @@ Theme name:"""
             await self._save_state()
             return True
     
+    def _set_aside_if_other_embedder(self) -> None:
+        if not self.model_path.exists():
+            return
+        tag = self.model_path / _EMBED_TAG
+        try:
+            made_by = tag.read_text().strip() if tag.exists() else ""
+        except OSError:
+            made_by = ""
+        from services.embedding_profile import is_current
+        if is_current(made_by or None):          # untagged = fitted before tagging = the legacy model
+            return
+        import shutil
+        from datetime import datetime as _dt
+        aside = self.model_path.with_name(f"{self.model_path.name}.{_dt.now():%Y%m%d%H%M%S}.other-embedder")
+        shutil.move(str(self.model_path), str(aside))
+        for extra in (self.rebuild_state_path,):
+            try:
+                extra.unlink()
+            except OSError:
+                pass
+        print(f"[TopicModel] model was fitted by {made_by or 'the legacy embedder'}; set aside at "
+              f"{aside.name} — topics re-form with the live model")
+
     async def reset(self) -> bool:
         """Reset all topic data.
         

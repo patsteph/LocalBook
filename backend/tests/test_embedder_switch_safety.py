@@ -187,3 +187,37 @@ def test_articles_compare_only_vectors_from_the_live_model(monkeypatch):
     monkeypatch.setattr(settings, "embedding_model", "gemma")
     assert ids(asyncio.run(article_store.list_with_embeddings(since))) == {"emb-test-gemma"}
     assert ids(asyncio.run(article_store.list_needing_embedding(since))) == {"emb-test-legacy", "emb-test-none"}
+
+
+def test_a_topic_model_from_another_embedder_is_set_aside(tmp_path, monkeypatch):
+    from config import settings
+    from services import topic_modeling as tm
+    from services.embedding_profile import LEGACY_EMBED_MODEL
+
+    svc = object.__new__(tm.TopicModelingService)
+    svc.model_path = tmp_path / "bertopic_model"
+    svc.rebuild_state_path = tmp_path / "rebuild_state.json"
+    svc.model_path.mkdir()
+    (svc.model_path / tm._EMBED_TAG).write_text(LEGACY_EMBED_MODEL)
+
+    monkeypatch.setattr(settings, "embedding_model", LEGACY_EMBED_MODEL)
+    svc._set_aside_if_other_embedder()
+    assert svc.model_path.exists()                                   # same embedder: kept
+
+    monkeypatch.setattr(settings, "embedding_model", "mlx-community/embeddinggemma-2-bf16")
+    svc._set_aside_if_other_embedder()
+    assert not svc.model_path.exists()
+    assert any(p.name.endswith(".other-embedder") for p in tmp_path.iterdir())   # moved, not deleted
+
+
+def test_an_untagged_topic_model_is_treated_as_legacy(tmp_path, monkeypatch):
+    from config import settings
+    from services import topic_modeling as tm
+
+    svc = object.__new__(tm.TopicModelingService)
+    svc.model_path = tmp_path / "bertopic_model"
+    svc.rebuild_state_path = tmp_path / "rebuild_state.json"
+    svc.model_path.mkdir()
+    monkeypatch.setattr(settings, "embedding_model", "mlx-community/embeddinggemma-2-bf16")
+    svc._set_aside_if_other_embedder()
+    assert not svc.model_path.exists()
