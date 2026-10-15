@@ -789,5 +789,24 @@ class LLMRuntime:
             f"check /system/model-readiness."
         )
 
+    async def embed_with_model(self, texts: List[str], model: str) -> List[List[float]]:
+        """Embed with a NAMED model — the LLM Locker's embedding trial — not the live role.
+
+        Unlike `embed_batch` this never zero-fills: a candidate's dimension may differ from
+        the live one (768 vs 1024), and the trial never writes to an index, so a wrong shape
+        is an error to report, not a vector to pad. Runs at background priority so a trial
+        never gets ahead of the person using the app.
+        """
+        if not texts:
+            return []
+        from services.mlx_engine import mlx_engine
+        if not mlx_engine.available():
+            raise RuntimeError("the MLX engine is not available")
+        async with model_lane(model, PRIORITY_BACKGROUND):
+            vecs = await mlx_engine.embed(texts, model=model)
+        if not vecs or len(vecs) != len(texts) or any(not v for v in vecs):
+            raise RuntimeError(f"{model} returned {len(vecs or [])} usable vectors for {len(texts)} texts")
+        return vecs
+
 
 llm_runtime = LLMRuntime()

@@ -25,7 +25,12 @@ async def _embed(text: str, model: str) -> list[float]:
     embedder fails the embedding category rather than the whole run.
     """
     try:
+        from config import settings
         from services.llm_runtime import llm_runtime
+        if model and model != settings.embedding_model:
+            # A named model that is not the live one: embed with THAT model (it used to
+            # silently measure the live embedder whatever model was asked for).
+            return (await llm_runtime.embed_with_model([text], model))[0]
         res = await llm_runtime.embed(text)
         embs = (res or {}).get("embeddings") or []
         return embs[0] if embs else []
