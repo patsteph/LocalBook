@@ -105,9 +105,11 @@ def test_apply_reports_sources_whose_text_changed_or_that_were_deleted(macs):
     assert rep.get("unindex") == ["s2"]
 
 
-def _fake_sources(monkeypatch, rows, indexed):
+def _fake_sources(monkeypatch, rows, indexed, dupes=None):
     monkeypatch.setattr(indexer, "_sources", lambda: rows)
     monkeypatch.setattr(indexer, "_indexed_ids", lambda nb: set(indexed.get(nb, ())))
+    monkeypatch.setattr(indexer, "_index_state", lambda nb: (set(indexed.get(nb, ())),
+                                                             set((dupes or {}).get(nb, ()))))
 
 
 def _src(sid, nb="nb1", chunks=5, status="completed"):
@@ -188,6 +190,28 @@ def test_stopping_indexing_keeps_the_rest_for_next_time(monkeypatch, fake_rag):
         asyncio.run(indexer.run_into(run))
     from services.sync import store
     assert store.get(indexer._PENDING)["reindex"] == ["b", "c"]
+
+
+def test_a_source_with_duplicate_chunks_is_reindexed_once(monkeypatch):
+    """Two interleaved passes left some sources indexed twice (2026-10-15); the planner
+    finds them by duplicate (source_id, chunk_index) and re-indexes each once."""
+    _fake_sources(monkeypatch, [_src("ok"), _src("doubled")], {"nb1": {"ok", "doubled"}},
+                  dupes={"nb1": {"doubled"}})
+    assert [s["id"] for s in indexer.plan()["index"]] == ["doubled"]
+
+
+def test_two_indexing_passes_never_run_side_by_side(monkeypatch, fake_rag):
+    """The MBP case: the background pass and a user's sync both indexed the same 69 sources."""
+    _fake_sources(monkeypatch, [_src("a"), _src("b"), _src("c")], {})
+    indexer.note({"reindex": ["a", "b", "c"]})
+
+    async def both():
+        r1 = progress.begin("index", "index", ["index"])
+        r2 = progress.begin("initiated", "initiated", ["index"])
+        return await asyncio.gather(indexer.run_into(r1), indexer.run_into(r2))
+    first, second = asyncio.run(both())
+    assert sorted(sid for sid, _, _ in fake_rag.ingested) == ["a", "b", "c"]    # each ONCE
+    assert first["indexed"] + second["indexed"] == 3
 
 
 # ── discovery ───────────────────────────────────────────────────────────────
@@ -291,3 +315,16 @@ def test_cleanup_removes_only_what_the_deleted_rows_named(tmp_path, monkeypatch)
     assert sorted(p.name for p in (tmp_path / "audio").iterdir()) == ["other.wav"]
     assert not (tmp_path / "notebooks" / "nb1").exists() and (tmp_path / "notebooks" / "nb2").exists()
     assert dropped == ["nb1"]
+
+
+def test_duplicate_chunks_are_found_in_a_real_index(tmp_path, monkeypatch):
+    lancedb = pytest.importorskip("lancedb")
+    from services import rag_storage
+
+    db = lancedb.connect(str(tmp_path))
+    rows = [{"source_id": sid, "chunk_index": ci, "vector": [0.1, 0.2]}
+            for sid, ci in (("clean", 0), ("clean", 1), ("twice", 0), ("twice", 1), ("twice", 0), ("twice", 1))]
+    db.create_table("notebook_nb1", data=rows)
+    monkeypatch.setattr(rag_storage, "_get_db", lambda: db)
+    have, dupes = indexer._index_state("nb1")
+    assert have == {"clean", "twice"} and dupes == {"twice"}

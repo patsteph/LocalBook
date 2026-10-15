@@ -33,6 +33,11 @@ _PENDING = "index_pending"
 _DIRTY = "index_dirty"      # set when an apply touched sources; the diff only runs then
 _task: Optional[asyncio.Task] = None
 _again = False
+# ONE indexing pass at a time. The background loop only checked for a user-started sync
+# when IT began; a sync started a moment later indexed the same sources alongside it —
+# every source embedded twice, and interleaved delete+insert left duplicate chunks
+# (2026-10-15, MBP: 69 sources, each twice). A second pass waits, then re-plans.
+_run_lock = asyncio.Lock()
 
 
 # ── what arrived ─────────────────────────────────────────────────────────────
@@ -63,19 +68,37 @@ def mark_dirty() -> None:
 
 
 def _indexed_ids(notebook_id: str) -> Set[str]:
+    return _index_state(notebook_id)[0]
+
+
+def _index_state(notebook_id: str):
+    """(source ids present in this Mac's index, source ids with DUPLICATE chunks).
+
+    A duplicate is the same (source_id, chunk_index) more than once — what two indexing
+    runs interleaving delete+insert on one source leave behind (2026-10-15). Duplicates
+    crowd search results with the same passage, so such a source is re-indexed once."""
     from services import rag_storage
 
     db = rag_storage._get_db()
     name = f"notebook_{notebook_id}"
     if name not in db.table_names():
-        return set()
+        return set(), set()
     t = db.open_table(name)
     try:
-        col = t.to_arrow().column("source_id")
-        return set(col.to_pylist())
+        cols = ["source_id", "chunk_index"] if "chunk_index" in t.schema.names else ["source_id"]
+        tbl = t.to_arrow().select(cols)
+        sids = tbl.column("source_id").to_pylist()
+        if len(cols) == 1:
+            return set(sids), set()
+        seen, dupes = set(), set()
+        for key in zip(sids, tbl.column("chunk_index").to_pylist()):
+            if key in seen:
+                dupes.add(key[0])
+            seen.add(key)
+        return set(sids), dupes
     except Exception as exc:
         logger.debug("[sync-index] could not read %s: %s", name, exc)
-        return set()
+        return set(), set()
 
 
 def _sources() -> List[Dict[str, Any]]:
@@ -107,9 +130,9 @@ def plan() -> Dict[str, Any]:
         by_nb.setdefault(s["notebook_id"], []).append(s)
     todo = []
     for nb, items in by_nb.items():
-        have = _indexed_ids(nb)
+        have, dupes = _index_state(nb)
         for s in items:
-            if s["id"] in re_ids or (s["chunks"] > 0 and s["id"] not in have):
+            if s["id"] in re_ids or s["id"] in dupes or (s["chunks"] > 0 and s["id"] not in have):
                 todo.append(s)
     present = {s["id"] for s in srcs}
     gone = [sid for sid in p.get("unindex", []) if sid not in present]
@@ -126,6 +149,13 @@ async def run_into(run, paced: bool = False) -> Dict[str, Any]:
     paced: a run the user did not start (startup catch-up, the background loop,
     another Mac's push) rests between sources while the user is active, so a
     100-source catch-up trickles instead of pinning the Mac."""
+    if _run_lock.locked():
+        run.step("index", total=0, unit="sources")          # waiting for the pass already running
+    async with _run_lock:
+        return await _run_into_locked(run, paced)
+
+
+async def _run_into_locked(run, paced: bool) -> Dict[str, Any]:
     from services.rag_engine import rag_engine
     from storage.source_store import source_store
 
