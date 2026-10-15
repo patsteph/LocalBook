@@ -208,7 +208,6 @@ python -W ignore -m PyInstaller \
     --hidden-import=services.research_jobs \
     --hidden-import=services.embedding_profile \
     --hidden-import=services.mlx_embed_loaders \
-    --hidden-import=services.embedding_trial \
     --hidden-import=api.sync \
     --collect-submodules=services.sync \
     --hidden-import=api.companions \

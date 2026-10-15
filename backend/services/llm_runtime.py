@@ -790,12 +790,12 @@ class LLMRuntime:
         )
 
     async def embed_with_model(self, texts: List[str], model: str) -> List[List[float]]:
-        """Embed with a NAMED model — the LLM Locker's embedding trial — not the live role.
+        """Embed with a NAMED model, not the live role (the Evaluator testing another embedder).
 
         Unlike `embed_batch` this never zero-fills: a candidate's dimension may differ from
-        the live one (768 vs 1024), and the trial never writes to an index, so a wrong shape
-        is an error to report, not a vector to pad. Runs at background priority so a trial
-        never gets ahead of the person using the app.
+        the live one (768 vs 1024), and this path never writes to an index, so a wrong shape
+        is an error to report, not a vector to pad. Runs at background priority so it never
+        gets ahead of the person using the app.
         """
         if not texts:
             return []

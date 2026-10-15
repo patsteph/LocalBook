@@ -1,7 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { settingsService } from '../services/settings';
 import { API_BASE_URL, localFetch } from '../services/api';
-import { EmbeddingTrialPanel } from './llm/EmbeddingTrialPanel';
 
 interface LLMSelectorProps {
   selectedProvider: string;
@@ -115,8 +114,6 @@ export const LLMSelector: React.FC<LLMSelectorProps> = ({ selectedProvider, onPr
   const [mode, setMode] = useState<'local' | 'cloud'>('local');
   const [models, setModels] = useState<OllamaModel[]>([]);
   const [active, setActive] = useState<ActiveModels>({ main: '', fast: '', embeddings: '', vision: '' });
-  // Embedding trial (Test) — compare a candidate embedder with the live one, no switch.
-  const [trialModel, setTrialModel] = useState<string | null>(null);
   // Compact setup: the fast role runs on the main model; `active.fast` is still the user's choice.
   const [fastShared, setFastShared] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -290,7 +287,7 @@ export const LLMSelector: React.FC<LLMSelectorProps> = ({ selectedProvider, onPr
     // degraded until that finishes. Ask — the tooltip alone was easy to miss.
     if (role === 'embeddings' && m.installed !== false && !window.confirm(
       `Switch Embeddings to ${m.display_name}?\n\nEvery notebook will be re-indexed with the new model. ` +
-      `Search is incomplete until that finishes. Use "Test" first to compare it without switching.`)) {
+      `Search is incomplete until that finishes.`)) {
       return;
     }
     if (m.provider === 'mlx' && m.installed === false) {
@@ -521,15 +518,6 @@ export const LLMSelector: React.FC<LLMSelectorProps> = ({ selectedProvider, onPr
             </div>
           )}
         </div>
-        {role === 'embeddings' && !isActive && m.installed !== false && !isDownloading && (
-          <button
-            onClick={() => setTrialModel(m.name)}
-            title="Compare it with your current embedding model without switching (nothing is re-indexed)."
-            className="shrink-0 px-2 py-1.5 rounded-lg text-xs text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/20"
-          >
-            Test
-          </button>
-        )}
         {isMLX && m.installed !== false && !isDownloading && (
           <button
             onClick={() => handleRemove(m)}
@@ -624,7 +612,6 @@ export const LLMSelector: React.FC<LLMSelectorProps> = ({ selectedProvider, onPr
 
   return (
     <div className="p-4 space-y-4">
-      {trialModel && <EmbeddingTrialPanel model={trialModel} onClose={() => setTrialModel(null)} />}
       {/* Local/Cloud toggle intentionally hidden — no cloud provider is in use. */}
 
       {/* A refused removal names the role still using the model, which is the

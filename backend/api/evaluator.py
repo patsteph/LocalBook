@@ -358,27 +358,6 @@ async def cleanup():
     return {"message": "Cleanup complete"}
 
 
-@router.post("/embedding-trial")
-async def start_embedding_trial(payload: dict):
-    """Test an embedding model against the live one WITHOUT switching (a background job).
-    Body: {"model": "<hf id>", "with_distractors": true}. Poll GET /evaluator/embedding-trial."""
-    from services import embedding_trial
-    from services.model_presence import is_present
-
-    model = (payload or {}).get("model") or ""
-    if not model:
-        raise HTTPException(status_code=400, detail="model is required")
-    if not is_present(model):
-        raise HTTPException(status_code=400, detail=f"{model} is not downloaded")
-    return await embedding_trial.start(model, with_distractors=bool((payload or {}).get("with_distractors", True)))
-
-
-@router.get("/embedding-trial")
-async def embedding_trial_status():
-    from services import embedding_trial
-    return embedding_trial.status()
-
-
 @router.post("/swap")
 async def swap_model(payload: dict):
     """Swap the active model for a specific role (main_model or fast_model)."""
