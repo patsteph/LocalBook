@@ -68,3 +68,31 @@ def test_memory_search_embeds_its_question_as_a_query(monkeypatch):
     store.get_embedding("what did I say about maps?", is_query=True)
     store.get_embedding("a stored memory")
     assert seen == [True, False]
+
+
+def test_the_embedding_cache_never_serves_another_models_vector(monkeypatch):
+    from config import settings
+    from services.rag_cache import EmbeddingCache
+
+    cache = EmbeddingCache(max_size=10, persist=False)
+    monkeypatch.setattr(settings, "embedding_model", "arctic")
+    cache.put("what is RAG?", [0.1] * 1024)
+    assert cache.get("what is RAG?") is not None
+    monkeypatch.setattr(settings, "embedding_model", "embeddinggemma-2")
+    assert cache.get("what is RAG?") is None             # a miss, not a 1024-d vector
+
+
+def test_the_answer_cache_only_matches_within_one_embedder(monkeypatch):
+    import asyncio
+    import numpy as np
+    from config import settings
+    from services.rag_cache import AnswerCache
+
+    cache = AnswerCache(max_size=10, similarity_threshold=0.9, persist=False)
+    monkeypatch.setattr(settings, "embedding_model", "arctic")
+    q = np.ones(1024) / np.sqrt(1024)
+    asyncio.run(cache.put("q?", "nb", q, "an answer", []))
+    assert asyncio.run(cache.get("other wording?", "nb", q)) is not None
+    monkeypatch.setattr(settings, "embedding_model", "embeddinggemma-2")
+    q768 = np.ones(768) / np.sqrt(768)
+    assert asyncio.run(cache.get("other wording?", "nb", q768)) is None
