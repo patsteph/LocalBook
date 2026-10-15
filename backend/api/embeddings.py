@@ -27,19 +27,12 @@ async def get_current_model(notebook_id: str):
         if not notebook:
             raise HTTPException(status_code=404, detail="Notebook not found")
 
-        # Get model from notebook metadata or use default (snowflake-arctic-embed2 via Ollama)
-        model_name = notebook.get("embedding_model", "snowflake-arctic-embed2")
+        # One embedder serves every notebook on this Mac: the live one (per Mac, not per
+        # notebook — a notebook's old `embedding_model` field predates MLX and is ignored).
+        from config import settings
+        model_name = settings.embedding_model
         needs_reembedding = notebook.get("needs_reembedding", False)
-
-        # Get model dimensions based on model name
-        dimensions_map = {
-            "snowflake-arctic-embed2": 1024,
-            "nomic-embed-text": 768,
-            "mxbai-embed-large": 1024,
-            "all-minilm": 384,
-        }
-
-        dimensions = dimensions_map.get(model_name, 1024)
+        dimensions = int(settings.embedding_dim)
 
         return {
             "model_name": model_name,

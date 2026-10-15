@@ -793,35 +793,37 @@ print(f'Whisper model cached at: {local_dir}')
             fi
         fi
 
-        # MLX embedding model (~1.1GB) — in-process embeddings via MLX (arctic-embed-l-v2.0 bf16).
-        # Size MEASURED 2026-08-19 (1.058 GiB on disk); the old ~2.3GB figure was ~2x over.
-        # Same model + 1024 dim as the Ollama `snowflake-arctic-embed2` → same vector space, no re-index.
-        # Pre-download here (with the SSL-tolerant session below) so the frozen app never has to fetch it
-        # at first use, where OpenSSL can't verify the HF cert. Skip for Ollama-embed users
-        # (LOCALBOOK_EMBED_ENGINE=ollama) — the default is mlx.
+        # MLX embedding model — whichever config.py names as the DEFAULT embedder (arctic today,
+        # EmbeddingGemma 2 once the switch ships: ~1.1–1.5GB). Read from config, never hardcoded,
+        # so a fresh install always fetches the model it will actually run (scenario S1).
+        # Pre-download here (with the SSL-tolerant session below) so the frozen app never has to fetch
+        # it at first use, where OpenSSL can't verify the HF cert.
         if [ "${LOCALBOOK_EMBED_ENGINE:-mlx}" = "ollama" ]; then
-            info "MLX embeddings disabled (LOCALBOOK_EMBED_ENGINE=ollama) — skipping bf16 embed download"
+            info "MLX embeddings disabled (LOCALBOOK_EMBED_ENGINE=ollama) — skipping embed download"
         else
-            local embed_hf_cache="$HOME/.cache/huggingface/hub/models--mlx-community--snowflake-arctic-embed-l-v2.0-bf16"
-            if [ -d "$embed_hf_cache" ]; then
-                success "MLX embedding model (already cached)"
-            else
-                info "Downloading MLX embedding model (~1.1GB) — in-process embeddings engine..."
-                python -c "
-import os, sys, signal
+            info "Checking the MLX embedding model (downloads ~1–1.5GB if missing)..."
+            python -c "
+import os, re, sys, signal
 def _alarm(*_): raise SystemExit('Download timed out')
 signal.signal(signal.SIGALRM, _alarm)
 signal.alarm(1200)
-# ONE transport implementation (backend/services/hf_transport.py). This block used to call
-# huggingface_hub's configure_http_backend, REMOVED in hf_hub 1.x — it raised ImportError on
-# every run, so the SSL bypass never applied and these downloads failed on any machine needing it.
-# Derive the backend dir from the running interpreter — these blocks execute inside
-# <backend>/.venv, so this is correct on BOTH the fresh and upgrade paths (INSTALL_DIR is
-# empty during a fresh install) and independent of cwd.
+# ONE transport implementation (backend/services/hf_transport.py). Derive the backend dir from the
+# running interpreter — these blocks execute inside <backend>/.venv, so this is correct on BOTH the
+# fresh and upgrade paths (INSTALL_DIR is empty during a fresh install) and independent of cwd.
+backend = None
 for _cand in (os.path.dirname(os.path.dirname(os.path.dirname(sys.executable))),
               os.path.join(os.getcwd(), 'backend'), os.getcwd()):
     if os.path.isfile(os.path.join(_cand, 'services', 'hf_transport.py')):
-        sys.path.insert(0, _cand); break
+        backend = _cand; sys.path.insert(0, _cand); break
+repo = 'mlx-community/snowflake-arctic-embed-l-v2.0-bf16'
+try:
+    m = re.search(r'embedding_model: str = \"([^\"]+)\"', open(os.path.join(backend, 'config.py')).read())
+    repo = m.group(1) if m else repo
+except Exception as _e:
+    print(f'[install] could not read the default embedder from config.py ({_e}); using {repo}')
+from huggingface_hub import try_to_load_from_cache
+if isinstance(try_to_load_from_cache(repo, 'config.json'), str):
+    print(f'MLX embedding model already cached: {repo}'); sys.exit(0)
 try:
     from services.hf_transport import install_hf_transport
     install_hf_transport()
@@ -829,17 +831,14 @@ except Exception as _e:
     print(f'[install] hf transport not configured ({_e}); using library defaults')
 from huggingface_hub import snapshot_download
 local_dir = snapshot_download(
-    repo_id='mlx-community/snowflake-arctic-embed-l-v2.0-bf16',
-    allow_patterns=['config.json', '*.safetensors', '*.json', 'tokenizer*', '*.txt', '*.model', 'sentencepiece*'],
+    repo_id=repo,
+    allow_patterns=['config.json', '*.safetensors', '*.json', 'tokenizer*', '*.txt', '*.model',
+                    'sentencepiece*', '*.jinja'],
     max_workers=1,
 )
 signal.alarm(0)
 print(f'MLX embedding model cached at: {local_dir}')
-" || warn "MLX embedding download failed (non-fatal — app falls back to Ollama embeddings until cached)"
-                if [ -d "$embed_hf_cache" ]; then
-                    success "MLX embedding model downloaded"
-                fi
-            fi
+" && success "MLX embedding model ready" || warn "MLX embedding download failed (non-fatal — LLM Studio can download it)"
         fi
 
         # MLX MAIN + FAST models (~6.8GB total) — Stage 3.7 of the MLX cutover.

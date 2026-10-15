@@ -96,6 +96,7 @@ const ROLE_META: Record<Role, { label: string; api_role: string; color: string; 
 function friendlyModelLabel(id: string): string {
   const low = id.toLowerCase();
   if (low.includes('arctic-embed')) return 'Embeddings (Arctic)';
+  if (low.includes('embeddinggemma')) return 'Embeddings (EmbeddingGemma 2)';
   if (low.includes('klein') || low.includes('flux')) return 'Image generation (Klein)';
   if (low.includes('gemma')) return 'Main model (Gemma)';
   if (low.includes('phi')) return 'Fast model (Phi)';

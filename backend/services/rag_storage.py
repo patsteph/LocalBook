@@ -198,7 +198,8 @@ async def ingest_document(
     # Generate embeddings
     await reporter.emit(
         "embedding", 72,
-        f"Computing {len(texts_to_embed)} embeddings (1024-dim snowflake-arctic)...",
+        f"Computing {len(texts_to_embed)} embeddings ({settings.embedding_dim}-dim "
+        f"{settings.embedding_model.rsplit('/', 1)[-1]})...",
         details={"vector_count": len(texts_to_embed)},
     )
     # Serialize the (core) embedding step behind any active foreground
