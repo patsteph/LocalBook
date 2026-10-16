@@ -15,7 +15,7 @@ import socket
 import time
 from typing import Any, Dict, List, Optional
 
-from services.sync import discovery, genesis, identity, indexer, peer, progress, retention, runtime, store
+from services.sync import embedder_advice, discovery, genesis, identity, indexer, peer, progress, retention, runtime, store
 
 logger = logging.getLogger(__name__)
 
@@ -480,6 +480,9 @@ def status() -> Dict[str, Any]:
         "schema_head": runtime.ledger_head(),
         "collector": _collector_status(),
         "retention": {"last": store.get("retention_last"), "held_by": retention.stale_peers()},
+        # This device searches with a different embedder than its library — for Settings,
+        # Data Health and any other client (the iPhone app reads this).
+        "embedder_advice": embedder_advice.advice(),
     }
 
 

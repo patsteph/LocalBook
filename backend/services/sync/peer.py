@@ -109,6 +109,8 @@ def _note_models(d: Dict[str, Any], theirs: Optional[Dict[str, str]]) -> None:
     different embedder means the same question retrieves differently on each Mac."""
     diff = model_mismatch(theirs)
     store.put(f"model_mismatch:{d['device_id']}", diff)
+    from services.sync import embedder_advice
+    embedder_advice.record_peer_models(d["device_id"], theirs)
     if diff:
         logger.warning("[sync] %s runs different models: %s", d.get("name") or d["device_id"], diff)
 

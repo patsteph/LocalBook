@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { api } from '../../services/api';
 import { SyncProgress } from './SyncProgress';
 import { conflictLabel, conflictValue } from './conflictLabel';
+import { EmbeddingSwitchPanel } from '../llm/EmbeddingSwitchPanel';
 
 /**
  * Settings › Sync (LB-12): this Mac's peers.
@@ -43,6 +44,11 @@ type Status = {
         last: { at: number; tombstones: Record<string, number>; logs: Record<string, number>; conflicts: number } | null;
         held_by: { device_id: string; name?: string; days: number | null }[];
     };
+    // This device searches with a different embedder than the rest of the library.
+    embedder_advice?: {
+        library_model: string; this_device: string; devices: string[];
+        downloaded: boolean; in_progress: boolean; message: string;
+    } | null;
 };
 type Conflict = { id: string; tbl: string; pk?: string; field: string; kind: string; kept_value: any; other_value: any; created_at: string };
 
@@ -133,6 +139,10 @@ export function SyncSection() {
                 </p>
             </header>
             {error && <div className="rounded-lg border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-red-200">{error}</div>}
+
+            {st.embedder_advice && (
+                <EmbedderAdvice advice={st.embedder_advice} />
+            )}
 
             {/* ── on / off ── */}
             <section className="space-y-3 rounded-lg border border-gray-700 bg-gray-900/40 p-4 text-sm">
@@ -380,5 +390,34 @@ export function SyncSection() {
                 </>
             )}
         </div>
+    );
+}
+
+
+function EmbedderAdvice({ advice }: { advice: NonNullable<Status['embedder_advice']> }) {
+    const [open, setOpen] = useState(false);
+    const [note, setNote] = useState<string | null>(null);
+    const download = async () => {
+        try {
+            await api.post('/settings/mlx/download', { model_id: advice.library_model });
+            setNote('Downloading — follow it in LLM Studio, then come back here to switch.');
+        } catch (e: any) {
+            setNote(e?.response?.data?.detail ?? 'Could not start the download.');
+        }
+    };
+    return (
+        <section className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-4 text-sm text-amber-100">
+            <div className="font-medium">Search model differs from your other devices</div>
+            <p className="mt-1">{advice.message}</p>
+            {!advice.in_progress && (
+                <div className="mt-3">
+                    {advice.downloaded
+                        ? <button onClick={() => setOpen(true)} className={primary}>Switch search model…</button>
+                        : <button onClick={download} className={primary}>Download {advice.library_model.split('/').pop()}</button>}
+                </div>
+            )}
+            {note && <p className="mt-2 text-xs">{note}</p>}
+            {open && <EmbeddingSwitchPanel target={advice.library_model} onClose={() => setOpen(false)} />}
+        </section>
     );
 }
