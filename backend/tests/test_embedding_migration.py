@@ -166,3 +166,63 @@ def test_the_old_direct_swap_is_refused_for_embedders():
     app.include_router(evaluator.router)
     r = TestClient(app).post("/evaluator/swap", json={"target_model": NEW, "role": "embeddings"})
     assert r.status_code == 409
+
+
+# ── startup: the saved embedder differs from the one that built the index ─────
+
+
+def _tag(lib):
+    p = lib["data"] / "lancedb" / em.INDEX_TAG
+    return p.read_text() if p.exists() else None
+
+
+def test_a_saved_embedder_that_did_not_build_the_index_never_drops_it(lib, monkeypatch):
+    """The MBP case (2026-10-15): EmbeddingGemma saved, a 1024-dim index on disk. Search
+    keeps the index's model; the new index builds alongside."""
+    from config import settings
+    from services import embedding_profile
+    monkeypatch.setattr(embedding_profile, "LEGACY_EMBED_MODEL", "org/legacy-1024")
+    monkeypatch.setattr(em, "_table_dims", lambda d: [1024])              # a legacy arctic index
+    monkeypatch.setattr(settings, "embedding_model", NEW)
+    out = em.reconcile_at_startup()
+    assert out == {"kept": True, "searching_with": "org/legacy-1024", "building_for": NEW}
+    assert settings.embedding_model == "org/legacy-1024" and em._auto_target == NEW
+    em._auto_target = None
+
+
+def test_an_index_already_made_by_the_saved_model_is_recognised_and_tagged(lib, monkeypatch):
+    from config import settings
+    from services import embedding_profile
+    monkeypatch.setattr(settings, "embedding_model", NEW)
+    monkeypatch.setattr(em, "_table_dims", lambda d: [768])
+    monkeypatch.setattr(embedding_profile, "for_model",
+                        lambda m: embedding_profile.EmbeddingProfile(model_id=m, dims=768 if m == NEW else 1024))
+    assert em.reconcile_at_startup() is None
+    assert _tag(lib) == NEW and settings.embedding_model == NEW
+
+
+def test_the_index_model_must_be_downloaded_to_keep_searching_with_it(lib, monkeypatch):
+    from config import settings
+    em.write_index_tag(OLD)
+    monkeypatch.setattr(settings, "embedding_model", NEW)
+    monkeypatch.setattr("services.model_presence.is_present", lambda m: m != OLD)
+    out = em.reconcile_at_startup()
+    assert out["kept"] is False and settings.embedding_model == NEW
+
+
+def test_a_fresh_library_is_tagged_with_the_saved_model(tmp_path, monkeypatch):
+    from config import settings
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    monkeypatch.setattr(settings, "db_path", tmp_path / "lancedb")
+    monkeypatch.setattr(settings, "embedding_model", NEW)
+    assert em.reconcile_at_startup() is None
+    assert (tmp_path / "lancedb" / em.INDEX_TAG).read_text() == NEW
+
+
+def test_the_switch_tags_both_indexes(lib):
+    _build()
+    assert (em.shadow_dir(NEW) / em.INDEX_TAG).read_text() == NEW          # tagged when built
+    assert asyncio.run(em.request_switch())["ok"]
+    em.apply_pending_at_startup()
+    assert _tag(lib) == NEW
+    assert (lib["data"] / f"lancedb@{em.slug(OLD)}" / em.INDEX_TAG).read_text() == OLD

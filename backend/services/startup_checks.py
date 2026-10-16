@@ -106,7 +106,14 @@ async def run_all_startup_checks(status_callback=None) -> Dict[str, Any]:
                 f"Models not installed: {_missing_names}. Install them in LLM Studio. "
                 f"(Not auto-downloaded — Wave 9 decision.)")
         
-        # Step 3: Check RAG embedding dimensions
+        # Step 3: Check RAG embedding dimensions. A saved embedder that differs from the
+        # index's is handled WITHOUT dropping anything: the launch kept the index's model and
+        # the new model's index builds alongside (services/embedding_migration).
+        try:
+            from services.embedding_migration import kick_auto_target
+            await kick_auto_target()
+        except Exception as e:
+            print(f"[Startup] background index build not started: {e}")
         update_status("checking", "Checking embedding compatibility...", 50)
         rag_needs_migration = check_rag_embedding_dimensions()
         results["embedding_migration"] = "needed" if rag_needs_migration else "ok"

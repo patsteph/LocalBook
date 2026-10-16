@@ -44,9 +44,11 @@ LEDGER = ".embedder_migration.json"     # the shadow build's state (resumable)
 FLIP = ".embedder_flip.json"            # "switch on next launch"
 ROLLBACK = ".embedder_rollback.json"    # "switch back on next launch"
 HISTORY = ".embedder_history.json"      # the last switch, for rollback + cleanup
+INDEX_TAG = ".embed_model"              # inside an index dir: the model that built it
 
 _task: Optional[asyncio.Task] = None
 _stop = False
+_auto_target: Optional[str] = None      # set at launch when the saved embedder ≠ the index's
 
 
 # ── paths ────────────────────────────────────────────────────────────────────
@@ -99,6 +101,96 @@ def _tables(db_dir: Path) -> List[str]:
 
 def _dir_bytes(p: Path) -> int:
     return sum(f.stat().st_size for f in p.rglob("*") if f.is_file()) if p.is_dir() else 0
+
+
+# ── which model built an index ───────────────────────────────────────────────
+
+
+def write_index_tag(model: str, index_dir: Optional[Path] = None) -> None:
+    d = index_dir or _live_dir()
+    try:
+        d.mkdir(parents=True, exist_ok=True)
+        (d / INDEX_TAG).write_text(model)
+    except OSError as exc:
+        logger.debug("[embedder-migration] index tag not written: %s", exc)
+
+
+def _table_dims(index_dir: Path) -> List[int]:
+    import lancedb
+    dims = []
+    try:
+        db = lancedb.connect(str(index_dir))
+        for n in _tables(index_dir):
+            try:
+                t = db.open_table(n)
+                if t.count_rows():
+                    dims.append(int(t.schema.field("vector").type.list_size))
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return dims
+
+
+def index_model(saved: Optional[str] = None) -> Optional[str]:
+    """The model that built the live index: its tag, else inferred from the vector size —
+    1024 everywhere = the legacy embedder (the only 1024-dim one ever shipped); the size
+    the SAVED model produces everywhere = that model. Mixed or empty = unknown (None)."""
+    tag = _live_dir() / INDEX_TAG
+    try:
+        if tag.exists():
+            return tag.read_text().strip() or None
+    except OSError:
+        pass
+    dims = set(_table_dims(_live_dir()))
+    if len(dims) != 1:
+        return None
+    dim = dims.pop()
+    from services import embedding_profile
+    if saved and embedding_profile.for_model(saved).dims == dim:
+        return saved
+    if dim == 1024:
+        return embedding_profile.LEGACY_EMBED_MODEL
+    return None
+
+
+def reconcile_at_startup() -> Optional[Dict[str, Any]]:
+    """Run at launch after the saved models are applied, before the embedding dimension is
+    derived. If the saved embedder is not the one that built the index, keep SEARCHING with
+    the index's model and build the saved one's index alongside — never drop the index to
+    rebuild it in place (that emptied search until done and re-ran every LLM call; the MBP
+    met it on 2026-10-15). Never raises."""
+    global _auto_target
+    try:
+        from config import settings
+        from services.model_presence import is_present
+
+        saved = settings.embedding_model
+        idx = index_model(saved)
+        if idx is None:
+            if not _tables(_live_dir()):
+                write_index_tag(saved)            # a fresh index: it will be the saved model's
+            return None
+        if idx == saved:
+            if not (_live_dir() / INDEX_TAG).exists():
+                write_index_tag(saved)
+            return None
+        if not is_present(idx):
+            return {"kept": False, "reason": f"{idx} (which built the index) is not downloaded"}
+        settings.embedding_model = idx            # search keeps working on the index's model
+        _auto_target = saved
+        return {"kept": True, "searching_with": idx, "building_for": saved}
+    except Exception as exc:
+        logger.warning("[embedder-migration] startup reconcile skipped: %s", exc)
+        return None
+
+
+async def kick_auto_target() -> None:
+    """Start the shadow build the launch decided on (startup checks call this)."""
+    if _auto_target and not (_task and not _task.done()):
+        out = await start(_auto_target)
+        logger.info("[embedder-migration] building the %s index in the background: %s",
+                    _auto_target, out.get("started"))
 
 
 # ── what gets embedded (mirrors rag_storage exactly) ─────────────────────────
@@ -270,6 +362,7 @@ async def _run(target: str) -> None:
                 led["stage"] = f"copying {n}"
                 _write(LEDGER, led)
                 await _copy_table(target, live_db, shadow_db, n, led)
+        write_index_tag(target, shadow)
         led.update(stage="ready", finished_at=datetime.now(timezone.utc).isoformat())
         _write(LEDGER, led)
         logger.info("[embedder-migration] shadow index for %s ready (%s rows)", target, led.get("rows_done"))
@@ -378,6 +471,8 @@ def apply_pending_at_startup() -> Optional[Dict[str, Any]]:
             if not shadow.is_dir():
                 raise RuntimeError(f"the new index {shadow.name} is missing")
             _swap(live, live.with_name(f"{live.name}@{slug(prev)}"), shadow)
+            write_index_tag(target)
+            write_index_tag(prev, live.with_name(f"{live.name}@{slug(prev)}"))
             _set_saved_embedder(target)
             _write(HISTORY, {"previous_model": prev, "model": target,
                              "switched_at": datetime.now(timezone.utc).isoformat()})
@@ -391,6 +486,7 @@ def apply_pending_at_startup() -> Optional[Dict[str, Any]]:
             if not kept.is_dir():
                 raise RuntimeError(f"the previous index {kept.name} is missing")
             _swap(live, live.with_name(f"{live.name}@{slug(cur)}"), kept)
+            write_index_tag(to)
             _set_saved_embedder(to)
             _write(HISTORY, {"previous_model": cur, "model": to,
                              "switched_at": datetime.now(timezone.utc).isoformat(), "rolled_back": True})

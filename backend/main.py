@@ -253,6 +253,17 @@ if _prefs_path.exists():
 from services.model_profile import apply_at_startup as _apply_profile
 _apply_profile()
 
+# Saved embedder ≠ the model that built the index (switched in the Locker before the shadow
+# build existed, or a new default): keep searching with the index's model and build the saved
+# one alongside — the old answer, drop every table and re-ingest, emptied search for hours.
+try:
+    from services.embedding_migration import reconcile_at_startup as _reconcile_embedder
+    _emb = _reconcile_embedder()
+    if _emb:
+        print(f"[SafeStart] embedding index: {_emb}")
+except Exception as _e:
+    print(f"[SafeStart] embedding index check skipped: {_e}")
+
 # The embedding dimension follows the embedding MODEL (its registry profile), never a
 # remembered number: the Locker's .env write lands in the working directory — inside the app
 # bundle — and the old key was ignored anyway, so after a restart a 768-dim model ran against
