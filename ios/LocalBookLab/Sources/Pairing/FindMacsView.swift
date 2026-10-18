@@ -2,6 +2,8 @@ import SwiftUI
 
 struct FindMacsView: View {
     @State private var browser = MacBrowser()
+    @State private var host = "192.168.86.66"
+    @State private var port = "47651"
 
     var body: some View {
         List {
@@ -26,9 +28,28 @@ struct FindMacsView: View {
                             Button("Check connection") { browser.checkReachable(mac) }
                                 .buttonStyle(.bordered)
                         }
+                        HStack(alignment: .top) {
+                            tlsLabel(mac.tls)
+                            Spacer()
+                            Button("Test TLS") { browser.probeTLS(mac) }
+                                .buttonStyle(.bordered)
+                        }
                     }
                     .padding(.vertical, 2)
                 }
+            }
+            Section {
+                TextField("Host", text: $host).textInputAutocapitalization(.never).autocorrectionDisabled()
+                TextField("Port", text: $port).keyboardType(.numberPad)
+                Button("Test TLS to this host and port") {
+                    if let p = UInt16(port) { browser.probeTLS(host: host, port: p) }
+                }
+                tlsLabel(browser.manualResult)
+                ForEach(browser.log, id: \.self) { Text($0).font(.caption2.monospaced()).foregroundStyle(.secondary) }
+            } header: {
+                Text("TLS check against any server")
+            } footer: {
+                Text("For diagnosing which certificate types this iPhone's TLS accepts.")
             }
         }
         .navigationTitle("Find Macs")
@@ -38,6 +59,20 @@ struct FindMacsView: View {
         }
         .task { browser.start() }
         .onDisappear { browser.stop() }
+    }
+
+    @ViewBuilder private func tlsLabel(_ t: MacBrowser.TLSProbe) -> some View {
+        switch t {
+        case .notRun: Text("TLS not tested").foregroundStyle(.secondary)
+        case .running: HStack { ProgressView(); Text("Handshaking…") }
+        case .sawCertificate(let fp, let n):
+            VStack(alignment: .leading, spacing: 2) {
+                Label("Got the Mac's certificate (\(n) in chain)", systemImage: "checkmark.circle.fill")
+                    .foregroundStyle(.green)
+                Text(fp).font(.caption2.monospaced()).foregroundStyle(.secondary).textSelection(.enabled)
+            }
+        case .noCertificate(let why): Label(why, systemImage: "xmark.circle.fill").foregroundStyle(.red)
+        }
     }
 
     @ViewBuilder private func reachabilityLabel(_ r: MacBrowser.Reachability) -> some View {

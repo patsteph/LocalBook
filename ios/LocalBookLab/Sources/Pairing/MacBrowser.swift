@@ -1,6 +1,8 @@
 import Foundation
 import Network
 import Observation
+import CryptoKit
+import Security
 
 /// Phase 0 test 3, step 1: find the Macs on this network the way the Mac finds its peers —
 /// Bonjour `_localbook._tcp`. Discovery only; nothing here is trusted or authenticated.
@@ -13,6 +15,16 @@ final class MacBrowser {
         let deviceId: String?     // `id=` in the advertisement's TXT record
         let endpoint: NWEndpoint
         var reachability: Reachability = .unknown
+        var tls: TLSProbe = .notRun
+    }
+
+    /// What the Mac's certificate looks like to iOS. The Mac's identity is an Ed25519
+    /// certificate; if iOS's TLS stack can't complete a handshake against it, pairing needs a
+    /// different transport or a different Mac certificate — so find out before building on it.
+    enum TLSProbe: Equatable {
+        case notRun, running
+        case sawCertificate(fingerprint: String, chain: Int)
+        case noCertificate(String)
     }
 
     enum Reachability: Equatable {
@@ -69,6 +81,83 @@ final class MacBrowser {
         }
         .sorted { $0.name < $1.name }
         if browsing { state = macs.isEmpty ? "Looking…" : "Found \(macs.count)" }
+    }
+
+    /// TLS 1.3 handshake to the sync port, trusting nothing and sending nothing: only records
+    /// whether iOS gets as far as handing us the Mac's certificate, and its SHA-256 (compare with
+    /// the Mac's `sync/device.crt`). The Mac then rejects us for lacking a client certificate —
+    /// that failure is expected and irrelevant here.
+    func probeTLS(_ mac: Mac) {
+        guard let i = macs.firstIndex(where: { $0.id == mac.id }) else { return }
+        macs[i].tls = .running
+        runProbe(endpoint: mac.endpoint, id: mac.id)
+    }
+
+    /// Same probe against any host:port — used with throwaway test servers on the Mac to tell
+    /// "iOS can't do Ed25519" apart from "something else is wrong".
+    private(set) var manualResult: TLSProbe = .notRun
+    private(set) var log: [String] = []
+
+    func probeTLS(host: String, port: UInt16) {
+        guard let p = NWEndpoint.Port(rawValue: port) else { return }
+        manualResult = .running
+        log = []
+        runProbe(endpoint: .hostPort(host: NWEndpoint.Host(host), port: p), id: "manual")
+    }
+
+    private func runProbe(endpoint: NWEndpoint, id: String) {
+        let tls = NWProtocolTLS.Options()
+        let sec = tls.securityProtocolOptions
+        sec_protocol_options_set_min_tls_protocol_version(sec, .TLSv13)
+        sec_protocol_options_set_verify_block(sec, { _, trustRef, complete in
+            let trust = sec_trust_copy_ref(trustRef).takeRetainedValue()
+            let chain = (SecTrustCopyCertificateChain(trust) as? [SecCertificate]) ?? []
+            let result: TLSProbe
+            if let leaf = chain.first {
+                let der = SecCertificateCopyData(leaf) as Data
+                let fp = SHA256.hash(data: der).map { String(format: "%02x", $0) }.joined()
+                result = .sawCertificate(fingerprint: fp, chain: chain.count)
+            } else {
+                result = .noCertificate("verify callback ran with an empty chain")
+            }
+            Task { @MainActor [weak self] in self?.setTLS(result, for: id) }
+            complete(true)          // diagnostic only: nothing is sent on this connection
+        }, .main)
+        let conn = NWConnection(to: endpoint, using: NWParameters(tls: tls, tcp: NWProtocolTCP.Options()))
+        conn.stateUpdateHandler = { [weak self] s in
+            Task { @MainActor in
+                guard let self else { return }
+                self.note(id, "state \(s)")
+                switch s {
+                case .ready: conn.cancel()
+                case .failed(let e), .waiting(let e):
+                    if self.current(id) == .running { self.setTLS(.noCertificate("\(e)"), for: id) }
+                    conn.cancel()
+                default: break
+                }
+            }
+        }
+        conn.start(queue: .main)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 10) { [weak self] in
+            Task { @MainActor in
+                guard let self, self.current(id) == .running else { return }
+                self.setTLS(.noCertificate("No handshake in 10 s"), for: id)
+                conn.cancel()
+            }
+        }
+    }
+
+    private func note(_ id: String, _ line: String) {
+        if id == "manual" { log.append(line) }
+    }
+
+    private func current(_ id: String) -> TLSProbe? {
+        id == "manual" ? manualResult : macs.first(where: { $0.id == id })?.tls
+    }
+
+    private func setTLS(_ t: TLSProbe, for id: String) {
+        if id == "manual" { manualResult = t; return }
+        if let j = macs.firstIndex(where: { $0.id == id }) { macs[j].tls = t }
     }
 
     /// Plain TCP connect to the advertised endpoint: proves the local-network permission, the
