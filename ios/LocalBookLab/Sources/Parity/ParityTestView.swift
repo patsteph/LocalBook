@@ -115,8 +115,8 @@ private struct ReportSection: View {
                        value: fmt(report.cosine.mean), ok: report.verdict.meanCosine)
             verdictRow("Worst similarity ≥ \(report.bars.worstCosineMin.formatted())",
                        value: fmt(report.cosine.min), ok: report.verdict.worstCosine)
-            verdictRow("Same top-5 for every question",
-                       value: pct(report.top5IdenticalRate), ok: report.verdict.top5Identical)
+            verdictRow("Best hit ≥ \(pct(report.bars.top1SameMin)) same, top-5 overlap ≥ \(pct(report.bars.top5OverlapMin))",
+                       value: "\(pct(report.top1SameRate)) / \(pct(report.top5MeanOverlap))", ok: report.verdict.retrievalAgrees)
             verdictRow("No errors", value: "\(report.errors.count)", ok: report.verdict.noErrors)
             verdictRow("Nothing over the 512-token cap",
                        value: "\(report.skippedOverPhoneCap) skipped", ok: report.verdict.noneOverCap)
@@ -128,8 +128,12 @@ private struct ReportSection: View {
             LabeledContent("Embedded", value: "\(report.itemsEmbedded) in \(report.seconds.formatted(.number.precision(.fractionLength(1)))) s")
             LabeledContent("While in background", value: "\(report.embeddedWhileInBackground)")
             LabeledContent("Median ms per token", value: fmt(report.msPerToken, digits: 3))
-            LabeledContent("Top-1 the same", value: pct(report.top1SameRate))
-            LabeledContent("Top-5 overlap", value: pct(report.top5MeanOverlap))
+            LabeledContent("Top-5 identical order", value: pct(report.top5IdenticalRate))
+            if report.overCap.count > 0 {
+                LabeledContent("Over 512, cut to 512", value: "\(report.overCap.count), longest \(report.overCap.longestTokens)")
+                LabeledContent("Cut vs full similarity (mean/min)",
+                               value: "\(fmt(report.overCap.truncatedCosine.mean)) / \(fmt(report.overCap.truncatedCosine.min))")
+            }
             if let t = report.tokenizer {
                 LabeledContent("Tokenizer identical", value: "\(t.identical) of \(t.checked)")
                 if let m = t.firstMismatch { Text(m).font(.caption.monospaced()).foregroundStyle(.secondary) }

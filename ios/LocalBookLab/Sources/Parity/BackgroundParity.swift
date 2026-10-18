@@ -27,9 +27,9 @@ enum BackgroundParity {
             // Report progress immediately: a continued task that reports none is expired.
             // Same total the runner uses: only items within the phone's 512-token cap.
             let cap = EmbeddingGemma2Engine.maxTokens
-            let eligible = runner.fixture.chunks.filter { $0.tokenIds.count <= cap }.count
-                + runner.fixture.queries.filter { $0.tokenIds.count <= cap }.count
-            let total = eligible * max(1, runner.passes)
+            let all = runner.fixture.chunks + runner.fixture.queries
+            let eligible = all.filter { $0.tokenIds.count <= cap }.count
+            let total = eligible * max(1, runner.passes) + (all.count - eligible)
             box.value.progress.totalUnitCount = Int64(total)
             box.value.progress.completedUnitCount = 0
 
