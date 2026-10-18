@@ -438,6 +438,67 @@ def _recovery_pub() -> Optional[str]:
         return None
 
 
+# ── phones: the same shapes on a P-256 identity (see identity.phone_cert_pem) ─────────────
+# Ports follow the Mac pair: sync_port+2 = phone pairing (server-auth only, open with the
+# same window), sync_port+3 = phone sync (mutual TLS, trust = pinned phones). A phone finds
+# them from the `_localbook._tcp` advertisement's port by that convention.
+
+phone_pair_app = FastAPI(title="LocalBook phone pairing", docs_url=None, redoc_url=None, openapi_url=None)
+phone_sync_app = FastAPI(title="LocalBook phone sync", docs_url=None, redoc_url=None, openapi_url=None)
+
+
+def phone_pair_port() -> int:
+    return sync_port() + 2
+
+
+def phone_sync_port() -> int:
+    return sync_port() + 3
+
+
+@phone_pair_app.post("/pair/hello")
+async def phone_pair_hello(request: Request):
+    if float(store.get("pairing_open_until", 0)) < time.time():
+        raise HTTPException(403, "pairing is not open on this Mac")
+    b = json.loads(await request.body() or b"{}")
+    if not b.get("device_id") or not identity.is_p256_cert(b.get("cert_pem", "")):
+        raise HTTPException(400, "a phone must present a P-256 certificate")
+    theirs = identity.fingerprint(b["cert_pem"])
+    mine_pem = identity.phone_cert_pem()
+    pid = uuid.uuid4().hex
+    store.add_pairing({
+        "id": pid, "direction": "incoming", "device_id": b["device_id"],
+        "name": f"{b.get('name') or 'iPhone'} (phone)", "cert_pem": b["cert_pem"], "fingerprint": theirs,
+        "sas": identity.sas(identity.fingerprint(mine_pem), theirs),
+        "host": request.client.host if request.client else None, "port": None,
+        "recovery_pub": None, "created_at": time.time(),
+    })
+    store.note_phone_pairing(pid)
+    return {"device_id": identity.device_id(), "name": identity.device_name(), "cert_pem": mine_pem,
+            "sync_port": phone_sync_port(), "proto": identity.PROTOCOL}
+
+
+async def _verified_phone(request: Request) -> Dict[str, Any]:
+    body = await request.body()
+    dev_id = request.headers.get("X-LB-Device", "")
+    d = store.phone(dev_id)
+    if not d:
+        raise HTTPException(403, "not a paired phone")
+    if not identity.verify_signature(d["cert_pem"], request.method, request.url.path,
+                                     request.headers.get("X-LB-Time", "0"), body,
+                                     request.headers.get("X-LB-Sig", "")):
+        raise HTTPException(403, "bad signature")
+    store.touch_phone(dev_id)
+    return {"device": d, "body": json.loads(body or b"{}")}
+
+
+@phone_sync_app.post("/phone/hello")
+async def phone_hello(request: Request):
+    _check_enabled()
+    v = await _verified_phone(request)
+    return {"device_id": identity.device_id(), "name": identity.device_name(),
+            "proto": identity.PROTOCOL, "models": models(), "you": v["device"]["device_id"]}
+
+
 # ── listeners ────────────────────────────────────────────────────────────────
 
 _servers: Dict[str, Any] = {}
@@ -479,6 +540,14 @@ async def start_sync_listener() -> None:
     pems = [d["cert_pem"] for d in store.devices()]
     ctx = await asyncio.to_thread(identity.server_context, pems, True)
     await _serve("sync", sync_app, sync_port(), ctx)
+    await start_phone_listener()
+
+
+async def start_phone_listener() -> None:
+    """The phone sync listener, trusting exactly the pinned phones. Restarted on pair/revoke."""
+    pems = [p["cert_pem"] for p in store.phones().values() if not p.get("revoked_at")]
+    ctx = await asyncio.to_thread(identity.server_context, pems, True, True)
+    await _serve("phone_sync", phone_sync_app, phone_sync_port(), ctx)
 
 
 async def open_pairing_window() -> float:
@@ -486,11 +555,14 @@ async def open_pairing_window() -> float:
     store.put("pairing_open_until", until)
     ctx = await asyncio.to_thread(identity.server_context, [], False)
     await _serve("pair", pair_app, sync_port() + 1, ctx)
+    pctx = await asyncio.to_thread(identity.server_context, [], False, True)
+    await _serve("phone_pair", phone_pair_app, phone_pair_port(), pctx)
 
     async def _close_later():
         await asyncio.sleep(PAIRING_WINDOW_S)
         if float(store.get("pairing_open_until", 0)) <= time.time():
             await stop("pair")
+            await stop("phone_pair")
 
     asyncio.create_task(_close_later())
     return until

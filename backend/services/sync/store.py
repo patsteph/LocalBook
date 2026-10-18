@@ -102,6 +102,47 @@ def pin(d: Dict[str, Any], role: str) -> None:
          d.get("port"), role, d.get("recovery_pub"), time.time()))
 
 
+# ── phones (iPhone Lab, test 3) ───────────────────────────────────────────────
+# Kept OUT of the `devices` table on purpose: everything keyed on devices() (outbound sync,
+# retention's acknowledged-version floor, the collector, embedder advice) assumes a Mac that
+# listens and acknowledges. A phone that does neither would stall retention. They live in kv.
+
+
+def phones() -> Dict[str, Dict[str, Any]]:
+    return get("phones", {}) or {}
+
+
+def phone(device_id: str) -> Optional[Dict[str, Any]]:
+    p = phones().get(device_id)
+    return p if p and not p.get("revoked_at") else None
+
+
+def pin_phone(d: Dict[str, Any]) -> None:
+    all_ = phones()
+    all_[d["device_id"]] = {"device_id": d["device_id"], "name": d.get("name"), "cert_pem": d["cert_pem"],
+                            "fingerprint": d["fingerprint"], "paired_at": time.time(), "last_seen": None}
+    put("phones", all_)
+
+
+def touch_phone(device_id: str) -> None:
+    all_ = phones()
+    if device_id in all_:
+        all_[device_id]["last_seen"] = time.time()
+        put("phones", all_)
+
+
+def note_phone_pairing(pairing_id: str) -> None:
+    put("phone_pairing_ids", sorted({*(get("phone_pairing_ids", []) or []), pairing_id}))
+
+
+def is_phone_pairing(pairing_id: str) -> bool:
+    return pairing_id in (get("phone_pairing_ids", []) or [])
+
+
+def forget_phone_pairing(pairing_id: str) -> None:
+    put("phone_pairing_ids", [i for i in (get("phone_pairing_ids", []) or []) if i != pairing_id])
+
+
 def update_device(device_id: str, **fields) -> None:
     if not fields:
         return

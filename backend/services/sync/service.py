@@ -53,6 +53,8 @@ async def disable() -> Dict[str, Any]:
     discovery.stop()
     await peer.stop("sync")
     await peer.stop("pair")
+    await peer.stop("phone_sync")
+    await peer.stop("phone_pair")
     return status()
 
 
@@ -99,6 +101,11 @@ async def confirm_pairing(pairing_id: str) -> Dict[str, Any]:
     req = store.take_pairing(pairing_id)
     if not req:
         raise ValueError("that pairing request has expired — start again")
+    if store.is_phone_pairing(pairing_id):                  # an iPhone: pinned apart from the Macs
+        store.forget_phone_pairing(pairing_id)
+        store.pin_phone(req)
+        await peer.start_phone_listener()                   # the phone trust store changed
+        return status()
     role = "joiner" if req["direction"] == "incoming" else "seed"
     store.pin(req, role)
     _adopt_recovery_key(req.get("recovery_pub"))
@@ -168,6 +175,7 @@ def _adopt_recovery_key(pub: Optional[str]) -> None:
 
 def reject_pairing(pairing_id: str) -> None:
     store.take_pairing(pairing_id)
+    store.forget_phone_pairing(pairing_id)
 
 
 async def revoke(device_id: str) -> Dict[str, Any]:
