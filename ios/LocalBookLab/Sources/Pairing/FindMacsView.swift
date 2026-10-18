@@ -4,6 +4,10 @@ struct FindMacsView: View {
     @State private var browser = MacBrowser()
     @State private var host = "192.168.86.66"
     @State private var port = "47651"
+    @State private var pairingCode: String?
+    @State private var pairStatus = "Not paired"
+    @State private var busy = false
+    @State private var paired = MacLink.paired
 
     var body: some View {
         List {
@@ -39,6 +43,27 @@ struct FindMacsView: View {
                 }
             }
             Section {
+                LabeledContent("This phone", value: PhoneIdentity.deviceId)
+                if let p = paired { LabeledContent("Paired with", value: "\(p.name)") }
+                if let code = pairingCode {
+                    VStack(alignment: .leading) {
+                        Text("Code on this phone").font(.footnote).foregroundStyle(.secondary)
+                        Text(code).font(.system(size: 40, weight: .bold, design: .monospaced))
+                        Text("It must match the code on the Mac. Then tap “Codes match” on the Mac.")
+                            .font(.footnote).foregroundStyle(.secondary)
+                    }
+                }
+                Text(pairStatus).font(.footnote).foregroundStyle(.secondary)
+                Button("1. Pair with the Mac at the host below") { pair() }.disabled(busy)
+                Button("2. Say hello (signed, mutual TLS)") { hello() }.disabled(busy || paired == nil)
+                Button("Forget this Mac", role: .destructive) { MacLink.paired = nil; paired = nil; pairingCode = nil; pairStatus = "Not paired" }
+                    .disabled(paired == nil)
+            } header: {
+                Text("Pair with a Mac")
+            } footer: {
+                Text("On the Mac: Settings › Sync › open pairing. The host below is the Mac’s address; the pairing ports are the Mac’s sync port + 2 and + 3.")
+            }
+            Section {
                 TextField("Host", text: $host).textInputAutocapitalization(.never).autocorrectionDisabled()
                 TextField("Port", text: $port).keyboardType(.numberPad)
                 Button("Test TLS to this host and port") {
@@ -59,6 +84,29 @@ struct FindMacsView: View {
         }
         .task { browser.start() }
         .onDisappear { browser.stop() }
+    }
+
+    private func pair() {
+        busy = true; pairStatus = "Connecting to the pairing port…"; pairingCode = nil
+        Task {
+            defer { busy = false }
+            do {
+                let out = try await MacLink.requestPairing(host: host)
+                pairingCode = out.code
+                MacLink.paired = out.mac; paired = out.mac
+                pairStatus = "Reached \(out.mac.name). Compare the code, then confirm on the Mac."
+            } catch { pairStatus = "Pairing failed: \(error.localizedDescription)" }
+        }
+    }
+
+    private func hello() {
+        guard let mac = paired else { return }
+        busy = true; pairStatus = "Calling the Mac…"
+        Task {
+            defer { busy = false }
+            do { pairStatus = "Mac replied: \(try await MacLink.signedHello(mac))" }
+            catch { pairStatus = "Hello failed: \(error.localizedDescription)" }
+        }
     }
 
     @ViewBuilder private func tlsLabel(_ t: MacBrowser.TLSProbe) -> some View {
