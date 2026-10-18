@@ -118,3 +118,19 @@ def test_thresholds_are_per_model_and_default_to_todays_values(monkeypatch):
     monkeypatch.setattr(ep, "active", lambda: tuned)
     assert ep.threshold("router", 0.75) == 0.81
     assert ep.threshold("consensus", 0.72) == 0.72             # not calibrated → default
+
+
+def test_embeddinggemma_carries_the_shared_512_token_limit():
+    assert ep.for_model(GEMMA2).max_tokens == 512
+    assert ep.for_model(ARCTIC).max_tokens == 0          # arctic keeps its own context
+
+
+def test_embed_max_length_obeys_the_shared_limit(monkeypatch):
+    from services import mlx_engine
+    monkeypatch.delenv("LOCALBOOK_MLX_EMBED_MAX_LENGTH", raising=False)
+    mlx_engine._EMBED_MAXLEN_CACHE.clear()
+    try:
+        assert mlx_engine._embed_max_length(GEMMA2) == 512
+        assert mlx_engine._embed_max_length(ARCTIC) > 512
+    finally:
+        mlx_engine._EMBED_MAXLEN_CACHE.clear()

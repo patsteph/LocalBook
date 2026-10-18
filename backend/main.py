@@ -696,6 +696,10 @@ async def _run_startup_tasks():
                 print(f"⚠️ Derived-store reconcile failed (non-fatal): {e}")
 
         safe_create_task(_reconcile_derived_stores(), name="reconcile-derived-stores")
+        # Stored chunks longer than the embedder's shared token limit are split / re-embedded
+        # once, in the background, so every device sees the same vector for the same text.
+        from services.chunk_limit_migration import run_at_startup as _fit_chunks_to_limit
+        safe_create_task(_fit_chunks_to_limit(), name="chunk-limit-migration")
 
     await _step("starting", "Starting background services...", 75, _start_services())
 

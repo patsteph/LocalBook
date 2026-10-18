@@ -1091,6 +1091,7 @@
           128
         ],
         "min_dtype": "bfloat16",
+        "max_tokens": 512,
         "task_templates": {
           "clustering": "task: clustering | query: {text}",
           "similarity": "task: sentence similarity | query: {text}",

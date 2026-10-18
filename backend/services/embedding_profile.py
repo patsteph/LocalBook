@@ -48,7 +48,8 @@ _LEGACY_QUERY_PREFIXES = {
 
 # Architectures that must be run through their own pooled output and loader.
 _MODEL_TYPE_DEFAULTS = {
-    "embedding_gemma2": {"loader": "mlx_vlm", "pooling": "model", "min_dtype": "bfloat16"},
+    "embedding_gemma2": {"loader": "mlx_vlm", "pooling": "model", "min_dtype": "bfloat16",
+                         "max_tokens": 512},
     "gemma3_text": {"loader": "mlx_embeddings", "pooling": "model", "min_dtype": "bfloat16"},
 }
 
@@ -63,6 +64,11 @@ class EmbeddingProfile:
     dims: int = 0
     mrl_dims: Tuple[int, ...] = field(default_factory=tuple)
     min_dtype: str = ""                     # "bfloat16" → refuse a float16 checkpoint
+    # Shared cortex limit: no device embeds more than this many tokens of one text (0 = the
+    # model's own context). A vector that saw a different amount of text is a different vector,
+    # so every device in a library must cut at the same place. EmbeddingGemma 2: 512, the
+    # longest function the iPhone's Core ML build compiles.
+    max_tokens: int = 0
     source: str = "default"                 # where this was resolved from (shown in the Locker)
     # Symmetric tasks (two texts compared with each other, not a question against passages):
     # "clustering", "similarity", "classification" → template. A model without one embeds
@@ -170,6 +176,7 @@ def for_model(model_id: str) -> EmbeddingProfile:
                 dims=int(prof.get("dims", 0) or 0),
                 mrl_dims=tuple(int(d) for d in prof.get("mrl_dims", []) or []),
                 min_dtype=prof.get("min_dtype", ""),
+                max_tokens=int(prof.get("max_tokens", 0) or 0),
                 source=source,
                 task_templates=tuple(sorted((prof.get("task_templates") or {}).items())),
                 thresholds=tuple(sorted((k, float(v)) for k, v in (prof.get("thresholds") or {}).items())),

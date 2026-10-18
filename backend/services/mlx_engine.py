@@ -747,6 +747,15 @@ def _embed_max_length(model_id: str) -> int:
                 val = mp
     except Exception:
         pass
+    # The shared cortex limit wins over the model's context: every device must cut at the
+    # same token so one text has one vector everywhere (embedding_profile.max_tokens).
+    try:
+        from services.embedding_profile import for_model
+        cap = for_model(model_id).max_tokens
+        if cap > 0:
+            val = min(val, cap)
+    except Exception:
+        pass
     _EMBED_MAXLEN_CACHE[model_id] = val
     return val
 
