@@ -1,0 +1,65 @@
+# LocalBook Lab — Phase 0 spike harness.
+# Generate the Xcode project with:  brew install xcodegen && xcodegen generate
+name: LocalBookLab
+options:
+  bundleIdPrefix: com.patsteph.localbook
+  deploymentTarget:
+    iOS: "27.0"
+  createIntermediateGroups: true
+
+packages:
+  swift-transformers:
+    url: https://github.com/huggingface/swift-transformers
+    from: "1.3.5"
+
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    # Set your team here or in Xcode › Signing & Capabilities.
+    DEVELOPMENT_TEAM: ""
+    CODE_SIGN_STYLE: Automatic
+    TARGETED_DEVICE_FAMILY: "1,2"
+    ENABLE_USER_SCRIPT_SANDBOXING: YES
+
+targets:
+  LocalBookLab:
+    type: application
+    platform: iOS
+    sources:
+      - path: Sources
+    dependencies:
+      - package: swift-transformers
+        product: Tokenizers
+      - package: swift-transformers
+        product: Hub
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.patsteph.localbook.lab
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+    entitlements:
+      path: Resources/LocalBookLab.entitlements
+      properties:
+        # iOS 27: lets a background task keep running inference on the Neural Engine.
+        # Also required for ANY background Neural Engine use from iOS 27 on.
+        com.apple.developer.background-tasks.continued-processing.inference: true
+        # Gemma 4 E4B (test 2) needs more than the default per-app memory limit.
+        com.apple.developer.kernel.increased-memory-limit: true
+    info:
+      path: Resources/Info.plist
+      properties:
+        CFBundleDisplayName: LocalBook Lab
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        # Drop fixtures into the app from Finder (iPhone › Files) or the Files app.
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: true
+        UIBackgroundModes:
+          - processing
+        BGTaskSchedulerPermittedIdentifiers:
+          - com.patsteph.localbook.lab.parity.*
+        # Test 3 (pairing with a Mac) — Bonjour on the local network.
+        NSLocalNetworkUsageDescription: LocalBook finds and syncs with your Macs on this network.
+        NSBonjourServices:
+          - _localbook._tcp
