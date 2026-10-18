@@ -168,6 +168,16 @@ def main() -> None:
     args = ap.parse_args()
 
     from config import settings
+    # The app overlays user_preferences.json onto settings at startup (main.py), so the model
+    # you chose in the UI is not the config default. Do the same, or this reports Arctic.
+    _prefs = os.path.join(str(settings.data_dir), "user_preferences.json")
+    if os.path.exists(_prefs):
+        try:
+            _m = (json.load(open(_prefs)).get("default_combo") or {}).get("embedding_model")
+            if _m:
+                settings.embedding_model = _m
+        except Exception as e:
+            print(f"(could not read {_prefs}: {e})")
     from services import embedding_profile
     from services.embedding_migration import embedded_text
     from services.mlx_engine import _embed_max_length
