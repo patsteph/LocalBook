@@ -30,8 +30,12 @@ struct LabHomeView: View {
                     }
                     LabRow(number: 2, title: "Gemma 4 E4B on device",
                            detail: "Memory, speed, time to first word", pending: true)
-                    LabRow(number: 3, title: "Pairing with a Mac",
-                           detail: "Bonjour + pinned mutual TLS to the sync listener", pending: true)
+                    NavigationLink {
+                        FindMacsView()
+                    } label: {
+                        LabRow(number: 3, title: "Pairing with a Mac",
+                               detail: "Step 1: find Macs over Bonjour. Pinned TLS pairing comes next")
+                    }
                     LabRow(number: 4, title: "Speech behind a locked screen",
                            detail: "Parakeet and Kokoro on the Neural Engine", pending: true)
                 } header: {
