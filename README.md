@@ -4,7 +4,7 @@
 
 [![Version](https://img.shields.io/badge/version-2.5.0-blue.svg)](https://github.com/patsteph/LocalBook/releases)
 [![Platform](https://img.shields.io/badge/platform-macOS-lightgrey.svg)](https://github.com/patsteph/LocalBook)
-[![Python](https://img.shields.io/badge/python-3.12+-green.svg)](https://www.python.org)
+[![Python](https://img.shields.io/badge/python-3.13-green.svg)](https://www.python.org)
 [![License](https://img.shields.io/badge/license-MIT-yellow.svg)](LICENSE)
 
 ---
@@ -408,7 +408,7 @@ See [CHANGELOG.md](CHANGELOG.md) for full release history.
 | Requirement | Details |
 |-------------|---------|
 | **macOS** | 12.0+ (Apple Silicon required — M1/M2/M3/M4) |
-| **Python** | 3.12+ required |
+| **Python** | 3.13 required |
 | **RAM** | 16GB+ recommended (8GB minimum) |
 | **Storage** | ~20GB for models and app |
 | **Engine** | Apple MLX — runs in-process, no separate server to install or start |
@@ -418,7 +418,7 @@ See [CHANGELOG.md](CHANGELOG.md) for full release history.
 The build script installs these automatically, or install manually:
 
 ```bash
-brew install ffmpeg tesseract espeak-ng python@3.12 node
+brew install ffmpeg tesseract espeak-ng python@3.13 node
 ```
 
 ---
@@ -443,11 +443,11 @@ To upgrade an existing install, append `-- --upgrade`.
 
 ### Option 3: Build from Source
 
-**⚠️ Requires Python 3.12+**
+**⚠️ Requires Python 3.13**
 
 ```bash
-# Ensure Python 3.12+ is installed
-brew install python@3.12
+# Ensure Python 3.13 is installed
+brew install python@3.13
 
 # Clone and build
 git clone https://github.com/patsteph/LocalBook.git
