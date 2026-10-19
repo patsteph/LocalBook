@@ -3,7 +3,7 @@ import SwiftUI
 struct FindMacsView: View {
     @State private var browser = MacBrowser()
     @State private var host = "192.168.86.66"
-    @State private var port = "47651"
+    @State private var port = "47603"
     @State private var pairingCode: String?
     @State private var pairStatus = "Not paired"
     @State private var busy = false
@@ -74,7 +74,7 @@ struct FindMacsView: View {
             } header: {
                 Text("TLS check against any server")
             } footer: {
-                Text("For diagnosing which certificate types this iPhone's TLS accepts.")
+                Text("Port 47603 is the Mac’s phone link (P-256): it should hand over its certificate. The per-Mac “Test TLS” above hits the Mac-to-Mac port 47600, whose Ed25519 certificate iOS cannot use, so it is expected to fail.")
             }
         }
         .navigationTitle("Find Macs")
