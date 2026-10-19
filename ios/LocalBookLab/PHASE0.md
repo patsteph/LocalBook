@@ -32,8 +32,10 @@ Lab in this folder. Every pass bar was fixed before its numbers existed. Per-tes
    a second after locking). MLX (Gemma) runs on the GPU, so **do not promise locked-screen answers**.
    **Measured:** Gemma started inside a background task and the screen locked: the lock-screen task
    showed "Task failed" and the app then froze (could not scroll or share; had to be closed). So
-   generation must be cancelled the moment the app leaves the foreground (`willResignActive`); the
-   Lab now has a test for that.
+   generation must be cancelled the moment the app leaves the foreground (`willResignActive`).
+   **Guard verified:** cancelling on `willResignActive` stopped generation 1.3 s in (1 token out) and
+   the app stayed responsive afterwards (report shared normally). Caveat: the lock landed early, so a
+   lock in the middle of steady decoding is not yet tested.
    Anything that must run locked has to use Neural Engine or CPU only.
 3. **Background tasks run ~4× slower** than the foreground (voice 11→2.8×, transcription 114→32×).
    Render short things in the foreground; use a continued-processing task for long batches.
@@ -41,7 +43,7 @@ Lab in this folder. Every pass bar was fixed before its numbers existed. Per-tes
    same limit (`embedding_profile.max_tokens`), and stored chunks are migrated once at startup.
 5. **Apple's TLS cannot use Ed25519 or complete client-certificate auth** in our tests, which is why
    phones use their own P-256 identity and request signatures.
-6. **Speed varies run to run** (23 tok/s once, ~15 another time). Plan on the lower number.
+6. **Speed varies run to run** (23–24 tok/s in two runs, 14–18 in another). Plan on the lower number.
 
 ## Decisions already made in code
 
@@ -57,7 +59,7 @@ Lab in this folder. Every pass bar was fixed before its numbers existed. Per-tes
 
 Battery and energy per task; Gemma answer quality vs the Mac (same weights, so expect equal within
 numerics); thermal behaviour beyond ~2 minutes of continuous generation; the model download sizes on
-cellular; whether the cancel-on-lock guard keeps the app responsive (Lab test added); iPad; production-size libraries
+cellular; the cancel-on-lock guard during steady decoding (only an early lock is tested); iPad; production-size libraries
 (the work MBP has thousands of items, so check its over-limit chunk count before first sync).
 
 ## Before production (security)
