@@ -41,6 +41,7 @@ struct SpeechPhase: Codable, Sendable, Identifiable {
     let peakFootprintMB: Double
     let thermalEnd: String
     let note: String
+    var failure: String? = nil
 }
 
 struct SpeechReport: Codable, Sendable {
@@ -80,6 +81,11 @@ final class SpeechBenchModel {
     private var footprintAfterLoad = 0.0
     private var availableAfterLoad = 0.0
 
+    /// Which Kokoro pipeline. v3 runs three stages on the GPU, which iOS does not allow once the app
+    /// is in the background (measured: locking the screen fails the next prediction). Legacy keeps
+    /// every stage on the Neural Engine or the CPU.
+    var engine: KokoroAneVersion = .legacy
+    private(set) var loadedEngine: KokoroAneVersion?
     private var kokoro: KokoroAneManager?
     private var asr: AsrManager?
     private var audio: [Float] = []
@@ -89,17 +95,21 @@ final class SpeechBenchModel {
     // MARK: load
 
     func load() async {
-        guard kokoro == nil else { return }
+        if kokoro != nil, loadedEngine == engine { return }
+        if kokoro != nil { await kokoro?.cleanup(); kokoro = nil }      // switching voice engine
         let started = Date()
         do {
-            state = .loading("Speech models (Kokoro)…")
-            let k = KokoroAneManager(version: .v3)
+            state = .loading("Speech models (Kokoro \(engine.rawValue))…")
+            let k = KokoroAneManager(version: engine)
             try await k.initialize()
-            state = .loading("Transcription model (Parakeet)…")
-            let models = try await AsrModels.downloadAndLoad(version: .v3)
-            let a = AsrManager(config: .default)
-            try await a.loadModels(models)
-            kokoro = k; asr = a
+            if asr == nil {
+                state = .loading("Transcription model (Parakeet)…")
+                let models = try await AsrModels.downloadAndLoad(version: .v3)
+                let a = AsrManager(config: .default)
+                try await a.loadModels(models)
+                asr = a
+            }
+            kokoro = k; loadedEngine = engine
             loadSeconds = Date().timeIntervalSince(started)
             footprintAfterLoad = MemoryProbe.footprintMB()
             availableAfterLoad = MemoryProbe.availableMB()
@@ -114,13 +124,15 @@ final class SpeechBenchModel {
         state = .running("Reading aloud — lock the screen now")
         let player = ChunkPlayer(sampleRate: Double(KokoroAneConstants.sampleRate))
         let sampler = MemorySampler()
+        var records: [SpeechChunkRecord] = []
+        var all: [Float] = []
+        var underruns = 0
+        var backgroundChunks = 0
+        var current = 0
         do {
             try player.start()
-            var records: [SpeechChunkRecord] = []
-            var all: [Float] = []
-            var underruns = 0
-            var backgroundChunks = 0
             for (i, text) in SpeechCorpus.chunks.enumerated() {
+                current = i
                 progressNote = "Chunk \(i + 1) of \(SpeechCorpus.chunks.count)"
                 let t0 = Date()
                 let result = try await kokoro.synthesizeDetailed(text: text)
@@ -146,8 +158,15 @@ final class SpeechBenchModel {
             rebuildReport()
             state = .ready
         } catch {
-            player.stop(); _ = await sampler.stop()
-            state = .failed("Reading aloud: \(error.localizedDescription)")
+            player.stop()
+            let bg = AppStateTracker.shared.isInBackground
+            let why = "chunk \(current + 1) of \(SpeechCorpus.chunks.count), app \(bg ? "in the background" : "in the foreground"), "
+                + "engine \(loadedEngine?.rawValue ?? "?"): \(error.localizedDescription)"
+            phases.removeAll { $0.name == "Read aloud" }
+            phases.append(failedPhase(name: "Read aloud", records: records, underruns: underruns,
+                                      backgroundChunks: backgroundChunks, peak: await sampler.stop(), why: why))
+            rebuildReport()
+            state = .failed("Reading aloud — \(why)")
         }
     }
 
@@ -157,7 +176,7 @@ final class SpeechBenchModel {
         guard let kokoro else { return }
         state = .running("Generating speech in the background — lock the screen")
         let sampler = MemorySampler()
-        let box = ResultBox<[SpeechChunkRecord]>()
+        let box = ResultBox<SpeakOutcome>()
         let total = Int64(repeats * SpeechCorpus.chunks.count)
         do {
             try await SpeechBackground.run(title: "LocalBook speech test", subtitle: "Voicing text on the Neural Engine",
@@ -166,9 +185,15 @@ final class SpeechBenchModel {
                 var records: [SpeechChunkRecord] = []
                 for _ in 0..<repeats {
                     for text in SpeechCorpus.chunks {
-                        if cancel.isSet { return }
+                        if cancel.isSet { box.set(.init(records: records, failure: "cancelled by the system")); return }
                         let t0 = Date()
-                        guard let r = try? await kokoro.synthesizeDetailed(text: text) else { return }
+                        let r: KokoroAneSynthesisResult
+                        do { r = try await kokoro.synthesizeDetailed(text: text) }
+                        catch {
+                            let bg = await MainActor.run { AppStateTracker.shared.isInBackground }
+                            box.set(.init(records: records, failure: "chunk \(done + 1), app \(bg ? "in the background" : "in the foreground"): \(error.localizedDescription)"))
+                            return
+                        }
                         let synth = Date().timeIntervalSince(t0)
                         let seconds = Double(r.samples.count) / Double(r.sampleRate)
                         let bg = await MainActor.run { AppStateTracker.shared.isInBackground }
@@ -178,13 +203,22 @@ final class SpeechBenchModel {
                         report(done)
                     }
                 }
-                box.set(records)
+                box.set(.init(records: records, failure: nil))
             }
-            let records = try await box.wait(timeout: 900)
+            let outcome = try await box.wait(timeout: 900)
+            let records = outcome.records
             phases.removeAll { $0.name == "Speak in background" }
+            if let why = outcome.failure {
+                phases.append(failedPhase(name: "Speak in background", records: records, underruns: 0,
+                                          backgroundChunks: records.filter(\.inBackground).count,
+                                          peak: await sampler.stop(), why: "engine \(loadedEngine?.rawValue ?? "?"), \(why)"))
+                rebuildReport()
+                state = .failed("Background speech — \(why)")
+                return
+            }
             phases.append(phase(name: "Speak in background", kind: "speak", chunks: records, underruns: 0,
                                 backgroundChunks: records.filter(\.inBackground).count, peak: await sampler.stop(),
-                                note: "Continued-processing task, \(repeats) pass(es) over the text, no playback."))
+                                note: "Continued-processing task, \(repeats) pass(es) over the text, no playback; engine \(loadedEngine?.rawValue ?? "?")."))
             rebuildReport()
             state = .ready
         } catch {
@@ -211,7 +245,13 @@ final class SpeechBenchModel {
                 if cancel.isSet { break }
                 var decoder = TdtDecoderState.make()
                 let t0 = Date()
-                guard let result = try? await asr.transcribe(samples, decoderState: &decoder) else { break }
+                let result: ASRResult
+                do { result = try await asr.transcribe(samples, decoderState: &decoder) }
+                catch {
+                    let bg = await MainActor.run { AppStateTracker.shared.isInBackground }
+                    outcome.failure = "pass \(i + 1), app \(bg ? "in the background" : "in the foreground"): \(error.localizedDescription)"
+                    break
+                }
                 let secs = Date().timeIntervalSince(t0)
                 let bg = await MainActor.run { AppStateTracker.shared.isInBackground }
                 outcome.seconds.append(secs)
@@ -229,7 +269,7 @@ final class SpeechBenchModel {
                 await work({ _ in }, CancelFlag())
             }
             let outcome = try await box.wait(timeout: 900)
-            guard !outcome.seconds.isEmpty else { throw LabError.model("no pass finished") }
+            if let why = outcome.failure, outcome.seconds.isEmpty { throw LabError.model(why) }
             heard = outcome.text
             let total = outcome.seconds.reduce(0, +)
             let wer = SpeechMath.wordErrorRate(reference: reference, heard: outcome.text)
@@ -239,7 +279,8 @@ final class SpeechBenchModel {
                 workSeconds: total, realtimeFactor: audioSeconds * Double(outcome.seconds.count) / total,
                 chunks: [], wordErrorRate: wer, passes: outcome.seconds.count, passesInBackground: outcome.inBackground,
                 underruns: 0, peakFootprintMB: await sampler.stop(), thermalEnd: ProcessInfo.processInfo.thermalState.name,
-                note: "\(outcome.seconds.count) pass(es) over \(Int(audioSeconds)) s of audio."))
+                note: "\(outcome.seconds.count) pass(es) over \(Int(audioSeconds)) s of audio.",
+                failure: outcome.failure.map { "stopped after \(outcome.seconds.count) pass(es) — \($0)" }))
             rebuildReport()
             state = .ready
         } catch {
@@ -260,14 +301,22 @@ final class SpeechBenchModel {
                            peakFootprintMB: peak, thermalEnd: ProcessInfo.processInfo.thermalState.name, note: note)
     }
 
+    private func failedPhase(name: String, records: [SpeechChunkRecord], underruns: Int, backgroundChunks: Int,
+                             peak: Double, why: String) -> SpeechPhase {
+        var p = phase(name: name, kind: "speak", chunks: records, underruns: underruns,
+                      backgroundChunks: backgroundChunks, peak: peak, note: "Stopped early.")
+        p.failure = why
+        return p
+    }
+
     private func rebuildReport() {
         let speak = phases.filter { $0.kind == "speak" }
         let trans = phases.filter { $0.kind == "transcribe" }
         let bgPhases = phases.filter { $0.name.contains("background") }
         let verdict = SpeechReport.Verdict(
-            speechFast: !speak.isEmpty && speak.allSatisfy { $0.realtimeFactor >= bars.speechRealtimeFactorMin },
-            noGaps: speak.allSatisfy { $0.underruns == 0 },
-            backgroundWorked: !bgPhases.isEmpty && bgPhases.allSatisfy { $0.passesInBackground > 0 }
+            speechFast: !speak.isEmpty && speak.allSatisfy { $0.failure == nil && $0.realtimeFactor >= bars.speechRealtimeFactorMin },
+            noGaps: speak.allSatisfy { $0.failure == nil && $0.underruns == 0 },
+            backgroundWorked: !bgPhases.isEmpty && bgPhases.allSatisfy { $0.failure == nil && $0.passesInBackground > 0 }
                 && (phases.first { $0.name == "Read aloud" }.map { $0.passesInBackground > 0 } ?? true),
             transcribeFast: !trans.isEmpty && trans.allSatisfy { $0.realtimeFactor >= bars.transcribeRealtimeFactorMin },
             accurate: !trans.isEmpty && trans.allSatisfy { ($0.wordErrorRate ?? 1) <= bars.wordErrorRateMax })
@@ -283,10 +332,16 @@ final class SpeechBenchModel {
     }
 }
 
+struct SpeakOutcome: Sendable {
+    var records: [SpeechChunkRecord]
+    var failure: String?
+}
+
 struct TranscribeOutcome: Sendable {
     var seconds: [Double] = []
     var inBackground = 0
     var text = ""
+    var failure: String?
 }
 
 /// Hands one result from a background task back to the caller that is waiting for it.

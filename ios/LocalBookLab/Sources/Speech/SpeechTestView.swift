@@ -1,3 +1,4 @@
+import FluidAudio
 import SwiftUI
 
 struct SpeechTestView: View {
@@ -8,6 +9,15 @@ struct SpeechTestView: View {
     var body: some View {
         Form {
             Section {
+                Picker("Voice engine", selection: $model.engine) {
+                    Text("Neural Engine + CPU").tag(KokoroAneVersion.legacy)
+                    Text("Hybrid with GPU (v3)").tag(KokoroAneVersion.v3)
+                }
+                .pickerStyle(.segmented)
+                .disabled({ if case .loading = model.state { return true }; if case .running = model.state { return true }; return false }())
+                if model.loadedEngine != nil, model.loadedEngine != model.engine {
+                    Button("Switch voice engine") { Task { await model.load() } }
+                }
                 switch model.state {
                 case .notLoaded:
                     Button("Download and load the speech models") { Task { await model.load() } }
@@ -55,6 +65,7 @@ struct SpeechTestView: View {
                     ForEach(model.phases) { p in
                         VStack(alignment: .leading, spacing: 2) {
                             Text(p.name).font(.body.weight(.medium))
+                            if let why = p.failure { Text(why).font(.footnote).foregroundStyle(.red) }
                             Text("\(fmt(p.realtimeFactor))× real time"
                                  + (p.wordErrorRate.map { " · \(fmt($0 * 100))% words wrong" } ?? "")
                                  + " · \(p.passesInBackground) of \(p.kind == "speak" ? p.chunks.count : p.passes) in background"
