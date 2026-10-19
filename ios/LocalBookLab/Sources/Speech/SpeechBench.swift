@@ -83,7 +83,8 @@ final class SpeechBenchModel {
     private(set) var spokenChunkCount = 2
     private var spokenText: String { SpeechCorpus.chunks.prefix(spokenChunkCount).joined(separator: " ") }
 
-    func stop() { stopRequested = true }
+    private var cancelFlag = CancelFlag()
+    func stop() { stopRequested = true; cancelFlag.set() }
     private var loadSeconds = 0.0
     private var footprintAfterLoad = 0.0
     private var availableAfterLoad = 0.0
@@ -130,6 +131,7 @@ final class SpeechBenchModel {
         guard let kokoro else { return }
         state = .running("Reading aloud — lock the screen now")
         stopRequested = false
+        cancelFlag = CancelFlag()
         let player = ChunkPlayer(sampleRate: Double(KokoroAneConstants.sampleRate))
         let sampler = MemorySampler()
         var records: [SpeechChunkRecord] = []
@@ -138,7 +140,7 @@ final class SpeechBenchModel {
         var backgroundChunks = 0
         var current = 0
         do {
-            try player.start()
+            try await player.start()
             for (i, text) in SpeechCorpus.chunks.enumerated() {
                 current = i
                 progressNote = "Chunk \(i + 1) of \(SpeechCorpus.chunks.count)"
@@ -159,16 +161,20 @@ final class SpeechBenchModel {
             }
             // Let the last chunk finish so a stall near the end is not hidden.
             while player.remaining > 0.1 && !stopRequested { try await Task.sleep(for: .milliseconds(200)) }
-            player.stop()
+            try await Task.sleep(for: .milliseconds(500))          // let the last playback callbacks arrive
+            let played = player.played
+            await player.stop()
             audio = all; hasAudio = true
             phases.removeAll { $0.name == "Read aloud" }
+            // What matters for a locked screen is when the SOUND played, not when it was made: synthesis
+            // can finish seconds after the tap, long before anyone has locked the phone.
             phases.append(phase(name: "Read aloud", kind: "speak", chunks: records, underruns: underruns,
-                                backgroundChunks: backgroundChunks, peak: await sampler.stop(),
-                                note: "Played through the speaker; screen locked during \(backgroundChunks) chunk(s)."))
+                                backgroundChunks: played.inBackground, peak: await sampler.stop(),
+                                note: "Played through the speaker. \(played.inBackground) of \(played.total) chunk(s) finished playing while the app was in the background (screen locked); \(backgroundChunks) were synthesized there."))
             rebuildReport()
             state = .ready
         } catch {
-            player.stop()
+            await player.stop()
             let bg = AppStateTracker.shared.isInBackground
             let why = "chunk \(current + 1) of \(SpeechCorpus.chunks.count), app \(bg ? "in the background" : "in the foreground"), "
                 + "engine \(loadedEngine?.rawValue ?? "?"): \(error.localizedDescription)"
@@ -185,18 +191,21 @@ final class SpeechBenchModel {
     func speakInBackground(repeats: Int) async {
         guard let kokoro else { return }
         state = .running("Generating speech in the background — lock the screen")
+        stopRequested = false
+        cancelFlag = CancelFlag()
+        let cancelFlag = self.cancelFlag
         let sampler = MemorySampler()
         let box = ResultBox<SpeakOutcome>()
         let texts = Array(SpeechCorpus.chunks.prefix(spokenChunkCount))
         let total = Int64(repeats * texts.count)
         do {
             try await SpeechBackground.run(title: "LocalBook speech test", subtitle: "Voicing text on the Neural Engine",
-                                           totalUnits: total) { report, cancel in
+                                           totalUnits: total, cancel: cancelFlag) { report, cancel in
                 var done: Int64 = 0
                 var records: [SpeechChunkRecord] = []
                 for _ in 0..<repeats {
                     for text in texts {
-                        if cancel.isSet { box.set(.init(records: records, failure: "cancelled by the system")); return }
+                        if cancel.isSet { box.set(.init(records: records, failure: "stopped")); return }
                         let t0 = Date()
                         let r: KokoroAneSynthesisResult
                         do { r = try await kokoro.synthesizeDetailed(text: text) }
@@ -219,6 +228,11 @@ final class SpeechBenchModel {
             let outcome = try await box.wait(timeout: 900)
             let records = outcome.records
             phases.removeAll { $0.name == "Speak in background" }
+            if outcome.failure == "stopped" {
+                _ = await sampler.stop()
+                state = .ready               // you pressed Stop, or the system ended the task: not a fault
+                return
+            }
             if let why = outcome.failure {
                 phases.append(failedPhase(name: "Speak in background", records: records, underruns: 0,
                                           backgroundChunks: records.filter(\.inBackground).count,
@@ -247,6 +261,9 @@ final class SpeechBenchModel {
         let reference = spokenText
         let name = background ? "Transcribe in background" : "Transcribe"
         state = .running(background ? "Transcribing in the background — lock the screen" : "Transcribing…")
+        stopRequested = false
+        cancelFlag = CancelFlag()
+        let cancelFlag = self.cancelFlag
         let sampler = MemorySampler()
         let passes = background ? repeats : 1
         let box = ResultBox<TranscribeOutcome>()
@@ -275,9 +292,9 @@ final class SpeechBenchModel {
         do {
             if background {
                 try await SpeechBackground.run(title: "LocalBook speech test", subtitle: "Transcribing on the Neural Engine",
-                                               totalUnits: Int64(passes), work: work)
+                                               totalUnits: Int64(passes), cancel: cancelFlag, work: work)
             } else {
-                await work({ _ in }, CancelFlag())
+                await work({ _ in }, cancelFlag)
             }
             let outcome = try await box.wait(timeout: 900)
             if let why = outcome.failure, outcome.seconds.isEmpty { throw LabError.model(why) }
@@ -390,10 +407,9 @@ final class MemorySampler: @unchecked Sendable {
 enum SpeechBackground {
     static let prefix = "com.patsteph.localbook.lab.speech"
 
-    static func run(title: String, subtitle: String, totalUnits: Int64,
+    static func run(title: String, subtitle: String, totalUnits: Int64, cancel: CancelFlag = CancelFlag(),
                     work: @escaping @Sendable (@Sendable (Int64) -> Void, CancelFlag) async -> Void) async throws {
         let identifier = "\(prefix).\(UUID().uuidString.prefix(8).lowercased())"
-        let cancel = CancelFlag()
         let registered = BGTaskScheduler.shared.register(forTaskWithIdentifier: identifier, using: nil) { task in
             guard let continued = task as? BGContinuedProcessingTask else {
                 task.setTaskCompleted(success: false)

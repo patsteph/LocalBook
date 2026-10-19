@@ -11,15 +11,19 @@ final class ChunkPlayer: @unchecked Sendable {
     private let lock = NSLock()
     private var queuedSeconds = 0.0
     private var lastScheduled: Date?
+    private var _playedTotal = 0
+    private var _playedInBackground = 0
+    /// Chunks that finished PLAYING, and how many of those finished while the app was backgrounded.
+    var played: (total: Int, inBackground: Int) { lock.withLock { (_playedTotal, _playedInBackground) } }
 
     init(sampleRate: Double) {
         format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: sampleRate, channels: 1, interleaved: false)!
     }
 
-    func start() throws {
+    func start() async throws {
         let session = AVAudioSession.sharedInstance()
         try session.setCategory(.playback, mode: .spokenAudio)
-        try session.setActive(true)
+        _ = try await session.activate(options: [])
         engine.attach(node)
         try engine.connectNode(node, to: engine.mainMixerNode, format: format)
         try engine.start()
@@ -41,8 +45,20 @@ final class ChunkPlayer: @unchecked Sendable {
             lastScheduled = Date()
             return before
         }
-        node.scheduleBuffer(buffer, completionHandler: nil)
+        node.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                let background = AppStateTracker.shared.isInBackground
+                self?.notePlayed(inBackground: background)
+            }
+        }
         return lead
+    }
+
+    private func notePlayed(inBackground: Bool) {
+        lock.withLock {
+            _playedTotal += 1
+            if inBackground { _playedInBackground += 1 }
+        }
     }
 
     /// Seconds of audio not yet played.
@@ -53,10 +69,10 @@ final class ChunkPlayer: @unchecked Sendable {
         }
     }
 
-    func stop() {
+    func stop() async {
         node.stop()
         engine.stop()
-        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        _ = try? await AVAudioSession.sharedInstance().deactivate(options: .notifyOthersOnDeactivation)
     }
 }
 

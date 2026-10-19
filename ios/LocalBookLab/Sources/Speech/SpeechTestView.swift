@@ -3,7 +3,7 @@ import SwiftUI
 
 struct SpeechTestView: View {
     @State private var model = SpeechBenchModel()
-    @State private var speakRepeats = 6
+    @State private var speakRepeats = 3
     @State private var transcribeRepeats = 20
 
     var body: some View {
