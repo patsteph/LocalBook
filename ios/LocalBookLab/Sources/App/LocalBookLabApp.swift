@@ -40,8 +40,12 @@ struct LabHomeView: View {
                         LabRow(number: 3, title: "Pairing with a Mac",
                                detail: "Step 1: find Macs over Bonjour. Pinned TLS pairing comes next")
                     }
-                    LabRow(number: 4, title: "Speech behind a locked screen",
-                           detail: "Parakeet and Kokoro on the Neural Engine", pending: true)
+                    NavigationLink {
+                        SpeechTestView()
+                    } label: {
+                        LabRow(number: 4, title: "Speech behind a locked screen",
+                               detail: "Parakeet and Kokoro: read aloud, transcribe, and keep going when locked")
+                    }
                 } header: {
                     Text("Phase 0")
                 } footer: {
