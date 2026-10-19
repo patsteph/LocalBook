@@ -1,7 +1,7 @@
 # LocalBook Lab — Phase 0 spike
 
 A bare test harness, not the product. Each screen answers one question that could still
-change the iPhone architecture. Tests 1 (embedding parity) and 3 (pairing with a Mac) are wired and passed; tests 2 and 4 come next.
+change the iPhone architecture. Tests 1–4 are wired. 1 and 3 passed, 2 passed its five bars, and 4 passed apart from one clean lock-screen playback count (see below).
 
 ## Test 1: does the iPhone make the same vectors as the Mac?
 
@@ -74,6 +74,40 @@ models. What the test found:
 
 Ports: Mac sync `N`, Mac pairing `N+1`, phone pairing `N+2`, phone sync `N+3` (N = 47600).
 
+## Test 2: can the iPhone run the Mac's own model?
+
+`mlx-community/gemma-4-e4b-it-4bit` through `mlx-swift-lm` (pinned 3.31.4: 3.32.x has a
+FoundationModels adapter that does not compile against the iOS 27 beta SDK). Bars, fixed first:
+all runs finish, decode ≥ 10 tok/s, first word ≤ 2 s (short) / ≤ 8 s (~1,000 tokens), not hot.
+
+**Result (2026-10-19, iPhone18,2):** PASS. Decode 23–24 tok/s; first word 0.2 s short, 0.9 s at 441
+tokens, 1.4–1.7 s at 861 tokens; thermal nominal. **Memory is the constraint:** 4.2 GB after load,
+peak 4.74 GB, and the OS reports 1.9 GB still available (about a 6.1 GB limit with the
+increased-memory entitlement), so roughly 1.4 GB is left for the search model, index and UI. Follow-up
+buttons (3,000-token prompt, six back-to-back generations, search model loaded beside Gemma) are
+built; their numbers are not recorded yet.
+
+Needs Xcode's Metal toolchain (`xcodebuild -downloadComponent MetalToolchain`) and a one-time
+trust of the MLXHuggingFaceMacros macro and mlx-swift's CudaBuild plug-in.
+
+## Test 4: speech while the screen is locked
+
+FluidAudio's Kokoro (voice) and Parakeet v3 (transcription), run as a closed loop: the phone voices
+a passage, then transcribes its own audio and scores it against the text.
+
+**Findings (2026-10-19):**
+
+- **Kokoro "v3" cannot run locked:** three of its stages are `.cpuAndGPU`, and iOS refuses GPU work
+  once the screen locks (playback stopped about a second after locking: "Unable to compute the
+  prediction"). The **"legacy" pipeline** (Neural Engine + CPU) kept playing locked. Any design that
+  must work with the screen off has to avoid GPU stages.
+- **Foreground speech ≈ 10–17× real time; as a background (continued-processing) task ≈ 1.5×.**
+  Transcription: 112× in the foreground, 25.6× in the task, 0% of words wrong in both. Plan long
+  batch work for the task, but expect the 4–10× slowdown; render short read-alouds in the foreground
+  and play them from the lock screen.
+- Memory is small: 518 MB for both models.
+- Open: a clean count of chunks that finished playing while locked (the Lab now measures it).
+
 ## What it measures
 
 | Check | How |
@@ -89,4 +123,6 @@ Ports: Mac sync `N`, Mac pairing `N+1`, phone pairing `N+2`, phone sync `N+3` (N
 - `Sources/Embedding/EmbeddingModelStore.swift` — download + compile, kept in Application Support
 - `Sources/Embedding/EmbeddingGemma2Engine.swift` — token ids → vector on the Neural Engine (becomes the real embedder)
 - `Sources/Parity/*` — fixture, runner, background task, screen
+- `Sources/Generation/*` — Gemma 4 E4B load + five fixed measurements + stress follow-ups
+- `Sources/Speech/*` — Kokoro + Parakeet closed-loop test, audio-mode playback, continued-processing runs
 - `Sources/Pairing/*` — Bonjour browser, TLS probe, P-256 phone identity, pairing + signed hello
