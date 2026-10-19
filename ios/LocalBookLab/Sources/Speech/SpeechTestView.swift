@@ -28,6 +28,7 @@ struct SpeechTestView: View {
                     Button("Try again") { Task { await model.load() } }
                 case .running(let what):
                     HStack { ProgressView(); Text(what) }
+                    Button("Stop", role: .destructive) { model.stop() }
                     if !model.progressNote.isEmpty { Text(model.progressNote).font(.footnote).foregroundStyle(.secondary) }
                 case .ready:
                     Label("Models loaded", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
@@ -38,9 +39,11 @@ struct SpeechTestView: View {
 
             if case .ready = model.state {
                 Section {
-                    Button("1. Read the passage aloud (about 3 minutes)") { Task { await model.readAloud() } }
+                    Stepper("Stop after about \(Int(model.audioCapSeconds)) seconds of speech",
+                            value: Bindable(model).audioCapSeconds, in: 15...180, step: 15)
+                    Button("1. Read the passage aloud") { Task { await model.readAloud() } }
                 } header: { Text("Locked-screen playback") } footer: {
-                    Text("Tap it, wait for the first words, then press the side button to lock the phone. Leave it until the voice stops, then unlock. Playback should not pause or stutter.")
+                    Text("Tap it, wait for the first words, then press the side button to lock the phone. It stops by itself when the time is up (whole sentences, so a few seconds over). Playback should not pause or stutter.")
                 }
                 Section {
                     Stepper("Passes over the text: \(speakRepeats)", value: $speakRepeats, in: 2...20)

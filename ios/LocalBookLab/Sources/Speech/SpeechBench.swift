@@ -77,6 +77,13 @@ final class SpeechBenchModel {
     private(set) var heard = ""
     private(set) var progressNote = ""
     private(set) var hasAudio = false
+    /// Read-aloud stops once this much speech has been voiced (whole chunks), so a run is short.
+    var audioCapSeconds = 30.0
+    private var stopRequested = false
+    private(set) var spokenChunkCount = 2
+    private var spokenText: String { SpeechCorpus.chunks.prefix(spokenChunkCount).joined(separator: " ") }
+
+    func stop() { stopRequested = true }
     private var loadSeconds = 0.0
     private var footprintAfterLoad = 0.0
     private var availableAfterLoad = 0.0
@@ -122,6 +129,7 @@ final class SpeechBenchModel {
     func readAloud() async {
         guard let kokoro else { return }
         state = .running("Reading aloud — lock the screen now")
+        stopRequested = false
         let player = ChunkPlayer(sampleRate: Double(KokoroAneConstants.sampleRate))
         let sampler = MemorySampler()
         var records: [SpeechChunkRecord] = []
@@ -146,9 +154,11 @@ final class SpeechBenchModel {
                 all += result.samples
                 records.append(.init(index: i, audioSeconds: seconds, synthSeconds: synth, realtimeFactor: seconds / synth,
                                      leadSeconds: lead, inBackground: bg))
+                spokenChunkCount = i + 1
+                if records.map(\.audioSeconds).reduce(0, +) >= audioCapSeconds || stopRequested { break }
             }
             // Let the last chunk finish so a stall near the end is not hidden.
-            while player.remaining > 0.1 { try await Task.sleep(for: .milliseconds(200)) }
+            while player.remaining > 0.1 && !stopRequested { try await Task.sleep(for: .milliseconds(200)) }
             player.stop()
             audio = all; hasAudio = true
             phases.removeAll { $0.name == "Read aloud" }
@@ -177,14 +187,15 @@ final class SpeechBenchModel {
         state = .running("Generating speech in the background — lock the screen")
         let sampler = MemorySampler()
         let box = ResultBox<SpeakOutcome>()
-        let total = Int64(repeats * SpeechCorpus.chunks.count)
+        let texts = Array(SpeechCorpus.chunks.prefix(spokenChunkCount))
+        let total = Int64(repeats * texts.count)
         do {
             try await SpeechBackground.run(title: "LocalBook speech test", subtitle: "Voicing text on the Neural Engine",
                                            totalUnits: total) { report, cancel in
                 var done: Int64 = 0
                 var records: [SpeechChunkRecord] = []
                 for _ in 0..<repeats {
-                    for text in SpeechCorpus.chunks {
+                    for text in texts {
                         if cancel.isSet { box.set(.init(records: records, failure: "cancelled by the system")); return }
                         let t0 = Date()
                         let r: KokoroAneSynthesisResult
@@ -233,7 +244,7 @@ final class SpeechBenchModel {
         guard let asr, hasAudio else { state = .failed("Read aloud first — that makes the audio to transcribe."); return }
         let samples = SpeechMath.resampleTo16k(audio, from: audioRate)
         let audioSeconds = Double(samples.count) / 16_000
-        let reference = SpeechCorpus.fullText
+        let reference = spokenText
         let name = background ? "Transcribe in background" : "Transcribe"
         state = .running(background ? "Transcribing in the background — lock the screen" : "Transcribing…")
         let sampler = MemorySampler()
