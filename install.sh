@@ -313,23 +313,19 @@ main() {
         fi
     }
 
+    # Python 3.13 exactly: requirements.txt is compiled and tested on 3.13 and the app bundles this
+    # interpreter, so every install runs the same Python. (3.12 cannot install the lock at all.)
+    PY_REQUIRED="3.13"
+    is_py_required() { "$1" -c "import sys; sys.exit(sys.version_info[:2] != (3, 13))" 2>/dev/null; }
+
     find_python() {
         PYTHON_CMD=""
-        if command -v python3.13 &>/dev/null; then
-            PYTHON_CMD="python3.13"
-        elif command -v python3.12 &>/dev/null; then
-            PYTHON_CMD="python3.12"
-        elif [ -f "/opt/homebrew/bin/python3.12" ]; then
-            PYTHON_CMD="/opt/homebrew/bin/python3.12"
-        elif [ -f "/usr/local/bin/python3.12" ]; then
-            PYTHON_CMD="/usr/local/bin/python3.12"
-        elif command -v python3 &>/dev/null; then
-            local py_minor
-            py_minor=$(python3 -c "import sys; print(sys.version_info.minor)" 2>/dev/null || echo "0")
-            if [ "$py_minor" -ge 12 ]; then
-                PYTHON_CMD="python3"
+        local cand
+        for cand in python3.13 /opt/homebrew/bin/python3.13 /usr/local/bin/python3.13 python3; do
+            if command -v "$cand" &>/dev/null && is_py_required "$cand"; then
+                PYTHON_CMD="$cand"; return
             fi
-        fi
+        done
     }
 
     ensure_python() {
@@ -340,14 +336,22 @@ main() {
             success "Python: $ver"
             return
         fi
-        info "Installing Python 3.12..."
-        brew install python@3.12
+        info "Installing Python $PY_REQUIRED..."
+        brew install python@$PY_REQUIRED
         find_python
         if [ -n "$PYTHON_CMD" ]; then
-            success "Python 3.12 installed"
+            success "Python $PY_REQUIRED installed"
         else
-            fail "Python 3.12+ installation failed"
+            fail "Python $PY_REQUIRED installation failed"
             exit 1
+        fi
+    }
+
+    # A venv made by another Python (3.12 before 2.5.0) is rebuilt on the required one.
+    reset_venv_if_wrong_python() {
+        if [ -d ".venv" ] && ! is_py_required .venv/bin/python; then
+            warn "Virtual environment is not Python $PY_REQUIRED — recreating it..."
+            rm -rf .venv
         fi
     }
 
@@ -531,6 +535,7 @@ main() {
         cd "$INSTALL_DIR/backend"
 
         # Create virtual environment
+        reset_venv_if_wrong_python
         if [ ! -d ".venv" ]; then
             info "Creating Python virtual environment..."
             $PYTHON_CMD -m venv .venv || { fail "Failed to create Python virtual environment"; exit 1; }
@@ -1178,7 +1183,8 @@ print(f'cached at: {local_dir}')
         step 3 "Rebuilding backend"
         cd "$INSTALL_DIR/backend"
 
-        # Recreate venv if missing or corrupted
+        # Recreate venv if missing, corrupted, or made by another Python
+        reset_venv_if_wrong_python
         if [ ! -f ".venv/bin/activate" ]; then
             warn "Virtual environment missing — recreating..."
             rm -rf .venv
