@@ -1,12 +1,20 @@
 # LocalBook Lab — Phase 0 spike
 
 A bare test harness, not the product. Each screen answers one question that could still
-change the iPhone architecture. Test 1 (embedding parity) is wired; tests 2–4 come next.
+change the iPhone architecture. Tests 1 (embedding parity) and 3 (pairing with a Mac) are wired and passed; tests 2 and 4 come next.
 
 ## Test 1: does the iPhone make the same vectors as the Mac?
 
-**Pass bars (fixed before any numbers):** mean similarity ≥ 0.999, worst ≥ 0.998, the same
-top-5 chunks for every question, no errors. Then the same run with the phone locked.
+**Pass bars:** mean similarity ≥ 0.999, worst ≥ 0.998, best hit the same for ≥ 95% of questions
+and top-5 overlap ≥ 90% (exact order is float noise at cosine 0.9999), no errors, nothing over
+the 512-token limit. Then the same run with the phone locked.
+
+**Result (2026-10-18, iPhone18,2, iOS 27.2):** PASS. Cosine 0.99993 mean / 0.99981 worst,
+tokenizer 493/493, retrieval agrees (best hit 96%, top-5 overlap 98.4%). A 3-pass run under the
+lock screen embedded 1421 of 1446 items in the background with identical vectors (about 3×
+slower). Findings that shaped the product: the Mac's cap had to become a shared 512-token limit
+(`embedding_profile.max_tokens`), enforced by splitting long chunks at ingest and by a one-time
+startup migration of stored chunks.
 
 ### 1. On the Mac: export the fixture
 
@@ -48,6 +56,24 @@ inference one can't be enabled, note it: that answers the "does Apple gate it" q
 If the Neural Engine run fails, switch Compute to GPU or CPU and run again — that tells us
 whether the problem is the Neural Engine path or the vectors themselves.
 
+## Test 3: can the iPhone pair with a Mac?
+
+**Result (2026-10-19):** PASS, with one design change. Bonjour finds the Mac (`_localbook._tcp`);
+pairing uses the same 6-digit code as Mac-to-Mac; a signed `/phone/hello` returns the Mac's
+models. What the test found:
+
+- **iOS TLS cannot do Ed25519** (handshake fails with -9824 against an Ed25519 certificate, works
+  against P-256), so the Mac has a second, phone-only **P-256 identity** (derived from the
+  `device_identity` seed). Mac-to-Mac pairing is untouched.
+- **Client-certificate auth did not complete on Apple's stack** (URLSession and Network.framework,
+  RSA and P-256 alike), so the phone link does not demand one: the phone pins the Mac's
+  certificate, and every request carries an ECDSA signature the Mac checks against the key pinned
+  at pairing. Production should add a one-time nonce (today: a 5-minute timestamp window).
+- Phones live apart from the Macs table (`store.phones()`); they never listen or acknowledge, so
+  they must not hold back retention. Settings › Sync lists them under "Paired phones".
+
+Ports: Mac sync `N`, Mac pairing `N+1`, phone pairing `N+2`, phone sync `N+3` (N = 47600).
+
 ## What it measures
 
 | Check | How |
@@ -63,3 +89,4 @@ whether the problem is the Neural Engine path or the vectors themselves.
 - `Sources/Embedding/EmbeddingModelStore.swift` — download + compile, kept in Application Support
 - `Sources/Embedding/EmbeddingGemma2Engine.swift` — token ids → vector on the Neural Engine (becomes the real embedder)
 - `Sources/Parity/*` — fixture, runner, background task, screen
+- `Sources/Pairing/*` — Bonjour browser, TLS probe, P-256 phone identity, pairing + signed hello
