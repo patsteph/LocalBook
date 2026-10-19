@@ -33,28 +33,23 @@ if ! command -v brew &> /dev/null; then
     fi
 fi
 
-# Require Python 3.12+
+# Require Python 3.13 — exactly. requirements.txt is compiled and every test runs on 3.13, and the
+# bundled app carries this interpreter, so a different minor version means a different (untested)
+# app. 3.12 cannot even install the lock (audioop-lts and the standard-* backports are 3.13-only).
+PY_REQUIRED="3.13"
+is_py_required() { "$1" -c "import sys; sys.exit(sys.version_info[:2] != (3, 13))" 2>/dev/null; }
 PYTHON_CMD=""
-if command -v python3.12 &> /dev/null; then
-    PYTHON_CMD="python3.12"
-elif [ -f "/opt/homebrew/bin/python3.12" ]; then
-    PYTHON_CMD="/opt/homebrew/bin/python3.12"
-elif [ -f "/usr/local/bin/python3.12" ]; then
-    PYTHON_CMD="/usr/local/bin/python3.12"
-elif command -v python3.13 &> /dev/null; then
-    PYTHON_CMD="python3.13"
-elif command -v python3 &> /dev/null; then
-    PY_VER=$(python3 -c "import sys; print(f'{sys.version_info.minor}')")
-    if [ "$PY_VER" -ge 12 ]; then
-        PYTHON_CMD="python3"
+for cand in python3.13 /opt/homebrew/bin/python3.13 /usr/local/bin/python3.13 python3; do
+    if command -v "$cand" &> /dev/null && is_py_required "$cand"; then
+        PYTHON_CMD="$cand"; break
     fi
-fi
+done
 
 if [ -z "$PYTHON_CMD" ]; then
-    echo -e "${YELLOW}Python 3.12+ not found. Installing...${NC}"
-    brew install python@3.12
-    PYTHON_CMD="/opt/homebrew/bin/python3.12"
-    [ -f "$PYTHON_CMD" ] || PYTHON_CMD="/usr/local/bin/python3.12"
+    echo -e "${YELLOW}Python $PY_REQUIRED not found. Installing...${NC}"
+    brew install python@$PY_REQUIRED
+    PYTHON_CMD="/opt/homebrew/bin/python$PY_REQUIRED"
+    [ -f "$PYTHON_CMD" ] || PYTHON_CMD="/usr/local/bin/python$PY_REQUIRED"
 fi
 
 echo -e "${GREEN}Using Python: $PYTHON_CMD${NC}"
@@ -162,7 +157,13 @@ if [ ! -f "$BACKEND_EXE" ] || [ "$DO_REBUILD" = true ] || [ "$DO_CLEAN" = true ]
         rm -rf .venv
     fi
     
-    # Ensure venv exists with Python 3.12+
+    # A venv made by another Python (3.12 before 2.5.0) is rebuilt on $PY_REQUIRED.
+    if [ -d ".venv" ] && ! is_py_required .venv/bin/python; then
+        echo -e "${YELLOW}Virtual environment is not Python $PY_REQUIRED — recreating it...${NC}"
+        rm -rf .venv
+    fi
+
+    # Ensure venv exists with Python $PY_REQUIRED
     if [ ! -d ".venv" ]; then
         echo -e "${YELLOW}Creating virtual environment with $PYTHON_CMD...${NC}"
         $PYTHON_CMD -m venv .venv
