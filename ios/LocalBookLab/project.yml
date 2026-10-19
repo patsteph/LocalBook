@@ -13,10 +13,12 @@ packages:
     from: "1.3.5"
   mlx-swift:
     url: https://github.com/ml-explore/mlx-swift
-    minorVersion: "0.32.3"
+    minorVersion: "0.31.4"
   mlx-swift-lm:
     url: https://github.com/ml-explore/mlx-swift-lm
-    minorVersion: "3.32.3"
+    # 3.32.x adds a FoundationModels adapter that does not compile against the iOS 27 beta SDK;
+    # 3.31.4 has Gemma 4 E4B and none of that.
+    exactVersion: "3.31.4"
   swift-huggingface:
     url: https://github.com/huggingface/swift-huggingface
     from: "0.9.0"
