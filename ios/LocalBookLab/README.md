@@ -1,7 +1,7 @@
 # LocalBook Lab — Phase 0 spike
 
 A bare test harness, not the product. Each screen answers one question that could still
-change the iPhone architecture. Tests 1–4 are wired. 1 and 3 passed, 2 passed its five bars, and 4 passed apart from one clean lock-screen playback count (see below).
+change the iPhone architecture. Tests 1–4 are wired. 1 and 3 passed, 2 passed its five bars, and 4 passed on every bar.
 
 ## Test 1: does the iPhone make the same vectors as the Mac?
 
@@ -101,12 +101,14 @@ a passage, then transcribes its own audio and scores it against the text.
   once the screen locks (playback stopped about a second after locking: "Unable to compute the
   prediction"). The **"legacy" pipeline** (Neural Engine + CPU) kept playing locked. Any design that
   must work with the screen off has to avoid GPU stages.
-- **Foreground speech ≈ 10–17× real time; as a background (continued-processing) task ≈ 1.5×.**
-  Transcription: 112× in the foreground, 25.6× in the task, 0% of words wrong in both. Plan long
-  batch work for the task, but expect the 4–10× slowdown; render short read-alouds in the foreground
-  and play them from the lock screen.
+- **Foreground speech ≈ 10–17× real time; as a background (continued-processing) task ≈ 2.8× with
+  the screen locked** (1.5× in a first run where most of the task ran with the screen on, so the UI
+  was competing). Transcription: 114× foreground, 31.6× in the task, 0% of words wrong in both. So a
+  task costs roughly 4× in speed, not more. Plan long batch work for the task; render short
+  read-alouds in the foreground and play them from the lock screen.
 - Memory is small: 518 MB for both models.
-- Open: a clean count of chunks that finished playing while locked (the Lab now measures it).
+- **Locked playback confirmed:** 2 of 2 chunks finished playing while the app was in the background,
+  0 gaps (the audio background mode plus the GPU-free engine). **Test 4: PASS on every bar.**
 
 ## What it measures
 
