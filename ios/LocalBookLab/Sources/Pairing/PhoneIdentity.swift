@@ -72,13 +72,26 @@ enum PhoneIdentity {
     /// A SecIdentity (certificate + its private key) for mutual TLS.
     static func identity() throws -> SecIdentity {
         _ = try privateKey()
+        let cert = try certificate()
+        let der = SecCertificateCopyData(cert) as Data
+        // Ask for the identities in the Keychain and take the one whose certificate is ours. (A
+        // lookup by kSecValueRef returned -25291 on a device; matching the certificate bytes is
+        // unambiguous and needs nothing but the key and certificate already stored there.)
         let q: [String: Any] = [kSecClass as String: kSecClassIdentity,
-                                kSecValueRef as String: try certificate(),
-                                kSecReturnRef as String: true]
+                                kSecReturnRef as String: true,
+                                kSecMatchLimit as String: kSecMatchLimitAll]
         var found: CFTypeRef?
         let s = SecItemCopyMatching(q as CFDictionary, &found)
-        guard s == errSecSuccess, let found else { throw LabError.model("no identity for the certificate (\(s))") }
-        return found as! SecIdentity
+        guard s == errSecSuccess, let all = found as? [SecIdentity] else {
+            throw LabError.model("no identities in the Keychain (\(s)) — key and certificate are stored but not paired")
+        }
+        for id in all {
+            var c: SecCertificate?
+            if SecIdentityCopyCertificate(id, &c) == errSecSuccess, let c, (SecCertificateCopyData(c) as Data) == der {
+                return id
+            }
+        }
+        throw LabError.model("none of the \(all.count) Keychain identities matches this phone's certificate")
     }
 
     /// The request-signing message and headers the Mac's `identity.verify_signature` expects.
