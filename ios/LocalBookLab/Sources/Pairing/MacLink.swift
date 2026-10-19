@@ -88,7 +88,11 @@ enum MacLink {
 
     /// Step 3: a signed call over mutual TLS pinned to the certificate seen at pairing.
     static func signedHello(_ mac: PairedMac) async throws -> String {
-        let delegate = TrustCapture(pinned: mac.certDER, identity: try PhoneIdentity.identity())
+        // No client certificate: iOS's TLS stack would not complete client-certificate auth in
+        // testing (-1200/-12000 after the identity was offered). The phone is authenticated by the
+        // ECDSA signature on every request, which the Mac checks against the key pinned at
+        // pairing; the phone authenticates the Mac by pinning its certificate.
+        let delegate = TrustCapture(pinned: mac.certDER, identity: nil)
         let session = URLSession(configuration: .ephemeral, delegate: delegate, delegateQueue: nil)
         defer { session.finishTasksAndInvalidate() }
         let path = "/phone/hello"

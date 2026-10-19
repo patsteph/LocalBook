@@ -549,7 +549,7 @@ async def start_sync_listener() -> None:
 async def start_phone_listener() -> None:
     """The phone sync listener, trusting exactly the pinned phones. Restarted on pair/revoke."""
     pems = [p["cert_pem"] for p in store.phones().values() if not p.get("revoked_at")]
-    ctx = await asyncio.to_thread(identity.server_context, pems, True, True)
+    ctx = await asyncio.to_thread(lambda: identity.server_context(pems, False, True, optional_client=True))
     await _serve("phone_sync", phone_sync_app, phone_sync_port(), ctx)
 
 

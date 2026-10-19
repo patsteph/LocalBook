@@ -64,3 +64,9 @@ def test_phone_key_is_derived_from_the_device_identity_seed(ident):
     first = pub(identity.phone_private_key())
     assert first == pub(identity.phone_private_key())
     assert identity.phone_private_key().public_key().public_numbers().x == first
+
+
+def test_phone_link_does_not_demand_a_client_certificate(ident):
+    """Apple's TLS would not finish client-cert auth; the signed request authenticates the phone."""
+    ctx = identity.server_context(["x"] if False else [], False, True, optional_client=True)
+    assert ctx.verify_mode == ssl.CERT_OPTIONAL

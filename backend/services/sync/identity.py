@@ -235,13 +235,18 @@ def _load_own(ctx, p256: bool = False) -> None:
         key_path.unlink(missing_ok=True)
 
 
-def server_context(peer_pems: Iterable[str], require_client: bool = True, p256: bool = False):
+def server_context(peer_pems: Iterable[str], require_client: bool = True, p256: bool = False,
+                   optional_client: bool = False):
+    """`optional_client`: a client certificate is checked against the pinned ones IF presented,
+    but is not demanded. Used for phones: every request is signed with the phone's pinned key
+    (peer.py `_verified_phone`), which is what authenticates the device. Apple's TLS stack would
+    not complete client-certificate auth in testing, and demanding it only kept phones out."""
     ctx = _ctx_class()(ssl.PROTOCOL_TLS_SERVER)
     _set(ctx, "minimum_version", ssl.TLSVersion.TLSv1_3)
     _load_own(ctx, p256)
     pems = "".join(peer_pems)
-    if require_client:
-        _set(ctx, "verify_mode", ssl.CERT_REQUIRED)
+    if require_client or optional_client:
+        _set(ctx, "verify_mode", ssl.CERT_REQUIRED if require_client else ssl.CERT_OPTIONAL)
         if pems:
             ctx.load_verify_locations(cadata=pems)
     else:
