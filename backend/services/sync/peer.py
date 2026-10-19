@@ -477,16 +477,77 @@ async def phone_pair_hello(request: Request):
             "sync_port": phone_sync_port(), "proto": identity.PROTOCOL}
 
 
+class _FailureLimiter:
+    """Blocks a client address after too many failed authentications in a window. In memory: a
+    restart forgets it, which is fine (it only slows guessing, it does not guard a secret)."""
+
+    def __init__(self, max_failures: int = 6, window: float = 60.0, block: float = 120.0):
+        self.max_failures, self.window, self.block = max_failures, window, block
+        self._fails: Dict[str, list] = {}
+        self._blocked: Dict[str, float] = {}
+
+    def blocked(self, key: str, now: Optional[float] = None) -> bool:
+        now = now if now is not None else time.time()
+        until = self._blocked.get(key)
+        if until and until > now:
+            return True
+        self._blocked.pop(key, None)
+        return False
+
+    def failure(self, key: str, now: Optional[float] = None) -> None:
+        now = now if now is not None else time.time()
+        recent = [t for t in self._fails.get(key, []) if now - t < self.window] + [now]
+        self._fails[key] = recent
+        if len(recent) >= self.max_failures:
+            self._blocked[key] = now + self.block
+            self._fails.pop(key, None)
+        if len(self._fails) > 2000:                       # bounded: drop the oldest half
+            for k in sorted(self._fails, key=lambda k: self._fails[k][-1])[:1000]:
+                self._fails.pop(k, None)
+
+
+class _NonceCache:
+    """Remembers request nonces for longer than a signature stays valid, so a replay is refused."""
+
+    def __init__(self, ttl: float = 2 * identity.PHONE_MAX_SKEW + 30, max_items: int = 20000):
+        self.ttl, self.max_items = ttl, max_items
+        self._seen: Dict[str, float] = {}
+
+    def first_use(self, key: str, now: Optional[float] = None) -> bool:
+        now = now if now is not None else time.time()
+        if len(self._seen) >= self.max_items:
+            self._seen = {k: t for k, t in self._seen.items() if now - t < self.ttl}
+            if len(self._seen) >= self.max_items:
+                return False                              # flooded: refuse rather than forget
+        if key in self._seen and now - self._seen[key] < self.ttl:
+            return False
+        self._seen[key] = now
+        return True
+
+
+_phone_failures = _FailureLimiter()
+_phone_nonces = _NonceCache()
+
+
 async def _verified_phone(request: Request) -> Dict[str, Any]:
+    """The phone, if it is paired and the v2 signature (nonce, this Mac, fresh) holds."""
+    ip = request.client.host if request.client else "?"
+    if _phone_failures.blocked(ip):
+        raise HTTPException(429, "too many failed attempts; try again later")
     body = await request.body()
     dev_id = request.headers.get("X-LB-Device", "")
+    nonce = request.headers.get("X-LB-Nonce", "")
     d = store.phone(dev_id)
-    if not d:
-        raise HTTPException(403, "not a paired phone")
-    if not identity.verify_signature(d["cert_pem"], request.method, request.url.path,
-                                     request.headers.get("X-LB-Time", "0"), body,
-                                     request.headers.get("X-LB-Sig", "")):
-        raise HTTPException(403, "bad signature")
+    ok = bool(d) and identity.verify_phone_signature(
+        d["cert_pem"], request.method, request.url.path, request.headers.get("X-LB-Time", "0"), nonce,
+        body, request.headers.get("X-LB-Sig", ""))
+    if not ok:
+        _phone_failures.failure(ip)
+        raise HTTPException(403, "not a paired phone, or a bad signature")
+    # Only a VALID signature may spend a nonce, so strangers cannot fill the cache.
+    if not _phone_nonces.first_use(f"{dev_id}:{nonce}"):
+        _phone_failures.failure(ip)
+        raise HTTPException(403, "request already used")
     store.touch_phone(dev_id)
     return {"device": d, "body": json.loads(body or b"{}")}
 

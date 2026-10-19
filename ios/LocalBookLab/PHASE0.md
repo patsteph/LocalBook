@@ -51,7 +51,9 @@ Lab in this folder. Every pass bar was fixed before its numbers existed. Per-tes
 - Phone identity: P-256 derived from the Mac's `device_identity` seed (Mac side) / Keychain key
   (phone side); phones stored apart from the Macs table; "Paired phones" list with Remove.
 - Phone link: pairing code compared on both screens, phone pins the Mac certificate, every request
-  signed (ECDSA, 5-minute window), no client certificate required.
+  signed (ECDSA, no client certificate required). **Hardened (Phase 1 item 1):** the signature covers a
+  one-time nonce plus this Mac's id and certificate fingerprint (no replay, no redirect to another Mac),
+  expires after 2 minutes, and an address is locked out for 2 minutes after 6 failed attempts in a minute.
 - Voice engine: Kokoro legacy (Neural Engine + CPU). Transcription: Parakeet v3.
 - Gemma runtime: `mlx-swift-lm` pinned 3.31.4 (3.32.x does not build against the iOS 27 beta SDK).
 
@@ -64,13 +66,12 @@ cellular; the cancel-on-lock guard during steady decoding (only an early lock is
 
 ## Before production (security)
 
-Add a one-time nonce and the Mac's id/certificate fingerprint to the signed message (stops replay and
-cross-Mac replay); rate-limit bad signatures at the phone port; move the phone key to the Secure
-Enclave; consider a PAKE-style pairing instead of a 6-digit code.
+Done: nonce, Mac binding, rate limit. Still to do: move the phone key to the Secure Enclave; consider a
+PAKE-style pairing instead of a 6-digit code.
 
 ## Recommended Phase 1 order
 
-1. Harden the phone link (nonce, binding, rate limit) — small, and everything else relies on it.
+1. ~~Harden the phone link (nonce, binding, rate limit)~~ — done.
 2. A phone-side sync client that pulls the library through the phone link (the Mac side has only a
    hello endpoint today) and stores chunk text and the Mac's vectors.
 3. On-phone search over those vectors (embedding is already proven), then the answer path with

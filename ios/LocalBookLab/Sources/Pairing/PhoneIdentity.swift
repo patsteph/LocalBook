@@ -94,15 +94,20 @@ enum PhoneIdentity {
         throw LabError.model("none of the \(all.count) Keychain identities matches this phone's certificate")
     }
 
-    /// The request-signing message and headers the Mac's `identity.verify_signature` expects.
-    static func signedHeaders(method: String, path: String, body: Data) throws -> [String: String] {
+    /// The v2 signed request the Mac's `verify_phone_signature` expects. It covers a one-time nonce and
+    /// THIS Mac's id and certificate fingerprint, so a captured request cannot be replayed or redirected
+    /// to another Mac this phone is paired with. Headers: device, time, nonce, signature.
+    static func signedHeaders(method: String, path: String, body: Data,
+                              macDeviceId: String, macFingerprint: String) throws -> [String: String] {
         let ts = String(Int(Date().timeIntervalSince1970))
+        let nonce = (0..<16).map { _ in String(format: "%02x", UInt8.random(in: 0...255)) }.joined()
         let digest = SHA256.hash(data: body).map { String(format: "%02x", $0) }.joined()
-        let message = Data([method.uppercased(), path, ts, digest].joined(separator: "\n").utf8)
+        let message = Data(["LBP2", method.uppercased(), path, ts, nonce, macDeviceId, macFingerprint, digest]
+            .joined(separator: "\n").utf8)
         var err: Unmanaged<CFError>?
         guard let sig = SecKeyCreateSignature(try privateKey(), .ecdsaSignatureMessageX962SHA256,
                                               message as CFData, &err) as Data? else { throw err!.takeRetainedValue() }
-        return ["X-LB-Device": deviceId, "X-LB-Time": ts, "X-LB-Sig": sig.base64EncodedString()]
+        return ["X-LB-Device": deviceId, "X-LB-Time": ts, "X-LB-Nonce": nonce, "X-LB-Sig": sig.base64EncodedString()]
     }
 
     // MARK: X.509, by hand (a Lab needs one certificate, not a library)

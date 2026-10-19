@@ -102,7 +102,9 @@ enum MacLink {
         req.timeoutInterval = 15
         req.httpBody = body
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        for (k, v) in try PhoneIdentity.signedHeaders(method: "POST", path: path, body: body) { req.setValue(v, forHTTPHeaderField: k) }
+        let headers = try PhoneIdentity.signedHeaders(method: "POST", path: path, body: body,
+                                                      macDeviceId: mac.deviceId, macFingerprint: mac.fingerprint)
+        for (k, v) in headers { req.setValue(v, forHTTPHeaderField: k) }
         let data: Data, response: URLResponse
         do { (data, response) = try await session.data(for: req) }
         catch { throw MacLinkError.detail(describe(error, delegate.trace)) }

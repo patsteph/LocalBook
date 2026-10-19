@@ -214,6 +214,41 @@ def verify_signature(cert: str, method: str, path: str, ts: str, body: bytes, si
         return False
 
 
+# ── phone request signing (v2): replay-proof and bound to ONE Mac ─────────────────────────
+# The phone link has no client certificate, so this signature is what authenticates the device.
+# It covers the method, path, time, a one-time nonce, THIS Mac's device id and phone-certificate
+# fingerprint, and the body hash. A captured request cannot be replayed (the nonce is remembered),
+# cannot be redirected to another Mac the same phone is paired with (the Mac id and fingerprint are
+# inside the signature), and goes stale after PHONE_MAX_SKEW seconds.
+
+PHONE_PROTO = "LBP2"
+PHONE_MAX_SKEW = 120
+
+
+def phone_message(method: str, path: str, ts: str, nonce: str, mac_id: str, mac_fp: str, body: bytes) -> bytes:
+    return b"\n".join([PHONE_PROTO.encode(), method.upper().encode(), path.encode(), ts.encode(),
+                       nonce.encode(), mac_id.encode(), mac_fp.encode(),
+                       hashlib.sha256(body or b"").hexdigest().encode()])
+
+
+def verify_phone_signature(cert: str, method: str, path: str, ts: str, nonce: str, body: bytes,
+                           sig_b64: str, max_skew: int = PHONE_MAX_SKEW) -> bool:
+    """True if `sig_b64` is the phone's ECDSA signature over a v2 message addressed to THIS Mac."""
+    try:
+        if abs(int(time.time()) - int(ts)) > max_skew:
+            return False
+        if not (16 <= len(nonce) <= 64) or not all(c in "0123456789abcdefABCDEF-_" for c in nonce):
+            return False
+        pub = x509.load_pem_x509_certificate(cert.encode()).public_key()
+        if not isinstance(pub, ec.EllipticCurvePublicKey):
+            return False
+        msg = phone_message(method, path, ts, nonce, device_id(), fingerprint(phone_cert_pem()), body)
+        pub.verify(base64.b64decode(sig_b64), msg, ec.ECDSA(hashes.SHA256()))
+        return True
+    except Exception:
+        return False
+
+
 # ── TLS contexts ─────────────────────────────────────────────────────────────
 
 
