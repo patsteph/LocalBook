@@ -32,12 +32,21 @@ struct GemmaRun: Codable, Sendable, Identifiable {
     let thermalBefore: String
     let thermalAfter: String
     let stopReason: String
+    var inBackground: Bool? = nil
+}
+
+struct BackgroundGemmaOutcome: Sendable {
+    var runs: [GemmaRun] = []
+    var failure: String?
 }
 
 struct SearchModelMemory: Codable, Sendable {
     let footprintMB: Double
     let availableMB: Double
+    /// Steady-state speed: the first call (which loads and compiles for the Neural Engine) is
+    /// timed separately in `coldFirstEmbedSeconds` and left out of this.
     let embedMillisecondsPerToken: Double
+    var coldFirstEmbedSeconds: Double? = nil
 }
 
 struct GemmaReport: Codable, Sendable {
@@ -52,6 +61,10 @@ struct GemmaReport: Codable, Sendable {
     var stressRuns: [GemmaRun]? = nil
     /// Memory once the search model (EmbeddingGemma on the Neural Engine) is loaded beside Gemma.
     var withSearchModel: SearchModelMemory? = nil
+    /// Generation inside a continued-processing task, with the phone locked. MLX runs on the GPU,
+    /// which iOS refuses once the screen is locked, so this is expected to fail or crawl.
+    var backgroundRuns: [GemmaRun]? = nil
+    var backgroundFailure: String? = nil
     let bars: GemmaBars
     let verdict: Verdict
     struct Verdict: Codable, Sendable {
@@ -93,6 +106,10 @@ final class GemmaBenchModel {
     private(set) var reportURL: URL?
     private(set) var stressRuns: [GemmaRun] = []
     private(set) var withSearchModel: SearchModelMemory?
+    private(set) var backgroundRuns: [GemmaRun] = []
+    private(set) var backgroundFailure: String?
+    private var cancelFlag = CancelFlag()
+    func stop() { cancelFlag.set() }
     private(set) var liveText = ""
     private(set) var loadSeconds = 0.0
     private(set) var footprintAfterLoadMB = 0.0
@@ -172,6 +189,63 @@ final class GemmaBenchModel {
         state = .ready
     }
 
+    /// Can Gemma answer while the phone is locked? Three generations inside a continued-processing
+    /// task. (Informational: the answer decides whether the phone may promise locked-screen answers.)
+    func runBackground() async {
+        guard let container else { return }
+        backgroundRuns = []; backgroundFailure = nil
+        cancelFlag = CancelFlag()
+        let cancel = cancelFlag
+        state = .running("Generating in the background — lock the phone now")
+        let prompt = Self.prompt(approxTokens: 500)
+        let box = ResultBox<BackgroundGemmaOutcome>()
+        do {
+            try await SpeechBackground.run(title: "LocalBook model test", subtitle: "Gemma answering in the background",
+                                           totalUnits: 3, cancel: cancel) { report, cancel in
+                var out = BackgroundGemmaOutcome()
+                for i in 0..<3 {
+                    if cancel.isSet { out.failure = "stopped"; break }
+                    let session = ChatSession(container, generateParameters: GenerateParameters(maxTokens: 80))
+                    let started = Date()
+                    var first: Double?
+                    var info: GenerateCompletionInfo?
+                    do {
+                        for try await item in session.streamDetails(to: prompt) {
+                            switch item {
+                            case .chunk: if first == nil { first = Date().timeIntervalSince(started) }
+                            case .info(let i): info = i
+                            default: break
+                            }
+                        }
+                    } catch {
+                        let bg = await MainActor.run { AppStateTracker.shared.isInBackground }
+                        out.failure = "run \(i + 1), app \(bg ? "in the background" : "in the foreground"): \(error.localizedDescription)"
+                        break
+                    }
+                    let bg = await MainActor.run { AppStateTracker.shared.isInBackground }
+                    guard let info else { out.failure = "run \(i + 1): no completion info"; break }
+                    out.runs.append(GemmaRun(label: "background \(i + 1)", promptTokens: info.promptTokenCount,
+                                             generatedTokens: info.generationTokenCount, firstWordSeconds: first ?? .nan,
+                                             promptSeconds: info.promptTime, decodeTokensPerSecond: info.tokensPerSecond,
+                                             peakFootprintMB: MemoryProbe.footprintMB(),
+                                             thermalBefore: "", thermalAfter: ProcessInfo.processInfo.thermalState.name,
+                                             stopReason: "\(info.stopReason)", inBackground: bg))
+                    report(Int64(i + 1))
+                }
+                box.set(out)
+            }
+            let out = try await box.wait(timeout: 600)
+            backgroundRuns = out.runs
+            backgroundFailure = out.failure == "stopped" ? nil : out.failure
+            rewriteReport()
+            state = .ready
+        } catch {
+            backgroundFailure = error.localizedDescription
+            rewriteReport()
+            state = .failed("Background generation: \(error.localizedDescription)")
+        }
+    }
+
     /// Load the search model beside Gemma — the state the real app lives in — and re-measure memory.
     func loadSearchModelToo() async {
         guard container != nil else { return }
@@ -179,13 +253,17 @@ final class GemmaBenchModel {
         do {
             let location = try await EmbeddingModelStore.prepare(progress: { _ in })
             let engine = try EmbeddingGemma2Engine(location: location)
-            let ids = Array(repeating: 1000, count: 200)
+            let tokens = [2] + Array(repeating: 1000, count: 200) + [1]
+            let c0 = Date()
+            _ = try await engine.embed(tokenIds: tokens)                 // cold: loads + compiles
+            let cold = Date().timeIntervalSince(c0)
             let t0 = Date()
-            _ = try await engine.embed(tokenIds: [2] + ids + [1])
-            let perToken = Date().timeIntervalSince(t0) / 202 * 1000
+            for _ in 0..<5 { _ = try await engine.embed(tokenIds: tokens) }
+            let perToken = Date().timeIntervalSince(t0) / (5 * Double(tokens.count)) * 1000
             withSearchModel = SearchModelMemory(footprintMB: MemoryProbe.footprintMB(),
                                                 availableMB: MemoryProbe.availableMB(),
-                                                embedMillisecondsPerToken: perToken)
+                                                embedMillisecondsPerToken: perToken,
+                                                coldFirstEmbedSeconds: cold)
             keepAlive = engine          // stay resident, as it would in the app
             rewriteReport()
             state = .ready
@@ -237,6 +315,8 @@ final class GemmaBenchModel {
         guard var r = report else { return }
         r.stressRuns = stressRuns.isEmpty ? nil : stressRuns
         r.withSearchModel = withSearchModel
+        r.backgroundRuns = backgroundRuns.isEmpty ? nil : backgroundRuns
+        r.backgroundFailure = backgroundFailure
         report = r
         let url = reportURL ?? FileManager.default.temporaryDirectory
             .appending(path: "gemma-report-\(Int(Date().timeIntervalSince1970)).json")

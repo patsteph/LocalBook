@@ -20,6 +20,7 @@ struct GemmaTestView: View {
                     Button("Run the 5 measurements") { Task { await model.runAll() } }
                 case .running(let label):
                     HStack { ProgressView(); Text("Running: \(label)") }
+                    Button("Stop", role: .destructive) { model.stop() }
                     if !model.liveText.isEmpty {
                         Text(model.liveText).font(.footnote).foregroundStyle(.secondary).lineLimit(6)
                     }
@@ -59,6 +60,7 @@ struct GemmaTestView: View {
                 Section {
                     Button("Stress: 3,000-token prompt, then 6 generations in a row") { Task { await model.runStress() } }
                     Button("Load the search model beside Gemma, re-measure memory") { Task { await model.loadSearchModelToo() } }
+                    Button("Answer in the background — then lock the phone") { Task { await model.runBackground() } }
                 } header: { Text("Next questions") } footer: {
                     Text("Run both, one after the other, then share the report again. Keep the phone plugged in.")
                 }
@@ -70,11 +72,21 @@ struct GemmaTestView: View {
                         }
                     }
                 }
+                if !model.backgroundRuns.isEmpty || model.backgroundFailure != nil {
+                    Section("Answering with the phone locked") {
+                        if let why = model.backgroundFailure { Text(why).font(.footnote).foregroundStyle(.red) }
+                        ForEach(model.backgroundRuns) { r in
+                            Text("\(r.label): \(fmt(r.decodeTokensPerSecond)) tok/s · \(r.inBackground == true ? "while locked" : "screen on")")
+                                .font(.footnote)
+                        }
+                    }
+                }
                 if let m = model.withSearchModel {
                     Section("With the search model loaded") {
                         LabeledContent("Memory used", value: "\(Int(m.footprintMB)) MB")
                         LabeledContent("Still available", value: "\(Int(m.availableMB)) MB")
                         LabeledContent("Embed speed", value: "\(fmt(m.embedMillisecondsPerToken)) ms/token")
+                        if let cold = m.coldFirstEmbedSeconds { LabeledContent("First call (cold)", value: "\(fmt(cold)) s") }
                     }
                 }
             }
