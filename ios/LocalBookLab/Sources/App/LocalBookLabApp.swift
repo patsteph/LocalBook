@@ -28,8 +28,12 @@ struct LabHomeView: View {
                                title: "Embedding parity",
                                detail: "iPhone Neural Engine vs Mac MLX, same chunks, same questions")
                     }
-                    LabRow(number: 2, title: "Gemma 4 E4B on device",
-                           detail: "Memory, speed, time to first word", pending: true)
+                    NavigationLink {
+                        GemmaTestView()
+                    } label: {
+                        LabRow(number: 2, title: "Gemma 4 E4B on device",
+                               detail: "Memory, speed, time to first word — the Mac's own model")
+                    }
                     NavigationLink {
                         FindMacsView()
                     } label: {
