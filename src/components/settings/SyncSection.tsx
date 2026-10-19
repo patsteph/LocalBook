@@ -36,6 +36,7 @@ type Status = {
     pairing_open_until: number;
     pairing: Pairing[];
     devices: Device[];
+    phones?: { device_id: string; name?: string | null; paired_at?: number | null; last_seen?: number | null }[];
     open_conflicts: number | null;
     backup_destination: string | null;
     proposed_backup: string | null;
@@ -247,6 +248,27 @@ export function SyncSection() {
                             </div>
                         ))}
                     </section>
+
+                    {/* ── phones (kept apart from the Macs: they never listen or acknowledge) ── */}
+                    {(st.phones?.length ?? 0) > 0 && (
+                        <section className="space-y-3 rounded-lg border border-gray-700 bg-gray-900/40 p-4 text-sm">
+                            <h3 className="font-semibold text-gray-100">Paired phones</h3>
+                            {st.phones!.map((p) => (
+                                <div key={p.device_id} className="flex items-center justify-between gap-3 rounded border border-gray-700/60 bg-gray-800/40 px-3 py-2">
+                                    <div>
+                                        <div className="text-gray-100">{p.name ?? p.device_id}</div>
+                                        <div className="text-xs text-gray-500">
+                                            paired {ago(p.paired_at)} · last contact {ago(p.last_seen)}
+                                        </div>
+                                    </div>
+                                    <button className={secondary} disabled={!!busy}
+                                        onClick={() => run('revoke-phone', () => api.post(`/sync/phones/${p.device_id}/revoke`))}>
+                                        Remove
+                                    </button>
+                                </div>
+                            ))}
+                        </section>
+                    )}
 
                     {/* ── devices ── */}
                     <section className="space-y-3 rounded-lg border border-gray-700 bg-gray-900/40 p-4 text-sm">

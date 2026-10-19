@@ -125,6 +125,11 @@ async def discover():
     return {"macs": [m for m in found if m.get("device_id") not in paired]}
 
 
+@router.post("/phones/{device_id}/revoke")
+async def revoke_phone(device_id: str):
+    return await _call(_svc().revoke_phone(device_id))
+
+
 @router.post("/devices/{device_id}/revoke")
 async def revoke(device_id: str):
     return await _call(_svc().revoke(device_id))

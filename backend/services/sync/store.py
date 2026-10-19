@@ -124,6 +124,13 @@ def pin_phone(d: Dict[str, Any]) -> None:
     put("phones", all_)
 
 
+def revoke_phone(device_id: str) -> None:
+    all_ = phones()
+    if device_id in all_:
+        all_[device_id]["revoked_at"] = time.time()
+        put("phones", all_)
+
+
 def touch_phone(device_id: str) -> None:
     all_ = phones()
     if device_id in all_:

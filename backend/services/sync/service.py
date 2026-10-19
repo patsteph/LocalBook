@@ -178,6 +178,12 @@ def reject_pairing(pairing_id: str) -> None:
     store.forget_phone_pairing(pairing_id)
 
 
+async def revoke_phone(device_id: str) -> Dict[str, Any]:
+    store.revoke_phone(device_id)
+    await peer.start_phone_listener()                      # drop it from the trust store
+    return status()
+
+
 async def revoke(device_id: str) -> Dict[str, Any]:
     store.update_device(device_id, revoked_at=time.time())
     await peer.start_sync_listener()
@@ -481,6 +487,8 @@ def status() -> Dict[str, Any]:
         "pairing": [{k: p[k] for k in ("id", "direction", "device_id", "name", "sas", "host")}
                     for p in store.pairing_requests()],
         "devices": devices,
+        "phones": [{k: p.get(k) for k in ("device_id", "name", "paired_at", "last_seen")}
+                   for p in store.phones().values() if not p.get("revoked_at")],
         "open_conflicts": open_conflicts,
         "backup_destination": str(backup_scheduler.configured_destination() or "") or None,
         "proposed_backup": _proposed_backup(),
