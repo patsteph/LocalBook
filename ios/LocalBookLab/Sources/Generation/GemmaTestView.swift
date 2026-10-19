@@ -60,7 +60,7 @@ struct GemmaTestView: View {
                 Section {
                     Button("Stress: 3,000-token prompt, then 6 generations in a row") { Task { await model.runStress() } }
                     Button("Load the search model beside Gemma, re-measure memory") { Task { await model.loadSearchModelToo() } }
-                    Button("Answer in the background — then lock the phone") { Task { await model.runBackground() } }
+                    Button("Answer, then lock the phone mid-way (checks it stops cleanly)") { Task { await model.runLockMidway() } }
                 } header: { Text("Next questions") } footer: {
                     Text("Run both, one after the other, then share the report again. Keep the phone plugged in.")
                 }
@@ -72,13 +72,12 @@ struct GemmaTestView: View {
                         }
                     }
                 }
-                if !model.backgroundRuns.isEmpty || model.backgroundFailure != nil {
-                    Section("Answering with the phone locked") {
-                        if let why = model.backgroundFailure { Text(why).font(.footnote).foregroundStyle(.red) }
-                        ForEach(model.backgroundRuns) { r in
-                            Text("\(r.label): \(fmt(r.decodeTokensPerSecond)) tok/s · \(r.inBackground == true ? "while locked" : "screen on")")
-                                .font(.footnote)
-                        }
+                if let l = model.lockMidway {
+                    Section("Locking the phone mid-answer") {
+                        Text(l.stoppedWhenAppLeftForeground
+                             ? "Stopped \(fmt(l.secondsUntilStopped ?? .nan)) s in, after \(l.tokensGenerated) tokens — the app left the foreground and generation was cancelled."
+                             : (l.finishedNormally ? "Finished before you locked (\(l.tokensGenerated) tokens)." : "Ended early (\(l.tokensGenerated) tokens)."))
+                            .font(.footnote)
                     }
                 }
                 if let m = model.withSearchModel {

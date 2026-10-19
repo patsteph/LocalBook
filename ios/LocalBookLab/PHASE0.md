@@ -30,7 +30,10 @@ Lab in this folder. Every pass bar was fixed before its numbers existed. Per-tes
    second large model, no large in-memory index, and keep context short.
 2. **No GPU once the screen locks.** iOS refused GPU stages after lock (Kokoro v3: playback stopped
    a second after locking). MLX (Gemma) runs on the GPU, so **do not promise locked-screen answers**.
-   (A button in the Lab measures it; if not run, treat it as "expected to fail, unmeasured".)
+   **Measured:** Gemma started inside a background task and the screen locked: the lock-screen task
+   showed "Task failed" and the app then froze (could not scroll or share; had to be closed). So
+   generation must be cancelled the moment the app leaves the foreground (`willResignActive`); the
+   Lab now has a test for that.
    Anything that must run locked has to use Neural Engine or CPU only.
 3. **Background tasks run ~4× slower** than the foreground (voice 11→2.8×, transcription 114→32×).
    Render short things in the foreground; use a continued-processing task for long batches.
@@ -54,7 +57,7 @@ Lab in this folder. Every pass bar was fixed before its numbers existed. Per-tes
 
 Battery and energy per task; Gemma answer quality vs the Mac (same weights, so expect equal within
 numerics); thermal behaviour beyond ~2 minutes of continuous generation; the model download sizes on
-cellular; whether Gemma runs under a background task (expected: no); iPad; production-size libraries
+cellular; whether the cancel-on-lock guard keeps the app responsive (Lab test added); iPad; production-size libraries
 (the work MBP has thousands of items, so check its over-limit chunk count before first sync).
 
 ## Before production (security)

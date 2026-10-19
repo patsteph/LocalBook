@@ -5,6 +5,7 @@ import MLXHuggingFace
 import MLXLLM
 import MLXLMCommon
 import Observation
+import UIKit
 import Tokenizers
 import os
 
@@ -35,9 +36,12 @@ struct GemmaRun: Codable, Sendable, Identifiable {
     var inBackground: Bool? = nil
 }
 
-struct BackgroundGemmaOutcome: Sendable {
-    var runs: [GemmaRun] = []
-    var failure: String?
+struct LockMidwayResult: Codable, Sendable {
+    let tokensGenerated: Int
+    let secondsRunning: Double
+    let stoppedWhenAppLeftForeground: Bool
+    let secondsUntilStopped: Double?
+    let finishedNormally: Bool
 }
 
 struct SearchModelMemory: Codable, Sendable {
@@ -61,10 +65,8 @@ struct GemmaReport: Codable, Sendable {
     var stressRuns: [GemmaRun]? = nil
     /// Memory once the search model (EmbeddingGemma on the Neural Engine) is loaded beside Gemma.
     var withSearchModel: SearchModelMemory? = nil
-    /// Generation inside a continued-processing task, with the phone locked. MLX runs on the GPU,
-    /// which iOS refuses once the screen is locked, so this is expected to fail or crawl.
-    var backgroundRuns: [GemmaRun]? = nil
-    var backgroundFailure: String? = nil
+    /// Locking the phone mid-answer: did generation stop cleanly and the app stay responsive?
+    var lockMidway: LockMidwayResult? = nil
     let bars: GemmaBars
     let verdict: Verdict
     struct Verdict: Codable, Sendable {
@@ -106,8 +108,7 @@ final class GemmaBenchModel {
     private(set) var reportURL: URL?
     private(set) var stressRuns: [GemmaRun] = []
     private(set) var withSearchModel: SearchModelMemory?
-    private(set) var backgroundRuns: [GemmaRun] = []
-    private(set) var backgroundFailure: String?
+    private(set) var lockMidway: LockMidwayResult?
     private var cancelFlag = CancelFlag()
     func stop() { cancelFlag.set() }
     private(set) var liveText = ""
@@ -189,61 +190,41 @@ final class GemmaBenchModel {
         state = .ready
     }
 
-    /// Can Gemma answer while the phone is locked? Three generations inside a continued-processing
-    /// task. (Informational: the answer decides whether the phone may promise locked-screen answers.)
-    func runBackground() async {
+    /// What happens when the phone is locked in the middle of an answer? Gemma runs on the GPU and
+    /// iOS refuses GPU work once the app leaves the foreground: a first test inside a background task
+    /// failed ("Task failed") and then left the app frozen. So the app must stop generating the moment
+    /// it is no longer active. This starts a long answer and cancels it on willResignActive; the
+    /// result says how fast it stopped and whether the app stayed responsive.
+    func runLockMidway() async {
         guard let container else { return }
-        backgroundRuns = []; backgroundFailure = nil
-        cancelFlag = CancelFlag()
-        let cancel = cancelFlag
-        state = .running("Generating in the background — lock the phone now")
+        lockMidway = nil
+        state = .running("Answering — lock the phone within 5 seconds")
+        let session = ChatSession(container, generateParameters: GenerateParameters(maxTokens: 400))
         let prompt = Self.prompt(approxTokens: 500)
-        let box = ResultBox<BackgroundGemmaOutcome>()
-        do {
-            try await SpeechBackground.run(title: "LocalBook model test", subtitle: "Gemma answering in the background",
-                                           totalUnits: 3, cancel: cancel) { report, cancel in
-                var out = BackgroundGemmaOutcome()
-                for i in 0..<3 {
-                    if cancel.isSet { out.failure = "stopped"; break }
-                    let session = ChatSession(container, generateParameters: GenerateParameters(maxTokens: 80))
-                    let started = Date()
-                    var first: Double?
-                    var info: GenerateCompletionInfo?
-                    do {
-                        for try await item in session.streamDetails(to: prompt) {
-                            switch item {
-                            case .chunk: if first == nil { first = Date().timeIntervalSince(started) }
-                            case .info(let i): info = i
-                            default: break
-                            }
-                        }
-                    } catch {
-                        let bg = await MainActor.run { AppStateTracker.shared.isInBackground }
-                        out.failure = "run \(i + 1), app \(bg ? "in the background" : "in the foreground"): \(error.localizedDescription)"
-                        break
-                    }
-                    let bg = await MainActor.run { AppStateTracker.shared.isInBackground }
-                    guard let info else { out.failure = "run \(i + 1): no completion info"; break }
-                    out.runs.append(GemmaRun(label: "background \(i + 1)", promptTokens: info.promptTokenCount,
-                                             generatedTokens: info.generationTokenCount, firstWordSeconds: first ?? .nan,
-                                             promptSeconds: info.promptTime, decodeTokensPerSecond: info.tokensPerSecond,
-                                             peakFootprintMB: MemoryProbe.footprintMB(),
-                                             thermalBefore: "", thermalAfter: ProcessInfo.processInfo.thermalState.name,
-                                             stopReason: "\(info.stopReason)", inBackground: bg))
-                    report(Int64(i + 1))
-                }
-                box.set(out)
+        let started = Date()
+        var tokens = 0
+        var stoppedAfter: Double?
+        let task = Task { @MainActor in
+            for try await item in session.streamDetails(to: prompt) {
+                if case .chunk = item { tokens += 1 }
             }
-            let out = try await box.wait(timeout: 600)
-            backgroundRuns = out.runs
-            backgroundFailure = out.failure == "stopped" ? nil : out.failure
-            rewriteReport()
-            state = .ready
-        } catch {
-            backgroundFailure = error.localizedDescription
-            rewriteReport()
-            state = .failed("Background generation: \(error.localizedDescription)")
         }
+        let observer = NotificationCenter.default.addObserver(
+            forName: UIApplication.willResignActiveNotification, object: nil, queue: .main) { _ in
+            MainActor.assumeIsolated {
+                if stoppedAfter == nil { stoppedAfter = Date().timeIntervalSince(started) }
+                task.cancel()
+            }
+        }
+        var finishedNormally = false
+        do { try await task.value; finishedNormally = true } catch {}
+        NotificationCenter.default.removeObserver(observer)
+        lockMidway = LockMidwayResult(
+            tokensGenerated: tokens, secondsRunning: Date().timeIntervalSince(started),
+            stoppedWhenAppLeftForeground: stoppedAfter != nil, secondsUntilStopped: stoppedAfter,
+            finishedNormally: finishedNormally)
+        rewriteReport()
+        state = .ready
     }
 
     /// Load the search model beside Gemma — the state the real app lives in — and re-measure memory.
@@ -315,8 +296,7 @@ final class GemmaBenchModel {
         guard var r = report else { return }
         r.stressRuns = stressRuns.isEmpty ? nil : stressRuns
         r.withSearchModel = withSearchModel
-        r.backgroundRuns = backgroundRuns.isEmpty ? nil : backgroundRuns
-        r.backgroundFailure = backgroundFailure
+        r.lockMidway = lockMidway
         report = r
         let url = reportURL ?? FileManager.default.temporaryDirectory
             .appending(path: "gemma-report-\(Int(Date().timeIntervalSince1970)).json")
