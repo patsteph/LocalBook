@@ -540,7 +540,10 @@ async def start_sync_listener() -> None:
     pems = [d["cert_pem"] for d in store.devices()]
     ctx = await asyncio.to_thread(identity.server_context, pems, True)
     await _serve("sync", sync_app, sync_port(), ctx)
-    await start_phone_listener()
+    try:
+        await start_phone_listener()
+    except Exception as exc:        # a phone-link problem must never take Mac-to-Mac sync down
+        logger.error("[sync] phone listener could not start: %s", exc)
 
 
 async def start_phone_listener() -> None:
@@ -555,8 +558,11 @@ async def open_pairing_window() -> float:
     store.put("pairing_open_until", until)
     ctx = await asyncio.to_thread(identity.server_context, [], False)
     await _serve("pair", pair_app, sync_port() + 1, ctx)
-    pctx = await asyncio.to_thread(identity.server_context, [], False, True)
-    await _serve("phone_pair", phone_pair_app, phone_pair_port(), pctx)
+    try:
+        pctx = await asyncio.to_thread(identity.server_context, [], False, True)
+        await _serve("phone_pair", phone_pair_app, phone_pair_port(), pctx)
+    except Exception as exc:
+        logger.error("[sync] phone pairing listener could not start: %s", exc)
 
     async def _close_later():
         await asyncio.sleep(PAIRING_WINDOW_S)

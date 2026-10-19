@@ -55,3 +55,12 @@ def test_phone_server_context_is_tls13_p256(ident):
 def test_phones_are_not_devices(ident):
     store.pin_phone({"device_id": "p1", "name": "iPhone", "cert_pem": "x", "fingerprint": "f"})
     assert store.phone("p1") and store.devices() == []
+
+
+def test_phone_key_is_derived_from_the_device_identity_seed(ident):
+    """No keyvault purpose of its own: the same seed always gives the same phone key."""
+    from services import keyvault
+    pub = lambda k: k.public_key().public_numbers().x
+    first = pub(identity.phone_private_key())
+    assert first == pub(identity.phone_private_key())
+    assert identity.phone_private_key().public_key().public_numbers().x == first

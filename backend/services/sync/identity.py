@@ -120,11 +120,15 @@ def cert_pem() -> str:
 
 
 def phone_private_key() -> ec.EllipticCurvePrivateKey:
+    """Derived from the Ed25519 `device_identity` seed (HKDF, fixed label), not stored apart:
+    it is recoverable exactly when the main identity is, and keyvault needs no new purpose."""
+    from cryptography.hazmat.primitives.kdf.hkdf import HKDF
     from services import keyvault
 
-    seed = keyvault.get_or_create("device_identity_p256")
+    seed = keyvault.get_or_create("device_identity")
+    okm = HKDF(algorithm=hashes.SHA256(), length=32, salt=None, info=b"localbook-phone-p256-v1").derive(seed)
     order = 0xFFFFFFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632551   # P-256 group order
-    return ec.derive_private_key(int.from_bytes(seed, "big") % (order - 1) + 1, ec.SECP256R1())
+    return ec.derive_private_key(int.from_bytes(okm, "big") % (order - 1) + 1, ec.SECP256R1())
 
 
 def phone_cert_pem() -> str:
