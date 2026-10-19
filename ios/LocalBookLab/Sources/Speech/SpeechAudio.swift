@@ -21,9 +21,9 @@ final class ChunkPlayer: @unchecked Sendable {
         try session.setCategory(.playback, mode: .spokenAudio)
         try session.setActive(true)
         engine.attach(node)
-        engine.connect(node, to: engine.mainMixerNode, format: format)
+        try engine.connectNode(node, to: engine.mainMixerNode, format: format)
         try engine.start()
-        node.play()
+        try node.playAudio()
     }
 
     /// Queue a chunk; returns the seconds of audio that were still waiting when it arrived.
