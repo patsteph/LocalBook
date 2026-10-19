@@ -34,6 +34,12 @@ struct GemmaRun: Codable, Sendable, Identifiable {
     let stopReason: String
 }
 
+struct SearchModelMemory: Codable, Sendable {
+    let footprintMB: Double
+    let availableMB: Double
+    let embedMillisecondsPerToken: Double
+}
+
 struct GemmaReport: Codable, Sendable {
     let createdAt: String
     let device: DeviceInfo
@@ -42,6 +48,10 @@ struct GemmaReport: Codable, Sendable {
     let footprintAfterLoadMB: Double
     let availableMemoryAfterLoadMB: Double
     let runs: [GemmaRun]
+    /// Informational, not pass/fail: a ~3,000-token prompt, then six back-to-back generations.
+    var stressRuns: [GemmaRun]? = nil
+    /// Memory once the search model (EmbeddingGemma on the Neural Engine) is loaded beside Gemma.
+    var withSearchModel: SearchModelMemory? = nil
     let bars: GemmaBars
     let verdict: Verdict
     struct Verdict: Codable, Sendable {
@@ -81,6 +91,8 @@ final class GemmaBenchModel {
     private(set) var runs: [GemmaRun] = []
     private(set) var report: GemmaReport?
     private(set) var reportURL: URL?
+    private(set) var stressRuns: [GemmaRun] = []
+    private(set) var withSearchModel: SearchModelMemory?
     private(set) var liveText = ""
     private(set) var loadSeconds = 0.0
     private(set) var footprintAfterLoadMB = 0.0
@@ -141,8 +153,50 @@ final class GemmaBenchModel {
         finish()
     }
 
-    private func measure(label: String, text: String, on container: ModelContainer) async -> GemmaRun? {
-        let session = ChatSession(container, generateParameters: GenerateParameters(maxTokens: 160))
+    /// The questions the 5 runs cannot answer: does a long prompt blow the memory budget, and does
+    /// speed hold when the phone keeps generating? (Informational, not pass/fail.)
+    func runStress() async {
+        guard let container else { return }
+        stressRuns = []
+        state = .running("very long (~3,000 tokens)")
+        if let r = await measure(label: "very long (~3,000 tokens)", text: Self.prompt(approxTokens: 3500), on: container) {
+            stressRuns.append(r)
+        } else { return }
+        for i in 1...6 {
+            state = .running("sustained \(i) of 6")
+            guard let r = await measure(label: "sustained \(i)", text: Self.prompt(approxTokens: 500), on: container,
+                                        maxTokens: 220) else { return }
+            stressRuns.append(r)
+        }
+        rewriteReport()
+        state = .ready
+    }
+
+    /// Load the search model beside Gemma — the state the real app lives in — and re-measure memory.
+    func loadSearchModelToo() async {
+        guard container != nil else { return }
+        state = .running("loading the search model")
+        do {
+            let location = try await EmbeddingModelStore.prepare(progress: { _ in })
+            let engine = try EmbeddingGemma2Engine(location: location)
+            let ids = Array(repeating: 1000, count: 200)
+            let t0 = Date()
+            _ = try await engine.embed(tokenIds: [2] + ids + [1])
+            let perToken = Date().timeIntervalSince(t0) / 202 * 1000
+            withSearchModel = SearchModelMemory(footprintMB: MemoryProbe.footprintMB(),
+                                                availableMB: MemoryProbe.availableMB(),
+                                                embedMillisecondsPerToken: perToken)
+            keepAlive = engine          // stay resident, as it would in the app
+            rewriteReport()
+            state = .ready
+        } catch {
+            state = .failed("search model: \(error.localizedDescription)")
+        }
+    }
+    private var keepAlive: EmbeddingGemma2Engine?
+
+    private func measure(label: String, text: String, on container: ModelContainer, maxTokens: Int = 160) async -> GemmaRun? {
+        let session = ChatSession(container, generateParameters: GenerateParameters(maxTokens: maxTokens))
         let before = ProcessInfo.processInfo.thermalState.name
         var peak = MemoryProbe.footprintMB()
         let sampler = Task.detached {
@@ -177,6 +231,18 @@ final class GemmaBenchModel {
                         decodeTokensPerSecond: info.tokensPerSecond, peakFootprintMB: peak,
                         thermalBefore: before, thermalAfter: ProcessInfo.processInfo.thermalState.name,
                         stopReason: "\(info.stopReason)")
+    }
+
+    private func rewriteReport() {
+        guard var r = report else { return }
+        r.stressRuns = stressRuns.isEmpty ? nil : stressRuns
+        r.withSearchModel = withSearchModel
+        report = r
+        let url = reportURL ?? FileManager.default.temporaryDirectory
+            .appending(path: "gemma-report-\(Int(Date().timeIntervalSince1970)).json")
+        try? r.json().write(to: url)
+        try? r.json().write(to: URL.documentsDirectory.appending(path: url.lastPathComponent))
+        reportURL = url
     }
 
     private func finish() {

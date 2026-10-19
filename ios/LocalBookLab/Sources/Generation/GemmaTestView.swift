@@ -56,6 +56,27 @@ struct GemmaTestView: View {
                     row("Not hot at the end", report.verdict.thermal, report.runs.last?.thermalAfter ?? "?")
                     if let url = model.reportURL { ShareLink("Share report", item: url) }
                 } header: { Text(report.verdict.pass ? "Pass" : "Not yet") }
+                Section {
+                    Button("Stress: 3,000-token prompt, then 6 generations in a row") { Task { await model.runStress() } }
+                    Button("Load the search model beside Gemma, re-measure memory") { Task { await model.loadSearchModelToo() } }
+                } header: { Text("Next questions") } footer: {
+                    Text("Run both, one after the other, then share the report again. Keep the phone plugged in.")
+                }
+                if !model.stressRuns.isEmpty {
+                    Section("Stress runs") {
+                        ForEach(model.stressRuns) { r in
+                            Text("\(r.label): first word \(fmt(r.firstWordSeconds)) s · \(fmt(r.decodeTokensPerSecond)) tok/s · peak \(Int(r.peakFootprintMB)) MB · \(r.thermalAfter)")
+                                .font(.footnote)
+                        }
+                    }
+                }
+                if let m = model.withSearchModel {
+                    Section("With the search model loaded") {
+                        LabeledContent("Memory used", value: "\(Int(m.footprintMB)) MB")
+                        LabeledContent("Still available", value: "\(Int(m.availableMB)) MB")
+                        LabeledContent("Embed speed", value: "\(fmt(m.embedMillisecondsPerToken)) ms/token")
+                    }
+                }
             }
         }
         .navigationTitle("Gemma 4 E4B")
