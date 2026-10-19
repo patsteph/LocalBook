@@ -25,3 +25,5 @@ pyflakes
 # LB-12 sync harness (tests/test_sync_harness.py): property tests over three replicas.
 # Test-tier only — never in requirements.in.
 hypothesis
+# Needed by services/keyvault.py, which ~20 test modules import. Public package only.
+cryptography
