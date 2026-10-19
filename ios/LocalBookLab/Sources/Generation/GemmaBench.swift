@@ -96,9 +96,10 @@ final class GemmaBenchModel {
         do {
             // Keep MLX's buffer cache small: on a phone it is memory the app cannot spare.
             Memory.cacheLimit = 64 * 1024 * 1024
-            let c = try await #huggingFaceLoadModelContainer(configuration: Self.configuration) { progress in
-                Task { @MainActor [weak self] in
-                    if case .downloading = self?.state { self?.state = .downloading(progress.fractionCompleted) }
+            let c = try await #huggingFaceLoadModelContainer(configuration: Self.configuration) { [weak self] progress in
+                let fraction = progress.fractionCompleted
+                Task { @MainActor in
+                    if case .downloading = self?.state { self?.state = .downloading(fraction) }
                 }
             }
             state = .loading

@@ -124,7 +124,7 @@ final class ParityModel {
             let ids = checkTokenizer ? await tokenize(fixture) : nil
             begin(background: true)
             let runner = ParityRunner(fixture: fixture, engine: engine, passes: passes)
-            try BackgroundParity.start(
+            try await BackgroundParity.start(
                 runner: runner,
                 tokenizerIds: ids,
                 progress: { done, total in

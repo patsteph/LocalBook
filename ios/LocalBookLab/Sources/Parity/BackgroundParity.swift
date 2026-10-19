@@ -13,7 +13,7 @@ enum BackgroundParity {
     static func start(runner: ParityRunner,
                       tokenizerIds: [String: [Int]]?,
                       progress: @escaping @Sendable (Int, Int) -> Void,
-                      finished: @escaping @Sendable (ParityReport) async -> Void) throws {
+                      finished: @escaping @Sendable (ParityReport) async -> Void) async throws {
         let identifier = "\(prefix).\(UUID().uuidString.prefix(8).lowercased())"
         let cancel = CancelFlag()
 
@@ -58,7 +58,7 @@ enum BackgroundParity {
             subtitle: "Embedding on the Neural Engine")
         request.strategy = .fail   // tell us now if it can't start, rather than queueing
         do {
-            try BGTaskScheduler.shared.submit(request)
+            try await BGTaskScheduler.shared.submitTaskRequest(request)
         } catch {
             throw LabError.background("submit failed: \(error.localizedDescription)")
         }

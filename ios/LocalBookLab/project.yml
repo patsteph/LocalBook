@@ -77,6 +77,8 @@ targets:
       properties:
         CFBundleDisplayName: LocalBook Lab
         UILaunchScreen: {}
+        # A Lab, portrait only: say so, or iPad validation wants every orientation.
+        UIRequiresFullScreen: true
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
         # Drop fixtures into the app from Finder (iPhone › Files) or the Files app.

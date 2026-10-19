@@ -109,7 +109,7 @@ final class MacBrowser {
         let tls = NWProtocolTLS.Options()
         let sec = tls.securityProtocolOptions
         sec_protocol_options_set_min_tls_protocol_version(sec, .TLSv13)
-        sec_protocol_options_set_verify_block(sec, { _, trustRef, complete in
+        sec_protocol_options_set_verify_block(sec, { [weak self] _, trustRef, complete in
             let trust = sec_trust_copy_ref(trustRef).takeRetainedValue()
             let chain = (SecTrustCopyCertificateChain(trust) as? [SecCertificate]) ?? []
             let result: TLSProbe
@@ -120,7 +120,7 @@ final class MacBrowser {
             } else {
                 result = .noCertificate("verify callback ran with an empty chain")
             }
-            Task { @MainActor [weak self] in self?.setTLS(result, for: id) }
+            Task { @MainActor in self?.setTLS(result, for: id) }
             complete(true)          // diagnostic only: nothing is sent on this connection
         }, .main)
         let conn = NWConnection(to: endpoint, using: NWParameters(tls: tls, tcp: NWProtocolTCP.Options()))
