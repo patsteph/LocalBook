@@ -44,7 +44,13 @@ struct FindMacsView: View {
             }
             Section {
                 LabeledContent("This phone", value: PhoneIdentity.deviceId)
-                if let p = paired { LabeledContent("Paired with", value: "\(p.name)") }
+                if let p = paired {
+                    LabeledContent(p.verified == true ? "Paired with" : "Asked to pair with", value: "\(p.name)")
+                    if p.verified != true {
+                        Text("Not verified yet: confirm the code on the Mac, then tap “2. Say hello”.")
+                            .font(.footnote).foregroundStyle(.orange)
+                    }
+                }
                 if let code = pairingCode {
                     VStack(alignment: .leading) {
                         Text("Code on this phone").font(.footnote).foregroundStyle(.secondary)
@@ -104,8 +110,10 @@ struct FindMacsView: View {
         busy = true; pairStatus = "Calling the Mac…"
         Task {
             defer { busy = false }
-            do { pairStatus = "Mac replied: \(try await MacLink.signedHello(mac))" }
-            catch { pairStatus = "Hello failed: \(error.localizedDescription)" }
+            do {
+                pairStatus = "Mac replied: \(try await MacLink.signedHello(mac))"
+                paired = MacLink.paired
+            } catch { pairStatus = "Hello failed: \(error.localizedDescription)" }
         }
     }
 

@@ -13,16 +13,20 @@ struct PairedMac: Codable, Equatable {
     var syncPort: Int
     var certDER: Data
     var fingerprint: String
+    /// Set once a signed call over mutual TLS has actually worked. Until then the Mac has only
+    /// been *asked* — it still needs the user to confirm the code there.
+    var verified: Bool? = nil
 }
 
 enum MacLinkError: LocalizedError {
-    case http(Int, String), certificateMismatch, noCertificate, notPaired
+    case http(Int, String), certificateMismatch, noCertificate, notPaired, detail(String)
     var errorDescription: String? {
         switch self {
         case .http(let c, let m): "Mac answered \(c): \(m)"
         case .certificateMismatch: "The certificate in the reply is not the one the connection used"
         case .noCertificate: "The Mac sent no certificate"
         case .notPaired: "Not paired yet"
+        case .detail(let s): s
         }
     }
 }
@@ -95,10 +99,22 @@ enum MacLink {
         req.httpBody = body
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         for (k, v) in try PhoneIdentity.signedHeaders(method: "POST", path: path, body: body) { req.setValue(v, forHTTPHeaderField: k) }
-        let (data, response) = try await session.data(for: req)
+        let data: Data, response: URLResponse
+        do { (data, response) = try await session.data(for: req) }
+        catch { throw MacLinkError.detail(describe(error, delegate.trace)) }
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
         guard status == 200 else { throw MacLinkError.http(status, String(decoding: data.prefix(200), as: UTF8.self)) }
+        var ok = mac
+        ok.verified = true
+        paired = ok
         return String(decoding: data, as: UTF8.self)
+    }
+
+    /// What actually happened, for a status line: the error, its code, and the TLS challenges seen.
+    static func describe(_ error: Error, _ trace: [String]) -> String {
+        let ns = error as NSError
+        let t = trace.isEmpty ? "no TLS challenge reached the app" : trace.joined(separator: ", ")
+        return "\(error.localizedDescription) [\(ns.domain) \(ns.code)] — \(t)"
     }
 
     private static func derFromPEM(_ pem: String) -> Data? {
@@ -114,7 +130,10 @@ private final class TrustCapture: NSObject, URLSessionDelegate, @unchecked Senda
     let identity: SecIdentity?
     private let lock = NSLock()
     private var _seen: Data?
+    private var _trace: [String] = []
     var seenDER: Data? { lock.lock(); defer { lock.unlock() }; return _seen }
+    var trace: [String] { lock.lock(); defer { lock.unlock() }; return _trace }
+    private func note(_ s: String) { lock.lock(); _trace.append(s); lock.unlock() }
 
     init(pinned: Data?, identity: SecIdentity?) { self.pinned = pinned; self.identity = identity }
 
@@ -122,15 +141,20 @@ private final class TrustCapture: NSObject, URLSessionDelegate, @unchecked Senda
                     completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
         switch challenge.protectionSpace.authenticationMethod {
         case NSURLAuthenticationMethodServerTrust:
+            note("server certificate")
             guard let trust = challenge.protectionSpace.serverTrust,
                   let leaf = (SecTrustCopyCertificateChain(trust) as? [SecCertificate])?.first else {
                 return completionHandler(.cancelAuthenticationChallenge, nil)
             }
             let der = SecCertificateCopyData(leaf) as Data
             lock.lock(); _seen = der; lock.unlock()
-            if let pinned, pinned != der { return completionHandler(.cancelAuthenticationChallenge, nil) }
+            if let pinned, pinned != der {
+                note("server certificate DID NOT match the pinned one")
+                return completionHandler(.cancelAuthenticationChallenge, nil)
+            }
             completionHandler(.useCredential, URLCredential(trust: trust))
         case NSURLAuthenticationMethodClientCertificate:
+            note("client certificate requested")
             guard let identity else { return completionHandler(.performDefaultHandling, nil) }
             completionHandler(.useCredential, URLCredential(identity: identity, certificates: nil, persistence: .forSession))
         default:
