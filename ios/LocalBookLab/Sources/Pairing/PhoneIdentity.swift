@@ -24,6 +24,10 @@ enum PhoneIdentity {
         let query: [String: Any] = [kSecClass as String: kSecClassKey,
                                     kSecAttrApplicationTag as String: tag,
                                     kSecAttrKeyType as String: kSecAttrKeyTypeECSECPrimeRandom,
+                                    // A permanent key can leave its PUBLIC half in the Keychain under the
+                                    // same tag; without the class, the lookup may return that one and
+                                    // signing fails with -50 "algorithm not supported by the key".
+                                    kSecAttrKeyClass as String: kSecAttrKeyClassPrivate,
                                     kSecReturnRef as String: true]
         var found: CFTypeRef?
         if SecItemCopyMatching(query as CFDictionary, &found) == errSecSuccess, let k = found {
@@ -31,9 +35,11 @@ enum PhoneIdentity {
         }
         let attrs: [String: Any] = [kSecAttrKeyType as String: kSecAttrKeyTypeECSECPrimeRandom,
                                     kSecAttrKeySizeInBits as String: 256,
-                                    kSecAttrIsPermanent as String: true,
-                                    kSecAttrApplicationTag as String: tag,
-                                    kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly]
+                                    kSecPrivateKeyAttrs as String: [
+                                        kSecAttrIsPermanent as String: true,
+                                        kSecAttrApplicationTag as String: tag,
+                                        kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
+                                    ] as [String: Any]]
         var err: Unmanaged<CFError>?
         guard let key = SecKeyCreateRandomKey(attrs as CFDictionary, &err) else { throw err!.takeRetainedValue() }
         return key
@@ -98,7 +104,8 @@ enum PhoneIdentity {
     }
 
     private static func buildCertificateDER() throws -> Data {
-        guard let pub = SecKeyCopyPublicKey(try privateKey()),
+        let priv = try privateKey()
+        guard let pub = SecKeyCopyPublicKey(priv),
               let point = SecKeyCopyExternalRepresentation(pub, nil) as Data? else { throw LabError.model("no public key") }
         let sigAlg = der(0x30, Data([0x06, 0x08, 0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x04, 0x03, 0x02]))
         let name = der(0x30, der(0x31, der(0x30, Data([0x06, 0x03, 0x55, 0x04, 0x03])
@@ -125,7 +132,7 @@ enum PhoneIdentity {
         let tbs = der(0x30, Data([0xA0, 0x03, 0x02, 0x01, 0x02]) + der(0x02, serial) + sigAlg + name + validity
                       + name + spki + extensions)
         var err: Unmanaged<CFError>?
-        guard let sig = SecKeyCreateSignature(try privateKey(), .ecdsaSignatureMessageX962SHA256,
+        guard let sig = SecKeyCreateSignature(priv, .ecdsaSignatureMessageX962SHA256,
                                               tbs as CFData, &err) as Data? else { throw err!.takeRetainedValue() }
         return der(0x30, tbs + sigAlg + der(0x03, Data([0x00]) + sig))
     }
