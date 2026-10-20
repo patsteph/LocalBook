@@ -692,6 +692,11 @@ async def _run_startup_tasks():
                 )
                 if dropped:
                     print(f"🧹 Reconciled derived stores — dropped {dropped} orphaned notebook entr(ies)")
+                from services import rag_storage
+                tables = await asyncio.to_thread(rag_storage.reconcile_vector_tables, live)
+                if tables["dropped_empty"] or tables["orphans_with_data"]:
+                    print(f"🧹 Vector tables: dropped {tables['dropped_empty']} empty orphan(s); "
+                          f"{tables['orphans_with_data']} orphan table(s) still hold data (see scripts/data_integrity.py)")
             except Exception as e:
                 print(f"⚠️ Derived-store reconcile failed (non-fatal): {e}")
 

@@ -483,13 +483,55 @@ def drop_notebook_table(notebook_id: str) -> bool:
     Deleting a notebook never did this, so every notebook ever created left its
     table behind — 74 of 79 tables in one real data dir belonged to notebooks
     that no longer exist.
+
+    `table_names()` can under-report on this storage format (services/embedding_migration walks table
+    DIRECTORIES for the same reason), so a table is dropped by name and, failing that, by removing its
+    directory — never skipped because it was not listed.
     """
     db = _get_db()
     table_name = f"notebook_{notebook_id}"
-    if table_name not in db.table_names():
-        return False
-    db.drop_table(table_name)
-    return True
+    try:
+        db.drop_table(table_name)
+        return True
+    except Exception as exc:
+        logger.debug("[rag-storage] drop_table(%s): %s", table_name, exc)
+    import shutil
+    from pathlib import Path
+    d = Path(str(settings.db_path)) / f"{table_name}.lance"
+    if d.exists():
+        shutil.rmtree(d, ignore_errors=True)
+        return True
+    return False
+
+
+def reconcile_vector_tables(live_notebook_ids) -> dict:
+    """Housekeeping at start-up: vector tables that belong to no live notebook.
+
+    Empty ones (no real rows: placeholders created for ids that were never notebooks, or emptied by deleted
+    sources) are dropped. Ones that still hold chunks are only COUNTED — deleting stored data is the owner's
+    call (scripts/data_integrity.py lists them). Never runs against an empty live list."""
+    from pathlib import Path
+    live = set(live_notebook_ids)
+    if not live:
+        return {"dropped_empty": 0, "orphans_with_data": 0}
+    db_dir = Path(str(settings.db_path))
+    db = _get_db()
+    dropped = with_data = 0
+    for d in sorted(db_dir.glob("notebook_*.lance")):
+        nb = d.name[:-len(".lance")][len("notebook_"):]
+        if nb in live:
+            continue
+        try:
+            t = db.open_table(f"notebook_{nb}")
+            real = t.count_rows() - len(t.search().where("source_id = 'placeholder'").limit(10).to_list())
+        except Exception:
+            continue
+        if real <= 0:
+            if drop_notebook_table(nb):
+                dropped += 1
+        else:
+            with_data += 1
+    return {"dropped_empty": dropped, "orphans_with_data": with_data}
 
 
 async def delete_source(notebook_id: str, source_id: str) -> bool:
