@@ -560,6 +560,39 @@ async def phone_hello(request: Request):
             "proto": identity.PROTOCOL, "models": models(), "you": v["device"]["device_id"]}
 
 
+@phone_sync_app.post("/phone/library/manifest")
+async def phone_library_manifest(request: Request):
+    _check_enabled()
+    await _verified_phone(request)
+    from services.sync import phone_library
+    return await asyncio.to_thread(phone_library.manifest)
+
+
+@phone_sync_app.post("/phone/library/sources")
+async def phone_library_sources(request: Request):
+    _check_enabled()
+    v = await _verified_phone(request)
+    from services.sync import phone_library
+    out = await asyncio.to_thread(phone_library.sources, str(v["body"].get("notebook_id", "")))
+    if out is None:
+        raise HTTPException(404, "no such notebook")
+    return out
+
+
+@phone_sync_app.post("/phone/library/chunks")
+async def phone_library_chunks(request: Request):
+    _check_enabled()
+    v = await _verified_phone(request)
+    from services.sync import phone_library
+    b = v["body"]
+    out = await asyncio.to_thread(
+        lambda: phone_library.chunks(str(b.get("notebook_id", "")), source_ids=b.get("source_ids"),
+                                     after=b.get("after"), limit=int(b.get("limit", 200))))
+    if out is None:
+        raise HTTPException(404, "no such notebook")
+    return out
+
+
 # ── listeners ────────────────────────────────────────────────────────────────
 
 _servers: Dict[str, Any] = {}

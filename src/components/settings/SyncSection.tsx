@@ -74,6 +74,7 @@ export function SyncSection() {
     const [conflicts, setConflicts] = useState<Conflict[] | null>(null);
     const [found, setFound] = useState<FoundMac[] | null>(null);
     const [syncing, setSyncing] = useState(false);
+    const [phoneNotebooks, setPhoneNotebooks] = useState<{ id: string; title: string; on_phone: boolean }[] | null>(null);
 
     const refresh = useCallback(async () => {
         try {
@@ -108,6 +109,21 @@ export function SyncSection() {
         } catch { setFound([]); }
     }, []);
     useEffect(() => { if (st?.enabled) void discover(); }, [st?.enabled, discover]);
+
+    const loadPhoneNotebooks = useCallback(async () => {
+        try {
+            const { data } = await api.get<{ notebooks: { id: string; title: string; on_phone: boolean }[] }>('/sync/phones/library');
+            setPhoneNotebooks(data.notebooks);
+        } catch { setPhoneNotebooks(null); }
+    }, []);
+    useEffect(() => { if (st?.enabled) void loadPhoneNotebooks(); }, [st?.enabled, loadPhoneNotebooks]);
+
+    const togglePhoneNotebook = (id: string, onPhone: boolean) => run(`phone-nb-${id}`, async () => {
+        const next = (phoneNotebooks ?? []).map((n) => (n.id === id ? { ...n, on_phone: onPhone } : n));
+        const { data } = await api.post<{ notebooks: { id: string; title: string; on_phone: boolean }[] }>(
+            '/sync/phones/library', { excluded: next.filter((n) => !n.on_phone).map((n) => n.id) });
+        setPhoneNotebooks(data.notebooks);
+    });
 
     const run = async (label: string, fn: () => Promise<any>) => {
         setBusy(label); setError(null);
@@ -266,6 +282,25 @@ export function SyncSection() {
                                         Remove
                                     </button>
                                 </div>
+                            ))}
+                        </section>
+                    )}
+
+                    {/* ── what phones may read ── */}
+                    {phoneNotebooks && phoneNotebooks.length > 0 && (
+                        <section className="space-y-3 rounded-lg border border-gray-700 bg-gray-900/40 p-4 text-sm">
+                            <h3 className="font-semibold text-gray-100">What paired phones can read</h3>
+                            <p className="text-xs text-gray-400">
+                                A phone you pair can read the notebooks ticked here (their text and search vectors).
+                                Untick a notebook to keep it off phones. New notebooks start ticked.
+                            </p>
+                            {phoneNotebooks.map((n) => (
+                                <label key={n.id} className="flex items-center gap-2 text-gray-200">
+                                    <input type="checkbox" checked={n.on_phone} disabled={!!busy}
+                                        onChange={(e) => void togglePhoneNotebook(n.id, e.target.checked)} />
+                                    <span>{n.title}</span>
+                                    {!n.on_phone && <span className="text-xs text-amber-300">kept off phones</span>}
+                                </label>
                             ))}
                         </section>
                     )}

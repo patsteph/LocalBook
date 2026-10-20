@@ -125,6 +125,25 @@ async def discover():
     return {"macs": [m for m in found if m.get("device_id") not in paired]}
 
 
+class PhoneLibraryRequest(BaseModel):
+    excluded: list[str]
+
+
+@router.get("/phones/library")
+async def phone_library_settings():
+    """Every notebook and whether paired phones may read it."""
+    from services.sync import phone_library
+    return {"notebooks": phone_library.settings_view()}
+
+
+@router.post("/phones/library")
+async def set_phone_library(req: PhoneLibraryRequest):
+    """Set which notebooks are kept off phones (everything else is visible)."""
+    from services.sync import phone_library
+    phone_library.set_excluded(req.excluded)
+    return {"notebooks": phone_library.settings_view()}
+
+
 @router.post("/phones/{device_id}/revoke")
 async def revoke_phone(device_id: str):
     return await _call(_svc().revoke_phone(device_id))
