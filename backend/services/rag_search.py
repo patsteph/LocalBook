@@ -37,15 +37,28 @@ except ImportError:
 # ─── Lazy-loaded reranker state ──────────────────────────────────────────────────
 
 _flashrank_reranker = None
+_fp32_reranker = None
 _crossencoder_reranker = None
 
 
 def _get_reranker():
     """Lazy load the reranker model - prefers FlashRank for speed."""
-    global _flashrank_reranker, _crossencoder_reranker
+    global _flashrank_reranker, _crossencoder_reranker, _fp32_reranker
 
-    # Prefer FlashRank (ultra-fast, no torch)
+    # Prefer FlashRank (ultra-fast, no torch). With reranker_precision="fp32" the same model runs at full
+    # precision once its file is on disk (the iPhone does too, so both rank the same).
     if HAS_FLASHRANK and settings.reranker_type == "flashrank":
+        if getattr(settings, "reranker_precision", "int8") == "fp32":
+            try:
+                from services import onnx_reranker
+                if onnx_reranker.available():
+                    if _fp32_reranker is None:
+                        _fp32_reranker = onnx_reranker.FullPrecisionReranker(max_length=256)
+                        print("[RAG] Loaded full-precision reranker (MiniLM-L-12, same weights as the iPhone)")
+                    return _fp32_reranker
+                onnx_reranker.fetch_in_background()          # keep FlashRank until it arrives
+            except Exception as exc:
+                print(f"[RAG] full-precision reranker unavailable ({exc}); using FlashRank")
         if _flashrank_reranker is None:
             # Use persistent cache dir (not /tmp which gets cleared on reboot)
             cache_dir = settings.data_dir / "models" / "flashrank"

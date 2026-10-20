@@ -73,19 +73,42 @@ final class AnswerParityModel {
     let library: LibraryModel
     init(library: LibraryModel) { self.library = library }
 
-    func loadQuestions() -> [String] {
+    /// The questions in the app's own copy of the fixture, or the real reason there are none.
+    func readQuestions() -> (questions: [String], problem: String?) {
         let url = URL.documentsDirectory.appending(path: "parity_fixture.json")
-        guard let fixture = try? ParityFixture.load(from: url) else { return [] }
-        let marker = "| query: "
-        return fixture.queries.compactMap { q in
-            guard let r = q.formattedText.range(of: marker) else { return nil }
-            return String(q.formattedText[r.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
-        }.filter { $0.count >= 8 }
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            return ([], "The app has no copy of parity_fixture.json yet. Tap “Choose parity_fixture.json…” and pick the file from the Mac.")
+        }
+        do {
+            let fixture = try ParityFixture.load(from: url)
+            let marker = "| query: "
+            let qs = fixture.queries.compactMap { q -> String? in
+                guard let r = q.formattedText.range(of: marker) else { return nil }
+                return String(q.formattedText[r.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
+            }.filter { $0.count >= 8 }
+            return qs.isEmpty ? ([], "The fixture loaded but holds no questions (\(fixture.queries.count) queries, none with a “| query:” part).") : (qs, nil)
+        } catch {
+            return ([], "The saved fixture cannot be read — probably an old export. Regenerate it on the Mac and choose it again. Details: \(Self.describe(error))")
+        }
+    }
+
+    func loadQuestions() -> [String] { readQuestions().questions }
+
+    private static func describe(_ error: Error) -> String {
+        if let d = error as? DecodingError {
+            switch d {
+            case .keyNotFound(let k, let c): return "missing “\(k.stringValue)” at \(c.codingPath.map(\.stringValue).joined(separator: "."))"
+            case .typeMismatch(_, let c), .valueNotFound(_, let c), .dataCorrupted(let c): return "\(c.debugDescription) at \(c.codingPath.map(\.stringValue).joined(separator: "."))"
+            @unknown default: break
+            }
+        }
+        return error.localizedDescription
     }
 
     func requestStop() { stop = true }
 
-    var availableQuestions: Int { loadQuestions().count }
+    var availableQuestions: Int { readQuestions().questions.count }
+    var fixtureProblem: String? { readQuestions().problem }
 
     /// Copy a picked parity_fixture.json into the app's own folder, so the next run finds it by itself.
     func importFixture(_ url: URL) {
@@ -95,17 +118,20 @@ final class AnswerParityModel {
             let data = try Data(contentsOf: url)
             _ = try ParityFixture.decoder.decode(ParityFixture.self, from: data)       // must be a real fixture
             try data.write(to: URL.documentsDirectory.appending(path: "parity_fixture.json"), options: .atomic)
-            status = "Loaded \(availableQuestions) questions from \(url.lastPathComponent)."
+            status = fixtureProblem ?? "Loaded \(availableQuestions) questions from \(url.lastPathComponent)."
         } catch {
             status = "That file is not a parity fixture: \(error.localizedDescription)"
         }
     }
 
     func run(count: Int) async {
-        let questions = Array(loadQuestions().prefix(count))
+        let read = readQuestions()
+        let questions = Array(read.questions.prefix(count))
         questionCount = questions.count
-        guard !questions.isEmpty else { status = "No questions yet: tap “Choose parity_fixture.json…” and pick the file from the Mac."; return }
-        guard library.searchState == .ready else { status = "Get the phone's search model ready first."; return }
+        guard !questions.isEmpty else { status = read.problem ?? "No questions found."; return }
+        guard library.searchState == .ready else { status = "Get the phone's search model ready first (Library screen)."; return }
+        guard MacLink.paired != nil else { status = "Pair with a Mac first (row 3)."; return }
+        guard library.chunkCount > 0 else { status = "The phone has no library yet: sync it first (Library screen)."; return }
         running = true; stop = false; results = []; report = nil
         defer { running = false }
         for (i, q) in questions.enumerated() {
@@ -192,7 +218,8 @@ struct AnswerParityView: View {
                     if !model.status.isEmpty { Text(model.status).font(.footnote).foregroundStyle(.secondary) }
                 }
             } header: { Text("Mac vs phone") } footer: {
-                Text("Needs: Mac app running, library synced and the search model ready (Library screen). The questions come from parity_fixture.json (\(model.availableQuestions) found): choose it once and the app remembers it. Each question takes about a minute. Keep the phone plugged in and the screen on.")
+                Text((model.fixtureProblem.map { "Questions: \($0)\n\n" } ?? "Questions: \(model.availableQuestions) found.\n\n")
+                     + "Needs the Mac app running, the library synced and the search model ready (Library screen). Each question takes about a minute. Keep the phone plugged in and the screen on.")
             }
             if let r = model.report {
                 Section("Agreement so far (\(r.completed) ok, \(r.failed) failed)") {

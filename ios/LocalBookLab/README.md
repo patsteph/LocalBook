@@ -122,7 +122,10 @@ The phone reranks like the Mac: `ms-marco-MiniLM-L-12-v2`, converted to Core ML 
 The model (`tools/cache/RerankerL12.mlpackage`, 64 MB) is not committed; the build works without it and the
 phone then skips reranking. Measured on 50 real questions × 12 candidates against the Mac's reranker: rank
 correlation 0.968, same best passage 84%, same top 5 93% (L-6 is much worse: 0.916 / 66% / 86%). The gap to
-100% is the Mac's int8-quantised ONNX file versus this half-precision model.
+100% is the Mac's int8-quantised ONNX file versus this half-precision model. Running the same full
+precision on the Mac (`reranker_precision = "fp32"`, `backend/services/onnx_reranker.py`, exported with
+`tools/export_reranker_onnx.py`) closes it: rank correlation 0.999, same best passage 100%, same top 5 100%
+(`tools/score_with_onnx.py` + `tools/compare_onnx_coreml.py`). Mac cost: about 265 ms per 12 passages on the CPU.
 
 ## What it measures
 

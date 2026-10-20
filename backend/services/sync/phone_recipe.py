@@ -103,7 +103,8 @@ def recipe() -> Dict[str, Any]:
                        "repetition_context_size": int(mlx_engine._MLX_REP_CONTEXT)},
         "retrieval": {"top_k": 4, "overcollect": int(settings.retrieval_overcollect), "rerank_keep": 5,
                       "rrf_k": 60, "candidates_per_ranker": 50,
-                      "reranker": {"enabled": bool(settings.use_reranker), "model": settings.reranker_model}},
+                      "reranker": {"enabled": bool(settings.use_reranker), "model": settings.reranker_model,
+                                   "precision": getattr(settings, "reranker_precision", "int8")}},
         "clean_steps": CLEAN_STEPS,
         "conformance": {"classification": _classification_vectors(), "cleaning": _clean_vectors()},
     }
