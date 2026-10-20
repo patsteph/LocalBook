@@ -1,6 +1,12 @@
 import Foundation
+import HuggingFace
+import MLX
+import MLXHuggingFace
+import MLXLLM
+import MLXLMCommon
 import Observation
 import Tokenizers
+import UIKit
 
 /// Phase 1, item 2: the phone's copy of the Mac's library — sync it, then search it with the phone's
 /// own embedder. Searching the Mac's vectors with the phone's embedder is exactly what test 1 proved.
@@ -18,12 +24,18 @@ final class LibraryModel {
     private(set) var lastSummary: LibrarySync.Summary?
     private(set) var hits: [LibraryHit] = []
     private(set) var timing = ""
+    private(set) var answerText = ""
+    private(set) var answerSources: [LibraryHit] = []
+    private(set) var answerStatus = ""
+    private(set) var answering = false
+    private var generation: Task<Void, Never>?
+    private var gemma: ModelContainer?
     var query = ""
     var scopeToNotebook: String?
 
     private var store: LibraryStore?
     private var engine: EmbeddingGemma2Engine?
-    private var tokenizer: (any Tokenizer)?
+    private var tokenizer: (any Tokenizers.Tokenizer)?
     private var queryTemplate = "task: search result | query: {text}"
 
     func open() async {
@@ -42,6 +54,10 @@ final class LibraryModel {
         chunkCount = await store.chunkCount()
         if let t = await store.meta("last_sync") { lastSyncLine = "Last synced \(t)" }
         if let q = await store.meta("query_template") { queryTemplate = q }
+        // The app searches one notebook at a time (only the curator sees across all of them).
+        if scopeToNotebook == nil || !notebooks.contains(where: { $0.id == scopeToNotebook }) {
+            scopeToNotebook = notebooks.max(by: { $0.chunks < $1.chunks })?.id
+        }
     }
 
     func sync() async {
@@ -73,6 +89,81 @@ final class LibraryModel {
             engine = e
             searchState = .ready
         } catch { searchState = .failed(error.localizedDescription) }
+    }
+
+    func stopAnswer() { generation?.cancel() }
+
+    /// Free the answer model's memory (4+ GB) when the screen goes away.
+    func unloadAnswerModel() {
+        generation?.cancel()
+        gemma = nil
+    }
+
+    /// Search the chosen notebook, then have the phone's own Gemma answer from those passages. Generation
+    /// is cancelled the moment the app stops being active: iOS refuses GPU work in the background and
+    /// a stuck generation freezes the app (measured in Phase 0).
+    func ask() async {
+        guard let store, let engine, let tokenizer, !answering,
+              !query.trimmingCharacters(in: .whitespaces).isEmpty, let scope = scopeToNotebook else { return }
+        answering = true
+        answerText = ""; answerSources = []
+        defer { answering = false }
+        do {
+            answerStatus = "Finding passages…"
+            let t0 = Date()
+            let text = queryTemplate.replacingOccurrences(of: "{text}", with: query)
+            let vector = try await engine.embed(tokenIds: TokenRepair.spaceFallback(tokenizer.encode(text: text)))
+            let result = try await store.search(query: vector, topK: 5, notebook: scope)
+            hits = result.hits
+            answerSources = result.hits
+            let findSeconds = Date().timeIntervalSince(t0)
+
+            if gemma == nil {
+                answerStatus = "Loading the answer model (4 GB)…"
+                Memory.cacheLimit = 64 * 1024 * 1024
+                gemma = try await #huggingFaceLoadModelContainer(configuration: LLMRegistry.gemma4_e4b_it_4bit)
+            }
+            guard let gemma else { return }
+            let sources = result.hits.enumerated().map { i, h in
+                "[\(i + 1)] (\(h.filename))\n\(String(h.text.prefix(1_100)))"
+            }.joined(separator: "\n\n")
+            let instructions = "You answer questions using ONLY the numbered passages from the user's own notes. "
+                + "If they do not contain the answer, say so plainly. Be concise. Cite the passages you used like [1] or [2]."
+            let prompt = "Passages:\n\n\(sources)\n\nQuestion: \(query)"
+            let session = ChatSession(gemma, instructions: instructions, generateParameters: GenerateParameters(maxTokens: 400))
+
+            answerStatus = "Answering…"
+            let started = Date()
+            var firstWord: Double?
+            var info: GenerateCompletionInfo?
+            let task = Task { @MainActor in
+                for try await item in session.streamDetails(to: prompt) {
+                    switch item {
+                    case .chunk(let s):
+                        if firstWord == nil { firstWord = Date().timeIntervalSince(started) }
+                        answerText += s
+                    case .info(let i): info = i
+                    default: break
+                    }
+                }
+            }
+            generation = Task { _ = try? await task.value }
+            let observer = NotificationCenter.default.addObserver(
+                forName: UIApplication.willResignActiveNotification, object: nil, queue: .main) { _ in
+                MainActor.assumeIsolated { task.cancel() }
+            }
+            do { try await task.value } catch {}
+            NotificationCenter.default.removeObserver(observer)
+            let cancelled = task.isCancelled
+            var line = "Passages in \(Int(findSeconds * 1000)) ms"
+            if let firstWord { line += " · first word \(String(format: "%.1f", firstWord)) s" }
+            if let info { line += " · \(String(format: "%.0f", info.tokensPerSecond)) tok/s · \(info.generationTokenCount) tokens" }
+            line += " · memory \(Int(MemoryProbe.footprintMB())) MB"
+            if cancelled { line += " · stopped" }
+            answerStatus = line
+        } catch {
+            answerStatus = "Could not answer: \(error.localizedDescription)"
+        }
     }
 
     func search() async {

@@ -45,22 +45,33 @@ struct LibraryView: View {
                     TextField("Ask your library a question", text: $model.query)
                         .submitLabel(.search)
                         .onSubmit { Task { await model.search() } }
-                    Picker("Search in", selection: $model.scopeToNotebook) {
-                        Text("Everything").tag(String?.none)
+                    Picker("Notebook", selection: $model.scopeToNotebook) {
                         ForEach(model.notebooks) { Text($0.title).tag(String?.some($0.id)) }
                     }
-                    Button("Search") { Task { await model.search() } }
+                    Button("Ask (answer with Gemma from the passages)") { Task { await model.ask() } }
+                        .disabled(model.answering)
+                    Button("Search only (just the passages)") { Task { await model.search() } }
                     if !model.timing.isEmpty { Text(model.timing).font(.footnote).foregroundStyle(.secondary) }
                 }
             } header: { Text("Search on the phone") } footer: {
                 Text("The question is embedded on this phone and compared with the Mac's own vectors — the same match test 1 proved.")
             }
 
+            if model.answering || !model.answerText.isEmpty || !model.answerStatus.isEmpty {
+                Section {
+                    if model.answering { Button("Stop", role: .destructive) { model.stopAnswer() } }
+                    if !model.answerText.isEmpty { Text(model.answerText) }
+                    if !model.answerStatus.isEmpty { Text(model.answerStatus).font(.footnote).foregroundStyle(.secondary) }
+                } header: { Text("Answer") } footer: {
+                    Text("Written on this phone by the same Gemma 4 model the Mac runs, from the passages below. It stops if you lock the phone.")
+                }
+            }
+
             if !model.hits.isEmpty {
-                Section("Best matches") {
-                    ForEach(model.hits) { h in
+                Section("Sources") {
+                    ForEach(Array(model.hits.enumerated()), id: \.element.id) { i, h in
                         VStack(alignment: .leading, spacing: 3) {
-                            Text("\(h.notebookTitle) · \(h.filename)").font(.footnote.weight(.medium))
+                            Text("[\(i + 1)] \(h.notebookTitle) · \(h.filename)").font(.footnote.weight(.medium))
                             Text(h.text.prefix(240) + (h.text.count > 240 ? "…" : "")).font(.footnote)
                             Text(String(format: "similarity %.3f", h.score)).font(.caption2).foregroundStyle(.secondary)
                         }
@@ -71,5 +82,6 @@ struct LibraryView: View {
         .navigationTitle("Library")
         .navigationBarTitleDisplayMode(.inline)
         .task { await model.open() }
+        .onDisappear { model.unloadAnswerModel() }
     }
 }

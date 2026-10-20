@@ -72,8 +72,9 @@ PAKE-style pairing instead of a 6-digit code.
 ## Recommended Phase 1 order
 
 1. ~~Harden the phone link (nonce, binding, rate limit)~~ — done.
-2. A phone-side sync client that pulls the library through the phone link (the Mac side has only a
-   hello endpoint today) and stores chunk text and the Mac's vectors.
+2. ~~A phone-side sync client~~ — done and run on the phone (Lab row 5): 7 notebooks, 11,190 chunks,
+   36.1 MB in 14.9 s over Wi-Fi; a question embeds in 18 ms and the Mac's vectors match it. The app searches
+   one notebook at a time (only the curator sees across all). Mac-side per-notebook "Keep off phones" switch.
 3. On-phone search over those vectors (embedding is already proven), then the answer path with
    Gemma in the foreground, with the memory limits above as acceptance criteria.
 4. Read-aloud and voice notes using the proven engines.
