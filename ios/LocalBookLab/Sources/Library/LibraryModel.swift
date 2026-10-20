@@ -150,7 +150,9 @@ final class LibraryModel {
         let embedSeconds: Double
         let seconds: Double
         let nothingRelevant: Bool         // the Mac would answer "I don't have enough relevant information"
+        var pool: [Ranked] = []           // the reranked, boosted passages before the keep/drop rules (what a retry starts from)
     }
+    struct Ranked: Sendable { let hit: LibraryHit; let rerank: Double }
 
     /// Retrieval the way the Mac does it (rag_engine.query): expand the question with the Mac's rule-based tables,
     /// fuse the nearest vectors and BM25 into `hybridK` candidates, rerank them with the cross-encoder (against the
@@ -188,7 +190,14 @@ final class LibraryModel {
             let personal = await personal(for: notebook)
             top = r.boosted(scored, question: question, personal: personal).map { top[$0.index] }
         }
-        // Confidence and the keep/drop rules are the Mac's (rag_context.build_citations_and_context).
+        let pool = top.map { Ranked(hit: $0.hit, rerank: $0.rerank) }
+        let (cited, nothing) = cite(pool, didRerank: didRerank)
+        return Retrieval(hits: cited, reranked: didRerank, candidates: found.hits.count, scanned: found.scanned,
+                         embedSeconds: embedSeconds, seconds: Date().timeIntervalSince(t0), nothingRelevant: nothing, pool: pool)
+    }
+
+    /// Confidence and the keep/drop rules are the Mac's (rag_context.build_citations_and_context).
+    func cite(_ top: [Ranked], didRerank: Bool) -> (hits: [LibraryHit], nothing: Bool) {
         var cited = top.map { item -> LibraryHit in
             let conf = recipe?.confidence(rerank: didRerank ? item.rerank : 0, rrfNormalised: Double(item.hit.rrf)) ?? Double(item.hit.rrf)
             return LibraryHit(notebookId: item.hit.notebookId, notebookTitle: item.hit.notebookTitle, sourceId: item.hit.sourceId,
@@ -203,8 +212,38 @@ final class LibraryModel {
             else if strong.isEmpty { cited = Array(cited.prefix(rules.fallbackKeep)) }
             else { cited = strong }
         }
-        return Retrieval(hits: cited, reranked: didRerank, candidates: found.hits.count, scanned: found.scanned,
-                         embedSeconds: embedSeconds, seconds: Date().timeIntervalSince(t0), nothingRelevant: nothing)
+        return (cited, nothing)
+    }
+
+    /// The Mac's second look (rag_search.corrective_retrieval): search again with rewritten queries, add the new
+    /// passages to the first set (capped), rerank the lot and keep the best. Nil when it would find nothing new.
+    func correctiveRetrieve(question: String, notebook: String?, first: [Ranked]) async throws -> Retrieval? {
+        guard let store, let engine, let tokenizer, let reranker, let r = recipe, let c = r.corrective else { return nil }
+        let rt = r.retrieval
+        let t0 = Date()
+        let variants = r.queryVariants(question)
+        guard variants.count > 1 else { return nil }
+        func key(_ h: LibraryHit) -> String { "\(h.sourceId)/\(h.chunkIndex)" }
+        var all = first.map(\.hit)
+        var seen = Set(all.map(key))
+        var params = LibraryStore.SearchParams(vectorCandidates: c.vectorCandidates, bm25Candidates: c.bm25Candidates, hybridK: c.hybridK,
+                                               rrfK: Double(rt.rrfK), missingRank: Double(rt.rrfMissingRank), k1: rt.bm25.k1, b: rt.bm25.b, epsilon: rt.bm25.epsilon)
+        params.hybridK = c.hybridK
+        var scanned = 0
+        for v in variants.dropFirst() {
+            let text = queryTemplate.replacingOccurrences(of: "{text}", with: v)
+            let vector = try await engine.embed(tokenIds: TokenRepair.spaceFallback(tokenizer.encode(text: text)))
+            let found = try await store.search(query: vector, queryText: v, params: params, notebook: notebook)
+            scanned = max(scanned, found.scanned)
+            for h in found.hits where !seen.contains(key(h)) { all.append(h); seen.insert(key(h)) }
+        }
+        all = Array(all.prefix(c.resultCap))
+        guard all.count > first.count else { return nil }
+        let scores = try await reranker.scores(query: question, passages: all.map(\.text))
+        let top = zip(all, scores).map { Ranked(hit: $0, rerank: Double($1)) }.sorted { $0.rerank > $1.rerank }.prefix(c.rerankKeep)
+        let (cited, nothing) = cite(Array(top), didRerank: true)
+        return Retrieval(hits: cited, reranked: true, candidates: all.count, scanned: scanned, embedSeconds: 0,
+                         seconds: Date().timeIntervalSince(t0), nothingRelevant: nothing, pool: Array(top))
     }
 
     /// The Mac's profile, core memory, entities and relationships for a notebook, as last synced.
@@ -244,17 +283,31 @@ final class LibraryModel {
     func localAnswer(question: String, notebook: String, topK: Int = 5, maxTokens: Int = 400) async throws -> LocalAnswer {
         guard store != nil, engine != nil, tokenizer != nil else { throw LibraryError.badResponse("search model not ready") }
         let t0 = Date()
-        let result = try await retrieve(question: question, notebook: notebook)
+        var result = try await retrieve(question: question, notebook: notebook)
+        let personal = await personal(for: notebook)
+        var gen = try await generateOnce(question: question, result: result, personal: personal, withEntityContext: true)
+        // The Mac's second look: a weak answer retriggers retrieval with rewritten queries and answers again.
+        if let r = recipe, !r.answerLooksGood(question: question, answer: gen.text, type: r.classify(question)),
+           let second = try await correctiveRetrieve(question: question, notebook: notebook, first: result.pool) {
+            result = second
+            gen = try await generateOnce(question: question, result: result, personal: personal, withEntityContext: false)
+        }
+        return LocalAnswer(sources: result.nothingRelevant ? [] : result.hits, answer: gen.text, seconds: Date().timeIntervalSince(t0),
+                           firstWordSeconds: gen.firstWord, tokensPerSecond: gen.tokensPerSecond)
+    }
+
+    /// One answer for one retrieval (UI-free). Nothing relevant means the Mac's refusal, without asking the model.
+    private func generateOnce(question: String, result: Retrieval, personal: PersonalContext?, withEntityContext: Bool)
+        async throws -> (text: String, firstWord: Double?, tokensPerSecond: Double?) {
         if result.nothingRelevant || result.hits.isEmpty {
-            return LocalAnswer(sources: [], answer: recipe?.citations.noAnswer ?? "I don't have enough relevant information in your documents to answer this question accurately.",
-                               seconds: Date().timeIntervalSince(t0), firstWordSeconds: nil, tokensPerSecond: nil)
+            return (recipe?.citations.noAnswer ?? "I don't have enough relevant information in your documents to answer this question accurately.", nil, nil)
         }
         if gemma == nil {
             Memory.cacheLimit = 64 * 1024 * 1024
             gemma = try await #huggingFaceLoadModelContainer(configuration: LLMRegistry.gemma4_e4b_it_4bit)
         }
         guard let gemma else { throw LibraryError.badResponse("answer model not loaded") }
-        let setup = generationSetup(question: question, hits: result.hits, personal: await personal(for: notebook))
+        let setup = generationSetup(question: question, hits: result.hits, personal: personal, withEntityContext: withEntityContext)
         let session = ChatSession(gemma, instructions: setup.instructions, generateParameters: setup.params)
         var answer = "", first: Double?, info: GenerateCompletionInfo?
         let started = Date()
@@ -265,16 +318,15 @@ final class LibraryModel {
             default: break
             }
         }
-        return LocalAnswer(sources: result.hits, answer: setup.clean(answer, info?.stopReason == .length), seconds: Date().timeIntervalSince(t0),
-                           firstWordSeconds: first, tokensPerSecond: info?.tokensPerSecond)
+        return (setup.clean(answer, info?.stopReason == .length), first, info?.tokensPerSecond)
     }
 
     /// What the phone gives its model: the Mac's own prompts, decode settings and passage framing when the
     /// recipe has been synced, otherwise the short built-in fallback.
-    func generationSetup(question: String, hits: [LibraryHit], personal: PersonalContext? = nil) -> (instructions: String, prompt: String, params: GenerateParameters, clean: (String, Bool) -> String) {
+    func generationSetup(question: String, hits: [LibraryHit], personal: PersonalContext? = nil, withEntityContext: Bool = true) -> (instructions: String, prompt: String, params: GenerateParameters, clean: (String, Bool) -> String) {
         if let r = recipe {
             return (r.systemPrompt(for: question, personal: personal),
-                    r.userPrompt(question: question, passages: hits.map(\.text), suffix: r.contextSuffix(question: question, personal: personal)),
+                    r.userPrompt(question: question, passages: hits.map(\.text), suffix: withEntityContext ? r.contextSuffix(question: question, personal: personal) : ""),
                     r.generateParameters,
                     { text, cutOff in
                         let fixed = r.fixCitations(r.clean(text), count: hits.count)
@@ -374,15 +426,24 @@ final class LibraryModel {
         do {
             answerStatus = "Finding passages (offline mode: vectors + keywords)…"
             let t0 = Date()
-            let result = try await retrieve(question: query, notebook: scope)
+            var result = try await retrieve(question: query, notebook: scope)
             hits = result.hits
             sourceScoreIsRelevance = false
             answerSources = result.hits
             let findSeconds = Date().timeIntervalSince(t0)
-            if result.nothingRelevant || result.hits.isEmpty {          // as the Mac: no relevant passages, no guessing
-                answerText = recipe?.citations.noAnswer ?? "I don't have enough relevant information in your documents to answer this question accurately."
-                answerStatus = "Passages in \(Int(findSeconds * 1000)) ms · nothing relevant enough"
-                return
+            var withContext = true
+            var corrected = false
+            if result.nothingRelevant || result.hits.isEmpty {          // as the Mac: no relevant passages, no guessing…
+                answerStatus = "Nothing relevant yet — looking again with rewritten queries…"
+                if let second = try await correctiveRetrieve(question: query, notebook: scope, first: result.pool),     // …but it looks again first
+                   !second.nothingRelevant, !second.hits.isEmpty {
+                    result = second; corrected = true; withContext = false
+                    hits = second.hits; answerSources = second.hits
+                } else {
+                    answerText = recipe?.citations.noAnswer ?? "I don't have enough relevant information in your documents to answer this question accurately."
+                    answerStatus = "Passages in \(Int(findSeconds * 1000)) ms · nothing relevant enough"
+                    return
+                }
             }
 
             if gemma == nil {
@@ -391,39 +452,59 @@ final class LibraryModel {
                 gemma = try await #huggingFaceLoadModelContainer(configuration: LLMRegistry.gemma4_e4b_it_4bit)
             }
             guard let gemma else { return }
-            let setup = generationSetup(question: query, hits: result.hits, personal: await personal(for: scope))
-            let prompt = setup.prompt
-            let session = ChatSession(gemma, instructions: setup.instructions, generateParameters: setup.params)
-
-            answerStatus = "Answering…"
-            let started = Date()
-            var firstWord: Double?
-            var info: GenerateCompletionInfo?
-            let task = Task { @MainActor in
-                for try await item in session.streamDetails(to: prompt) {
-                    switch item {
-                    case .chunk(let s):
-                        if firstWord == nil { firstWord = Date().timeIntervalSince(started) }
-                        answerText += s
-                    case .info(let i): info = i
-                    default: break
+            let personal = await personal(for: scope)
+            var current = result
+            var line = ""
+            while true {
+                let setup = generationSetup(question: query, hits: current.hits, personal: personal, withEntityContext: withContext)
+                let prompt = setup.prompt
+                let session = ChatSession(gemma, instructions: setup.instructions, generateParameters: setup.params)
+                answerStatus = corrected ? "Looking again, then answering…" : "Answering…"
+                answerText = ""
+                let started = Date()
+                var firstWord: Double?
+                var info: GenerateCompletionInfo?
+                let task = Task { @MainActor in
+                    for try await item in session.streamDetails(to: prompt) {
+                        switch item {
+                        case .chunk(let s):
+                            if firstWord == nil { firstWord = Date().timeIntervalSince(started) }
+                            answerText += s
+                        case .info(let i): info = i
+                        default: break
+                        }
                     }
                 }
+                generation = Task { _ = try? await task.value }
+                let observer = NotificationCenter.default.addObserver(
+                    forName: UIApplication.willResignActiveNotification, object: nil, queue: .main) { _ in
+                    MainActor.assumeIsolated { task.cancel() }
+                }
+                do { try await task.value } catch {}
+                NotificationCenter.default.removeObserver(observer)
+                if !answerText.isEmpty { answerText = setup.clean(answerText, info?.stopReason == .length) }
+                let cancelled = task.isCancelled
+                line = "Passages in \(Int(findSeconds * 1000)) ms"
+                if let firstWord { line += " · first word \(String(format: "%.1f", firstWord)) s" }
+                if let info { line += " · \(String(format: "%.0f", info.tokensPerSecond)) tok/s · \(info.generationTokenCount) tokens" }
+                line += " · memory \(Int(MemoryProbe.footprintMB())) MB"
+                if cancelled { line += " · stopped"; break }
+                // The Mac's second look: a weak answer retriggers retrieval with rewritten queries and one more answer.
+                guard !corrected, let r = recipe, !r.answerLooksGood(question: query, answer: answerText, type: r.classify(query)) else { break }
+                corrected = true
+                answerStatus = "Looking again with rewritten queries…"
+                guard let second = try await correctiveRetrieve(question: query, notebook: scope, first: current.pool) else { break }
+                current = second
+                withContext = false
+                hits = second.hits
+                answerSources = second.hits
+                if second.nothingRelevant || second.hits.isEmpty {
+                    answerText = r.citations.noAnswer
+                    line += " · nothing relevant after a second look"
+                    break
+                }
             }
-            generation = Task { _ = try? await task.value }
-            let observer = NotificationCenter.default.addObserver(
-                forName: UIApplication.willResignActiveNotification, object: nil, queue: .main) { _ in
-                MainActor.assumeIsolated { task.cancel() }
-            }
-            do { try await task.value } catch {}
-            NotificationCenter.default.removeObserver(observer)
-            if !answerText.isEmpty { answerText = setup.clean(answerText, info?.stopReason == .length) }
-            let cancelled = task.isCancelled
-            var line = "Passages in \(Int(findSeconds * 1000)) ms"
-            if let firstWord { line += " · first word \(String(format: "%.1f", firstWord)) s" }
-            if let info { line += " · \(String(format: "%.0f", info.tokensPerSecond)) tok/s · \(info.generationTokenCount) tokens" }
-            line += " · memory \(Int(MemoryProbe.footprintMB())) MB"
-            if cancelled { line += " · stopped" }
+            if corrected { line += " · after a second look" }
             answerStatus = line
         } catch {
             answerStatus = "Could not answer: \(error.localizedDescription)"

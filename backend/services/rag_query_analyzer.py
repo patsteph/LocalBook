@@ -394,35 +394,41 @@ def fallback_query_analysis(question: str) -> Dict:
     }
 
 
+VARIANT_EXPANSIONS = {
+    'q1': 'first quarter Q1',
+    'q2': 'second quarter Q2',
+    'q3': 'third quarter Q3',
+    'q4': 'fourth quarter Q4',
+    'fy': 'fiscal year FY',
+}
+VARIANT_COUNT_WORDS = ['how many', 'how much', 'total', 'count']
+VARIANT_COUNT_SUFFIX = " total count number"
+VARIANT_ENTITY_REGEX = r'\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\b'
+VARIANT_MAX = 3
+
+
 def generate_query_variants(question: str) -> List[str]:
     """Generate variant queries to improve retrieval on retry."""
     variants = [question]
     
     q_lower = question.lower()
     
-    expansions = {
-        'q1': 'first quarter Q1',
-        'q2': 'second quarter Q2',
-        'q3': 'third quarter Q3',
-        'q4': 'fourth quarter Q4',
-        'fy': 'fiscal year FY',
-    }
-    for abbrev, full in expansions.items():
+    for abbrev, full in VARIANT_EXPANSIONS.items():
         if abbrev in q_lower:
             expanded = re.sub(rf'\b{abbrev}\b', full, question, flags=re.IGNORECASE)
             if expanded != question:
                 variants.append(expanded)
                 break
     
-    if any(word in q_lower for word in ['how many', 'how much', 'total', 'count']):
-        variants.append(f"{question} total count number")
+    if any(word in q_lower for word in VARIANT_COUNT_WORDS):
+        variants.append(f"{question}{VARIANT_COUNT_SUFFIX}")
     
-    entities = re.findall(r'\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\b', question)
+    entities = re.findall(VARIANT_ENTITY_REGEX, question)
     if entities:
         entity_focused = f"{entities[0]} {question}"
         variants.append(entity_focused)
     
-    return variants[:3]
+    return variants[:VARIANT_MAX]
 
 
 # ─── Quality Verification ────────────────────────────────────────────────────────
@@ -484,18 +490,24 @@ def verify_retrieval_quality(results: List[Dict], analysis: Dict) -> Tuple[bool,
     return True, "Retrieval looks good"
 
 
+QUALITY_MIN_CHARS = 15
+QUALITY_FAILURE_PHRASES = [
+    "i cannot find", "not in the sources", "no information",
+    "unable to find", "don't have", "doesn't contain",
+    "not mentioned", "no data", "cannot determine"
+]
+QUALITY_PLACEHOLDER_REGEX = r'\bX\s+(number|demos?|seedings?|activities?|total)\b'
+QUALITY_PLACEHOLDER_TOKENS = ['[N]', '[Summary]']
+QUALITY_META_PHRASES = ["note to user", "replace 'x'"]
+
+
 def check_answer_quality(question: str, answer: str, query_type: str) -> Tuple[bool, str]:
     """Lightweight quality check for answers - no LLM call, just heuristics."""
-    if not answer or len(answer.strip()) < 15:
+    if not answer or len(answer.strip()) < QUALITY_MIN_CHARS:
         return False, "Answer too short"
     
-    failure_phrases = [
-        "i cannot find", "not in the sources", "no information",
-        "unable to find", "don't have", "doesn't contain",
-        "not mentioned", "no data", "cannot determine"
-    ]
     answer_lower = answer.lower()
-    for phrase in failure_phrases:
+    for phrase in QUALITY_FAILURE_PHRASES:
         if phrase in answer_lower:
             return False, f"Answer indicates failure: '{phrase}'"
     
@@ -503,13 +515,13 @@ def check_answer_quality(question: str, answer: str, query_type: str) -> Tuple[b
         has_number = bool(re.search(r'\d+', answer))
         if not has_number:
             return False, "Factual query but no number in answer"
-        if re.search(r'\bX\s+(number|demos?|seedings?|activities?|total)\b', answer, re.IGNORECASE):
+        if re.search(QUALITY_PLACEHOLDER_REGEX, answer, re.IGNORECASE):
             return False, "Answer contains 'X' placeholder instead of actual number"
     
-    if '[N]' in answer or '[Summary]' in answer:
+    if any(tok in answer for tok in QUALITY_PLACEHOLDER_TOKENS):
         return False, "Answer contains placeholder artifacts"
     
-    if "note to user" in answer_lower or "replace 'x'" in answer_lower:
+    if any(phrase in answer_lower for phrase in QUALITY_META_PHRASES):
         return False, "Answer contains meta-commentary instead of actual data"
     
     return True, "Answer looks good"

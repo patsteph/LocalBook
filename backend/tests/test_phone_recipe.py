@@ -77,3 +77,15 @@ def test_the_recipe_carries_routing_format_and_entity_rules_with_vectors():
     from services import rag_query_analyzer
     for v in c["format"]:
         assert rag_query_analyzer.detect_response_format(v["question"]) == v["hint"]
+
+
+def test_the_recipe_publishes_the_macs_second_look_rules_with_vectors():
+    from services import rag_query_analyzer as qa
+    body = phone_recipe.recipe()
+    body = body.get("recipe", body)
+    assert body["quality"]["failure_phrases"] and body["variants"]["max"] == 3
+    assert body["corrective"]["result_cap"] == 2 * body["retrieval"]["overcollect"]
+    for v in body["conformance"]["quality"]:
+        assert qa.check_answer_quality(v["question"], v["answer"], v["type"])[0] == v["ok"]
+    for v in body["conformance"]["variants"]:
+        assert qa.generate_query_variants(v["question"]) == v["variants"]

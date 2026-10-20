@@ -20,6 +20,9 @@ struct AnswerRecipe: Codable, Sendable {
     var formatRules: [[String]]?
     var routing: Routing?
     var personalization: PersonalRules?
+    var quality: Quality?
+    var variants: Variants?
+    var corrective: Corrective?
     var conformance: Conformance
 
     struct Classify: Codable, Sendable {
@@ -73,6 +76,8 @@ struct AnswerRecipe: Codable, Sendable {
         var cleaning: [CleanCase]
         var citationFix: [CitationCase]?
         var format: [FormatCase]?
+        var quality: [QualityCase]?
+        var variants: [VariantCase]?
         var routing: [RoutingCase]?
         var personal: PersonalCases?
         var expansion: [ExpandCase]?
@@ -81,6 +86,8 @@ struct AnswerRecipe: Codable, Sendable {
         struct CleanCase: Codable, Sendable { var raw: String; var cleaned: String }
         struct CitationCase: Codable, Sendable { var raw: String; var count: Int; var fixed: String }
         struct FormatCase: Codable, Sendable { var question: String; var hint: String }
+        struct QualityCase: Codable, Sendable { var question: String; var answer: String; var type: String; var ok: Bool }
+        struct VariantCase: Codable, Sendable { var question: String; var variants: [String] }
         struct RoutingCase: Codable, Sendable { var question: String; var tabular: Double; var text: Double }
         struct PersonalCases: Codable, Sendable {
             var entities: [PersonalContext.Entity]
@@ -230,6 +237,7 @@ struct AnswerRecipe: Codable, Sendable {
             problems.append("citation numbers differ for “\(c.raw.prefix(40).replacingOccurrences(of: "\n", with: " "))”")
         }
         problems += checkPersonalization()
+        problems += checkCorrective()
         return problems
     }
 }

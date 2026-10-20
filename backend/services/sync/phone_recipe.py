@@ -87,6 +87,31 @@ CITATION_FIX_SAMPLES = [
 ]
 
 
+QUALITY_SAMPLES = [
+    ("How long is onboarding?", "Onboarding is not specified in the provided sources.", "factual"),
+    ("How many demos?", "Chris did 12 demos in Q1 [1].", "factual"),
+    ("What is RAG?", "I cannot find this in your notes at all.", "synthesis"),
+    ("What is RAG?", "Short.", "synthesis"),
+    ("What is RAG?", "RAG retrieves passages before answering [N].", "synthesis"),
+    ("Total?", "The total is X demos for the quarter, replace 'X' later.", "factual"),
+    ("Compare", "A fine comparison of the two systems with no numbers at all.", "complex"),
+    ("Who?", "NOTE TO USER: fill in the name here please.", "synthesis"),
+]
+VARIANT_SAMPLES = ["How many demos did Pat Stephens do in Q1?", "what is fy planning", "Tell me about Netflix onboarding",
+                   "total revenue q3 and q4", "how long is onbaording at Netflix", "plain lower case question"]
+
+
+def _quality_vectors() -> List[Dict[str, Any]]:
+    from services import rag_query_analyzer
+    return [{"question": q, "answer": a, "type": t,
+             "ok": bool(rag_query_analyzer.check_answer_quality(q, a, t)[0])} for q, a, t in QUALITY_SAMPLES]
+
+
+def _variant_vectors() -> List[Dict[str, Any]]:
+    from services import rag_query_analyzer
+    return [{"question": q, "variants": rag_query_analyzer.generate_query_variants(q)} for q in VARIANT_SAMPLES]
+
+
 def _format_vectors() -> List[Dict[str, str]]:
     from services import rag_query_analyzer
     qs = SAMPLE_QUESTIONS + ["Write me the code for a parser", "Give me a step by step guide", "What are the key risks?",
@@ -158,11 +183,28 @@ def recipe() -> Dict[str, Any]:
         # source_router, and the entity/graph numbers: how the Mac re-orders reranked passages before citing them.
         "routing": phone_personal.routing(),
         "personalization": phone_personal.RULES,
+        # rag_query_analyzer.check_answer_quality / generate_query_variants and rag_search.corrective_retrieval:
+        # when an answer looks weak the Mac retries retrieval with query variants and answers again.
+        "quality": {"min_chars": rag_query_analyzer.QUALITY_MIN_CHARS,
+                    "failure_phrases": rag_query_analyzer.QUALITY_FAILURE_PHRASES,
+                    "placeholder_regex": rag_query_analyzer.QUALITY_PLACEHOLDER_REGEX,
+                    "placeholder_tokens": rag_query_analyzer.QUALITY_PLACEHOLDER_TOKENS,
+                    "meta_phrases": rag_query_analyzer.QUALITY_META_PHRASES},
+        "variants": {"expansions": [[k, v] for k, v in rag_query_analyzer.VARIANT_EXPANSIONS.items()],
+                     "count_words": rag_query_analyzer.VARIANT_COUNT_WORDS,
+                     "count_suffix": rag_query_analyzer.VARIANT_COUNT_SUFFIX,
+                     "entity_regex": rag_query_analyzer.VARIANT_ENTITY_REGEX, "max": rag_query_analyzer.VARIANT_MAX},
+        "corrective": {"hybrid_k": int(settings.retrieval_overcollect),
+                       "vector_candidates": int(settings.retrieval_overcollect) * 2,
+                       "bm25_candidates": int(settings.retrieval_overcollect) * 2,
+                       "result_cap": int(settings.retrieval_overcollect) * 2, "rerank_keep": 5},
         "clean_steps": CLEAN_STEPS,
         "conformance": {"classification": _classification_vectors(), "cleaning": _clean_vectors(),
                         "expansion": _expansion_vectors(),
                         "citation_fix": _citation_fix_vectors(),
                         "format": _format_vectors(),
+                        "quality": _quality_vectors(),
+                        "variants": _variant_vectors(),
                         "routing": phone_personal.routing_vectors(SAMPLE_QUESTIONS),
                         "personal": phone_personal.personal_vectors()},
     }
