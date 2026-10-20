@@ -105,3 +105,35 @@ def test_the_recipe_says_how_confidence_combines_and_proves_it():
     body = phone_recipe.recipe()
     body = body.get("recipe", body)
     assert body["citations"]["combine"] == "max" and body["conformance"]["confidence"]
+
+
+def test_citation_fix_handles_section_in_source_and_context_tags():
+    from services import rag_generation as g
+    assert g.fix_citations("A [16.2.1 in Source 2] and [16.8 in Source 5].", 5) == "A [2] and [5]."
+    assert g.fix_citations("B [16.2 in Source 9], note [Local Context].", 4) == "B, note."
+    assert g.fix_citations("C [1, 16.7.3 in Source 2, 562].", 4) == "C [1, 2]."
+
+
+def test_focused_fallbacks_supplement_hybrid_results_and_scan_the_whole_table():
+    """Netflix regression: the entity fallback looked at an arbitrary 500 rows and REPLACED the hybrid pool
+    with the single matching chunk it happened to find."""
+    from services import rag_search
+
+    class Q:
+        def __init__(self, rows): self.rows, self.w = rows, None
+        def where(self, expr): self.w = expr; return self
+        def limit(self, n): return self
+        def to_list(self): return [r for r in self.rows if "netflix" in r["text"].lower()]
+
+    class T:
+        def __init__(self, rows): self.rows = rows
+        def search(self, *a): return Q(self.rows)
+
+    rows = [{"source_id": "x", "chunk_index": 0, "text": "Company: Netflix orientation"},
+            {"source_id": "y", "chunk_index": 73, "text": "netflix mention"}, {"source_id": "z", "chunk_index": 1, "text": "other"}]
+    found = rag_search._rows_containing(T(rows), ["Netflix"])
+    assert {r["source_id"] for r in found} == {"x", "y"}
+    hybrid = [{"source_id": "h", "chunk_index": 2, "text": "t", "_rrf_score": 0.9}]
+    merged = rag_search._merge_results(found[:12], hybrid, 24)
+    assert {r["source_id"] for r in merged} == {"x", "y", "h"}
+    assert all(r.get("_rrf_score") for r in merged)      # exact matches carry a rank signal for the confidence step

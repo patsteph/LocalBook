@@ -84,6 +84,9 @@ CITATION_FIX_SAMPLES = [
     ("Mixed [1, 562] and [2], [16.2].", 4),
     ("Beyond count [6].\n[7] starts a line.", 5),
     ("Ranges [1-3] and words [see 2] stay.", 5),
+    ("Section [16.2.1 in Source 2] and [16.8 in Source 5].", 5),
+    ("Bad source [16.2 in Source 9], note [Local Context] and [Contextual Note].", 4),
+    ("Mixed [1, 16.7.3 in Source 2, 562] and [LocalBook Context].", 4),
 ]
 
 

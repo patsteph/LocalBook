@@ -296,6 +296,53 @@ def rerank(query: str, documents: List[Dict], top_k: int = 5) -> List[Dict]:
 
 # ─── Adaptive Search (unified — replaces duplicate _adaptive_search + _adaptive_search_progressive) ─
 
+def _rows_containing(table, terms, limit: int = 400, include_filename: bool = False) -> List[Dict]:
+    """Rows of the WHOLE table whose text (and optionally filename) contains any of `terms`.
+
+    The entity / time / keyword fallbacks used to look at `table.search(zero_vector).limit(500)` — an
+    arbitrary 500 rows, ~19% of a 2,600-chunk notebook — so a spreadsheet holding the very entity asked
+    about could be missed and the fallback would then REPLACE good hybrid results with the one chunk that
+    happened to be in the sample. A filtered scan sees every row. Falls back to the old sample if the
+    table cannot run the filter.
+    """
+    cleaned = []
+    for t in terms:
+        t = str(t).strip().lower().replace("'", "''").replace("%", "").replace("_", "")
+        if len(t) >= 2 and t not in cleaned:
+            cleaned.append(t)
+    if not cleaned:
+        return []
+    cols = ["lower(text)"] + (["lower(filename)"] if include_filename else [])
+    expr = " OR ".join(f"{c} LIKE '%{t}%'" for t in cleaned for c in cols)
+    try:
+        return table.search().where(expr).limit(limit).to_list()
+    except Exception as e:
+        print(f"[RAG] Filtered scan unavailable ({e}); using a 500-row sample")
+        rows = table.search([0.0] * settings.embedding_dim).limit(500).to_list()
+        out = []
+        for r in rows:
+            hay = r.get("text", "").lower() + (" " + r.get("filename", "").lower() if include_filename else "")
+            if any(t in hay for t in cleaned):
+                out.append(r)
+        return out
+
+
+def _merge_results(preferred: List[Dict], original: List[Dict], limit: int) -> List[Dict]:
+    """Focused matches first, then the hybrid results they were meant to supplement (not replace)."""
+    seen, merged = set(), []
+    for r in list(preferred) + list(original):
+        key = (r.get("source_id"), r.get("chunk_index"))
+        if key in seen:
+            continue
+        seen.add(key)
+        if not r.get("_rrf_score") and r.get("_distance") is None:
+            # found by an exact text match, not by a ranked search: give it a mid-range rank signal so the
+            # confidence step does not judge it on a (tiny) rerank score alone
+            r["_rrf_score"] = 0.5
+        merged.append(r)
+    return merged[:limit]
+
+
 async def adaptive_search(
     table,
     question: str,
@@ -334,14 +381,7 @@ async def adaptive_search(
     entities = analysis.get("entities") or []
     if entities:
         try:
-            all_docs = table.search([0.0] * settings.embedding_dim).limit(500).to_list()
-            entity_matches = []
-            for doc in all_docs:
-                text = doc.get("text", "").lower()
-                for entity in entities:
-                    if entity.lower() in text:
-                        entity_matches.append(doc)
-                        break
+            entity_matches = _rows_containing(table, entities)
 
             if entity_matches:
                 strategies_used.append("entity_focused")
@@ -350,9 +390,11 @@ async def adaptive_search(
                     bm25 = BM25Okapi(corpus)
                     scores = bm25.get_scores(expanded_query.lower().split())
                     ranked_indices = np.argsort(scores)[::-1][:top_k * 2]
-                    results = [entity_matches[i] for i in ranked_indices]
+                    focused = [entity_matches[i] for i in ranked_indices]
                 else:
-                    results = entity_matches[:top_k * 2]
+                    focused = entity_matches[:top_k * 2]
+                # supplement the hybrid results, never replace them
+                results = _merge_results(focused[:top_k], results, top_k * 2)
 
                 is_good, reason = rag_query_analyzer.verify_retrieval_quality(results, analysis)
                 if is_good:
@@ -367,16 +409,7 @@ async def adaptive_search(
     time_periods = analysis.get("time_periods") or []
     if time_periods:
         try:
-            all_docs = table.search([0.0] * settings.embedding_dim).limit(500).to_list()
-            time_matches = []
-            for doc in all_docs:
-                text = doc.get("text", "").lower()
-                filename = doc.get("filename", "").lower()
-                combined = f"{text} {filename}"
-                for period in time_periods:
-                    if period.lower() in combined:
-                        time_matches.append(doc)
-                        break
+            time_matches = _rows_containing(table, time_periods, include_filename=True)
 
             if time_matches:
                 strategies_used.append("time_focused")
@@ -385,9 +418,10 @@ async def adaptive_search(
                     bm25 = BM25Okapi(corpus)
                     scores = bm25.get_scores(expanded_query.lower().split())
                     ranked_indices = np.argsort(scores)[::-1][:top_k * 2]
-                    results = [time_matches[i] for i in ranked_indices if i < len(time_matches)]
+                    focused = [time_matches[i] for i in ranked_indices if i < len(time_matches)]
                 else:
-                    results = time_matches[:top_k * 2]
+                    focused = time_matches[:top_k * 2]
+                results = _merge_results(focused[:top_k], results, top_k * 2)
 
                 is_good, reason = rag_query_analyzer.verify_retrieval_quality(results, analysis)
                 if is_good:
@@ -400,7 +434,6 @@ async def adaptive_search(
 
     # Strategy 4: Full-text scan with keyword matching
     try:
-        all_docs = table.search([0.0] * settings.embedding_dim).limit(500).to_list()
         key_metric = analysis.get("key_metric", "")
 
         keyword_matches = []
@@ -408,7 +441,7 @@ async def adaptive_search(
         search_terms.extend(entities)
         search_terms.extend(time_periods)
 
-        for doc in all_docs:
+        for doc in _rows_containing(table, search_terms, limit=1000):
             text = doc.get("text", "").lower()
             match_count = sum(1 for term in search_terms if term.lower() in text)
             if match_count >= 2:  # At least 2 keywords match
@@ -417,7 +450,7 @@ async def adaptive_search(
         if keyword_matches:
             strategies_used.append("keyword_scan")
             keyword_matches.sort(key=lambda x: -x[0])
-            results = [doc for _, doc in keyword_matches[:top_k * 2]]
+            results = _merge_results([doc for _, doc in keyword_matches[:top_k]], results, top_k * 2)
             print(f"[RAG] Adaptive search: Strategy 4 (keyword scan) found {len(results)} matches")
             return results, strategies_used
     except Exception as e:

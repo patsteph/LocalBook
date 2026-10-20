@@ -200,11 +200,22 @@ struct AnswerRecipe: Codable, Sendable {
         return out.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    /// Mac `rag_generation.fix_citations`: a bracket made only of numbers keeps the entries that are whole
-    /// numbers from 1 to `count` (the sources given); an emptied bracket goes, with the space before it.
+    /// Mac `rag_generation.fix_citations`: in a bracket made only of citation-like items, a whole number from 1
+    /// to `count` stays, "<section> in Source N" becomes N when N is a real source, everything else goes
+    /// (section numbers, "[Local Context]" tags); an emptied bracket goes with the space before it.
     func fixCitations(_ text: String, count: Int) -> String {
-        guard count >= 1,
-              let re = try? NSRegularExpression(pattern: #"( ?)\[\s*(\d+(?:\.\d+)*(?:\s*[,;]\s*\d+(?:\.\d+)*)*)\s*\]"#) else { return text }
+        guard count >= 1 else { return text }
+        let item = #"(?:\d+(?:\.\d+)*(?:\s+in\s+Source\s+\d+)?|(?:Local(?:Book)?\s+|Contextual\s+)?(?:Context|Note))"#
+        guard let re = try? NSRegularExpression(pattern: "( ?)\\[\\s*(\(item)(?:\\s*[,;]\\s*\(item))*)\\s*\\]", options: .caseInsensitive),
+              let inSource = try? NSRegularExpression(pattern: #"\bin\s+Source\s+(\d+)$"#, options: .caseInsensitive) else { return text }
+        func number(_ raw: String) -> Int? {
+            let s = raw.trimmingCharacters(in: .whitespaces)
+            var n: Int?
+            if !s.isEmpty, s.allSatisfy(\.isNumber) { n = Int(s) }
+            else if let m = inSource.firstMatch(in: s, range: NSRange(s.startIndex..., in: s)), let r = Range(m.range(at: 1), in: s) { n = Int(s[r]) }
+            guard let n, n >= 1, n <= count else { return nil }
+            return n
+        }
         let ns = text as NSString
         var out = "", last = 0
         for m in re.matches(in: text, range: NSRange(location: 0, length: ns.length)) {
@@ -213,8 +224,9 @@ struct AnswerRecipe: Codable, Sendable {
             let whole = ns.substring(with: m.range)
             let items = ns.substring(with: m.range(at: 2)).trimmingCharacters(in: .whitespaces)
                 .components(separatedBy: CharacterSet(charactersIn: ",;")).map { $0.trimmingCharacters(in: .whitespaces) }
-            let keep = items.filter { Int($0).map { $0 >= 1 && $0 <= count } ?? false && !$0.contains(".") }
-            if keep.count == items.count { out += whole }
+            var keep: [String] = []
+            for it in items { if let n = number(it), !keep.contains(String(n)) { keep.append(String(n)) } }
+            if keep.count == items.count, items.allSatisfy({ !$0.isEmpty && $0.allSatisfy(\.isNumber) }) { out += whole }
             else if !keep.isEmpty { out += ns.substring(with: m.range(at: 1)) + "[" + keep.joined(separator: ", ") + "]" }
         }
         return out + ns.substring(from: last)
