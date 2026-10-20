@@ -1,4 +1,4 @@
-"""Read-only: do this Mac's stores agree on which notebooks exist?
+"""Do this Mac's stores agree on which notebooks exist?
 
   LOCALBOOK_USE_PRODUCTION_DATA=1 .venv/bin/python scripts/data_integrity.py
 
@@ -7,7 +7,12 @@ notebooks: vector tables (the expensive one — every re-embedding migration wal
 folders, entity / graph / community entries and source rows. Writes nothing.
 
   --drop-empty-tables   after a backup of lancedb/, delete vector tables that belong to no notebook AND hold
-                        no real rows (placeholders). Tables that hold data are only ever reported.
+                        no real rows (placeholders).
+  --drop-dead-tables    (with the above) also delete orphan tables that hold chunks but whose source ids exist
+                        nowhere in the sources table. Tables whose sources still exist are never touched.
+
+Without those flags nothing is written. Removal refuses to run while the LocalBook backend is running
+(quit the app first) unless --force is given.
 """
 import argparse
 import json
@@ -25,6 +30,10 @@ from config import settings
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--drop-empty-tables", action="store_true")
+    ap.add_argument("--drop-dead-tables", action="store_true",
+                    help="also delete orphan tables that hold data but whose sources no longer exist ANYWHERE "
+                         "(listed first; a backup of lancedb/ is taken)")
+    ap.add_argument("--force", action="store_true", help="allow removal while the LocalBook backend is running")
     args = ap.parse_args()
     home = Path(settings.data_dir)
     print(f"data dir: {home}\n")
@@ -102,15 +111,22 @@ def main() -> None:
         except Exception as exc:
             print(f"{fname}: unreadable ({exc})")
 
-    if args.drop_empty_tables and orphan_empty:
+    dead = [nb for nb, c in claimed.items() if not c[1]]
+    targets = list(orphan_empty) + (dead if args.drop_dead_tables else [])
+    if (args.drop_empty_tables or args.drop_dead_tables) and targets:
+        import subprocess
+        running = subprocess.run(["pgrep", "-f", "localbook-backend"], capture_output=True, text=True).stdout.strip()
+        if running and not args.force:
+            print("\nThe LocalBook backend is running; quit the app first (or pass --force). Nothing was changed.")
+            return
         backup = home / f"lancedb_backup_{datetime.now():%Y%m%d_%H%M%S}_before_orphan_cleanup"
         shutil.copytree(db_dir, backup)
         print(f"\nbackup: {backup.name}")
-        for nb in orphan_empty:
+        for nb in targets:
             shutil.rmtree(db_dir / f"notebook_{nb}.lance", ignore_errors=True)
-        print(f"dropped {len(orphan_empty)} empty orphan table(s)")
+        print(f"dropped {len(orphan_empty)} empty orphan table(s)" + (f" and {len(dead)} dead one(s) ({sum(rows[n] for n in dead)} chunks)" if args.drop_dead_tables else ""))
     elif orphan_empty or orphan_data:
-        print("\n(nothing changed; --drop-empty-tables removes only the empty placeholders, after a backup)")
+        print("\n(nothing changed; --drop-empty-tables removes the empty placeholders, --drop-dead-tables also the dead ones with data; both back up first)")
 
 
 if __name__ == "__main__":
