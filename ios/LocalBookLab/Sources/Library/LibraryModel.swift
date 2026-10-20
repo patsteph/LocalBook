@@ -71,6 +71,7 @@ final class LibraryModel {
     }
 
     func refresh() async {
+        personalCache.removeAll()
         guard let store else { return }
         Task.detached { await store.warmUp() }              // build the in-memory vector block before the first question
         notebooks = await store.notebooks()

@@ -209,6 +209,7 @@ actor LibraryStore {
     func wipe() throws {
         dropMatrix()
         for t in ["chunks", "sources", "notebooks", "chunks_fts"] { try exec("DELETE FROM \(t)") }
+        try exec("DELETE FROM meta WHERE key LIKE 'personal:%'")        // profile, memory, entities: all of it goes
     }
 
     func removeNotebooks(except keep: Set<String>) throws {
@@ -220,6 +221,19 @@ actor LibraryStore {
             }
             let s = try statement("DELETE FROM notebooks WHERE id=?")
             bind(s, 1, n.id); sqlite3_step(s); sqlite3_finalize(s)
+        }
+        // The Mac's profile, core memory, entities and relationships are kept per notebook (meta "personal:<id>").
+        // They go with the notebook, and any left over from an earlier sync of one that is now off-limits too.
+        let keys = try statement("SELECT key FROM meta WHERE key LIKE 'personal:%'")
+        var stale: [String] = []
+        while sqlite3_step(keys) == SQLITE_ROW {
+            let key = String(cString: sqlite3_column_text(keys, 0))
+            if !keep.contains(String(key.dropFirst("personal:".count))) { stale.append(key) }
+        }
+        sqlite3_finalize(keys)
+        for key in stale {
+            let d = try statement("DELETE FROM meta WHERE key=?")
+            bind(d, 1, key); sqlite3_step(d); sqlite3_finalize(d)
         }
     }
 
