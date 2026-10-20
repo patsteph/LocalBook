@@ -48,3 +48,19 @@ def test_expansion_and_retrieval_numbers_come_from_the_macs_own_tables():
     ret = r["retrieval"]
     assert ret["hybrid_k"] == 2 * ret["overcollect"] and ret["vector_candidates"] == 4 * ret["overcollect"]
     assert r["citations"]["min_confidence"] == 0.20
+
+
+def test_citation_fix_drops_numbers_that_point_at_no_source():
+    from services import rag_generation
+    assert rag_generation.fix_citations("Fine [1] and [2, 3].", 3) == "Fine [1] and [2, 3]."
+    assert rag_generation.fix_citations("Section [16.7.3] and [562].", 5) == "Section and."
+    assert rag_generation.fix_citations("Mixed [1, 562] and [2].", 4) == "Mixed [1] and [2]."
+    assert rag_generation.fix_citations("Words [see 2] and [1-3] stay.", 5) == "Words [see 2] and [1-3] stay."
+
+
+def test_the_recipe_publishes_citation_vectors_and_a_length_hint():
+    from services.sync import phone_recipe
+    body = phone_recipe.recipe()
+    body = body.get("recipe", body)
+    assert body["conformance"]["citation_fix"]
+    assert "words" in body["generation"]["length_hint"]

@@ -78,6 +78,20 @@ def _expansion_vectors() -> List[Dict[str, str]]:
     return [{"question": q, "expanded": rag_query_analyzer.expand_query(q)} for q in qs]
 
 
+CITATION_FIX_SAMPLES = [
+    ("Fine [1] and [2, 3].", 3),
+    ("Wrong section [16.7.3] and [562].", 5),
+    ("Mixed [1, 562] and [2], [16.2].", 4),
+    ("Beyond count [6].\n[7] starts a line.", 5),
+    ("Ranges [1-3] and words [see 2] stay.", 5),
+]
+
+
+def _citation_fix_vectors() -> List[Dict[str, Any]]:
+    from services import rag_generation
+    return [{"raw": a, "count": n, "fixed": rag_generation.fix_citations(a, n)} for a, n in CITATION_FIX_SAMPLES]
+
+
 def _clean_vectors() -> List[Dict[str, str]]:
     from services import rag_generation
     return [{"raw": a, "cleaned": rag_generation.clean_llm_output(a)} for a in SAMPLE_ANSWERS]
@@ -107,7 +121,10 @@ def recipe() -> Dict[str, Any]:
         # temperature 0.3, top-p and repetition penalty from the engine's own constants.
         "generation": {"temperature": 0.3, "max_tokens": 500, "top_p": float(mlx_engine._MLX_TOP_P),
                        "repetition_penalty": float(mlx_engine._MLX_REP_PENALTY),
-                       "repetition_context_size": int(mlx_engine._MLX_REP_CONTEXT)},
+                       "repetition_context_size": int(mlx_engine._MLX_REP_CONTEXT),
+                       # The phone's model is wordier than the Mac's and would be cut off at max_tokens mid-sentence;
+                       # this line goes on the end of its system prompt (the Mac does not need it).
+                       "length_hint": "Keep the whole answer under 250 words and finish every sentence."},
         # rag_search.adaptive_search → hybrid_search(k = overcollect * 2): each ranker contributes k * 2
         # candidates, they are fused with Reciprocal Rank Fusion (0-based ranks, 1000 when absent) to k, the
         # reranker keeps top_k + 1. BM25 is rank_bm25's BM25Okapi over lower-cased whitespace tokens.
@@ -130,7 +147,8 @@ def recipe() -> Dict[str, Any]:
                                     "accurately. Try uploading more documents related to this topic, or rephrase your question.")},
         "clean_steps": CLEAN_STEPS,
         "conformance": {"classification": _classification_vectors(), "cleaning": _clean_vectors(),
-                        "expansion": _expansion_vectors()},
+                        "expansion": _expansion_vectors(),
+                        "citation_fix": _citation_fix_vectors()},
     }
     version = hashlib.sha256(json.dumps(body, sort_keys=True).encode()).hexdigest()[:12]
     return {"recipe_version": version, **body}

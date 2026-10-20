@@ -92,6 +92,31 @@ FORMAT REQUIREMENTS (mandatory):
 
 # ─── Output Cleaning ─────────────────────────────────────────────────────────────
 
+_CITATION_BRACKET = re.compile(r'( ?)\[\s*(\d+(?:\.\d+)*(?:\s*[,;]\s*\d+(?:\.\d+)*)*)\s*\]')
+
+
+def fix_citations(text: str, num_citations: int) -> str:
+    """Drop citation numbers that point at nothing.
+
+    The model sometimes copies a number from the passages themselves ("section 16.7.3", "[562]") into its
+    citation brackets. A bracket made only of numbers keeps just the entries that are whole numbers from 1 to
+    the count of sources actually given; a bracket left empty is removed with the space before it.
+    """
+    if num_citations < 1:
+        return text
+
+    def _fix(m: "re.Match") -> str:
+        items = re.split(r'\s*[,;]\s*', m.group(2).strip())
+        keep = [i for i in items if i.isdigit() and 1 <= int(i) <= num_citations]
+        if len(keep) == len(items):
+            return m.group(0)
+        if not keep:
+            return ''
+        return f"{m.group(1)}[{', '.join(keep)}]"
+
+    return _CITATION_BRACKET.sub(_fix, text)
+
+
 def clean_llm_output(text: str) -> str:
     """Clean up CHAT-ANSWER LLM output artifacts.
 
@@ -246,7 +271,7 @@ Answer the question, citing sources inline as [N]. Do not list references at the
     # Simplification S1/B2 (2026-07-03): cloud providers removed — LocalBook is
     # 100% local by design; no UI ever surfaced openai/anthropic. llm_provider is
     # kept in signatures only to avoid a wide call-chain refactor.
-    answer = await llm_service.generate_text(system_prompt, prompt)
+    answer = fix_citations(await llm_service.generate_text(system_prompt, prompt), num_citations)
 
     return {
         "answer": answer,

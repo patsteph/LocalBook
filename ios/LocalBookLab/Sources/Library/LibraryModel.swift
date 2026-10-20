@@ -245,19 +245,23 @@ final class LibraryModel {
             default: break
             }
         }
-        return LocalAnswer(sources: result.hits, answer: setup.clean(answer), seconds: Date().timeIntervalSince(t0),
+        return LocalAnswer(sources: result.hits, answer: setup.clean(answer, info?.stopReason == .length), seconds: Date().timeIntervalSince(t0),
                            firstWordSeconds: first, tokensPerSecond: info?.tokensPerSecond)
     }
 
     /// What the phone gives its model: the Mac's own prompts, decode settings and passage framing when the
     /// recipe has been synced, otherwise the short built-in fallback.
-    func generationSetup(question: String, hits: [LibraryHit]) -> (instructions: String, prompt: String, params: GenerateParameters, clean: (String) -> String) {
+    func generationSetup(question: String, hits: [LibraryHit]) -> (instructions: String, prompt: String, params: GenerateParameters, clean: (String, Bool) -> String) {
         if let r = recipe {
             return (r.systemPrompt(for: question), r.userPrompt(question: question, passages: hits.map(\.text)),
-                    r.generateParameters, { r.clean($0) })
+                    r.generateParameters,
+                    { text, cutOff in
+                        let fixed = r.fixCitations(r.clean(text), count: hits.count)
+                        return cutOff ? r.trimUnfinished(fixed) : fixed
+                    })
         }
         let sources = hits.enumerated().map { i, h in "[\(i + 1)] (\(h.filename))\n\(String(h.text.prefix(1_100)))" }.joined(separator: "\n\n")
-        return (Self.localInstructions, "Passages:\n\n\(sources)\n\nQuestion: \(question)", GenerateParameters(maxTokens: 400), { $0 })
+        return (Self.localInstructions, "Passages:\n\n\(sources)\n\nQuestion: \(question)", GenerateParameters(maxTokens: 400), { text, _ in text })
     }
 
     static let localInstructions = "You answer questions using ONLY the numbered passages from the user's own notes. "
@@ -392,7 +396,7 @@ final class LibraryModel {
             }
             do { try await task.value } catch {}
             NotificationCenter.default.removeObserver(observer)
-            if !answerText.isEmpty { answerText = setup.clean(answerText) }
+            if !answerText.isEmpty { answerText = setup.clean(answerText, info?.stopReason == .length) }
             let cancelled = task.isCancelled
             var line = "Passages in \(Int(findSeconds * 1000)) ms"
             if let firstWord { line += " · first word \(String(format: "%.1f", firstWord)) s" }

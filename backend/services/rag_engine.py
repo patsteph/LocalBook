@@ -1264,7 +1264,7 @@ Answer the question, citing sources inline as [N]. Do not list references at the
         
         # Run comprehensive cleanup (strips bibliography sections the stream missed)
         streamed_answer = full_answer
-        full_answer = rag_generation.clean_llm_output(full_answer)
+        full_answer = rag_generation.fix_citations(rag_generation.clean_llm_output(full_answer), num_citations)
         # If cleanup changed the answer, send replace_answer to fix what the user already saw
         if full_answer != streamed_answer:
             print(f"[RAG STREAM] Post-stream cleanup removed {len(streamed_answer) - len(full_answer)} chars of bibliography leakage")

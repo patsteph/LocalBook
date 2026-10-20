@@ -32,6 +32,7 @@ struct AnswerRecipe: Codable, Sendable {
         var topP: Float
         var repetitionPenalty: Float
         var repetitionContextSize: Int
+        var lengthHint: String?
     }
     struct Retrieval: Codable, Sendable {
         var topK: Int
@@ -67,10 +68,12 @@ struct AnswerRecipe: Codable, Sendable {
     struct Conformance: Codable, Sendable {
         var classification: [ClassCase]
         var cleaning: [CleanCase]
+        var citationFix: [CitationCase]?
         var expansion: [ExpandCase]?
         struct ExpandCase: Codable, Sendable { var question: String; var expanded: String }
         struct ClassCase: Codable, Sendable { var question: String; var type: String }
         struct CleanCase: Codable, Sendable { var raw: String; var cleaned: String }
+        struct CitationCase: Codable, Sendable { var raw: String; var count: Int; var fixed: String }
     }
 
     // MARK: the Mac's classifier (rag_query_analyzer.classify_query), driven by its pattern lists
@@ -114,7 +117,9 @@ struct AnswerRecipe: Codable, Sendable {
     // MARK: prompts (rag_generation.generate_answer), without the user's profile and memory
 
     func systemPrompt(for question: String) -> String {
-        systemPrompts[classify(question)] ?? systemPrompts["synthesis"] ?? ""
+        let base = systemPrompts[classify(question)] ?? systemPrompts["synthesis"] ?? ""
+        guard let hint = generation.lengthHint, !hint.isEmpty else { return base }
+        return base + "\n\n" + hint
     }
 
     func userPrompt(question: String, passages: [String]) -> String {
@@ -151,6 +156,36 @@ struct AnswerRecipe: Codable, Sendable {
         return out.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    /// Mac `rag_generation.fix_citations`: a bracket made only of numbers keeps the entries that are whole
+    /// numbers from 1 to `count` (the sources given); an emptied bracket goes, with the space before it.
+    func fixCitations(_ text: String, count: Int) -> String {
+        guard count >= 1,
+              let re = try? NSRegularExpression(pattern: #"( ?)\[\s*(\d+(?:\.\d+)*(?:\s*[,;]\s*\d+(?:\.\d+)*)*)\s*\]"#) else { return text }
+        let ns = text as NSString
+        var out = "", last = 0
+        for m in re.matches(in: text, range: NSRange(location: 0, length: ns.length)) {
+            out += ns.substring(with: NSRange(location: last, length: m.range.location - last))
+            last = m.range.location + m.range.length
+            let whole = ns.substring(with: m.range)
+            let items = ns.substring(with: m.range(at: 2)).trimmingCharacters(in: .whitespaces)
+                .components(separatedBy: CharacterSet(charactersIn: ",;")).map { $0.trimmingCharacters(in: .whitespaces) }
+            let keep = items.filter { Int($0).map { $0 >= 1 && $0 <= count } ?? false && !$0.contains(".") }
+            if keep.count == items.count { out += whole }
+            else if !keep.isEmpty { out += ns.substring(with: m.range(at: 1)) + "[" + keep.joined(separator: ", ") + "]" }
+        }
+        return out + ns.substring(from: last)
+    }
+
+    /// An answer that ran out of tokens ends mid-sentence; cut it back to the last finished sentence or list
+    /// item so it never reads as if the model stopped on purpose. Leaves it alone if there is no full stop.
+    func trimUnfinished(_ text: String) -> String {
+        guard let re = try? NSRegularExpression(pattern: #"[.!?](?:\*\*|\*|\]|\)|"|')*(?=\s|$)"#) else { return text }
+        let ns = text as NSString
+        guard let last = re.matches(in: text, range: NSRange(location: 0, length: ns.length)).last,
+              last.range.location + last.range.length > text.count / 3 else { return text }
+        return ns.substring(to: last.range.location + last.range.length)
+    }
+
     /// Re-run the phone's code on the Mac's conformance vectors. Empty = the phone behaves like the Mac.
     func check() -> [String] {
         var problems: [String] = []
@@ -162,6 +197,9 @@ struct AnswerRecipe: Codable, Sendable {
         }
         for c in conformance.cleaning where clean(c.raw) != c.cleaned {
             problems.append("answer cleaning differs for “\(c.raw.prefix(40).replacingOccurrences(of: "\n", with: " "))”")
+        }
+        for c in conformance.citationFix ?? [] where fixCitations(c.raw, count: c.count) != c.fixed {
+            problems.append("citation numbers differ for “\(c.raw.prefix(40).replacingOccurrences(of: "\n", with: " "))”")
         }
         return problems
     }
