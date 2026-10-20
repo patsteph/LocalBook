@@ -577,6 +577,18 @@ async def phone_library_recipe(request: Request):
     return await asyncio.to_thread(phone_recipe.recipe)
 
 
+@phone_sync_app.post("/phone/library/personal")
+async def phone_library_personal(request: Request):
+    """The user's profile and core memory, and one notebook's entities and relationships."""
+    _check_enabled()
+    v = await _verified_phone(request)
+    from services.sync import phone_personal
+    out = await asyncio.to_thread(phone_personal.personal, str(v["body"].get("notebook_id", "")))
+    if out is None:
+        raise HTTPException(404, "no such notebook")
+    return out
+
+
 @phone_sync_app.post("/phone/library/sources")
 async def phone_library_sources(request: Request):
     _check_enabled()

@@ -78,6 +78,14 @@ enum LibrarySync {
 
         try await store.removeNotebooks(except: Set(manifest.notebooks.map(\.id)))
         sum.notebooks = manifest.notebooks.count
+        // The Mac's profile, core memory, entities and relationships (they shape its answers). Best effort: an
+        // older Mac without this endpoint just leaves the phone without them.
+        for nb in manifest.notebooks {
+            if let p = try? await call(mac, "/phone/library/personal", ["notebook_id": nb.id], as: PersonalContext.self, bytes: &sum.bytes),
+               let data = try? JSONEncoder().encode(p) {
+                try await store.setMeta("personal:" + nb.id, String(decoding: data, as: UTF8.self))
+            }
+        }
         let local = Dictionary(uniqueKeysWithValues: await store.notebooks().map { ($0.id, $0.digest) })
         for (i, nb) in manifest.notebooks.enumerated() {
             if local[nb.id] == nb.digest { progress("\(nb.title): up to date"); continue }

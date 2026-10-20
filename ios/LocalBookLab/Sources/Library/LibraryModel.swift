@@ -57,6 +57,7 @@ final class LibraryModel {
     var reranker: RerankerEngine?
     private(set) var rerankerLine = "Reranker: not loaded"
     private(set) var recipe: AnswerRecipe?
+    private var personalCache: [String: PersonalContext] = [:]
     private(set) var recipeLine = "No answer recipe yet — sync first"
 
     func open() async {
@@ -177,13 +178,22 @@ final class LibraryModel {
             ranked = zip(found.hits, scores).map { ($0, Double($1)) }.sorted { $0.1 > $1.1 }
             didRerank = true
         }
-        let top = Array(ranked.prefix(keep))
+        var top = Array(ranked.prefix(keep))
+        // The Mac then re-orders those passages by entity and source-type boosts (rag_engine steps 3c/3d).
+        if didRerank, let r = recipe {
+            let scored = top.enumerated().map { i, item in
+                AnswerRecipe.Scored(sourceId: item.hit.sourceId, text: item.hit.text, sourceType: item.hit.sourceType,
+                                    filename: item.hit.filename, rerank: item.rerank, score: item.rerank, index: i)
+            }
+            let personal = await personal(for: notebook)
+            top = r.boosted(scored, question: question, personal: personal).map { top[$0.index] }
+        }
         // Confidence and the keep/drop rules are the Mac's (rag_context.build_citations_and_context).
         var cited = top.map { item -> LibraryHit in
             let conf = recipe?.confidence(rerank: didRerank ? item.rerank : 0, rrfNormalised: Double(item.hit.rrf)) ?? Double(item.hit.rrf)
             return LibraryHit(notebookId: item.hit.notebookId, notebookTitle: item.hit.notebookTitle, sourceId: item.hit.sourceId,
                               chunkIndex: item.hit.chunkIndex, filename: item.hit.filename, text: item.hit.text,
-                              score: Float(conf), rrf: item.hit.rrf)
+                              score: Float(conf), rrf: item.hit.rrf, sourceType: item.hit.sourceType)
         }
         var nothing = false
         if let rules = recipe?.citations {
@@ -195,6 +205,16 @@ final class LibraryModel {
         }
         return Retrieval(hits: cited, reranked: didRerank, candidates: found.hits.count, scanned: found.scanned,
                          embedSeconds: embedSeconds, seconds: Date().timeIntervalSince(t0), nothingRelevant: nothing)
+    }
+
+    /// The Mac's profile, core memory, entities and relationships for a notebook, as last synced.
+    func personal(for notebook: String?) async -> PersonalContext? {
+        guard let notebook, let store else { return nil }
+        if let c = personalCache[notebook] { return c }
+        guard let json = await store.meta("personal:" + notebook), let data = json.data(using: .utf8),
+              let p = try? JSONDecoder().decode(PersonalContext.self, from: data) else { return nil }
+        personalCache[notebook] = p
+        return p
     }
 
     func stopAnswer() { generation?.cancel() }
@@ -234,7 +254,7 @@ final class LibraryModel {
             gemma = try await #huggingFaceLoadModelContainer(configuration: LLMRegistry.gemma4_e4b_it_4bit)
         }
         guard let gemma else { throw LibraryError.badResponse("answer model not loaded") }
-        let setup = generationSetup(question: question, hits: result.hits)
+        let setup = generationSetup(question: question, hits: result.hits, personal: await personal(for: notebook))
         let session = ChatSession(gemma, instructions: setup.instructions, generateParameters: setup.params)
         var answer = "", first: Double?, info: GenerateCompletionInfo?
         let started = Date()
@@ -251,9 +271,10 @@ final class LibraryModel {
 
     /// What the phone gives its model: the Mac's own prompts, decode settings and passage framing when the
     /// recipe has been synced, otherwise the short built-in fallback.
-    func generationSetup(question: String, hits: [LibraryHit]) -> (instructions: String, prompt: String, params: GenerateParameters, clean: (String, Bool) -> String) {
+    func generationSetup(question: String, hits: [LibraryHit], personal: PersonalContext? = nil) -> (instructions: String, prompt: String, params: GenerateParameters, clean: (String, Bool) -> String) {
         if let r = recipe {
-            return (r.systemPrompt(for: question), r.userPrompt(question: question, passages: hits.map(\.text)),
+            return (r.systemPrompt(for: question, personal: personal),
+                    r.userPrompt(question: question, passages: hits.map(\.text), suffix: r.contextSuffix(question: question, personal: personal)),
                     r.generateParameters,
                     { text, cutOff in
                         let fixed = r.fixCitations(r.clean(text), count: hits.count)
@@ -370,7 +391,7 @@ final class LibraryModel {
                 gemma = try await #huggingFaceLoadModelContainer(configuration: LLMRegistry.gemma4_e4b_it_4bit)
             }
             guard let gemma else { return }
-            let setup = generationSetup(question: query, hits: result.hits)
+            let setup = generationSetup(question: query, hits: result.hits, personal: await personal(for: scope))
             let prompt = setup.prompt
             let session = ChatSession(gemma, instructions: setup.instructions, generateParameters: setup.params)
 

@@ -17,6 +17,9 @@ struct AnswerRecipe: Codable, Sendable {
     var queryExpansion: QueryExpansion
     var citations: CitationRules
     var cleanSteps: [CleanStep]
+    var formatRules: [[String]]?
+    var routing: Routing?
+    var personalization: PersonalRules?
     var conformance: Conformance
 
     struct Classify: Codable, Sendable {
@@ -69,11 +72,26 @@ struct AnswerRecipe: Codable, Sendable {
         var classification: [ClassCase]
         var cleaning: [CleanCase]
         var citationFix: [CitationCase]?
+        var format: [FormatCase]?
+        var routing: [RoutingCase]?
+        var personal: PersonalCases?
         var expansion: [ExpandCase]?
         struct ExpandCase: Codable, Sendable { var question: String; var expanded: String }
         struct ClassCase: Codable, Sendable { var question: String; var type: String }
         struct CleanCase: Codable, Sendable { var raw: String; var cleaned: String }
         struct CitationCase: Codable, Sendable { var raw: String; var count: Int; var fixed: String }
+        struct FormatCase: Codable, Sendable { var question: String; var hint: String }
+        struct RoutingCase: Codable, Sendable { var question: String; var tabular: Double; var text: Double }
+        struct PersonalCases: Codable, Sendable {
+            var entities: [PersonalContext.Entity]
+            var relationships: [PersonalContext.Relationship]
+            var results: [Passage]
+            var cases: [Case]
+            struct Passage: Codable, Sendable {
+                var sourceId: String; var text: String; var rerankScore: Double; var sourceType: String; var filename: String
+            }
+            struct Case: Codable, Sendable { var question: String; var order: [String]; var scores: [Double]; var suffix: String }
+        }
     }
 
     // MARK: the Mac's classifier (rag_query_analyzer.classify_query), driven by its pattern lists
@@ -116,16 +134,26 @@ struct AnswerRecipe: Codable, Sendable {
 
     // MARK: prompts (rag_generation.generate_answer), without the user's profile and memory
 
-    func systemPrompt(for question: String) -> String {
+    func systemPrompt(for question: String, personal: PersonalContext? = nil) -> String {
         let base = systemPrompts[classify(question)] ?? systemPrompts["synthesis"] ?? ""
-        guard let hint = generation.lengthHint, !hint.isEmpty else { return base }
-        return base + "\n\n" + hint
+        var parts: [String] = []
+        if let p = personal {
+            if !p.userContext.isEmpty { parts.append("User context: " + p.userContext) }
+            if !p.coreMemory.isEmpty { parts.append(p.coreMemory) }
+        }
+        parts.append(base)
+        if classify(question) == "factual" {
+            let hint = formatHint(question)
+            if !hint.isEmpty { parts.append(hint) }
+        }
+        if let hint = generation.lengthHint, !hint.isEmpty { parts.append(hint) }
+        return parts.joined(separator: "\n\n")
     }
 
-    func userPrompt(question: String, passages: [String]) -> String {
+    func userPrompt(question: String, passages: [String], suffix: String = "") -> String {
         let context = passages.enumerated()
             .map { contextItem.replacingOccurrences(of: "{n}", with: "\($0.offset + 1)").replacingOccurrences(of: "{text}", with: $0.element) }
-            .joined(separator: contextSeparator)
+            .joined(separator: contextSeparator) + suffix
         return userPrompt.replacingOccurrences(of: "{context}", with: context).replacingOccurrences(of: "{question}", with: question)
     }
 
@@ -201,6 +229,7 @@ struct AnswerRecipe: Codable, Sendable {
         for c in conformance.citationFix ?? [] where fixCitations(c.raw, count: c.count) != c.fixed {
             problems.append("citation numbers differ for “\(c.raw.prefix(40).replacingOccurrences(of: "\n", with: " "))”")
         }
+        problems += checkPersonalization()
         return problems
     }
 }

@@ -64,6 +64,26 @@ def classify_query(question: str) -> str:
     return 'synthesis'
 
 
+# Ordered (regex, instruction) rules; the first that matches the lower-cased question wins. Published to phones
+# in the answer recipe so they apply exactly the same hint.
+FORMAT_RULES = [
+    (r'\b(\d+|top|key|main|major|all)\s+(things?|items?|points?|reasons?|ways?|tips?|examples?|factors?|features?|benefits?|risks?|issues?|steps?|ideas?|recommendations?|priorities?|strengths?|weaknesses?|areas?|industries|sectors?|use\s*cases?|applications?|tools?|platforms?|technologies?|strategies?|challenges?|trends?|methods?|approaches?|techniques?|components?|types?|categories?|advantages?|disadvantages?|differences?)\b',
+     "\nFORMAT: Respond using a numbered or bulleted markdown list. Each item should be concise (1-2 sentences). Place citations INLINE at the end of each item like [1], NOT grouped at the top."),
+    (r'\blist\s+(the|all|every|my|our|their)\b',
+     "\nFORMAT: Respond using a numbered or bulleted markdown list. Each item should be concise (1-2 sentences). Place citations INLINE at the end of each item like [1], NOT grouped at the top."),
+    (r'\bwhat are (the |all )?(key|main|top|biggest|most)\b',
+     "\nFORMAT: Respond using a numbered or bulleted markdown list. Each item should be concise (1-2 sentences). Place citations INLINE at the end of each item like [1], NOT grouped at the top."),
+    (r'\b(write|show|give|create|generate)\s+(me\s+)?(the\s+)?(code|script|function|implementation|snippet|class|method|query|sql|regex)\b',
+     "\nFORMAT: Include code in fenced markdown code blocks (```language). Add brief explanations outside the code blocks."),
+    (r'\b(implement|code|program|script)\s+(a|an|the|this|that)\b',
+     "\nFORMAT: Include code in fenced markdown code blocks (```language). Add brief explanations outside the code blocks."),
+    (r'\b(table|comparison|matrix|grid)\b.*\b(of|for|showing|comparing)\b',
+     "\nFORMAT: Use a markdown table for structured comparison. Add a brief summary below the table."),
+    (r'\b(step.by.step|walk me through|how do i|how to|process for|guide to|instructions for)\b',
+     "\nFORMAT: Respond with numbered steps. Each step should have a clear action and brief explanation."),
+]
+
+
 def detect_response_format(question: str) -> str:
     """Detect the ideal response format from the query — pure regex, zero latency.
 
@@ -71,29 +91,9 @@ def detect_response_format(question: str) -> str:
     or empty string for default paragraph style.
     """
     q_lower = question.lower()
-
-    # LIST
-    if re.search(r'\b(\d+|top|key|main|major|all)\s+(things?|items?|points?|reasons?|ways?|tips?|examples?|factors?|features?|benefits?|risks?|issues?|steps?|ideas?|recommendations?|priorities?|strengths?|weaknesses?|areas?|industries|sectors?|use\s*cases?|applications?|tools?|platforms?|technologies?|strategies?|challenges?|trends?|methods?|approaches?|techniques?|components?|types?|categories?|advantages?|disadvantages?|differences?)\b', q_lower):
-        return "\nFORMAT: Respond using a numbered or bulleted markdown list. Each item should be concise (1-2 sentences). Place citations INLINE at the end of each item like [1], NOT grouped at the top."
-    if re.search(r'\blist\s+(the|all|every|my|our|their)\b', q_lower):
-        return "\nFORMAT: Respond using a numbered or bulleted markdown list. Each item should be concise (1-2 sentences). Place citations INLINE at the end of each item like [1], NOT grouped at the top."
-    if re.search(r'\bwhat are (the |all )?(key|main|top|biggest|most)\b', q_lower):
-        return "\nFORMAT: Respond using a numbered or bulleted markdown list. Each item should be concise (1-2 sentences). Place citations INLINE at the end of each item like [1], NOT grouped at the top."
-
-    # CODE
-    if re.search(r'\b(write|show|give|create|generate)\s+(me\s+)?(the\s+)?(code|script|function|implementation|snippet|class|method|query|sql|regex)\b', q_lower):
-        return "\nFORMAT: Include code in fenced markdown code blocks (```language). Add brief explanations outside the code blocks."
-    if re.search(r'\b(implement|code|program|script)\s+(a|an|the|this|that)\b', q_lower):
-        return "\nFORMAT: Include code in fenced markdown code blocks (```language). Add brief explanations outside the code blocks."
-
-    # TABLE
-    if re.search(r'\b(table|comparison|matrix|grid)\b.*\b(of|for|showing|comparing)\b', q_lower):
-        return "\nFORMAT: Use a markdown table for structured comparison. Add a brief summary below the table."
-
-    # STEPS
-    if re.search(r'\b(step.by.step|walk me through|how do i|how to|process for|guide to|instructions for)\b', q_lower):
-        return "\nFORMAT: Respond with numbered steps. Each step should have a clear action and brief explanation."
-
+    for pattern, hint in FORMAT_RULES:
+        if re.search(pattern, q_lower):
+            return hint
     return ""
 
 

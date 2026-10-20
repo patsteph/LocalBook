@@ -64,3 +64,16 @@ def test_the_recipe_publishes_citation_vectors_and_a_length_hint():
     body = body.get("recipe", body)
     assert body["conformance"]["citation_fix"]
     assert "words" in body["generation"]["length_hint"]
+
+
+def test_the_recipe_carries_routing_format_and_entity_rules_with_vectors():
+    body = phone_recipe.recipe()
+    body = body.get("recipe", body)
+    assert body["format_rules"] and body["routing"]["patterns"]["numeric"]
+    assert body["personalization"]["boost_cap"] == 0.3
+    c = body["conformance"]
+    assert c["format"] and c["routing"] and c["personal"]["cases"]
+    # the first matching rule of the Mac's own function is what the vectors say
+    from services import rag_query_analyzer
+    for v in c["format"]:
+        assert rag_query_analyzer.detect_response_format(v["question"]) == v["hint"]

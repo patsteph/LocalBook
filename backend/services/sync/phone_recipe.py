@@ -87,6 +87,13 @@ CITATION_FIX_SAMPLES = [
 ]
 
 
+def _format_vectors() -> List[Dict[str, str]]:
+    from services import rag_query_analyzer
+    qs = SAMPLE_QUESTIONS + ["Write me the code for a parser", "Give me a step by step guide", "What are the key risks?",
+                             "table of costs for the pilot"]
+    return [{"question": q, "hint": rag_query_analyzer.detect_response_format(q)} for q in qs]
+
+
 def _citation_fix_vectors() -> List[Dict[str, Any]]:
     from services import rag_generation
     return [{"raw": a, "count": n, "fixed": rag_generation.fix_citations(a, n)} for a, n in CITATION_FIX_SAMPLES]
@@ -100,6 +107,7 @@ def _clean_vectors() -> List[Dict[str, str]]:
 def recipe() -> Dict[str, Any]:
     from config import settings
     from services import mlx_engine, rag_generation, rag_query_analyzer
+    from services.sync import phone_personal
 
     body: Dict[str, Any] = {
         "proto": PROTO,
@@ -145,10 +153,18 @@ def recipe() -> Dict[str, Any]:
                       "fallback_keep": 3,
                       "no_answer": ("I don't have enough relevant information in your documents to answer this question "
                                     "accurately. Try uploading more documents related to this topic, or rephrase your question.")},
+        # rag_query_analyzer.detect_response_format: the first matching rule's hint ends a factual question's prompt.
+        "format_rules": [[pat, hint] for pat, hint in rag_query_analyzer.FORMAT_RULES],
+        # source_router, and the entity/graph numbers: how the Mac re-orders reranked passages before citing them.
+        "routing": phone_personal.routing(),
+        "personalization": phone_personal.RULES,
         "clean_steps": CLEAN_STEPS,
         "conformance": {"classification": _classification_vectors(), "cleaning": _clean_vectors(),
                         "expansion": _expansion_vectors(),
-                        "citation_fix": _citation_fix_vectors()},
+                        "citation_fix": _citation_fix_vectors(),
+                        "format": _format_vectors(),
+                        "routing": phone_personal.routing_vectors(SAMPLE_QUESTIONS),
+                        "personal": phone_personal.personal_vectors()},
     }
     version = hashlib.sha256(json.dumps(body, sort_keys=True).encode()).hexdigest()[:12]
     return {"recipe_version": version, **body}

@@ -26,6 +26,7 @@ struct LibraryHit: Sendable, Identifiable {
     let text: String
     let score: Float
     var rrf: Float = 0              // Reciprocal Rank Fusion score divided by the best one in the pool (0…1)
+    var sourceType: String = ""
 }
 
 struct LibraryNotebookInfo: Sendable, Identifiable {
@@ -377,13 +378,14 @@ actor LibraryStore {
         var hits: [LibraryHit] = []
         for item in fused.prefix(params.hybridK) {
             let key = rowKeys[range.lowerBound + item.row]
-            let t = try statement("SELECT text, filename FROM chunks WHERE notebook_id=? AND source_id=? AND chunk_index=?")
+            let t = try statement("SELECT text, filename, source_type FROM chunks WHERE notebook_id=? AND source_id=? AND chunk_index=?")
             defer { sqlite3_finalize(t) }
             bind(t, 1, key.nb); bind(t, 2, key.src); sqlite3_bind_int64(t, 3, Int64(key.idx))
             guard sqlite3_step(t) == SQLITE_ROW else { continue }
             hits.append(.init(notebookId: key.nb, notebookTitle: titles[key.nb] ?? key.nb, sourceId: key.src, chunkIndex: key.idx,
                               filename: String(cString: sqlite3_column_text(t, 1)), text: String(cString: sqlite3_column_text(t, 0)),
-                              score: scores[item.row], rrf: Float(item.rrf / best)))
+                              score: scores[item.row], rrf: Float(item.rrf / best),
+                              sourceType: String(cString: sqlite3_column_text(t, 2))))
         }
         return (hits, rows, Date().timeIntervalSince(started))
     }
