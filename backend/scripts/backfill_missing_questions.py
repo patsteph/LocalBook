@@ -49,10 +49,12 @@ async def main() -> None:
     import lancedb
     from config import settings
     prefs = Path(settings.data_dir) / "user_preferences.json"
-    if prefs.exists():                                   # the embedder the app itself uses
-        model = json.loads(prefs.read_text()).get("embedding_model")
-        if model:
-            settings.embedding_model = model
+    if prefs.exists():                                   # the models the app itself uses (user_preferences.json → default_combo)
+        combo = json.loads(prefs.read_text()).get("default_combo", {})
+        if combo.get("embedding_model"):
+            settings.embedding_model = combo["embedding_model"]
+        if combo.get("fast_model"):
+            settings.fast_model = combo["fast_model"]
     db = lancedb.connect(str(Path(settings.data_dir) / "lancedb"))
     total = 0
     for name in sorted(db.table_names()):
@@ -92,8 +94,14 @@ async def main() -> None:
                 raise RuntimeError("embedder returned a bad vector; nothing more written")
             for u, v in zip(updated, vecs):
                 u["vector"] = v
-            await asyncio.to_thread(lambda: table.merge_insert(["source_id", "chunk_index"])
-                                    .when_matched_update_all().execute(updated))
+            import pyarrow as pa
+            replacement = pa.Table.from_pylist(updated, schema=table.schema)       # validated BEFORE anything is deleted
+
+            def _write() -> None:                                                   # same delete-then-add as chunk_limit_migration
+                for u in updated:
+                    table.delete(f"source_id = '{u['source_id']}' AND chunk_index = {u['chunk_index']}")
+                table.add(replacement)
+            await asyncio.to_thread(_write)
             print(f"   wrote {len(updated)} (batch {i // 16 + 1})")
     print(f"TOTAL missing: {total}" + ("" if args.apply else "  (dry run — nothing written)"))
 

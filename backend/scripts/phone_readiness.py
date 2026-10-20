@@ -17,8 +17,8 @@ import lancedb
 from config import settings
 
 prefs = Path(settings.data_dir) / "user_preferences.json"
-if prefs.exists():
-    settings.embedding_model = json.loads(prefs.read_text()).get("embedding_model") or settings.embedding_model
+if prefs.exists():                                    # the embedder the app itself uses (default_combo)
+    settings.embedding_model = json.loads(prefs.read_text()).get("default_combo", {}).get("embedding_model") or settings.embedding_model
 from services import chunk_limit_migration as m
 
 db = lancedb.connect(str(Path(settings.data_dir) / "lancedb"))
