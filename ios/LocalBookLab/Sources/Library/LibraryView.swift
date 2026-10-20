@@ -33,28 +33,33 @@ struct LibraryView: View {
             }
 
             Section {
+                Picker("Who answers", selection: $model.askMode) {
+                    ForEach(LibraryModel.AskMode.allCases) { Text($0.rawValue).tag($0) }
+                }
+                .pickerStyle(.segmented)
+                TextField("Ask your library a question", text: $model.query)
+                    .submitLabel(.go)
+                    .onSubmit { Task { await model.ask() } }
+                Picker("Notebook", selection: $model.scopeToNotebook) {
+                    ForEach(model.notebooks) { Text($0.title).tag(String?.some($0.id)) }
+                }
+                Button("Ask") { Task { await model.ask() } }
+                    .disabled(model.answering || (model.askMode == .phone && model.searchState != .ready))
+                // Searching on the phone (and answering on the phone) needs the phone's own search model.
                 switch model.searchState {
                 case .notReady:
-                    Button("Get the search model ready") { Task { await model.prepareSearch() } }
+                    Button("Get the phone's search model ready") { Task { await model.prepareSearch() } }
                 case .preparing(let what):
                     HStack { ProgressView(); Text(what).font(.footnote) }
                 case .failed(let why):
                     Text(why).font(.footnote).foregroundStyle(.red)
                     Button("Try again") { Task { await model.prepareSearch() } }
                 case .ready:
-                    TextField("Ask your library a question", text: $model.query)
-                        .submitLabel(.search)
-                        .onSubmit { Task { await model.search() } }
-                    Picker("Notebook", selection: $model.scopeToNotebook) {
-                        ForEach(model.notebooks) { Text($0.title).tag(String?.some($0.id)) }
-                    }
-                    Button("Ask (answer with Gemma from the passages)") { Task { await model.ask() } }
-                        .disabled(model.answering)
-                    Button("Search only (just the passages)") { Task { await model.search() } }
+                    Button("Search only (just the passages, on this phone)") { Task { await model.search() } }
                     if !model.timing.isEmpty { Text(model.timing).font(.footnote).foregroundStyle(.secondary) }
                 }
-            } header: { Text("Search on the phone") } footer: {
-                Text("The question is embedded on this phone and compared with the Mac's own vectors — the same match test 1 proved.")
+            } header: { Text("Ask") } footer: {
+                Text("“Ask the Mac” needs the Mac app running. “On this phone” works offline: it embeds your question here, matches the Mac's vectors and keywords, and Gemma writes the answer.")
             }
 
             if model.answering || !model.answerText.isEmpty || !model.answerStatus.isEmpty {
@@ -62,8 +67,13 @@ struct LibraryView: View {
                     if model.answering { Button("Stop", role: .destructive) { model.stopAnswer() } }
                     if !model.answerText.isEmpty { Text(model.answerText) }
                     if !model.answerStatus.isEmpty { Text(model.answerStatus).font(.footnote).foregroundStyle(.secondary) }
+                    ForEach(model.followUps, id: \.self) { q in
+                        Button(q) { model.query = q; Task { await model.ask() } }.font(.footnote)
+                    }
                 } header: { Text("Answer") } footer: {
-                    Text("Written on this phone by the same Gemma 4 model the Mac runs, from the passages below. It stops if you lock the phone.")
+                    Text(model.askMode == .mac
+                         ? "Written by the Mac with its full search (query analysis, hybrid search, re-rank). Counts as a normal question on the Mac."
+                         : "Offline mode: written on this phone by the same Gemma 4 model, from the best passages by vectors and keywords (no re-rank). It stops if you lock the phone.")
                 }
             }
 
@@ -73,7 +83,9 @@ struct LibraryView: View {
                         VStack(alignment: .leading, spacing: 3) {
                             Text("[\(i + 1)] \(h.notebookTitle) · \(h.filename)").font(.footnote.weight(.medium))
                             Text(h.text.prefix(240) + (h.text.count > 240 ? "…" : "")).font(.footnote)
-                            Text(String(format: "similarity %.3f", h.score)).font(.caption2).foregroundStyle(.secondary)
+                            Text(model.sourceScoreIsConfidence ? String(format: "confidence %.0f%%", Double(h.score) * 100)
+                                                               : String(format: "similarity %.3f", h.score))
+                                .font(.caption2).foregroundStyle(.secondary)
                         }
                     }
                 }

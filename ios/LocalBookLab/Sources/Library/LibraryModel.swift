@@ -27,6 +27,22 @@ final class LibraryModel {
     private(set) var answerText = ""
     private(set) var answerSources: [LibraryHit] = []
     private(set) var answerStatus = ""
+    private(set) var followUps: [String] = []
+    private(set) var sourceScoreIsConfidence = false
+    var askMode: AskMode = .mac
+    enum AskMode: String, CaseIterable, Identifiable {
+        case mac = "Ask the Mac", phone = "On this phone"
+        var id: String { rawValue }
+    }
+
+    private struct MacAnswer: Decodable {
+        struct Citation: Decodable {
+            let number: Int?; let sourceId: String; let filename: String?; let chunkIndex: Int?
+            let text: String; let confidence: Double?
+        }
+        let answer: String; let citations: [Citation]; let followUpQuestions: [String]
+        let lowConfidence: Bool; let cacheHit: Bool
+    }
     private(set) var answering = false
     private var generation: Task<Void, Never>?
     private var gemma: ModelContainer?
@@ -93,6 +109,54 @@ final class LibraryModel {
 
     func stopAnswer() { generation?.cancel() }
 
+    /// Dispatch on the chosen mode.
+    func ask() async {
+        switch askMode {
+        case .mac: await askMac()
+        case .phone: await askOnPhone()
+        }
+    }
+
+    /// The Mac's own pipeline (query analysis, hybrid search, re-rank, its answer model) answers; the phone
+    /// only shows it. Counts as a normal question on the Mac (its answer cache and memory see it).
+    private func askMac() async {
+        guard let mac = MacLink.paired else { answerStatus = "Pair with a Mac first (row 3)."; return }
+        guard !answering, !query.trimmingCharacters(in: .whitespaces).isEmpty, let scope = scopeToNotebook else { return }
+        answering = true
+        answerText = ""; answerSources = []; followUps = []; hits = []
+        defer { answering = false }
+        let title = notebooks.first { $0.id == scope }?.title ?? scope
+        answerStatus = "Asking the Mac…"
+        let started = Date()
+        let question = query
+        let task = Task { @MainActor in
+            do {
+                let data = try await MacLink.signedCall(mac, path: "/phone/ask",
+                                                        json: ["notebook_id": scope, "question": question], timeout: 240)
+                let decoder = JSONDecoder(); decoder.keyDecodingStrategy = .convertFromSnakeCase
+                let r = try decoder.decode(MacAnswer.self, from: data)
+                answerText = r.answer
+                sourceScoreIsConfidence = true
+                answerSources = r.citations.map {
+                    LibraryHit(notebookId: scope, notebookTitle: title, sourceId: $0.sourceId, chunkIndex: $0.chunkIndex ?? 0,
+                               filename: $0.filename ?? "Unknown", text: $0.text, score: Float($0.confidence ?? 0))
+                }
+                hits = answerSources
+                followUps = r.followUpQuestions
+                var line = "Answered by the Mac in \(String(format: "%.1f", Date().timeIntervalSince(started))) s · \(r.citations.count) sources"
+                if r.cacheHit { line += " · from its cache" }
+                if r.lowConfidence { line += " · low confidence" }
+                answerStatus = line
+            } catch is CancellationError {
+                answerStatus = "Stopped"
+            } catch {
+                answerStatus = "Could not get an answer from the Mac: \(error.localizedDescription). Is it running? You can switch to “On this phone”."
+            }
+        }
+        generation = Task { await task.value }
+        await task.value
+    }
+
     /// Free the answer model's memory (4+ GB) when the screen goes away.
     func unloadAnswerModel() {
         generation?.cancel()
@@ -102,14 +166,16 @@ final class LibraryModel {
     /// Search the chosen notebook, then have the phone's own Gemma answer from those passages. Generation
     /// is cancelled the moment the app stops being active: iOS refuses GPU work in the background and
     /// a stuck generation freezes the app (measured in Phase 0).
-    func ask() async {
+    private func askOnPhone() async {
+        sourceScoreIsConfidence = false
+        followUps = []
         guard let store, let engine, let tokenizer, !answering,
               !query.trimmingCharacters(in: .whitespaces).isEmpty, let scope = scopeToNotebook else { return }
         answering = true
         answerText = ""; answerSources = []
         defer { answering = false }
         do {
-            answerStatus = "Finding passages…"
+            answerStatus = "Finding passages (offline mode: vectors + keywords)…"
             let t0 = Date()
             let text = queryTemplate.replacingOccurrences(of: "{text}", with: query)
             let vector = try await engine.embed(tokenIds: TokenRepair.spaceFallback(tokenizer.encode(text: text)))

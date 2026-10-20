@@ -593,6 +593,36 @@ async def phone_library_chunks(request: Request):
     return out
 
 
+_phone_ask_lock = asyncio.Lock()           # one phone question at a time: it uses the Mac's models
+PHONE_ASK_TIMEOUT = 240
+
+
+@phone_sync_app.post("/phone/ask")
+async def phone_ask(request: Request):
+    """Ask the Mac's own pipeline (analysis, hybrid search, re-rank, answer) about one notebook.
+
+    This is a normal question as far as the Mac is concerned: the answer cache and memory extraction see
+    it, exactly as if it had been typed here. Excluded notebooks are not askable."""
+    _check_enabled()
+    v = await _verified_phone(request)
+    from services.sync import phone_library
+    notebook_id = str(v["body"].get("notebook_id", ""))
+    question = str(v["body"].get("question", "")).strip()
+    if not question or len(question) > 2000:
+        raise HTTPException(400, "a question of 1 to 2000 characters is required")
+    if not await asyncio.to_thread(phone_library.is_visible, notebook_id):
+        raise HTTPException(404, "no such notebook")
+    if _phone_ask_lock.locked():
+        raise HTTPException(429, "the Mac is answering another question; try again in a moment")
+    async with _phone_ask_lock:
+        from services.rag_engine import rag_engine
+        try:
+            result = await asyncio.wait_for(rag_engine.query(notebook_id, question, top_k=4), PHONE_ASK_TIMEOUT)
+        except asyncio.TimeoutError:
+            raise HTTPException(504, "the Mac took too long to answer")
+    return phone_library.shape_answer(result)
+
+
 # ── listeners ────────────────────────────────────────────────────────────────
 
 _servers: Dict[str, Any] = {}

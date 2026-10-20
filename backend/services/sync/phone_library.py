@@ -71,6 +71,23 @@ def _visible(notebook_id: str) -> bool:
     return notebook_id in notebook_titles() and notebook_id not in set(excluded())
 
 
+def is_visible(notebook_id: str) -> bool:
+    return _visible(notebook_id)
+
+
+def shape_answer(result: Dict[str, Any]) -> Dict[str, Any]:
+    """What a phone needs from the Mac's answer: the text, the sources it cited, and the follow-ups.
+    Parent-document context is left out (it can be large and the phone does not use it)."""
+    cites = []
+    for c in result.get("citations") or []:
+        cites.append({"number": c.get("number"), "source_id": c.get("source_id"), "filename": c.get("filename"),
+                      "chunk_index": c.get("chunk_index"), "text": c.get("text", ""),
+                      "confidence": c.get("confidence"), "confidence_level": c.get("confidence_level")})
+    return {"answer": result.get("answer", ""), "citations": cites,
+            "follow_up_questions": list(result.get("follow_up_questions") or []),
+            "low_confidence": bool(result.get("low_confidence")), "cache_hit": bool(result.get("cache_hit"))}
+
+
 # ── the index, read directly ─────────────────────────────────────────────────
 
 

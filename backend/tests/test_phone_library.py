@@ -117,3 +117,28 @@ def test_chunks_can_be_limited_to_chosen_sources_and_the_digest_changes(lib):
 def test_the_library_needs_a_valid_signature(lib):
     r = lib[1].post("/phone/library/manifest", content=b"{}", headers={"X-LB-Device": "phone-1"})
     assert r.status_code == 403
+
+
+def test_ask_the_mac_runs_the_macs_own_pipeline_and_returns_a_trimmed_answer(lib, monkeypatch):
+    import services.rag_engine as re_mod
+    seen = {}
+
+    async def fake_query(notebook_id, question, source_ids=None, top_k=4, **kw):
+        seen.update(notebook_id=notebook_id, question=question, top_k=top_k)
+        return {"answer": "Because.", "citations": [{"number": 1, "source_id": "s1", "filename": "a.md", "chunk_index": 0,
+                                                     "text": "alpha", "parent_text": "x" * 5000, "confidence": 0.8,
+                                                     "confidence_level": "high"}],
+                "follow_up_questions": ["Why?"], "low_confidence": False}
+    monkeypatch.setattr(re_mod.rag_engine, "query", fake_query)
+    r = _call(lib, "/phone/ask", {"notebook_id": NB_OPEN, "question": "How does X differ from Y?"})
+    assert r.status_code == 200 and seen == {"notebook_id": NB_OPEN, "question": "How does X differ from Y?", "top_k": 4}
+    body = r.json()
+    assert body["answer"] == "Because." and body["citations"][0]["filename"] == "a.md"
+    assert "parent_text" not in body["citations"][0]
+
+
+def test_ask_refuses_excluded_notebooks_and_bad_questions(lib):
+    phone_library.set_excluded([NB_PRIVATE])
+    assert _call(lib, "/phone/ask", {"notebook_id": NB_PRIVATE, "question": "hi"}).status_code == 404
+    assert _call(lib, "/phone/ask", {"notebook_id": NB_OPEN, "question": "  "}).status_code == 400
+    assert _call(lib, "/phone/ask", {"notebook_id": NB_OPEN, "question": "x" * 3000}).status_code == 400
