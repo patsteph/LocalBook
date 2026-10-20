@@ -349,7 +349,7 @@ actor LibraryStore {
                 scores[doc, default: 0] += idf * (f * (k1 + 1) / norm)
             }
         }
-        return scores.sorted { $0.value > $1.value }.prefix(limit).map { (Int($0.key), $0.value) }
+        return scores.sorted { $0.value != $1.value ? $0.value > $1.value : $0.key < $1.key }.prefix(limit).map { (Int($0.key), $0.value) }
     }
 
     struct SearchParams: Sendable {
