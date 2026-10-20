@@ -271,6 +271,9 @@ actor LibraryStore {
 
     // MARK: search
 
+    /// Build the in-memory vector block now, so the first question does not pay for it (about 0.6 s).
+    func warmUp() { try? buildMatrix() }
+
     private static let stopwords: Set<String> = ["a", "an", "and", "are", "as", "at", "be", "by", "do", "does", "for", "from", "how",
         "in", "is", "it", "of", "on", "or", "the", "to", "was", "what", "when", "where", "which", "who", "why", "with", "can", "you"]
 

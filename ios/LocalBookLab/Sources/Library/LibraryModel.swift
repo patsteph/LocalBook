@@ -66,6 +66,7 @@ final class LibraryModel {
 
     func refresh() async {
         guard let store else { return }
+        Task.detached { await store.warmUp() }              // build the in-memory vector block before the first question
         notebooks = await store.notebooks()
         chunkCount = await store.chunkCount()
         if let t = await store.meta("last_sync") { lastSyncLine = "Last synced \(t)" }
@@ -194,7 +195,8 @@ final class LibraryModel {
                 "[\(i + 1)] (\(h.filename))\n\(String(h.text.prefix(1_100)))"
             }.joined(separator: "\n\n")
             let instructions = "You answer questions using ONLY the numbered passages from the user's own notes. "
-                + "If they do not contain the answer, say so plainly. Be concise. Cite the passages you used like [1] or [2]."
+                + "If they do not contain the answer, say so plainly. Be concise. Cite the passages you used like [1] or [2]. "
+                + "Write plain text: no LaTeX or dollar-sign math (write arrows as ->), and no tables."
             let prompt = "Passages:\n\n\(sources)\n\nQuestion: \(query)"
             let session = ChatSession(gemma, instructions: instructions, generateParameters: GenerateParameters(maxTokens: 400))
 
