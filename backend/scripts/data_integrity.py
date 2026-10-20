@@ -56,8 +56,35 @@ def main() -> None:
     print(f"  orphan, holding data:          {len(orphan_data)}  ({sum(rows[n] for n in orphan_data)} chunks)")
     if unreadable:
         print(f"  orphan, unreadable:            {len(unreadable)}")
-    for nb in orphan_data[:25]:
+    # Who owns the chunks in an orphan table? If its source ids exist in the sources table (under ANY
+    # notebook), the notebook was re-id'd or the sources moved — the table is NOT safe to treat as garbage.
+    src_owner = {sid: nbid for sid, nbid in conn.execute("SELECT id, notebook_id FROM sources")}
+    src_name = {sid: fn for sid, fn in conn.execute("SELECT id, filename FROM sources")}
+    claimed = {}
+    for nb in orphan_data:
+        t = db.open_table(f"notebook_{nb}")
+        sids = {r["source_id"] for r in t.search().select(["source_id"]).limit(t.count_rows()).to_list()}
+        sids.discard("placeholder")
+        known = {sid for sid in sids if sid in src_owner}
+        claimed[nb] = (len(sids), known)
+    print("\n  orphan tables whose chunks belong to sources that STILL EXIST (do not delete these):")
+    hit = [(nb, c) for nb, c in claimed.items() if c[1]]
+    for nb, (total, known) in sorted(hit, key=lambda kv: -kv[1][0])[:25]:
+        owners = {src_owner[sid][:8] for sid in known}
+        ex = next(iter(known))
+        print(f"      {nb[:8]}…  {rows[nb]} chunks, {len(known)}/{total} sources still exist, owned by notebook(s) {sorted(owners)}  e.g. {src_name.get(ex, '?')[:40]}")
+    if not hit:
+        print("      none")
+    print(f"\n  truly dead (no source anywhere refers to them): {len([nb for nb, c in claimed.items() if not c[1]])} tables, "
+          f"{sum(rows[nb] for nb, c in claimed.items() if not c[1])} chunks")
+    for nb in [n for n, c in claimed.items() if not c[1]][:15]:
         print(f"      {nb[:8]}…  {rows[nb]} chunks")
+    missing = [n for n in live if n not in dirs]
+    if missing:
+        print("\n  live notebooks WITHOUT a vector table (their sources cannot be searched):")
+        for n in missing:
+            c = conn.execute("SELECT COUNT(*) FROM sources WHERE notebook_id=?", (n,)).fetchone()[0]
+            print(f"      {n[:8]}…  \"{live[n]}\"  sources={c}")
 
     nb_dirs = [p.name for p in (home / "notebooks").glob("*") if p.is_dir()] if (home / "notebooks").exists() else []
     print(f"\nnotebook data folders: {len(nb_dirs)}, not belonging to a live notebook: {len([d for d in nb_dirs if d not in live])}")
