@@ -10,6 +10,26 @@ from typing import Dict, List, Optional, Tuple
 
 # ─── Query Classification ──────────────────────────────────────────────────────
 
+# Pattern lists behind classify_query, module-level so a paired phone can be given the SAME lists
+# (services/sync/phone_recipe.py) instead of keeping its own copy.
+COMPLEX_PATTERNS = [
+    'compare', 'contrast', 'analyze', 'explain why', 'explain how',
+    'what are the differences', 'what are the similarities',
+    'synthesize', 'evaluate', 'assess',
+    'pros and cons', 'advantages and disadvantages',
+    'step by step', 'walk me through', 'break down',
+    'relationship between', 'implications', 'consequences',
+    'argue', 'debate', 'critique', 'review'
+]
+
+FACTUAL_PATTERNS = [
+    'how many', 'how much', 'what is the', 'what was the',
+    'when did', 'when was', 'who is', 'who was', 'who did',
+    'what date', 'what time', 'what number', 'what percentage',
+    'list the', 'name the', 'count of', 'total of',
+    'did chris', 'did christopher',
+]
+
 def classify_query(question: str) -> str:
     """Classify query type for optimal prompt and model selection.
     
@@ -26,16 +46,7 @@ def classify_query(question: str) -> str:
         re.search(r'\band\b.{5,}\?', q_lower) is not None
     )
     
-    complex_patterns = [
-        'compare', 'contrast', 'analyze', 'explain why', 'explain how',
-        'what are the differences', 'what are the similarities',
-        'synthesize', 'evaluate', 'assess',
-        'pros and cons', 'advantages and disadvantages',
-        'step by step', 'walk me through', 'break down',
-        'relationship between', 'implications', 'consequences',
-        'argue', 'debate', 'critique', 'review'
-    ]
-    for pattern in complex_patterns:
+    for pattern in COMPLEX_PATTERNS:
         if pattern in q_lower:
             return 'complex'
     
@@ -46,14 +57,7 @@ def classify_query(question: str) -> str:
     if is_multi_part:
         return 'synthesis'
     
-    factual_patterns = [
-        'how many', 'how much', 'what is the', 'what was the',
-        'when did', 'when was', 'who is', 'who was', 'who did',
-        'what date', 'what time', 'what number', 'what percentage',
-        'list the', 'name the', 'count of', 'total of',
-        'did chris', 'did christopher',
-    ]
-    for pattern in factual_patterns:
+    for pattern in FACTUAL_PATTERNS:
         if pattern in q_lower:
             return 'factual'
     

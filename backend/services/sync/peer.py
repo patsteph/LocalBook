@@ -568,6 +568,15 @@ async def phone_library_manifest(request: Request):
     return await asyncio.to_thread(phone_library.manifest)
 
 
+@phone_sync_app.post("/phone/library/recipe")
+async def phone_library_recipe(request: Request):
+    """The Mac's answer recipe (prompts, classifier rules, settings, cleaning steps, conformance vectors)."""
+    _check_enabled()
+    await _verified_phone(request)
+    from services.sync import phone_recipe
+    return await asyncio.to_thread(phone_recipe.recipe)
+
+
 @phone_sync_app.post("/phone/library/sources")
 async def phone_library_sources(request: Request):
     _check_enabled()
