@@ -63,6 +63,7 @@ struct AnswerRecipe: Codable, Sendable {
         var rrfBase: Double, rrfScale: Double
         var minConfidence: Double, veryLowConfidence: Double
         var fallbackKeep: Int
+        var combine: String?
         var noAnswer: String
     }
     struct CleanStep: Codable, Sendable {
@@ -77,6 +78,7 @@ struct AnswerRecipe: Codable, Sendable {
         var citationFix: [CitationCase]?
         var format: [FormatCase]?
         var quality: [QualityCase]?
+        var confidence: [ConfidenceCase]?
         var variants: [VariantCase]?
         var routing: [RoutingCase]?
         var personal: PersonalCases?
@@ -86,6 +88,7 @@ struct AnswerRecipe: Codable, Sendable {
         struct CleanCase: Codable, Sendable { var raw: String; var cleaned: String }
         struct CitationCase: Codable, Sendable { var raw: String; var count: Int; var fixed: String }
         struct FormatCase: Codable, Sendable { var question: String; var hint: String }
+        struct ConfidenceCase: Codable, Sendable { var rerank: Double?; var rrf: Double; var confidence: Double }
         struct QualityCase: Codable, Sendable { var question: String; var answer: String; var type: String; var ok: Bool }
         struct VariantCase: Codable, Sendable { var question: String; var variants: [String] }
         struct RoutingCase: Codable, Sendable { var question: String; var tabular: Double; var text: Double }
@@ -134,6 +137,12 @@ struct AnswerRecipe: Codable, Sendable {
     /// Confidence of a reranked passage as the Mac computes it (rag_context.build_citations_and_context).
     func confidence(rerank: Double, rrfNormalised: Double) -> Double {
         let c = citations
+        if c.combine == "max" {            // the higher of the two signals wins (no cliff at the rerank floor)
+            var best: Double?
+            if rerank > c.rerankFloor { best = min(1, rerank * c.rerankScale + c.rerankOffset) }
+            if rrfNormalised > 0 { best = max(best ?? 0, c.rrfBase + rrfNormalised * c.rrfScale) }
+            return best ?? 0.5
+        }
         if rerank > c.rerankFloor { return min(1, rerank * c.rerankScale + c.rerankOffset) }
         if rrfNormalised > 0 { return c.rrfBase + rrfNormalised * c.rrfScale }
         return 0.5
@@ -238,6 +247,9 @@ struct AnswerRecipe: Codable, Sendable {
         }
         problems += checkPersonalization()
         problems += checkCorrective()
+        for c in conformance.confidence ?? [] where abs(confidence(rerank: c.rerank ?? 0, rrfNormalised: c.rrf) - c.confidence) > 1e-9 {
+            problems.append("citation confidence for rerank \(c.rerank.map { String($0) } ?? "none") / rrf \(c.rrf) differs")
+        }
         return problems
     }
 }

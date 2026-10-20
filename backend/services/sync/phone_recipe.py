@@ -101,6 +101,15 @@ VARIANT_SAMPLES = ["How many demos did Pat Stephens do in Q1?", "what is fy plan
                    "total revenue q3 and q4", "how long is onbaording at Netflix", "plain lower case question"]
 
 
+CONFIDENCE_SAMPLES = [(0.0266, 0.5), (0.00007, 0.9), (0.5, 0.0), (None, 0.8), (0.0084, 0.0 + 0.3), (0.3, 0.2), (0.9, 1.0), (0.02, 0.0)]
+
+
+def _confidence_vectors() -> List[Dict[str, Any]]:
+    from services import rag_context
+    return [{"rerank": r, "rrf": f, "confidence": rag_context.citation_confidence(r, f)}
+            for r, f in CONFIDENCE_SAMPLES]
+
+
 def _quality_vectors() -> List[Dict[str, Any]]:
     from services import rag_query_analyzer
     return [{"question": q, "answer": a, "type": t,
@@ -176,6 +185,8 @@ def recipe() -> Dict[str, Any]:
         "citations": {"rerank_floor": 0.01, "rerank_scale": 1.4, "rerank_offset": 0.1,
                       "rrf_base": 0.5, "rrf_scale": 0.4, "min_confidence": 0.20, "very_low_confidence": 0.10,
                       "fallback_keep": 3,
+                      # rag_context.citation_confidence: the higher of the rerank-based and RRF-based values wins
+                      "combine": "max",
                       "no_answer": ("I don't have enough relevant information in your documents to answer this question "
                                     "accurately. Try uploading more documents related to this topic, or rephrase your question.")},
         # rag_query_analyzer.detect_response_format: the first matching rule's hint ends a factual question's prompt.
@@ -204,6 +215,7 @@ def recipe() -> Dict[str, Any]:
                         "citation_fix": _citation_fix_vectors(),
                         "format": _format_vectors(),
                         "quality": _quality_vectors(),
+                        "confidence": _confidence_vectors(),
                         "variants": _variant_vectors(),
                         "routing": phone_personal.routing_vectors(SAMPLE_QUESTIONS),
                         "personal": phone_personal.personal_vectors()},

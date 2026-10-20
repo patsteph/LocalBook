@@ -89,3 +89,19 @@ def test_the_recipe_publishes_the_macs_second_look_rules_with_vectors():
         assert qa.check_answer_quality(v["question"], v["answer"], v["type"])[0] == v["ok"]
     for v in body["conformance"]["variants"]:
         assert qa.generate_query_variants(v["question"]) == v["variants"]
+
+
+def test_a_better_reranked_passage_is_not_dropped_below_a_weaker_one():
+    """Netflix/onboarding regression: rerank 0.0266 (best) used to score 0.14 and be cut at 0.20, while a
+    0.00007 passage kept its RRF value of 0.5-0.9."""
+    from services.rag_context import citation_confidence as conf
+    best, weak = conf(0.0266, 0.5), conf(0.00007, 0.5)
+    assert best >= 0.20 and best >= weak
+    assert conf(0.5, 0.0) == 0.5 * 1.4 + 0.1          # unchanged where there is no RRF signal
+    assert conf(None, 0.8) == 0.5 + 0.8 * 0.4
+
+
+def test_the_recipe_says_how_confidence_combines_and_proves_it():
+    body = phone_recipe.recipe()
+    body = body.get("recipe", body)
+    assert body["citations"]["combine"] == "max" and body["conformance"]["confidence"]
