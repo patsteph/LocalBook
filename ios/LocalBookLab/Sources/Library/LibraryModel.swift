@@ -141,23 +141,60 @@ final class LibraryModel {
         } catch { rerankerLine = "Reranker failed: \(error.localizedDescription)" }
     }
 
-    /// Retrieval the way the Mac does it: fuse vectors and keywords into `overcollect` candidates, rerank them
-    /// with the cross-encoder, keep `rerankKeep`. Without the reranker, the fused order is used.
-    func retrieve(question: String, vector: [Float], notebook: String?) async throws -> (hits: [LibraryHit], reranked: Bool, scanned: Int, seconds: Double) {
-        guard let store else { throw LibraryError.badResponse("library not open") }
-        let over = recipe?.retrieval.overcollect ?? 12
-        let keep = recipe?.retrieval.rerankKeep ?? 5
-        let found = try await store.search(query: vector, queryText: question, topK: over, notebook: notebook)
-        guard let reranker, found.hits.count > 1 else {
-            return (Array(found.hits.prefix(keep)), false, found.scanned, found.seconds)
-        }
+    struct Retrieval: Sendable {
+        let hits: [LibraryHit]            // the passages the answer may cite; score = the Mac's confidence
+        let reranked: Bool
+        let candidates: Int               // how many passages the reranker was given
+        let scanned: Int
+        let embedSeconds: Double
+        let seconds: Double
+        let nothingRelevant: Bool         // the Mac would answer "I don't have enough relevant information"
+    }
+
+    /// Retrieval the way the Mac does it (rag_engine.query): expand the question with the Mac's rule-based tables,
+    /// fuse the nearest vectors and BM25 into `hybridK` candidates, rerank them with the cross-encoder (against the
+    /// ORIGINAL question), keep `rerankKeep`, turn each into a citation with the Mac's confidence and drop the weak
+    /// ones. Without the reranker, the fused order is used.
+    func retrieve(question: String, notebook: String?) async throws -> Retrieval {
+        guard let store, let engine, let tokenizer else { throw LibraryError.badResponse("search model not ready") }
         let t0 = Date()
-        let scores = try await reranker.scores(query: question, passages: found.hits.map(\.text))
-        let ranked = zip(found.hits, scores).sorted { $0.1 > $1.1 }.prefix(keep).map { pair in
-            LibraryHit(notebookId: pair.0.notebookId, notebookTitle: pair.0.notebookTitle, sourceId: pair.0.sourceId,
-                       chunkIndex: pair.0.chunkIndex, filename: pair.0.filename, text: pair.0.text, score: pair.1)
+        let expanded = recipe?.expand(question) ?? question
+        let text = queryTemplate.replacingOccurrences(of: "{text}", with: expanded)
+        let vector = try await engine.embed(tokenIds: TokenRepair.spaceFallback(tokenizer.encode(text: text)))
+        let embedSeconds = Date().timeIntervalSince(t0)
+
+        var params = LibraryStore.SearchParams()
+        let keep = recipe?.retrieval.rerankKeep ?? 5
+        if let r = recipe?.retrieval {
+            params = .init(vectorCandidates: r.vectorCandidates, bm25Candidates: r.bm25Candidates, hybridK: r.hybridK,
+                           rrfK: Double(r.rrfK), missingRank: Double(r.rrfMissingRank), k1: r.bm25.k1, b: r.bm25.b, epsilon: r.bm25.epsilon)
         }
-        return (Array(ranked), true, found.scanned, found.seconds + Date().timeIntervalSince(t0))
+        let found = try await store.search(query: vector, queryText: expanded, params: params, notebook: notebook)
+        var ranked: [(hit: LibraryHit, rerank: Double)] = found.hits.map { ($0, 0) }
+        var didRerank = false
+        if let reranker, found.hits.count > 1 {
+            let scores = try await reranker.scores(query: question, passages: found.hits.map(\.text))
+            ranked = zip(found.hits, scores).map { ($0, Double($1)) }.sorted { $0.1 > $1.1 }
+            didRerank = true
+        }
+        let top = Array(ranked.prefix(keep))
+        // Confidence and the keep/drop rules are the Mac's (rag_context.build_citations_and_context).
+        var cited = top.map { item -> LibraryHit in
+            let conf = recipe?.confidence(rerank: didRerank ? item.rerank : 0, rrfNormalised: Double(item.hit.rrf)) ?? Double(item.hit.rrf)
+            return LibraryHit(notebookId: item.hit.notebookId, notebookTitle: item.hit.notebookTitle, sourceId: item.hit.sourceId,
+                              chunkIndex: item.hit.chunkIndex, filename: item.hit.filename, text: item.hit.text,
+                              score: Float(conf), rrf: item.hit.rrf)
+        }
+        var nothing = false
+        if let rules = recipe?.citations {
+            let best = cited.map { Double($0.score) }.max() ?? 0
+            let strong = cited.filter { Double($0.score) >= rules.minConfidence }
+            if best < rules.veryLowConfidence { cited = []; nothing = true }
+            else if strong.isEmpty { cited = Array(cited.prefix(rules.fallbackKeep)) }
+            else { cited = strong }
+        }
+        return Retrieval(hits: cited, reranked: didRerank, candidates: found.hits.count, scanned: found.scanned,
+                         embedSeconds: embedSeconds, seconds: Date().timeIntervalSince(t0), nothingRelevant: nothing)
     }
 
     func stopAnswer() { generation?.cancel() }
@@ -185,11 +222,13 @@ final class LibraryModel {
     /// The phone's own retrieval (vectors + keywords) and Gemma answer for one question. Needs the search
     /// model ready; loads Gemma on first use.
     func localAnswer(question: String, notebook: String, topK: Int = 5, maxTokens: Int = 400) async throws -> LocalAnswer {
-        guard let store, let engine, let tokenizer else { throw LibraryError.badResponse("search model not ready") }
+        guard store != nil, engine != nil, tokenizer != nil else { throw LibraryError.badResponse("search model not ready") }
         let t0 = Date()
-        let text = queryTemplate.replacingOccurrences(of: "{text}", with: question)
-        let vector = try await engine.embed(tokenIds: TokenRepair.spaceFallback(tokenizer.encode(text: text)))
-        let result = try await retrieve(question: question, vector: vector, notebook: notebook)
+        let result = try await retrieve(question: question, notebook: notebook)
+        if result.nothingRelevant || result.hits.isEmpty {
+            return LocalAnswer(sources: [], answer: recipe?.citations.noAnswer ?? "I don't have enough relevant information in your documents to answer this question accurately.",
+                               seconds: Date().timeIntervalSince(t0), firstWordSeconds: nil, tokensPerSecond: nil)
+        }
         if gemma == nil {
             Memory.cacheLimit = 64 * 1024 * 1024
             gemma = try await #huggingFaceLoadModelContainer(configuration: LLMRegistry.gemma4_e4b_it_4bit)
@@ -237,7 +276,8 @@ final class LibraryModel {
         guard let store, let engine, let tokenizer else { throw LibraryError.badResponse("search model not ready") }
         let text = queryTemplate.replacingOccurrences(of: "{text}", with: question)
         let v = try await engine.embed(tokenIds: TokenRepair.spaceFallback(tokenizer.encode(text: text)))
-        return try await store.search(query: v, queryText: nil, topK: 1, notebook: nil).hits.first?.notebookId
+        var p = LibraryStore.SearchParams(); p.hybridK = 1
+        return try await store.search(query: v, queryText: nil, params: p, notebook: nil).hits.first?.notebookId
     }
 
     /// Dispatch on the chosen mode.
@@ -299,9 +339,9 @@ final class LibraryModel {
     /// is cancelled the moment the app stops being active: iOS refuses GPU work in the background and
     /// a stuck generation freezes the app (measured in Phase 0).
     private func askOnPhone() async {
-        sourceScoreIsConfidence = false
+        sourceScoreIsConfidence = true
         followUps = []
-        guard let store, let engine, let tokenizer, !answering,
+        guard store != nil, engine != nil, tokenizer != nil, !answering,
               !query.trimmingCharacters(in: .whitespaces).isEmpty, let scope = scopeToNotebook else { return }
         answering = true
         answerText = ""; answerSources = []
@@ -309,13 +349,16 @@ final class LibraryModel {
         do {
             answerStatus = "Finding passages (offline mode: vectors + keywords)…"
             let t0 = Date()
-            let text = queryTemplate.replacingOccurrences(of: "{text}", with: query)
-            let vector = try await engine.embed(tokenIds: TokenRepair.spaceFallback(tokenizer.encode(text: text)))
-            let result = try await retrieve(question: query, vector: vector, notebook: scope)
+            let result = try await retrieve(question: query, notebook: scope)
             hits = result.hits
-            sourceScoreIsRelevance = result.reranked
+            sourceScoreIsRelevance = false
             answerSources = result.hits
             let findSeconds = Date().timeIntervalSince(t0)
+            if result.nothingRelevant || result.hits.isEmpty {          // as the Mac: no relevant passages, no guessing
+                answerText = recipe?.citations.noAnswer ?? "I don't have enough relevant information in your documents to answer this question accurately."
+                answerStatus = "Passages in \(Int(findSeconds * 1000)) ms · nothing relevant enough"
+                return
+            }
 
             if gemma == nil {
                 answerStatus = "Loading the answer model (4 GB)…"
@@ -365,14 +408,11 @@ final class LibraryModel {
     func search() async {
         guard let store, let engine, let tokenizer, !query.trimmingCharacters(in: .whitespaces).isEmpty else { return }
         do {
-            let t0 = Date()
-            let text = queryTemplate.replacingOccurrences(of: "{text}", with: query)
-            let ids = TokenRepair.spaceFallback(tokenizer.encode(text: text))
-            let vector = try await engine.embed(tokenIds: ids)
-            let embedSeconds = Date().timeIntervalSince(t0)
-            let result = try await retrieve(question: query, vector: vector, notebook: scopeToNotebook)
+            let result = try await retrieve(question: query, notebook: scopeToNotebook)
+            let embedSeconds = result.embedSeconds
             hits = result.hits
-            sourceScoreIsRelevance = result.reranked
+            sourceScoreIsConfidence = true
+            sourceScoreIsRelevance = false
             timing = "Question embedded in \(Int(embedSeconds * 1000)) ms · scanned \(result.scanned) chunks in \(Int(result.seconds * 1000)) ms"
         } catch { searchState = .failed(error.localizedDescription) }
     }

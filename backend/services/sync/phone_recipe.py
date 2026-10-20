@@ -71,6 +71,13 @@ def _classification_vectors() -> List[Dict[str, str]]:
     return [{"question": q, "type": rag_query_analyzer.classify_query(q)} for q in SAMPLE_QUESTIONS]
 
 
+def _expansion_vectors() -> List[Dict[str, str]]:
+    from services import rag_query_analyzer
+    qs = ["How many demos did Chris do in Q1?", "What did Mike say about revenue and customers in FY2026?",
+          "How does Agentic AI differ from RAG?", "Tom and Pat met about the trial", "no expansions here"]
+    return [{"question": q, "expanded": rag_query_analyzer.expand_query(q)} for q in qs]
+
+
 def _clean_vectors() -> List[Dict[str, str]]:
     from services import rag_generation
     return [{"raw": a, "cleaned": rag_generation.clean_llm_output(a)} for a in SAMPLE_ANSWERS]
@@ -101,12 +108,29 @@ def recipe() -> Dict[str, Any]:
         "generation": {"temperature": 0.3, "max_tokens": 500, "top_p": float(mlx_engine._MLX_TOP_P),
                        "repetition_penalty": float(mlx_engine._MLX_REP_PENALTY),
                        "repetition_context_size": int(mlx_engine._MLX_REP_CONTEXT)},
+        # rag_search.adaptive_search → hybrid_search(k = overcollect * 2): each ranker contributes k * 2
+        # candidates, they are fused with Reciprocal Rank Fusion (0-based ranks, 1000 when absent) to k, the
+        # reranker keeps top_k + 1. BM25 is rank_bm25's BM25Okapi over lower-cased whitespace tokens.
         "retrieval": {"top_k": 4, "overcollect": int(settings.retrieval_overcollect), "rerank_keep": 5,
-                      "rrf_k": 60, "candidates_per_ranker": 50,
+                      "hybrid_k": int(settings.retrieval_overcollect) * 2,
+                      "vector_candidates": int(settings.retrieval_overcollect) * 4,
+                      "bm25_candidates": int(settings.retrieval_overcollect) * 4,
+                      "rrf_k": 60, "rrf_missing_rank": 1000,
+                      "bm25": {"k1": 1.5, "b": 0.75, "epsilon": 0.25},
                       "reranker": {"enabled": bool(settings.use_reranker), "model": settings.reranker_model,
                                    "precision": getattr(settings, "reranker_precision", "int8")}},
+        # Ordered [term, expansion] pairs: the order the expansions are appended in changes the expanded text.
+        "query_expansion": {"expansions": [[k, v] for k, v in rag_query_analyzer.EXPANSIONS.items()],
+                            "name_expansions": [[k, v] for k, v in rag_query_analyzer.NAME_EXPANSIONS.items()]},
+        # rag_context.build_citations_and_context: how a reranked passage becomes a citation, which are kept.
+        "citations": {"rerank_floor": 0.01, "rerank_scale": 1.4, "rerank_offset": 0.1,
+                      "rrf_base": 0.5, "rrf_scale": 0.4, "min_confidence": 0.20, "very_low_confidence": 0.10,
+                      "fallback_keep": 3,
+                      "no_answer": ("I don't have enough relevant information in your documents to answer this question "
+                                    "accurately. Try uploading more documents related to this topic, or rephrase your question.")},
         "clean_steps": CLEAN_STEPS,
-        "conformance": {"classification": _classification_vectors(), "cleaning": _clean_vectors()},
+        "conformance": {"classification": _classification_vectors(), "cleaning": _clean_vectors(),
+                        "expansion": _expansion_vectors()},
     }
     version = hashlib.sha256(json.dumps(body, sort_keys=True).encode()).hexdigest()[:12]
     return {"recipe_version": version, **body}

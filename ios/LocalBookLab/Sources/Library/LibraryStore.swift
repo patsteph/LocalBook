@@ -25,6 +25,7 @@ struct LibraryHit: Sendable, Identifiable {
     let filename: String
     let text: String
     let score: Float
+    var rrf: Float = 0              // Reciprocal Rank Fusion score divided by the best one in the pool (0…1)
 }
 
 struct LibraryNotebookInfo: Sendable, Identifiable {
@@ -59,7 +60,7 @@ actor LibraryStore {
     private var ranges: [String: Range<Int>] = [:]
     private var matrixReady = false
 
-    private func dropMatrix() { matrix = []; rowKeys = []; ranges = [:]; matrixReady = false }
+    private func dropMatrix() { matrix = []; rowKeys = []; ranges = [:]; matrixReady = false; bm25 = [:] }
 
     private func buildMatrix() throws {
         guard !matrixReady else { return }
@@ -274,32 +275,76 @@ actor LibraryStore {
     /// Build the in-memory vector block now, so the first question does not pay for it (about 0.6 s).
     func warmUp() { try? buildMatrix() }
 
-    private static let stopwords: Set<String> = ["a", "an", "and", "are", "as", "at", "be", "by", "do", "does", "for", "from", "how",
-        "in", "is", "it", "of", "on", "or", "the", "to", "was", "what", "when", "where", "which", "who", "why", "with", "can", "you"]
+    // MARK: BM25, exactly as the Mac's rank_bm25 BM25Okapi (lower-cased whitespace tokens)
 
-    /// Keyword ranking (BM25) inside one notebook: the best `limit` chunks for the question's content words.
-    private func keywordRank(_ text: String, notebook: String?, limit: Int) -> [(nb: String, src: String, idx: Int)] {
-        let words = text.lowercased().split(whereSeparator: { !$0.isLetter && !$0.isNumber })
-            .map(String.init).filter { $0.count > 1 && !Self.stopwords.contains($0) }
-        guard !words.isEmpty else { return [] }
-        let match = words.map { "\"\($0)\"" }.joined(separator: " OR ")
-        let sql = "SELECT notebook_id, source_id, chunk_index FROM chunks_fts WHERE chunks_fts MATCH ?"
-            + (notebook == nil ? "" : " AND notebook_id = ?") + " ORDER BY bm25(chunks_fts) LIMIT \(limit)"
-        guard let s = try? statement(sql) else { return [] }
+    private struct BM25Index {
+        var postings: [String: [(doc: Int32, tf: Int32)]] = [:]
+        var docLength: [Int32] = []
+        var idf: [String: Double] = [:]
+        var averageLength = 0.0
+    }
+    private var bm25: [String: BM25Index] = [:]
+
+    private func bm25Index(for notebook: String, epsilon: Double) throws -> BM25Index {
+        if let hit = bm25[notebook] { return hit }
+        let s = try statement("SELECT text FROM chunks WHERE notebook_id=? ORDER BY source_id, chunk_index")
         defer { sqlite3_finalize(s) }
-        bind(s, 1, match)
-        if let notebook { bind(s, 2, notebook) }
-        var out: [(nb: String, src: String, idx: Int)] = []
+        bind(s, 1, notebook)
+        var index = BM25Index()
+        var docFreq: [String: Int] = [:]
+        var doc: Int32 = 0
         while sqlite3_step(s) == SQLITE_ROW {
-            out.append((String(cString: sqlite3_column_text(s, 0)), String(cString: sqlite3_column_text(s, 1)),
-                        Int(sqlite3_column_int64(s, 2))))
+            let tokens = String(cString: sqlite3_column_text(s, 0)).lowercased()
+                .split(whereSeparator: \.isWhitespace).map(String.init)
+            var tf: [String: Int32] = [:]
+            for t in tokens { tf[t, default: 0] += 1 }
+            for (t, n) in tf { index.postings[t, default: []].append((doc, n)); docFreq[t, default: 0] += 1 }
+            index.docLength.append(Int32(tokens.count))
+            doc += 1
         }
-        return out
+        let n = Double(doc)
+        index.averageLength = n > 0 ? Double(index.docLength.reduce(0) { $0 + Int($1) }) / n : 0
+        var idfSum = 0.0
+        var negative: [String] = []
+        for (t, freq) in docFreq {
+            let v = log(n - Double(freq) + 0.5) - log(Double(freq) + 0.5)
+            index.idf[t] = v
+            idfSum += v
+            if v < 0 { negative.append(t) }
+        }
+        let floor = epsilon * (docFreq.isEmpty ? 0 : idfSum / Double(docFreq.count))
+        for t in negative { index.idf[t] = floor }
+        bm25[notebook] = index
+        return index
     }
 
-    /// Hybrid retrieval like the Mac's: the Mac's vectors (one Accelerate matrix-vector product) and a
-    /// BM25 keyword ranking, fused by Reciprocal Rank Fusion. `queryText` nil means vectors only.
-    func search(query: [Float], queryText: String? = nil, topK: Int, notebook: String? = nil)
+    /// The `limit` best documents for the query: (document index within the notebook, score), best first.
+    private func bm25Top(_ index: BM25Index, query: String, k1: Double, b: Double, limit: Int) -> [(doc: Int, score: Double)] {
+        var scores: [Int32: Double] = [:]
+        for term in query.lowercased().split(whereSeparator: \.isWhitespace).map(String.init) {
+            guard let idf = index.idf[term], let list = index.postings[term] else { continue }
+            for (doc, tf) in list {
+                let f = Double(tf)
+                let norm = f + k1 * (1 - b + b * Double(index.docLength[Int(doc)]) / max(index.averageLength, 1e-9))
+                scores[doc, default: 0] += idf * (f * (k1 + 1) / norm)
+            }
+        }
+        return scores.sorted { $0.value > $1.value }.prefix(limit).map { (Int($0.key), $0.value) }
+    }
+
+    struct SearchParams: Sendable {
+        var vectorCandidates = 48
+        var bm25Candidates = 48
+        var hybridK = 24
+        var rrfK = 60.0
+        var missingRank = 1000.0
+        var k1 = 1.5, b = 0.75, epsilon = 0.25
+    }
+
+    /// Hybrid retrieval exactly as the Mac's `hybrid_search`: the nearest vectors and the best BM25 documents
+    /// (each `…Candidates` long), fused by Reciprocal Rank Fusion (0-based ranks, `missingRank` when absent), the
+    /// best `hybridK` returned. `queryText` nil means vectors only (used to find a question's notebook).
+    func search(query: [Float], queryText: String? = nil, params: SearchParams = SearchParams(), notebook: String? = nil)
         throws -> (hits: [LibraryHit], scanned: Int, seconds: Double) {
         let started = Date()
         try buildMatrix()
@@ -312,38 +357,33 @@ actor LibraryStore {
                         m.baseAddress! + range.lowerBound * Self.dims, Int32(Self.dims), query, 1, 0, &scores, 1)
         }
         let order = (0..<rows).sorted { scores[$0] > scores[$1] }
-        let candidates = 50
-        // Reciprocal Rank Fusion, k = 60: score = Σ 1 / (60 + rank) over each ranking the chunk appears in.
-        struct Key: Hashable { let nb: String; let src: String; let idx: Int }
-        var fused: [Key: Float] = [:]
-        var dense: [Key: Float] = [:]
-        for (rank, o) in order.prefix(candidates).enumerated() {
-            let r = rowKeys[range.lowerBound + o]
-            let k = Key(nb: r.nb, src: r.src, idx: r.idx)
-            fused[k, default: 0] += 1 / Float(60 + rank + 1)
-            dense[k] = scores[o]
-        }
-        if let queryText {
-            for (rank, r) in keywordRank(queryText, notebook: notebook, limit: candidates).enumerated() {
-                fused[Key(nb: r.nb, src: r.src, idx: r.idx), default: 0] += 1 / Float(60 + rank + 1)
+        var vectorRank: [Int: Double] = [:]
+        for (rank, row) in order.prefix(params.vectorCandidates).enumerated() { vectorRank[row] = Double(rank) }
+        var keywordRank: [Int: Double] = [:]
+        if let queryText, notebook != nil {
+            let index = try bm25Index(for: notebook!, epsilon: params.epsilon)
+            for (rank, hit) in bm25Top(index, query: queryText, k1: params.k1, b: params.b, limit: params.bm25Candidates).enumerated() {
+                keywordRank[hit.doc] = Double(rank)
             }
         }
+        var fused: [(row: Int, rrf: Double)] = []
+        for row in Set(vectorRank.keys).union(keywordRank.keys) {
+            let v = vectorRank[row] ?? params.missingRank, k = keywordRank[row] ?? params.missingRank
+            fused.append((row, 1 / (params.rrfK + v) + 1 / (params.rrfK + k)))
+        }
+        fused.sort { $0.rrf > $1.rrf }
+        let best = fused.first?.rrf ?? 1
         let titles = Dictionary(uniqueKeysWithValues: notebooks().map { ($0.id, $0.title) })
         var hits: [LibraryHit] = []
-        for (key, _) in fused.sorted(by: { $0.value > $1.value }).prefix(topK) {
-            let t = try statement("SELECT text, filename, vector FROM chunks WHERE notebook_id=? AND source_id=? AND chunk_index=?")
+        for item in fused.prefix(params.hybridK) {
+            let key = rowKeys[range.lowerBound + item.row]
+            let t = try statement("SELECT text, filename FROM chunks WHERE notebook_id=? AND source_id=? AND chunk_index=?")
             defer { sqlite3_finalize(t) }
             bind(t, 1, key.nb); bind(t, 2, key.src); sqlite3_bind_int64(t, 3, Int64(key.idx))
             guard sqlite3_step(t) == SQLITE_ROW else { continue }
-            var sim = dense[key] ?? 0
-            if dense[key] == nil, let blob = sqlite3_column_blob(t, 2), sqlite3_column_bytes(t, 2) == Self.dims * 2 {
-                let h = blob.assumingMemoryBound(to: Float16.self)
-                sim = 0
-                for i in 0..<Self.dims { sim += Float(h[i]) * query[i] }
-            }
             hits.append(.init(notebookId: key.nb, notebookTitle: titles[key.nb] ?? key.nb, sourceId: key.src, chunkIndex: key.idx,
                               filename: String(cString: sqlite3_column_text(t, 1)), text: String(cString: sqlite3_column_text(t, 0)),
-                              score: sim))
+                              score: scores[item.row], rrf: Float(item.rrf / best)))
         }
         return (hits, rows, Date().timeIntervalSince(started))
     }

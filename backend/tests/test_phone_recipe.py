@@ -37,3 +37,14 @@ def test_the_recipe_carries_the_macs_own_prompts_and_rules():
 def test_classification_vectors_cover_all_three_types():
     kinds = {v["type"] for v in phone_recipe.recipe()["conformance"]["classification"]}
     assert kinds == {"factual", "synthesis", "complex"}
+
+
+def test_expansion_and_retrieval_numbers_come_from_the_macs_own_tables():
+    from services import rag_query_analyzer
+    r = phone_recipe.recipe()
+    assert dict(map(tuple, r["query_expansion"]["expansions"])) == rag_query_analyzer.EXPANSIONS
+    for v in r["conformance"]["expansion"]:
+        assert rag_query_analyzer.expand_query(v["question"]) == v["expanded"]
+    ret = r["retrieval"]
+    assert ret["hybrid_k"] == 2 * ret["overcollect"] and ret["vector_candidates"] == 4 * ret["overcollect"]
+    assert r["citations"]["min_confidence"] == 0.20

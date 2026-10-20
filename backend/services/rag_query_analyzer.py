@@ -288,55 +288,57 @@ def ensure_source_diversity(results: List[Dict], min_sources: int = 2) -> List[D
 
 # ─── Query Expansion ────────────────────────────────────────────────────────────
 
+# Rule-based expansion tables behind expand_query, module-level so a paired phone is given the SAME tables.
+EXPANSIONS = {
+    'demo': 'demo demonstration "record count"',
+    'demos': 'demos demonstrations "record count"',
+    'trial': 'trial pilot',
+    'trials': 'trials pilots',
+    'q1': 'q1 "q 1" "quarter 1" "first quarter" "Q 1 FY"',
+    'q2': 'q2 "q 2" "quarter 2" "second quarter" "Q 2 FY"',
+    'q3': 'q3 "q 3" "quarter 3" "third quarter" "Q 3 FY"',
+    'q4': 'q4 "q 4" "quarter 4" "fourth quarter" "Q 4 FY"',
+    'fy': 'fy "fiscal year"',
+    'fy2026': 'fy2026 "fy 2026" "FY 2026"',
+    'fy2025': 'fy2025 "fy 2025" "FY 2025"',
+    'revenue': 'revenue sales income',
+    'customer': 'customer client account',
+    'customers': 'customers clients accounts',
+    'meeting': 'meeting call conversation',
+    'meetings': 'meetings calls conversations',
+}
+
+NAME_EXPANSIONS = {
+    'chris': 'chris christopher',
+    'mike': 'mike michael',
+    'dan': 'dan daniel',
+    'bill': 'bill william',
+    'bob': 'bob robert',
+    'jim': 'jim james',
+    'tom': 'tom thomas',
+    'steve': 'steve stephen steven',
+    'pat': 'pat patrick patricia',
+    'jen': 'jen jennifer',
+    'liz': 'liz elizabeth',
+    'alex': 'alex alexander alexandra',
+    'matt': 'matt matthew',
+    'nick': 'nick nicholas',
+    'sam': 'sam samuel samantha',
+    'joe': 'joe joseph',
+    'will': 'will william',
+}
+
+
 def expand_query(question: str) -> str:
     """Query expansion with synonyms and related terms."""
-    expansions = {
-        'demo': 'demo demonstration "record count"',
-        'demos': 'demos demonstrations "record count"',
-        'trial': 'trial pilot',
-        'trials': 'trials pilots',
-        'q1': 'q1 "q 1" "quarter 1" "first quarter" "Q 1 FY"',
-        'q2': 'q2 "q 2" "quarter 2" "second quarter" "Q 2 FY"',
-        'q3': 'q3 "q 3" "quarter 3" "third quarter" "Q 3 FY"',
-        'q4': 'q4 "q 4" "quarter 4" "fourth quarter" "Q 4 FY"',
-        'fy': 'fy "fiscal year"',
-        'fy2026': 'fy2026 "fy 2026" "FY 2026"',
-        'fy2025': 'fy2025 "fy 2025" "FY 2025"',
-        'revenue': 'revenue sales income',
-        'customer': 'customer client account',
-        'customers': 'customers clients accounts',
-        'meeting': 'meeting call conversation',
-        'meetings': 'meetings calls conversations',
-    }
-    
-    name_expansions = {
-        'chris': 'chris christopher',
-        'mike': 'mike michael',
-        'dan': 'dan daniel',
-        'bill': 'bill william',
-        'bob': 'bob robert',
-        'jim': 'jim james',
-        'tom': 'tom thomas',
-        'steve': 'steve stephen steven',
-        'pat': 'pat patrick patricia',
-        'jen': 'jen jennifer',
-        'liz': 'liz elizabeth',
-        'alex': 'alex alexander alexandra',
-        'matt': 'matt matthew',
-        'nick': 'nick nicholas',
-        'sam': 'sam samuel samantha',
-        'joe': 'joe joseph',
-        'will': 'will william',
-    }
-    
     expanded = question
     q_lower = question.lower()
     
-    for term, expansion in expansions.items():
+    for term, expansion in EXPANSIONS.items():
         if term in q_lower and expansion not in q_lower:
             expanded = f"{expanded} {expansion}"
     
-    for nick, full in name_expansions.items():
+    for nick, full in NAME_EXPANSIONS.items():
         if nick in q_lower.split():
             expanded = f"{expanded} {full}"
     

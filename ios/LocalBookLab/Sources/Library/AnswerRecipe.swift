@@ -14,6 +14,8 @@ struct AnswerRecipe: Codable, Sendable {
     var contextSeparator: String
     var generation: Generation
     var retrieval: Retrieval
+    var queryExpansion: QueryExpansion
+    var citations: CitationRules
     var cleanSteps: [CleanStep]
     var conformance: Conformance
 
@@ -35,10 +37,26 @@ struct AnswerRecipe: Codable, Sendable {
         var topK: Int
         var overcollect: Int
         var rerankKeep: Int
+        var hybridK: Int
+        var vectorCandidates: Int
+        var bm25Candidates: Int
         var rrfK: Int
-        var candidatesPerRanker: Int
+        var rrfMissingRank: Int
+        var bm25: BM25
         var reranker: Reranker
-        struct Reranker: Codable, Sendable { var enabled: Bool; var model: String }
+        struct BM25: Codable, Sendable { var k1: Double; var b: Double; var epsilon: Double }
+        struct Reranker: Codable, Sendable { var enabled: Bool; var model: String; var precision: String? }
+    }
+    struct QueryExpansion: Codable, Sendable {
+        var expansions: [[String]]          // ordered [term, expansion] pairs
+        var nameExpansions: [[String]]
+    }
+    struct CitationRules: Codable, Sendable {
+        var rerankFloor: Double, rerankScale: Double, rerankOffset: Double
+        var rrfBase: Double, rrfScale: Double
+        var minConfidence: Double, veryLowConfidence: Double
+        var fallbackKeep: Int
+        var noAnswer: String
     }
     struct CleanStep: Codable, Sendable {
         var pattern: String
@@ -49,6 +67,8 @@ struct AnswerRecipe: Codable, Sendable {
     struct Conformance: Codable, Sendable {
         var classification: [ClassCase]
         var cleaning: [CleanCase]
+        var expansion: [ExpandCase]?
+        struct ExpandCase: Codable, Sendable { var question: String; var expanded: String }
         struct ClassCase: Codable, Sendable { var question: String; var type: String }
         struct CleanCase: Codable, Sendable { var raw: String; var cleaned: String }
     }
@@ -66,6 +86,29 @@ struct AnswerRecipe: Codable, Sendable {
         if multiPart { return "synthesis" }
         if classify.factualPatterns.contains(where: { q.contains($0) }) { return "factual" }
         return "synthesis"
+    }
+
+    // MARK: the Mac's rule-based query expansion (rag_query_analyzer.expand_query)
+
+    func expand(_ question: String) -> String {
+        var expanded = question
+        let q = question.lowercased()
+        for pair in queryExpansion.expansions where pair.count == 2 && q.contains(pair[0]) && !q.contains(pair[1]) {
+            expanded += " " + pair[1]
+        }
+        let words = Set(q.split(whereSeparator: \.isWhitespace).map(String.init))
+        for pair in queryExpansion.nameExpansions where pair.count == 2 && words.contains(pair[0]) {
+            expanded += " " + pair[1]
+        }
+        return expanded
+    }
+
+    /// Confidence of a reranked passage as the Mac computes it (rag_context.build_citations_and_context).
+    func confidence(rerank: Double, rrfNormalised: Double) -> Double {
+        let c = citations
+        if rerank > c.rerankFloor { return min(1, rerank * c.rerankScale + c.rerankOffset) }
+        if rrfNormalised > 0 { return c.rrfBase + rrfNormalised * c.rrfScale }
+        return 0.5
     }
 
     // MARK: prompts (rag_generation.generate_answer), without the user's profile and memory
@@ -113,6 +156,9 @@ struct AnswerRecipe: Codable, Sendable {
         var problems: [String] = []
         for c in conformance.classification where classify(c.question) != c.type {
             problems.append("question type for “\(c.question.prefix(50))”: Mac says \(c.type), phone says \(classify(c.question))")
+        }
+        for c in conformance.expansion ?? [] where expand(c.question) != c.expanded {
+            problems.append("query expansion for “\(c.question.prefix(40))” differs")
         }
         for c in conformance.cleaning where clean(c.raw) != c.cleaned {
             problems.append("answer cleaning differs for “\(c.raw.prefix(40).replacingOccurrences(of: "\n", with: " "))”")
