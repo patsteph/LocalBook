@@ -73,7 +73,6 @@ final class LibraryModel {
     func refresh() async {
         personalCache.removeAll()
         guard let store else { return }
-        Task.detached { await store.warmUp() }              // build the in-memory vector block before the first question
         notebooks = await store.notebooks()
         chunkCount = await store.chunkCount()
         if let t = await store.meta("last_sync") { lastSyncLine = "Last synced \(t)" }
@@ -91,6 +90,8 @@ final class LibraryModel {
         if scopeToNotebook == nil || !notebooks.contains(where: { $0.id == scopeToNotebook }) {
             scopeToNotebook = notebooks.max(by: { $0.chunks < $1.chunks })?.id
         }
+        let nb = scopeToNotebook
+        Task.detached { await store.warmUp(notebook: nb) }          // build that notebook's vector block before the first question
     }
 
     func sync() async {
@@ -354,8 +355,7 @@ final class LibraryModel {
         guard let store, let engine, let tokenizer else { throw LibraryError.badResponse("search model not ready") }
         let text = queryTemplate.replacingOccurrences(of: "{text}", with: question)
         let v = try await engine.embed(tokenIds: TokenRepair.spaceFallback(tokenizer.encode(text: text)))
-        var p = LibraryStore.SearchParams(); p.hybridK = 1
-        return try await store.search(query: v, queryText: nil, params: p, notebook: nil).hits.first?.notebookId
+        return try await store.closestNotebook(to: v)
     }
 
     /// Dispatch on the chosen mode.

@@ -54,36 +54,39 @@ enum LibraryError: LocalizedError {
 actor LibraryStore {
     static let dims = 768
     private var db: OpaquePointer?
-    /// Every vector as Float32 in one block (about 34 MB for 11,000 chunks), ordered by notebook so a
-    /// notebook is one contiguous range. Built on the first search; dropped whenever the data changes.
+    /// The vectors of ONE notebook as Float32 in one block (about 11 MB for 3,700 chunks), built on its first
+    /// search and kept until another notebook is searched or the data changes. The app searches one notebook
+    /// at a time, so memory follows the notebook being used, not the size of the whole library.
     private var matrix: [Float] = []
-    private var rowKeys: [(nb: String, src: String, idx: Int)] = []
-    private var ranges: [String: Range<Int>] = [:]
-    private var matrixReady = false
+    private var rowKeys: [(src: String, idx: Int)] = []
+    private var loadedNotebook: String?
 
-    private func dropMatrix() { matrix = []; rowKeys = []; ranges = [:]; matrixReady = false; bm25 = [:] }
+    private func dropMatrix() { matrix = []; rowKeys = []; loadedNotebook = nil; bm25 = [:] }
 
-    private func buildMatrix() throws {
-        guard !matrixReady else { return }
-        let n = chunkCount()
+    private func loadMatrix(_ notebook: String) throws {
+        if loadedNotebook == notebook { return }
+        matrix = []; rowKeys = []; loadedNotebook = nil
+        bm25 = bm25.filter { $0.key == notebook }
+        let count = try statement("SELECT COUNT(*) FROM chunks WHERE notebook_id=?")
+        bind(count, 1, notebook)
+        let n = sqlite3_step(count) == SQLITE_ROW ? Int(sqlite3_column_int64(count, 0)) : 0
+        sqlite3_finalize(count)
         var m = [Float](repeating: 0, count: n * Self.dims)
-        var keys: [(nb: String, src: String, idx: Int)] = []
+        var keys: [(src: String, idx: Int)] = []
         keys.reserveCapacity(n)
-        let s = try statement("SELECT notebook_id, source_id, chunk_index, vector FROM chunks ORDER BY notebook_id, source_id, chunk_index")
+        let s = try statement("SELECT source_id, chunk_index, vector FROM chunks WHERE notebook_id=? ORDER BY source_id, chunk_index")
         defer { sqlite3_finalize(s) }
+        bind(s, 1, notebook)
         var row = 0
-        var ranges: [String: Range<Int>] = [:]
         while sqlite3_step(s) == SQLITE_ROW, row < n {
-            guard let blob = sqlite3_column_blob(s, 3), sqlite3_column_bytes(s, 3) == Self.dims * 2 else { continue }
+            guard let blob = sqlite3_column_blob(s, 2), sqlite3_column_bytes(s, 2) == Self.dims * 2 else { continue }
             let halves = blob.assumingMemoryBound(to: Float16.self)
             let base = row * Self.dims
             for i in 0..<Self.dims { m[base + i] = Float(halves[i]) }
-            let nb = String(cString: sqlite3_column_text(s, 0))
-            keys.append((nb, String(cString: sqlite3_column_text(s, 1)), Int(sqlite3_column_int64(s, 2))))
-            if let r = ranges[nb] { ranges[nb] = r.lowerBound..<(row + 1) } else { ranges[nb] = row..<(row + 1) }
+            keys.append((String(cString: sqlite3_column_text(s, 0)), Int(sqlite3_column_int64(s, 1))))
             row += 1
         }
-        matrix = m; rowKeys = keys; self.ranges = ranges; matrixReady = true
+        matrix = m; rowKeys = keys; loadedNotebook = notebook
     }
 
     init(path: URL? = nil) throws {
@@ -270,8 +273,27 @@ actor LibraryStore {
 
     // MARK: search
 
-    /// Build the in-memory vector block now, so the first question does not pay for it (about 0.6 s).
-    func warmUp() { try? buildMatrix() }
+    /// Build the in-memory vector block for a notebook now, so its first question does not pay for it.
+    func warmUp(notebook: String?) { if let notebook { try? loadMatrix(notebook) } }
+
+    /// The notebook whose best chunk matches `query` most closely. Loads one notebook at a time so memory never
+    /// holds more than the largest one, and leaves nothing loaded afterwards.
+    func closestNotebook(to query: [Float]) throws -> String? {
+        guard query.count == Self.dims else { return nil }
+        var best: (id: String, score: Float)?
+        for n in notebooks() {
+            try loadMatrix(n.id)
+            let rows = rowKeys.count
+            guard rows > 0 else { continue }
+            var scores = [Float](repeating: 0, count: rows)
+            matrix.withUnsafeBufferPointer { m in
+                cblas_sgemv(CblasRowMajor, CblasNoTrans, Int32(rows), Int32(Self.dims), 1, m.baseAddress!, Int32(Self.dims), query, 1, 0, &scores, 1)
+            }
+            if let top = scores.max(), top > (best?.score ?? -Float.infinity) { best = (n.id, top) }
+        }
+        dropMatrix()
+        return best?.id
+    }
 
     // MARK: BM25, exactly as the Mac's rank_bm25 BM25Okapi (lower-cased whitespace tokens)
 
@@ -345,8 +367,9 @@ actor LibraryStore {
     func search(query: [Float], queryText: String? = nil, params: SearchParams = SearchParams(), notebook: String? = nil)
         throws -> (hits: [LibraryHit], scanned: Int, seconds: Double) {
         let started = Date()
-        try buildMatrix()
-        let range = notebook.flatMap { ranges[$0] } ?? (notebook == nil ? 0..<rowKeys.count : 0..<0)
+        guard let notebook else { return ([], 0, 0) }          // one notebook at a time (see closestNotebook for "which one")
+        try loadMatrix(notebook)
+        let range = 0..<rowKeys.count
         let rows = range.count
         guard rows > 0, query.count == Self.dims else { return ([], 0, Date().timeIntervalSince(started)) }
         var scores = [Float](repeating: 0, count: rows)
@@ -358,8 +381,8 @@ actor LibraryStore {
         var vectorRank: [Int: Double] = [:]
         for (rank, row) in order.prefix(params.vectorCandidates).enumerated() { vectorRank[row] = Double(rank) }
         var keywordRank: [Int: Double] = [:]
-        if let queryText, notebook != nil {
-            let index = try bm25Index(for: notebook!, epsilon: params.epsilon)
+        if let queryText {
+            let index = try bm25Index(for: notebook, epsilon: params.epsilon)
             for (rank, hit) in bm25Top(index, query: queryText, k1: params.k1, b: params.b, limit: params.bm25Candidates).enumerated() {
                 keywordRank[hit.doc] = Double(rank)
             }
@@ -369,17 +392,17 @@ actor LibraryStore {
             let v = vectorRank[row] ?? params.missingRank, k = keywordRank[row] ?? params.missingRank
             fused.append((row, 1 / (params.rrfK + v) + 1 / (params.rrfK + k)))
         }
-        fused.sort { $0.rrf > $1.rrf }
+        fused.sort { $0.rrf != $1.rrf ? $0.rrf > $1.rrf : $0.row < $1.row }      // ties: stable and repeatable (the Mac's order there is random)
         let best = fused.first?.rrf ?? 1
         let titles = Dictionary(uniqueKeysWithValues: notebooks().map { ($0.id, $0.title) })
         var hits: [LibraryHit] = []
         for item in fused.prefix(params.hybridK) {
-            let key = rowKeys[range.lowerBound + item.row]
+            let key = rowKeys[item.row]
             let t = try statement("SELECT text, filename, source_type FROM chunks WHERE notebook_id=? AND source_id=? AND chunk_index=?")
             defer { sqlite3_finalize(t) }
-            bind(t, 1, key.nb); bind(t, 2, key.src); sqlite3_bind_int64(t, 3, Int64(key.idx))
+            bind(t, 1, notebook); bind(t, 2, key.src); sqlite3_bind_int64(t, 3, Int64(key.idx))
             guard sqlite3_step(t) == SQLITE_ROW else { continue }
-            hits.append(.init(notebookId: key.nb, notebookTitle: titles[key.nb] ?? key.nb, sourceId: key.src, chunkIndex: key.idx,
+            hits.append(.init(notebookId: notebook, notebookTitle: titles[notebook] ?? notebook, sourceId: key.src, chunkIndex: key.idx,
                               filename: String(cString: sqlite3_column_text(t, 1)), text: String(cString: sqlite3_column_text(t, 0)),
                               score: scores[item.row], rrf: Float(item.rrf / best),
                               sourceType: String(cString: sqlite3_column_text(t, 2))))
