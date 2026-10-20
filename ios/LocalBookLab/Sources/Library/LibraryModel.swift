@@ -457,6 +457,7 @@ final class LibraryModel {
                 gemma = try await #huggingFaceLoadModelContainer(configuration: LLMRegistry.gemma4_e4b_it_4bit)
             }
             guard let gemma else { return }
+            guard GPUGuard.canStart else { answerStatus = "Open the app and ask again — answers can't run while the screen is off."; return }
             let personal = await personal(for: scope)
             var current = result
             var line = ""
@@ -481,10 +482,9 @@ final class LibraryModel {
                     }
                 }
                 generation = Task { _ = try? await task.value }
-                let observer = NotificationCenter.default.addObserver(
-                    forName: UIApplication.willResignActiveNotification, object: nil, queue: .main) { _ in
-                    MainActor.assumeIsolated { task.cancel() }
-                }
+                let observer = GPUGuard.protect(task, label: "ask")
+                UIApplication.shared.isIdleTimerDisabled = true          // don't let the screen auto-lock mid-answer
+                defer { UIApplication.shared.isIdleTimerDisabled = false }
                 do { try await task.value } catch {}
                 NotificationCenter.default.removeObserver(observer)
                 if !answerText.isEmpty { answerText = setup.clean(answerText, info?.stopReason == .length) }

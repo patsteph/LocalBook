@@ -1,3 +1,4 @@
+import BackgroundTasks
 import SwiftUI
 import UIKit
 
@@ -94,7 +95,7 @@ final class SoakModel {
         let started = Date()
         let batteryStart = Double(max(UIDevice.current.batteryLevel, 0)) * 100
         SoakTrace.reset()
-        SoakTrace.log("soak start: \(minutes) min, \(questions.count) questions")
+        SoakTrace.log("soak start: \(minutes) min, \(questions.count) questions, background GPU supported by this phone: \(BGTaskScheduler.supportedResources.contains(.gpu))")
         let names: [(Notification.Name, String)] = [
             (UIApplication.willResignActiveNotification, "willResignActive"), (UIApplication.didEnterBackgroundNotification, "didEnterBackground"),
             (UIApplication.willEnterForegroundNotification, "willEnterForeground"), (UIApplication.didBecomeActiveNotification, "didBecomeActive"),
@@ -110,6 +111,7 @@ final class SoakModel {
 
         var i = 0
         while !stop, Date().timeIntervalSince(started) < Double(minutes) * 60 {
+            while !GPUGuard.canStart && !stop { try? await Task.sleep(for: .seconds(1)) }       // never start GPU work while not in front
             let q = questions[i % questions.count]
             status = "Answer \(i + 1) · \(Int(Date().timeIntervalSince(started) / 60)) of \(minutes) min · lock the phone whenever you like"
             samples.append(await one(index: i, question: q, started: started))
@@ -128,12 +130,11 @@ final class SoakModel {
             guard let nb = try await library.bestNotebook(for: question) else { throw LibraryError.badResponse("no matching notebook") }
             SoakTrace.log("answer \(index + 1) begins")
             let task = Task { try await library.localAnswer(question: question, notebook: nb) }
-            let observer = NotificationCenter.default.addObserver(forName: UIApplication.willResignActiveNotification, object: nil, queue: .main) { _ in
-                SoakTrace.log("lock guard: cancelling answer \(index + 1)")
-                MainActor.assumeIsolated { interrupted = true; task.cancel() }      // GPU work must stop when the screen locks
-            }
+            let flag = LockFlag()
+            let observer = GPUGuard.protect(task, label: "soak answer \(index + 1)") { flag.set() }      // GPU work must stop when the screen locks
             defer { NotificationCenter.default.removeObserver(observer) }
             do { result = try await task.value } catch is CancellationError { interrupted = true } catch { failure = error.localizedDescription }
+            if flag.isSet { interrupted = true }
         } catch { failure = error.localizedDescription }
         SoakTrace.log("answer \(index + 1) returned (interrupted=\(interrupted), failure=\(failure ?? "none"))")
         if interrupted {                                          // wait for the app to be active again before the next question
@@ -182,6 +183,7 @@ struct SoakView: View {
             } footer: {
                 Text("Answers questions back to back and records time, speed, memory, heat and battery. Lock the phone for ~20 s part-way through, then wake it: the answer that was running is cancelled and the run carries on.")
             }
+            Section { LabeledContent("Background GPU on this phone", value: BGTaskScheduler.supportedResources.contains(.gpu) ? "supported" : "not supported") }
             if let last = model.samples.last {
                 Section("Latest") {
                     LabeledContent("Answers", value: "\(model.samples.count) · locks \(model.lockEvents)")
