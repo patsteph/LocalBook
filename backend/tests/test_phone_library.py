@@ -124,14 +124,15 @@ def test_ask_the_mac_runs_the_macs_own_pipeline_and_returns_a_trimmed_answer(lib
     seen = {}
 
     async def fake_query(notebook_id, question, source_ids=None, top_k=4, **kw):
-        seen.update(notebook_id=notebook_id, question=question, top_k=top_k)
+        seen.update(notebook_id=notebook_id, question=question, top_k=top_k, phone_only=kw.get("phone_only"))
         return {"answer": "Because.", "citations": [{"number": 1, "source_id": "s1", "filename": "a.md", "chunk_index": 0,
                                                      "text": "alpha", "parent_text": "x" * 5000, "confidence": 0.8,
                                                      "confidence_level": "high"}],
                 "follow_up_questions": ["Why?"], "low_confidence": False}
     monkeypatch.setattr(re_mod.rag_engine, "query", fake_query)
     r = _call(lib, "/phone/ask", {"notebook_id": NB_OPEN, "question": "How does X differ from Y?"})
-    assert r.status_code == 200 and seen == {"notebook_id": NB_OPEN, "question": "How does X differ from Y?", "top_k": 4}
+    assert r.status_code == 200 and seen == {"notebook_id": NB_OPEN, "question": "How does X differ from Y?",
+                                             "top_k": 4, "phone_only": True}
     body = r.json()
     assert body["answer"] == "Because." and body["citations"][0]["filename"] == "a.md"
     assert "parent_text" not in body["citations"][0]
@@ -142,3 +143,14 @@ def test_ask_refuses_excluded_notebooks_and_bad_questions(lib):
     assert _call(lib, "/phone/ask", {"notebook_id": NB_PRIVATE, "question": "hi"}).status_code == 404
     assert _call(lib, "/phone/ask", {"notebook_id": NB_OPEN, "question": "  "}).status_code == 400
     assert _call(lib, "/phone/ask", {"notebook_id": NB_OPEN, "question": "x" * 3000}).status_code == 400
+
+
+def test_a_phone_only_query_leaves_no_trace_on_the_mac():
+    """phone_only swallows every metrics call, so nothing lands in the Mac's global 'current query'."""
+    import asyncio
+    from services.rag_engine import _NullMetrics
+    m = _NullMetrics()
+    m.start_query("id", "nb", "a secret question", "t")
+    m.record_retrieval(chunks_retrieved=1)
+    assert m.anything_at_all() is None
+    assert asyncio.run(m.end_query(12.0)) is None

@@ -72,7 +72,7 @@ struct LibraryView: View {
                     }
                 } header: { Text("Answer") } footer: {
                     Text(model.askMode == .mac
-                         ? "Written by the Mac with its full search (query analysis, hybrid search, re-rank). Counts as a normal question on the Mac."
+                         ? "Written by the Mac with its full search (query analysis, hybrid search, re-rank). Your question stays private to this phone: the Mac records nothing about it."
                          : "Offline mode: written on this phone by the same Gemma 4 model, from the best passages by vectors and keywords (no re-rank). It stops if you lock the phone.")
                 }
             }

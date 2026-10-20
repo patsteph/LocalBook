@@ -119,7 +119,7 @@ final class LibraryModel {
     }
 
     /// The Mac's own pipeline (query analysis, hybrid search, re-rank, its answer model) answers; the phone
-    /// only shows it. Counts as a normal question on the Mac (its answer cache and memory see it).
+    /// only shows it. The question stays phone-only: the Mac keeps no metrics row, cache entry or memory of it.
     private func askMac() async {
         guard let mac = MacLink.paired else { answerStatus = "Pair with a Mac first (row 3)."; return }
         guard !answering, !query.trimmingCharacters(in: .whitespaces).isEmpty, let scope = scopeToNotebook else { return }

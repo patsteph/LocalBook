@@ -601,8 +601,8 @@ PHONE_ASK_TIMEOUT = 240
 async def phone_ask(request: Request):
     """Ask the Mac's own pipeline (analysis, hybrid search, re-rank, answer) about one notebook.
 
-    This is a normal question as far as the Mac is concerned: the answer cache and memory extraction see
-    it, exactly as if it had been typed here. Excluded notebooks are not askable."""
+    The question stays private to the phone: nothing about it is recorded on this Mac (no metrics row, no
+    answer-cache entry, no memory extraction). Excluded notebooks are not askable."""
     _check_enabled()
     v = await _verified_phone(request)
     from services.sync import phone_library
@@ -617,7 +617,7 @@ async def phone_ask(request: Request):
     async with _phone_ask_lock:
         from services.rag_engine import rag_engine
         try:
-            result = await asyncio.wait_for(rag_engine.query(notebook_id, question, top_k=4), PHONE_ASK_TIMEOUT)
+            result = await asyncio.wait_for(rag_engine.query(notebook_id, question, top_k=4, phone_only=True), PHONE_ASK_TIMEOUT)
         except asyncio.TimeoutError:
             raise HTTPException(504, "the Mac took too long to answer")
     return phone_library.shape_answer(result)
