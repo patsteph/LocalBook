@@ -17,6 +17,7 @@ struct LibraryView: View {
                 }
                 LabeledContent("On this phone", value: "\(model.notebooks.count) notebooks · \(model.chunkCount) chunks")
                 Text(model.lastSyncLine).font(.footnote).foregroundStyle(.secondary)
+                Text(model.recipeLine).font(.footnote).foregroundStyle(.secondary)
                 if let s = model.lastSummary {
                     Text("Last run: \(s.notebooksChanged) of \(s.notebooks) notebooks changed · \(s.sourcesFetched) sources, \(s.chunksFetched) chunks fetched · "
                          + "\(s.sourcesRemoved) removed · \(String(format: "%.1f", Double(s.bytes) / 1_000_000)) MB in \(String(format: "%.1f", s.seconds)) s")

@@ -30,6 +30,8 @@ enum LibrarySync {
     struct Summary: Sendable {
         var notebooks = 0, notebooksChanged = 0, sourcesFetched = 0, chunksFetched = 0, sourcesRemoved = 0
         var seconds = 0.0, bytes = 0
+        var recipeVersion: String?
+        var recipeProblems: [String] = []
     }
 
     private static var decoder: JSONDecoder {
@@ -61,6 +63,18 @@ enum LibrarySync {
         if let old = await store.meta("embedder"), old != keyString { try await store.wipe() }
         try await store.setMeta("embedder", keyString)
         try await store.setMeta("query_template", key.queryTemplate)
+
+        // The Mac's answer recipe (prompts, classifier, decode settings, cleaning): kept as published, then
+        // checked against the Mac's own sample outputs so a mismatch is reported rather than trusted.
+        let recipeData = try await MacLink.signedCall(mac, path: "/phone/library/recipe")
+        sum.bytes += recipeData.count
+        if let recipe = try? decoder.decode(AnswerRecipe.self, from: recipeData) {
+            try await store.setMeta("recipe", String(decoding: recipeData, as: UTF8.self))
+            sum.recipeVersion = recipe.recipeVersion
+            sum.recipeProblems = recipe.check()
+        } else {
+            sum.recipeProblems = ["The Mac sent an answer recipe this phone cannot read (version mismatch?)"]
+        }
 
         try await store.removeNotebooks(except: Set(manifest.notebooks.map(\.id)))
         sum.notebooks = manifest.notebooks.count

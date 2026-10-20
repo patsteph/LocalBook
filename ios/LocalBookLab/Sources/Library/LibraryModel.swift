@@ -53,6 +53,8 @@ final class LibraryModel {
     var engine: EmbeddingGemma2Engine?
     var tokenizer: (any Tokenizers.Tokenizer)?
     var queryTemplate = "task: search result | query: {text}"
+    private(set) var recipe: AnswerRecipe?
+    private(set) var recipeLine = "No answer recipe yet — sync first"
 
     func open() async {
         guard store == nil else { return }
@@ -71,6 +73,15 @@ final class LibraryModel {
         chunkCount = await store.chunkCount()
         if let t = await store.meta("last_sync") { lastSyncLine = "Last synced \(t)" }
         if let q = await store.meta("query_template") { queryTemplate = q }
+        if let json = await store.meta("recipe"), let data = json.data(using: .utf8) {
+            let d = JSONDecoder(); d.keyDecodingStrategy = .convertFromSnakeCase
+            recipe = try? d.decode(AnswerRecipe.self, from: data)
+            if let r = recipe {
+                let problems = r.check()
+                recipeLine = problems.isEmpty ? "Answers follow the Mac's recipe \(r.recipeVersion) (all \(r.conformance.classification.count + r.conformance.cleaning.count) checks pass)"
+                                              : "Mac recipe \(r.recipeVersion): \(problems.count) check(s) FAIL — \(problems[0])"
+            }
+        }
         // The app searches one notebook at a time (only the curator sees across all of them).
         if scopeToNotebook == nil || !notebooks.contains(where: { $0.id == scopeToNotebook }) {
             scopeToNotebook = notebooks.max(by: { $0.chunks < $1.chunks })?.id
@@ -143,21 +154,30 @@ final class LibraryModel {
             gemma = try await #huggingFaceLoadModelContainer(configuration: LLMRegistry.gemma4_e4b_it_4bit)
         }
         guard let gemma else { throw LibraryError.badResponse("answer model not loaded") }
-        let sources = result.hits.enumerated().map { i, h in "[\(i + 1)] (\(h.filename))\n\(String(h.text.prefix(1_100)))" }
-            .joined(separator: "\n\n")
-        let session = ChatSession(gemma, instructions: Self.localInstructions,
-                                  generateParameters: GenerateParameters(maxTokens: maxTokens))
+        let setup = generationSetup(question: question, hits: result.hits)
+        let session = ChatSession(gemma, instructions: setup.instructions, generateParameters: setup.params)
         var answer = "", first: Double?, info: GenerateCompletionInfo?
         let started = Date()
-        for try await item in session.streamDetails(to: "Passages:\n\n\(sources)\n\nQuestion: \(question)") {
+        for try await item in session.streamDetails(to: setup.prompt) {
             switch item {
             case .chunk(let c): if first == nil { first = Date().timeIntervalSince(started) }; answer += c
             case .info(let i): info = i
             default: break
             }
         }
-        return LocalAnswer(sources: result.hits, answer: answer, seconds: Date().timeIntervalSince(t0),
+        return LocalAnswer(sources: result.hits, answer: setup.clean(answer), seconds: Date().timeIntervalSince(t0),
                            firstWordSeconds: first, tokensPerSecond: info?.tokensPerSecond)
+    }
+
+    /// What the phone gives its model: the Mac's own prompts, decode settings and passage framing when the
+    /// recipe has been synced, otherwise the short built-in fallback.
+    func generationSetup(question: String, hits: [LibraryHit]) -> (instructions: String, prompt: String, params: GenerateParameters, clean: (String) -> String) {
+        if let r = recipe {
+            return (r.systemPrompt(for: question), r.userPrompt(question: question, passages: hits.map(\.text)),
+                    r.generateParameters, { r.clean($0) })
+        }
+        let sources = hits.enumerated().map { i, h in "[\(i + 1)] (\(h.filename))\n\(String(h.text.prefix(1_100)))" }.joined(separator: "\n\n")
+        return (Self.localInstructions, "Passages:\n\n\(sources)\n\nQuestion: \(question)", GenerateParameters(maxTokens: 400), { $0 })
     }
 
     static let localInstructions = "You answer questions using ONLY the numbered passages from the user's own notes. "
@@ -260,12 +280,9 @@ final class LibraryModel {
                 gemma = try await #huggingFaceLoadModelContainer(configuration: LLMRegistry.gemma4_e4b_it_4bit)
             }
             guard let gemma else { return }
-            let sources = result.hits.enumerated().map { i, h in
-                "[\(i + 1)] (\(h.filename))\n\(String(h.text.prefix(1_100)))"
-            }.joined(separator: "\n\n")
-            let instructions = Self.localInstructions
-            let prompt = "Passages:\n\n\(sources)\n\nQuestion: \(query)"
-            let session = ChatSession(gemma, instructions: instructions, generateParameters: GenerateParameters(maxTokens: 400))
+            let setup = generationSetup(question: query, hits: result.hits)
+            let prompt = setup.prompt
+            let session = ChatSession(gemma, instructions: setup.instructions, generateParameters: setup.params)
 
             answerStatus = "Answering…"
             let started = Date()
@@ -289,6 +306,7 @@ final class LibraryModel {
             }
             do { try await task.value } catch {}
             NotificationCenter.default.removeObserver(observer)
+            if !answerText.isEmpty { answerText = setup.clean(answerText) }
             let cancelled = task.isCancelled
             var line = "Passages in \(Int(findSeconds * 1000)) ms"
             if let firstWord { line += " · first word \(String(format: "%.1f", firstWord)) s" }
