@@ -15,6 +15,8 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
+import logging
+
 from config import settings
 from services import rag_query_analyzer
 from services import rag_embeddings
@@ -36,6 +38,8 @@ except ImportError:
 
 # ─── Lazy-loaded reranker state ──────────────────────────────────────────────────
 
+logger = logging.getLogger(__name__)
+
 _flashrank_reranker = None
 _fp32_reranker = None
 _crossencoder_reranker = None
@@ -55,10 +59,12 @@ def _get_reranker():
                     if _fp32_reranker is None:
                         _fp32_reranker = onnx_reranker.FullPrecisionReranker(max_length=256)
                         print("[RAG] Loaded full-precision reranker (MiniLM-L-12, same weights as the iPhone)")
+                        logger.info("Reranker: full precision (MiniLM-L-12, same weights as the iPhone)")
                     return _fp32_reranker
                 onnx_reranker.fetch_in_background()          # keep FlashRank until it arrives
             except Exception as exc:
                 print(f"[RAG] full-precision reranker unavailable ({exc}); using FlashRank")
+                logger.warning("Reranker: full precision unavailable (%s); using FlashRank int8", exc)
         if _flashrank_reranker is None:
             # Use persistent cache dir (not /tmp which gets cleared on reboot)
             cache_dir = settings.data_dir / "models" / "flashrank"
@@ -69,6 +75,7 @@ def _get_reranker():
                 max_length=256  # Optimized for typical chunk sizes
             )
             print(f"[RAG] Loaded FlashRank reranker: {settings.reranker_model} (cache: {cache_dir})")
+            logger.info("Reranker: FlashRank int8 (%s)", settings.reranker_model)
         return _flashrank_reranker
 
     # Fallback to cross-encoder (slower but works without FlashRank).
