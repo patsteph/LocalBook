@@ -93,6 +93,7 @@ struct LibraryView: View {
         }
         .toolbar {
             NavigationLink("Mac vs phone") { AnswerParityView(library: model) }
+            NavigationLink("Soak test (heat, battery, lock)") { SoakView(library: model) }
         }
         .navigationTitle("Library")
         .navigationBarTitleDisplayMode(.inline)
