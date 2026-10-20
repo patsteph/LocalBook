@@ -85,10 +85,26 @@ final class AnswerParityModel {
 
     func requestStop() { stop = true }
 
+    var availableQuestions: Int { loadQuestions().count }
+
+    /// Copy a picked parity_fixture.json into the app's own folder, so the next run finds it by itself.
+    func importFixture(_ url: URL) {
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        do {
+            let data = try Data(contentsOf: url)
+            _ = try ParityFixture.decoder.decode(ParityFixture.self, from: data)       // must be a real fixture
+            try data.write(to: URL.documentsDirectory.appending(path: "parity_fixture.json"), options: .atomic)
+            status = "Loaded \(availableQuestions) questions from \(url.lastPathComponent)."
+        } catch {
+            status = "That file is not a parity fixture: \(error.localizedDescription)"
+        }
+    }
+
     func run(count: Int) async {
         let questions = Array(loadQuestions().prefix(count))
         questionCount = questions.count
-        guard !questions.isEmpty else { status = "Put parity_fixture.json in the app's Files folder first (Lab test 1 uses it)."; return }
+        guard !questions.isEmpty else { status = "No questions yet: tap “Choose parity_fixture.json…” and pick the file from the Mac."; return }
         guard library.searchState == .ready else { status = "Get the phone's search model ready first."; return }
         running = true; stop = false; results = []; report = nil
         defer { running = false }
@@ -160,6 +176,7 @@ final class AnswerParityModel {
 struct AnswerParityView: View {
     @State private var model: AnswerParityModel
     @State private var count = 10
+    @State private var importing = false
     init(library: LibraryModel) { _model = State(initialValue: AnswerParityModel(library: library)) }
 
     var body: some View {
@@ -170,11 +187,12 @@ struct AnswerParityView: View {
                     HStack { ProgressView(); Text(model.status).font(.footnote) }
                     Button("Stop", role: .destructive) { model.requestStop() }
                 } else {
+                    Button("Choose parity_fixture.json…") { importing = true }
                     Button("Run: ask the Mac, then answer on the phone") { Task { await model.run(count: count) } }
                     if !model.status.isEmpty { Text(model.status).font(.footnote).foregroundStyle(.secondary) }
                 }
             } header: { Text("Mac vs phone") } footer: {
-                Text("Needs: Mac app running, library synced and the search model ready (Library screen), and parity_fixture.json in the app's Files folder. Each question takes about a minute. Keep the phone plugged in and the screen on.")
+                Text("Needs: Mac app running, library synced and the search model ready (Library screen). The questions come from parity_fixture.json (\(model.availableQuestions) found): choose it once and the app remembers it. Each question takes about a minute. Keep the phone plugged in and the screen on.")
             }
             if let r = model.report {
                 Section("Agreement so far (\(r.completed) ok, \(r.failed) failed)") {
@@ -199,6 +217,9 @@ struct AnswerParityView: View {
                     }
                 }
             }
+        }
+        .fileImporter(isPresented: $importing, allowedContentTypes: [.json]) { result in
+            if case .success(let url) = result { model.importFixture(url) }
         }
         .navigationTitle("Answer parity")
         .navigationBarTitleDisplayMode(.inline)
