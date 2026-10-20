@@ -113,7 +113,7 @@ final class LibraryModel {
             let t0 = Date()
             let text = queryTemplate.replacingOccurrences(of: "{text}", with: query)
             let vector = try await engine.embed(tokenIds: TokenRepair.spaceFallback(tokenizer.encode(text: text)))
-            let result = try await store.search(query: vector, topK: 5, notebook: scope)
+            let result = try await store.search(query: vector, queryText: query, topK: 5, notebook: scope)
             hits = result.hits
             answerSources = result.hits
             let findSeconds = Date().timeIntervalSince(t0)
@@ -174,7 +174,7 @@ final class LibraryModel {
             let ids = TokenRepair.spaceFallback(tokenizer.encode(text: text))
             let vector = try await engine.embed(tokenIds: ids)
             let embedSeconds = Date().timeIntervalSince(t0)
-            let result = try await store.search(query: vector, topK: 5, notebook: scopeToNotebook)
+            let result = try await store.search(query: vector, queryText: query, topK: 5, notebook: scopeToNotebook)
             hits = result.hits
             timing = "Question embedded in \(Int(embedSeconds * 1000)) ms · scanned \(result.scanned) chunks in \(Int(result.seconds * 1000)) ms"
         } catch { searchState = .failed(error.localizedDescription) }

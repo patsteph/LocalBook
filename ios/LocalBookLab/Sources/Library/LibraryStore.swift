@@ -107,7 +107,19 @@ actor LibraryStore {
               text TEXT NOT NULL, summary INTEGER NOT NULL, filename TEXT NOT NULL, source_type TEXT NOT NULL,
               vector BLOB NOT NULL, PRIMARY KEY (notebook_id, source_id, chunk_index))
             """,
+            // Keyword index (BM25) beside the vectors: the Mac ranks by BOTH and fuses them, so must the phone.
+            """
+            CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
+              text, notebook_id UNINDEXED, source_id UNINDEXED, chunk_index UNINDEXED, tokenize='porter unicode61')
+            """,
         ] { try exec(sql) }
+        // A library synced before the keyword index existed: fill it from the stored chunks, once.
+        if let s = try? statement("SELECT (SELECT COUNT(*) FROM chunks_fts), (SELECT COUNT(*) FROM chunks)") {
+            defer { sqlite3_finalize(s) }
+            if sqlite3_step(s) == SQLITE_ROW, sqlite3_column_int64(s, 0) == 0, sqlite3_column_int64(s, 1) > 0 {
+                try exec("INSERT INTO chunks_fts(text, notebook_id, source_id, chunk_index) SELECT text, notebook_id, source_id, chunk_index FROM chunks")
+            }
+        }
     }
 
     // No deinit: the store lives as long as the app, and SQLite closes the file with the process.
@@ -194,13 +206,13 @@ actor LibraryStore {
 
     func wipe() throws {
         dropMatrix()
-        for t in ["chunks", "sources", "notebooks"] { try exec("DELETE FROM \(t)") }
+        for t in ["chunks", "sources", "notebooks", "chunks_fts"] { try exec("DELETE FROM \(t)") }
     }
 
     func removeNotebooks(except keep: Set<String>) throws {
         dropMatrix()
         for n in notebooks() where !keep.contains(n.id) {
-            for t in ["chunks", "sources"] {
+            for t in ["chunks", "sources", "chunks_fts"] {
                 let s = try statement("DELETE FROM \(t) WHERE notebook_id=?")
                 bind(s, 1, n.id); sqlite3_step(s); sqlite3_finalize(s)
             }
@@ -217,7 +229,7 @@ actor LibraryStore {
         try exec("BEGIN IMMEDIATE")
         do {
             for sid in removed + resent {
-                for t in ["chunks", "sources"] {
+                for t in ["chunks", "sources", "chunks_fts"] {
                     let s = try statement("DELETE FROM \(t) WHERE notebook_id=? AND source_id=?")
                     bind(s, 1, notebook); bind(s, 2, sid); sqlite3_step(s); sqlite3_finalize(s)
                 }
@@ -236,6 +248,14 @@ actor LibraryStore {
                 c.vector.withUnsafeBytes { sqlite3_bind_blob(insert, 8, $0.baseAddress, Int32($0.count), Self.transient) }
                 guard sqlite3_step(insert) == SQLITE_DONE else { throw LibraryError.sqlite(String(cString: sqlite3_errmsg(db))) }
             }
+            let fts = try statement("INSERT INTO chunks_fts(text, notebook_id, source_id, chunk_index) VALUES (?,?,?,?)")
+            defer { sqlite3_finalize(fts) }
+            for c in chunks {
+                sqlite3_reset(fts)
+                bind(fts, 1, c.text); bind(fts, 2, c.notebookId); bind(fts, 3, c.sourceId)
+                sqlite3_bind_int64(fts, 4, Int64(c.chunkIndex))
+                guard sqlite3_step(fts) == SQLITE_DONE else { throw LibraryError.sqlite(String(cString: sqlite3_errmsg(db))) }
+            }
             for (sid, h) in hashes {
                 let s = try statement("INSERT OR REPLACE INTO sources(notebook_id, source_id, hash) VALUES (?,?,?)")
                 bind(s, 1, notebook); bind(s, 2, sid); bind(s, 3, h); sqlite3_step(s); sqlite3_finalize(s)
@@ -251,9 +271,33 @@ actor LibraryStore {
 
     // MARK: search
 
-    /// Nearest chunks to `query` (a unit vector) by dot product, over every chunk or one notebook. One
-    /// matrix-vector product over the whole block (Accelerate), then a top-K selection.
-    func search(query: [Float], topK: Int, notebook: String? = nil) throws -> (hits: [LibraryHit], scanned: Int, seconds: Double) {
+    private static let stopwords: Set<String> = ["a", "an", "and", "are", "as", "at", "be", "by", "do", "does", "for", "from", "how",
+        "in", "is", "it", "of", "on", "or", "the", "to", "was", "what", "when", "where", "which", "who", "why", "with", "can", "you"]
+
+    /// Keyword ranking (BM25) inside one notebook: the best `limit` chunks for the question's content words.
+    private func keywordRank(_ text: String, notebook: String?, limit: Int) -> [(nb: String, src: String, idx: Int)] {
+        let words = text.lowercased().split(whereSeparator: { !$0.isLetter && !$0.isNumber })
+            .map(String.init).filter { $0.count > 1 && !Self.stopwords.contains($0) }
+        guard !words.isEmpty else { return [] }
+        let match = words.map { "\"\($0)\"" }.joined(separator: " OR ")
+        let sql = "SELECT notebook_id, source_id, chunk_index FROM chunks_fts WHERE chunks_fts MATCH ?"
+            + (notebook == nil ? "" : " AND notebook_id = ?") + " ORDER BY bm25(chunks_fts) LIMIT \(limit)"
+        guard let s = try? statement(sql) else { return [] }
+        defer { sqlite3_finalize(s) }
+        bind(s, 1, match)
+        if let notebook { bind(s, 2, notebook) }
+        var out: [(nb: String, src: String, idx: Int)] = []
+        while sqlite3_step(s) == SQLITE_ROW {
+            out.append((String(cString: sqlite3_column_text(s, 0)), String(cString: sqlite3_column_text(s, 1)),
+                        Int(sqlite3_column_int64(s, 2))))
+        }
+        return out
+    }
+
+    /// Hybrid retrieval like the Mac's: the Mac's vectors (one Accelerate matrix-vector product) and a
+    /// BM25 keyword ranking, fused by Reciprocal Rank Fusion. `queryText` nil means vectors only.
+    func search(query: [Float], queryText: String? = nil, topK: Int, notebook: String? = nil)
+        throws -> (hits: [LibraryHit], scanned: Int, seconds: Double) {
         let started = Date()
         try buildMatrix()
         let range = notebook.flatMap { ranges[$0] } ?? (notebook == nil ? 0..<rowKeys.count : 0..<0)
@@ -264,20 +308,39 @@ actor LibraryStore {
             cblas_sgemv(CblasRowMajor, CblasNoTrans, Int32(rows), Int32(Self.dims), 1,
                         m.baseAddress! + range.lowerBound * Self.dims, Int32(Self.dims), query, 1, 0, &scores, 1)
         }
-        var order = Array(0..<rows)
-        let k = min(topK, rows)
-        order.sort { scores[$0] > scores[$1] }          // 11k elements: a few milliseconds
+        let order = (0..<rows).sorted { scores[$0] > scores[$1] }
+        let candidates = 50
+        // Reciprocal Rank Fusion, k = 60: score = Σ 1 / (60 + rank) over each ranking the chunk appears in.
+        struct Key: Hashable { let nb: String; let src: String; let idx: Int }
+        var fused: [Key: Float] = [:]
+        var dense: [Key: Float] = [:]
+        for (rank, o) in order.prefix(candidates).enumerated() {
+            let r = rowKeys[range.lowerBound + o]
+            let k = Key(nb: r.nb, src: r.src, idx: r.idx)
+            fused[k, default: 0] += 1 / Float(60 + rank + 1)
+            dense[k] = scores[o]
+        }
+        if let queryText {
+            for (rank, r) in keywordRank(queryText, notebook: notebook, limit: candidates).enumerated() {
+                fused[Key(nb: r.nb, src: r.src, idx: r.idx), default: 0] += 1 / Float(60 + rank + 1)
+            }
+        }
         let titles = Dictionary(uniqueKeysWithValues: notebooks().map { ($0.id, $0.title) })
         var hits: [LibraryHit] = []
-        for o in order.prefix(k) {
-            let key = rowKeys[range.lowerBound + o]
-            let t = try statement("SELECT text, filename FROM chunks WHERE notebook_id=? AND source_id=? AND chunk_index=?")
+        for (key, _) in fused.sorted(by: { $0.value > $1.value }).prefix(topK) {
+            let t = try statement("SELECT text, filename, vector FROM chunks WHERE notebook_id=? AND source_id=? AND chunk_index=?")
             defer { sqlite3_finalize(t) }
             bind(t, 1, key.nb); bind(t, 2, key.src); sqlite3_bind_int64(t, 3, Int64(key.idx))
             guard sqlite3_step(t) == SQLITE_ROW else { continue }
+            var sim = dense[key] ?? 0
+            if dense[key] == nil, let blob = sqlite3_column_blob(t, 2), sqlite3_column_bytes(t, 2) == Self.dims * 2 {
+                let h = blob.assumingMemoryBound(to: Float16.self)
+                sim = 0
+                for i in 0..<Self.dims { sim += Float(h[i]) * query[i] }
+            }
             hits.append(.init(notebookId: key.nb, notebookTitle: titles[key.nb] ?? key.nb, sourceId: key.src, chunkIndex: key.idx,
                               filename: String(cString: sqlite3_column_text(t, 1)), text: String(cString: sqlite3_column_text(t, 0)),
-                              score: scores[o]))
+                              score: sim))
         }
         return (hits, rows, Date().timeIntervalSince(started))
     }
