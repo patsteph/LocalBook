@@ -29,6 +29,7 @@ final class LibraryModel {
     private(set) var answerStatus = ""
     private(set) var followUps: [String] = []
     private(set) var sourceScoreIsConfidence = false
+    private(set) var sourceScoreIsRelevance = false
     var askMode: AskMode = .mac
     enum AskMode: String, CaseIterable, Identifiable {
         case mac = "Ask the Mac", phone = "On this phone"
@@ -53,6 +54,8 @@ final class LibraryModel {
     var engine: EmbeddingGemma2Engine?
     var tokenizer: (any Tokenizers.Tokenizer)?
     var queryTemplate = "task: search result | query: {text}"
+    var reranker: RerankerEngine?
+    private(set) var rerankerLine = "Reranker: not loaded"
     private(set) var recipe: AnswerRecipe?
     private(set) var recipeLine = "No answer recipe yet — sync first"
 
@@ -117,6 +120,44 @@ final class LibraryModel {
             engine = e
             searchState = .ready
         } catch { searchState = .failed(error.localizedDescription) }
+        await prepareReranker()
+    }
+
+    /// Load the Core ML reranker (the Mac's own model) and check it against scores the Mac produced.
+    func prepareReranker() async {
+        guard reranker == nil else { return }
+        guard RerankerEngine.resourceAvailable() else {
+            rerankerLine = "Reranker: not in this build — results are ordered by vectors and keywords only"
+            return
+        }
+        do {
+            rerankerLine = "Reranker: loading…"
+            let r = try await RerankerEngine()
+            let c = try await r.check()
+            reranker = r
+            rerankerLine = "Reranker (the Mac's MiniLM-L-12): token match \(c.encodingMatches)/\(c.encodingTotal) · "
+                + "score agreement with the Mac \(String(format: "%.2f", c.rankCorrelation)) · same top 5 \(Int(c.top5Overlap * 100))% · "
+                + "\(Int(c.millisecondsPerBatch)) ms per 12 passages"
+        } catch { rerankerLine = "Reranker failed: \(error.localizedDescription)" }
+    }
+
+    /// Retrieval the way the Mac does it: fuse vectors and keywords into `overcollect` candidates, rerank them
+    /// with the cross-encoder, keep `rerankKeep`. Without the reranker, the fused order is used.
+    func retrieve(question: String, vector: [Float], notebook: String?) async throws -> (hits: [LibraryHit], reranked: Bool, scanned: Int, seconds: Double) {
+        guard let store else { throw LibraryError.badResponse("library not open") }
+        let over = recipe?.retrieval.overcollect ?? 12
+        let keep = recipe?.retrieval.rerankKeep ?? 5
+        let found = try await store.search(query: vector, queryText: question, topK: over, notebook: notebook)
+        guard let reranker, found.hits.count > 1 else {
+            return (Array(found.hits.prefix(keep)), false, found.scanned, found.seconds)
+        }
+        let t0 = Date()
+        let scores = try await reranker.scores(query: question, passages: found.hits.map(\.text))
+        let ranked = zip(found.hits, scores).sorted { $0.1 > $1.1 }.prefix(keep).map { pair in
+            LibraryHit(notebookId: pair.0.notebookId, notebookTitle: pair.0.notebookTitle, sourceId: pair.0.sourceId,
+                       chunkIndex: pair.0.chunkIndex, filename: pair.0.filename, text: pair.0.text, score: pair.1)
+        }
+        return (Array(ranked), true, found.scanned, found.seconds + Date().timeIntervalSince(t0))
     }
 
     func stopAnswer() { generation?.cancel() }
@@ -148,7 +189,7 @@ final class LibraryModel {
         let t0 = Date()
         let text = queryTemplate.replacingOccurrences(of: "{text}", with: question)
         let vector = try await engine.embed(tokenIds: TokenRepair.spaceFallback(tokenizer.encode(text: text)))
-        let result = try await store.search(query: vector, queryText: question, topK: topK, notebook: notebook)
+        let result = try await retrieve(question: question, vector: vector, notebook: notebook)
         if gemma == nil {
             Memory.cacheLimit = 64 * 1024 * 1024
             gemma = try await #huggingFaceLoadModelContainer(configuration: LLMRegistry.gemma4_e4b_it_4bit)
@@ -227,6 +268,7 @@ final class LibraryModel {
                 let r = try decoder.decode(MacAnswer.self, from: data)
                 answerText = r.answer
                 sourceScoreIsConfidence = true
+                sourceScoreIsRelevance = false
                 answerSources = r.citations.map {
                     LibraryHit(notebookId: scope, notebookTitle: title, sourceId: $0.sourceId, chunkIndex: $0.chunkIndex ?? 0,
                                filename: $0.filename ?? "Unknown", text: $0.text, score: Float($0.confidence ?? 0))
@@ -269,8 +311,9 @@ final class LibraryModel {
             let t0 = Date()
             let text = queryTemplate.replacingOccurrences(of: "{text}", with: query)
             let vector = try await engine.embed(tokenIds: TokenRepair.spaceFallback(tokenizer.encode(text: text)))
-            let result = try await store.search(query: vector, queryText: query, topK: 5, notebook: scope)
+            let result = try await retrieve(question: query, vector: vector, notebook: scope)
             hits = result.hits
+            sourceScoreIsRelevance = result.reranked
             answerSources = result.hits
             let findSeconds = Date().timeIntervalSince(t0)
 
@@ -327,8 +370,9 @@ final class LibraryModel {
             let ids = TokenRepair.spaceFallback(tokenizer.encode(text: text))
             let vector = try await engine.embed(tokenIds: ids)
             let embedSeconds = Date().timeIntervalSince(t0)
-            let result = try await store.search(query: vector, queryText: query, topK: 5, notebook: scopeToNotebook)
+            let result = try await retrieve(question: query, vector: vector, notebook: scopeToNotebook)
             hits = result.hits
+            sourceScoreIsRelevance = result.reranked
             timing = "Question embedded in \(Int(embedSeconds * 1000)) ms · scanned \(result.scanned) chunks in \(Int(result.seconds * 1000)) ms"
         } catch { searchState = .failed(error.localizedDescription) }
     }

@@ -18,6 +18,7 @@ struct LibraryView: View {
                 LabeledContent("On this phone", value: "\(model.notebooks.count) notebooks · \(model.chunkCount) chunks")
                 Text(model.lastSyncLine).font(.footnote).foregroundStyle(.secondary)
                 Text(model.recipeLine).font(.footnote).foregroundStyle(.secondary)
+                Text(model.rerankerLine).font(.footnote).foregroundStyle(.secondary)
                 if let s = model.lastSummary {
                     Text("Last run: \(s.notebooksChanged) of \(s.notebooks) notebooks changed · \(s.sourcesFetched) sources, \(s.chunksFetched) chunks fetched · "
                          + "\(s.sourcesRemoved) removed · \(String(format: "%.1f", Double(s.bytes) / 1_000_000)) MB in \(String(format: "%.1f", s.seconds)) s")
@@ -104,7 +105,8 @@ struct LibraryView: View {
     }
 
     private func scoreLine(_ score: Float) -> String {
-        model.sourceScoreIsConfidence ? String(format: "confidence %.0f%%", Double(score) * 100)
-                                      : String(format: "similarity %.3f", score)
+        if model.sourceScoreIsConfidence { return String(format: "confidence %.0f%%", Double(score) * 100) }
+        if model.sourceScoreIsRelevance { return String(format: "relevance %.0f%% (reranked)", Double(score) * 100) }
+        return String(format: "similarity %.3f", score)
     }
 }

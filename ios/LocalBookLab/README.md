@@ -110,6 +110,20 @@ a passage, then transcribes its own audio and scores it against the text.
 - **Locked playback confirmed:** 2 of 2 chunks finished playing while the app was in the background,
   0 gaps (the audio background mode plus the GPU-free engine). **Test 4: PASS on every bar.**
 
+## Reranker (Phase 1)
+
+The phone reranks like the Mac: `ms-marco-MiniLM-L-12-v2`, converted to Core ML and run on the Neural Engine.
+`tools/convert_reranker.py` makes it (and measures it against the Mac's own FlashRank scores on real pairs):
+
+    python3 -m venv tools/.venv && tools/.venv/bin/pip install coremltools torch transformers numpy
+    LOCALBOOK_DATA_DIR="$HOME/Library/Application Support/LocalBook" backend/.venv/bin/python tools/make_rerank_pairs.py
+    tools/.venv/bin/python tools/convert_reranker.py cross-encoder/ms-marco-MiniLM-L-12-v2 L12
+
+The model (`tools/cache/RerankerL12.mlpackage`, 64 MB) is not committed; the build works without it and the
+phone then skips reranking. Measured on 50 real questions × 12 candidates against the Mac's reranker: rank
+correlation 0.968, same best passage 84%, same top 5 93% (L-6 is much worse: 0.916 / 66% / 86%). The gap to
+100% is the Mac's int8-quantised ONNX file versus this half-precision model.
+
 ## What it measures
 
 | Check | How |

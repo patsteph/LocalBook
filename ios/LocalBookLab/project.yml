@@ -45,6 +45,14 @@ targets:
     platform: iOS
     sources:
       - path: Sources
+      # The reranker: a Core ML conversion of the Mac's own model (tools/convert_reranker.py writes it).
+      # Not committed (64 MB); the build still works without it and the phone then skips reranking.
+      - path: tools/cache/RerankerL12.mlpackage
+        optional: true
+      - path: Models/RerankerTokenizer
+        type: folder
+      - path: tools/cache/rerank_conformance.json
+        optional: true
     dependencies:
       - package: swift-transformers
         product: Tokenizers
