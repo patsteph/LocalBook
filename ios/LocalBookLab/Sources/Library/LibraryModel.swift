@@ -305,10 +305,14 @@ final class LibraryModel {
             return (recipe?.citations.noAnswer ?? "I don't have enough relevant information in your documents to answer this question accurately.", nil, nil)
         }
         if gemma == nil {
+            SoakTrace.log("answer model load begins")
             Memory.cacheLimit = 64 * 1024 * 1024
             gemma = try await #huggingFaceLoadModelContainer(configuration: LLMRegistry.gemma4_e4b_it_4bit)
+            SoakTrace.log("answer model load ends")
         }
         guard let gemma else { throw LibraryError.badResponse("answer model not loaded") }
+        SoakTrace.log("decode begins (\(result.hits.count) passages)")
+        defer { SoakTrace.log("decode ends") }
         let setup = generationSetup(question: question, hits: result.hits, personal: personal, withEntityContext: withEntityContext)
         let session = ChatSession(gemma, instructions: setup.instructions, generateParameters: setup.params)
         var answer = "", first: Double?, info: GenerateCompletionInfo?

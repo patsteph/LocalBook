@@ -43,6 +43,26 @@ struct SoakReport: Codable, Sendable {
     }
 }
 
+/// Breadcrumbs for the soak: one line per event, flushed to disk at once, so that if the app hangs or dies while
+/// the screen is locked, `soak-trace.txt` in the app's Files folder still says what happened last.
+enum SoakTrace {
+    private static let queue = DispatchQueue(label: "soak.trace")
+    static var url: URL { URL.documentsDirectory.appending(path: "soak-trace.txt") }
+
+    static func reset() { queue.sync { try? Data().write(to: url) } }
+
+    static func log(_ event: String) {
+        let line = "\(ISO8601DateFormatter().string(from: Date())) mem=\(Int(MemoryProbe.footprintMB()))MB thermal=\(ProcessInfo.processInfo.thermalState.rawValue) \(event)\n"
+        queue.sync {
+            guard let data = line.data(using: .utf8) else { return }
+            if let h = try? FileHandle(forWritingTo: url) {
+                defer { try? h.close() }
+                _ = try? h.seekToEnd(); try? h.write(contentsOf: data); try? h.synchronize()
+            } else { try? data.write(to: url) }
+        }
+    }
+}
+
 @MainActor
 @Observable
 final class SoakModel {
@@ -73,10 +93,20 @@ final class SoakModel {
         UIApplication.shared.isIdleTimerDisabled = true           // the run is meant to be watched; locking is done by hand
         let started = Date()
         let batteryStart = Double(max(UIDevice.current.batteryLevel, 0)) * 100
-        let resign = NotificationCenter.default.addObserver(forName: UIApplication.willResignActiveNotification, object: nil, queue: .main) { _ in
-            MainActor.assumeIsolated { self.lockEvents += 1 }
+        SoakTrace.reset()
+        SoakTrace.log("soak start: \(minutes) min, \(questions.count) questions")
+        let names: [(Notification.Name, String)] = [
+            (UIApplication.willResignActiveNotification, "willResignActive"), (UIApplication.didEnterBackgroundNotification, "didEnterBackground"),
+            (UIApplication.willEnterForegroundNotification, "willEnterForeground"), (UIApplication.didBecomeActiveNotification, "didBecomeActive"),
+            (UIApplication.protectedDataWillBecomeUnavailableNotification, "protectedDataWillBecomeUnavailable"),
+            (UIApplication.didReceiveMemoryWarningNotification, "MEMORY WARNING")]
+        let tokens = names.map { (name, label) in
+            NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { _ in
+                SoakTrace.log("EVENT \(label)")
+                if name == UIApplication.willResignActiveNotification { MainActor.assumeIsolated { self.lockEvents += 1 } }
+            }
         }
-        defer { NotificationCenter.default.removeObserver(resign) }
+        defer { tokens.forEach { NotificationCenter.default.removeObserver($0) }; SoakTrace.log("soak end") }
 
         var i = 0
         while !stop, Date().timeIntervalSince(started) < Double(minutes) * 60 {
@@ -96,13 +126,16 @@ final class SoakModel {
         var failure: String?
         do {
             guard let nb = try await library.bestNotebook(for: question) else { throw LibraryError.badResponse("no matching notebook") }
+            SoakTrace.log("answer \(index + 1) begins")
             let task = Task { try await library.localAnswer(question: question, notebook: nb) }
             let observer = NotificationCenter.default.addObserver(forName: UIApplication.willResignActiveNotification, object: nil, queue: .main) { _ in
+                SoakTrace.log("lock guard: cancelling answer \(index + 1)")
                 MainActor.assumeIsolated { interrupted = true; task.cancel() }      // GPU work must stop when the screen locks
             }
             defer { NotificationCenter.default.removeObserver(observer) }
             do { result = try await task.value } catch is CancellationError { interrupted = true } catch { failure = error.localizedDescription }
         } catch { failure = error.localizedDescription }
+        SoakTrace.log("answer \(index + 1) returned (interrupted=\(interrupted), failure=\(failure ?? "none"))")
         if interrupted {                                          // wait for the app to be active again before the next question
             while UIApplication.shared.applicationState != .active && !stop { try? await Task.sleep(for: .seconds(1)) }
         }
@@ -159,6 +192,7 @@ struct SoakView: View {
                 }
             }
             if let url = model.reportURL { Section { ShareLink("Share report", item: url) } }
+            Section { Text("If the app hangs while locked, force-quit it, reopen, and share soak-trace.txt from the app's Files folder.").font(.footnote) }
         }
         .navigationTitle("Soak test")
     }
