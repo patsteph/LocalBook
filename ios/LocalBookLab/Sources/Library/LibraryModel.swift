@@ -35,7 +35,7 @@ final class LibraryModel {
         var id: String { rawValue }
     }
 
-    private struct MacAnswer: Decodable {
+    struct MacAnswer: Decodable {
         struct Citation: Decodable {
             let number: Int?; let sourceId: String; let filename: String?; let chunkIndex: Int?
             let text: String; let confidence: Double?
@@ -45,14 +45,14 @@ final class LibraryModel {
     }
     private(set) var answering = false
     private var generation: Task<Void, Never>?
-    private var gemma: ModelContainer?
+    var gemma: ModelContainer?
     var query = ""
     var scopeToNotebook: String?
 
-    private var store: LibraryStore?
-    private var engine: EmbeddingGemma2Engine?
-    private var tokenizer: (any Tokenizers.Tokenizer)?
-    private var queryTemplate = "task: search result | query: {text}"
+    var store: LibraryStore?
+    var engine: EmbeddingGemma2Engine?
+    var tokenizer: (any Tokenizers.Tokenizer)?
+    var queryTemplate = "task: search result | query: {text}"
 
     func open() async {
         guard store == nil else { return }
@@ -109,6 +109,75 @@ final class LibraryModel {
     }
 
     func stopAnswer() { generation?.cancel() }
+
+    // MARK: UI-free building blocks (also used by the answer-parity test)
+
+    struct LocalAnswer: Sendable {
+        let sources: [LibraryHit]
+        let answer: String
+        let seconds: Double
+        let firstWordSeconds: Double?
+        let tokensPerSecond: Double?
+    }
+
+    /// The Mac's reference answer for one question, via the signed phone link (phone-only on the Mac).
+    func macAnswer(question: String, notebook: String) async throws -> (answer: MacAnswer, seconds: Double) {
+        guard let mac = MacLink.paired else { throw LibraryError.notPaired }
+        let t0 = Date()
+        let data = try await MacLink.signedCall(mac, path: "/phone/ask",
+                                                json: ["notebook_id": notebook, "question": question], timeout: 240)
+        let decoder = JSONDecoder(); decoder.keyDecodingStrategy = .convertFromSnakeCase
+        return (try decoder.decode(MacAnswer.self, from: data), Date().timeIntervalSince(t0))
+    }
+
+    /// The phone's own retrieval (vectors + keywords) and Gemma answer for one question. Needs the search
+    /// model ready; loads Gemma on first use.
+    func localAnswer(question: String, notebook: String, topK: Int = 5, maxTokens: Int = 400) async throws -> LocalAnswer {
+        guard let store, let engine, let tokenizer else { throw LibraryError.badResponse("search model not ready") }
+        let t0 = Date()
+        let text = queryTemplate.replacingOccurrences(of: "{text}", with: question)
+        let vector = try await engine.embed(tokenIds: TokenRepair.spaceFallback(tokenizer.encode(text: text)))
+        let result = try await store.search(query: vector, queryText: question, topK: topK, notebook: notebook)
+        if gemma == nil {
+            Memory.cacheLimit = 64 * 1024 * 1024
+            gemma = try await #huggingFaceLoadModelContainer(configuration: LLMRegistry.gemma4_e4b_it_4bit)
+        }
+        guard let gemma else { throw LibraryError.badResponse("answer model not loaded") }
+        let sources = result.hits.enumerated().map { i, h in "[\(i + 1)] (\(h.filename))\n\(String(h.text.prefix(1_100)))" }
+            .joined(separator: "\n\n")
+        let session = ChatSession(gemma, instructions: Self.localInstructions,
+                                  generateParameters: GenerateParameters(maxTokens: maxTokens))
+        var answer = "", first: Double?, info: GenerateCompletionInfo?
+        let started = Date()
+        for try await item in session.streamDetails(to: "Passages:\n\n\(sources)\n\nQuestion: \(question)") {
+            switch item {
+            case .chunk(let c): if first == nil { first = Date().timeIntervalSince(started) }; answer += c
+            case .info(let i): info = i
+            default: break
+            }
+        }
+        return LocalAnswer(sources: result.hits, answer: answer, seconds: Date().timeIntervalSince(t0),
+                           firstWordSeconds: first, tokensPerSecond: info?.tokensPerSecond)
+    }
+
+    static let localInstructions = "You answer questions using ONLY the numbered passages from the user's own notes. "
+        + "If they do not contain the answer, say so plainly. Be concise. Cite the passages you used like [1] or [2]. "
+        + "Write plain text: no LaTeX or dollar-sign math (write arrows as ->), and no tables."
+
+    /// A unit vector for `text` as a document (for comparing two answers with the phone's own embedder).
+    func documentVector(_ text: String) async throws -> [Float] {
+        guard let engine, let tokenizer else { throw LibraryError.badResponse("search model not ready") }
+        let ids = TokenRepair.spaceFallback(tokenizer.encode(text: "title: none | text: " + String(text.prefix(1_500))))
+        return try await engine.embed(tokenIds: Array(ids.prefix(EmbeddingGemma2Engine.maxTokens)))
+    }
+
+    /// The notebook whose best chunk matches the question most closely (across everything on the phone).
+    func bestNotebook(for question: String) async throws -> String? {
+        guard let store, let engine, let tokenizer else { throw LibraryError.badResponse("search model not ready") }
+        let text = queryTemplate.replacingOccurrences(of: "{text}", with: question)
+        let v = try await engine.embed(tokenIds: TokenRepair.spaceFallback(tokenizer.encode(text: text)))
+        return try await store.search(query: v, queryText: nil, topK: 1, notebook: nil).hits.first?.notebookId
+    }
 
     /// Dispatch on the chosen mode.
     func ask() async {
@@ -194,9 +263,7 @@ final class LibraryModel {
             let sources = result.hits.enumerated().map { i, h in
                 "[\(i + 1)] (\(h.filename))\n\(String(h.text.prefix(1_100)))"
             }.joined(separator: "\n\n")
-            let instructions = "You answer questions using ONLY the numbered passages from the user's own notes. "
-                + "If they do not contain the answer, say so plainly. Be concise. Cite the passages you used like [1] or [2]. "
-                + "Write plain text: no LaTeX or dollar-sign math (write arrows as ->), and no tables."
+            let instructions = Self.localInstructions
             let prompt = "Passages:\n\n\(sources)\n\nQuestion: \(query)"
             let session = ChatSession(gemma, instructions: instructions, generateParameters: GenerateParameters(maxTokens: 400))
 

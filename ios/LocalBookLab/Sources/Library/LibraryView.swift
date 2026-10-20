@@ -82,18 +82,28 @@ struct LibraryView: View {
                     ForEach(Array(model.hits.enumerated()), id: \.element.id) { i, h in
                         VStack(alignment: .leading, spacing: 3) {
                             Text("[\(i + 1)] \(h.notebookTitle) · \(h.filename)").font(.footnote.weight(.medium))
-                            Text(h.text.prefix(240) + (h.text.count > 240 ? "…" : "")).font(.footnote)
-                            Text(model.sourceScoreIsConfidence ? String(format: "confidence %.0f%%", Double(h.score) * 100)
-                                                               : String(format: "similarity %.3f", h.score))
-                                .font(.caption2).foregroundStyle(.secondary)
+                            Text(excerpt(h.text)).font(.footnote)
+                            Text(scoreLine(h.score)).font(.caption2).foregroundStyle(.secondary)
                         }
                     }
                 }
             }
         }
+        .toolbar {
+            NavigationLink("Mac vs phone") { AnswerParityView(library: model) }
+        }
         .navigationTitle("Library")
         .navigationBarTitleDisplayMode(.inline)
         .task { await model.open() }
         .onDisappear { model.unloadAnswerModel() }
+    }
+
+    private func excerpt(_ text: String) -> String {
+        text.count > 240 ? String(text.prefix(240)) + "…" : text
+    }
+
+    private func scoreLine(_ score: Float) -> String {
+        model.sourceScoreIsConfidence ? String(format: "confidence %.0f%%", Double(score) * 100)
+                                      : String(format: "similarity %.3f", score)
     }
 }
