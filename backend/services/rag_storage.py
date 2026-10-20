@@ -601,12 +601,16 @@ async def generate_chunk_questions(chunks: List[str]) -> List[str]:
                     timeout=60.0,
                 )
                 raw = _resp.get("response", "") or ""
+                got = 0
                 for m in _HYDE_LINE_RE.finditer(raw):
                     idx = int(m.group(1)) - 1
                     if 0 <= idx < len(batch):
                         results[start + idx] = m.group(2).strip()
+                        got += 1
+                if got < len(batch):
+                    logger.warning("[HyDE] batch at chunk %d: %d of %d passages got questions", start, got, len(batch))
             except Exception as e:
-                print(f"[RAG] HyDE batch at {start} failed: {e}")  # leave "" for this batch
+                logger.warning("[HyDE] batch at chunk %d failed: %s", start, e)   # leave "" for this batch
 
     await asyncio.gather(*[
         _run_batch(s) for s in range(0, eligible, _HYDE_CHUNKS_PER_BATCH)
