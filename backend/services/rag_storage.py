@@ -136,8 +136,13 @@ async def ingest_document(
     enable_hyde: bool = True,
     precomputed_summary: Optional[str] = None,
     deferred: bool = False,
+    precomputed_questions: Optional[List[str]] = None,
 ) -> Dict:
     """Ingest a document into the RAG system.
+
+    precomputed_questions: one HyDE questions string per chunk, made by another Mac for this exact text
+    (sync carries them in the source's metadata, see hyde_record). Used only when it matches this
+    chunking; otherwise ignored.
 
     deferred: make it searchable now, and leave the topic model and entity graph
     to sustained idle (DEEP jobs). For BULK re-indexing — sync's catch-up indexed
@@ -185,12 +190,15 @@ async def ingest_document(
     # Generate synthetic questions for HyDE — pure retrieval enrichment, so skip
     # it entirely for background/auto-collected ingest (enable_hyde=False) where it
     # was the biggest fast-model multiplier with marginal ROI (2026-06-26).
-    if enable_hyde:
+    if precomputed_questions is not None and len(precomputed_questions) == len(chunks):
+        questions = list(precomputed_questions)              # carried over from the Mac that made them
+    elif enable_hyde:
         await reporter.emit(
             "hyde_questions", 68,
             "Generating synthetic questions to improve retrieval (HyDE)...",
         )
         questions = await generate_chunk_questions(chunks)
+        await _remember_questions(notebook_id, source_id, text, questions)
     else:
         questions = [""] * len(chunks)
     texts_to_embed = [f"{c}\n\nQuestions this answers:\n{q}" if q else c for c, q in zip(chunks, questions)]
@@ -553,6 +561,36 @@ _HYDE_MAX_CONCURRENT_BATCHES = 3
 # Guard: never fan HyDE out unboundedly. Beyond this many chunks, the overflow
 # chunks embed WITHOUT synthetic questions (still searchable, slightly weaker
 # HyDE) rather than melting Ollama on a giant document.
+def hyde_record(text: str, questions: List[str]) -> Dict:
+    """What travels with a source so another Mac can reuse its questions: they are only valid for the exact
+    text (hash) and chunking (count) they were made for."""
+    import hashlib
+    return {"hash": hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()[:16],
+            "n": len(questions), "q": questions}
+
+
+def hyde_usable(record, text: str, chunk_count: int) -> Optional[List[str]]:
+    """The questions in `record` if they were made for this text and this many chunks, else None."""
+    if not isinstance(record, dict) or not isinstance(record.get("q"), list):
+        return None
+    import hashlib
+    if record.get("hash") != hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()[:16]:
+        return None
+    return record["q"] if len(record["q"]) == chunk_count and record.get("n") == chunk_count else None
+
+
+async def _remember_questions(notebook_id: str, source_id: str, text: str, questions: List[str]) -> None:
+    """Keep the generated questions in the source's metadata so sync can hand them to the other Mac (which
+    re-indexes synced sources without making its own). Non-fatal: it only saves the other Mac some work."""
+    if not any(q.strip() for q in questions):
+        return
+    try:
+        from storage.source_store import source_store
+        await source_store.update(notebook_id, source_id, {"hyde_questions": hyde_record(text, questions)})
+    except Exception as e:
+        logger.debug("[HyDE] could not store questions for sync: %s", e)
+
+
 _HYDE_MAX_CHUNKS = 200
 _HYDE_LINE_RE = re.compile(r'(?im)^\s*P\s*(\d+)\s*[:\-.]\s*(.+?)\s*$')
 

@@ -14,7 +14,8 @@ What needs work is decided by looking, not by trusting metadata:
   * removed   — a source an apply deleted (engine report `unindex`)
 Changed/removed ids are persisted in sync.db so a restart does not lose them.
 
-Embeddings only: HyDE is off and the stored summary is reused, so this never
+Embeddings only: HyDE questions are not generated here (the other Mac's travel with the source when they
+match this text and chunking) and the stored summary is reused, so this never
 puts the main model to work. Entity extraction is queued the normal way.
 """
 
@@ -125,7 +126,8 @@ def _sources() -> List[Dict[str, Any]]:
             m = {}
         out.append({"id": sid, "notebook_id": nb, "filename": filename or "Unknown",
                     "type": typ or fmt or "document", "chunks": int(m.get("chunks") or 0),
-                    "status": m.get("status") or "completed", "summary": m.get("summary") or ""})
+                    "status": m.get("status") or "completed", "summary": m.get("summary") or "",
+                    "hyde": m.get("hyde_questions")})
     return out
 
 
@@ -195,7 +197,8 @@ async def _run_into_locked(run, paced: bool) -> Dict[str, Any]:
                 await rag_engine.ingest_document(
                     notebook_id=s["notebook_id"], source_id=s["id"], text=text,
                     filename=s["filename"], source_type=s["type"],
-                    enable_hyde=False, precomputed_summary=s["summary"], deferred=True)
+                    enable_hyde=False, precomputed_summary=s["summary"], deferred=True,
+                    precomputed_questions=_carried_questions(s, text))
                 indexed += 1
             _forget(reindex=[s["id"]])
         except Exception as exc:
@@ -211,6 +214,15 @@ async def _run_into_locked(run, paced: bool) -> Dict[str, Any]:
     if indexed or removed or failed:
         logger.info("[sync-index] %s", out)
     return out
+
+
+def _carried_questions(s: Dict[str, Any], text: str) -> Optional[List[str]]:
+    """The other Mac's HyDE questions for this source, if they were made for exactly this text and chunking."""
+    if not s.get("hyde"):
+        return None
+    from services import rag_chunking, rag_storage
+    chunks = rag_chunking.chunk_text_smart(text, s["type"], s["filename"])
+    return rag_storage.hyde_usable(s["hyde"], text, len(chunks))
 
 
 def _pace() -> float:
