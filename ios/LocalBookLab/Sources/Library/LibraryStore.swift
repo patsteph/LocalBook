@@ -109,19 +109,10 @@ actor LibraryStore {
               text TEXT NOT NULL, summary INTEGER NOT NULL, filename TEXT NOT NULL, source_type TEXT NOT NULL,
               vector BLOB NOT NULL, PRIMARY KEY (notebook_id, source_id, chunk_index))
             """,
-            // Keyword index (BM25) beside the vectors: the Mac ranks by BOTH and fuses them, so must the phone.
-            """
-            CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
-              text, notebook_id UNINDEXED, source_id UNINDEXED, chunk_index UNINDEXED, tokenize='porter unicode61')
-            """,
         ] { try exec(sql) }
-        // A library synced before the keyword index existed: fill it from the stored chunks, once.
-        if let s = try? statement("SELECT (SELECT COUNT(*) FROM chunks_fts), (SELECT COUNT(*) FROM chunks)") {
-            defer { sqlite3_finalize(s) }
-            if sqlite3_step(s) == SQLITE_ROW, sqlite3_column_int64(s, 0) == 0, sqlite3_column_int64(s, 1) > 0 {
-                try exec("INSERT INTO chunks_fts(text, notebook_id, source_id, chunk_index) SELECT text, notebook_id, source_id, chunk_index FROM chunks")
-            }
-        }
+        // Keyword ranking is exact BM25 computed in memory (see bm25Index); the SQLite full-text table an earlier
+        // build kept beside the chunks is not used any more, so drop it and its space.
+        try? exec("DROP TABLE IF EXISTS chunks_fts")
     }
 
     // No deinit: the store lives as long as the app, and SQLite closes the file with the process.
@@ -208,14 +199,14 @@ actor LibraryStore {
 
     func wipe() throws {
         dropMatrix()
-        for t in ["chunks", "sources", "notebooks", "chunks_fts"] { try exec("DELETE FROM \(t)") }
+        for t in ["chunks", "sources", "notebooks"] { try exec("DELETE FROM \(t)") }
         try exec("DELETE FROM meta WHERE key LIKE 'personal:%'")        // profile, memory, entities: all of it goes
     }
 
     func removeNotebooks(except keep: Set<String>) throws {
         dropMatrix()
         for n in notebooks() where !keep.contains(n.id) {
-            for t in ["chunks", "sources", "chunks_fts"] {
+            for t in ["chunks", "sources"] {
                 let s = try statement("DELETE FROM \(t) WHERE notebook_id=?")
                 bind(s, 1, n.id); sqlite3_step(s); sqlite3_finalize(s)
             }
@@ -245,7 +236,7 @@ actor LibraryStore {
         try exec("BEGIN IMMEDIATE")
         do {
             for sid in removed + resent {
-                for t in ["chunks", "sources", "chunks_fts"] {
+                for t in ["chunks", "sources"] {
                     let s = try statement("DELETE FROM \(t) WHERE notebook_id=? AND source_id=?")
                     bind(s, 1, notebook); bind(s, 2, sid); sqlite3_step(s); sqlite3_finalize(s)
                 }
@@ -263,14 +254,6 @@ actor LibraryStore {
                 bind(insert, 6, c.filename); bind(insert, 7, c.sourceType)
                 c.vector.withUnsafeBytes { sqlite3_bind_blob(insert, 8, $0.baseAddress, Int32($0.count), Self.transient) }
                 guard sqlite3_step(insert) == SQLITE_DONE else { throw LibraryError.sqlite(String(cString: sqlite3_errmsg(db))) }
-            }
-            let fts = try statement("INSERT INTO chunks_fts(text, notebook_id, source_id, chunk_index) VALUES (?,?,?,?)")
-            defer { sqlite3_finalize(fts) }
-            for c in chunks {
-                sqlite3_reset(fts)
-                bind(fts, 1, c.text); bind(fts, 2, c.notebookId); bind(fts, 3, c.sourceId)
-                sqlite3_bind_int64(fts, 4, Int64(c.chunkIndex))
-                guard sqlite3_step(fts) == SQLITE_DONE else { throw LibraryError.sqlite(String(cString: sqlite3_errmsg(db))) }
             }
             for (sid, h) in hashes {
                 let s = try statement("INSERT OR REPLACE INTO sources(notebook_id, source_id, hash) VALUES (?,?,?)")
