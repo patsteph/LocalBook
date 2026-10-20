@@ -153,7 +153,7 @@ class Settings(BaseSettings):
     # "int8": FlashRank's quantised file (today's behaviour). "fp32": the same model at full precision via
     # onnxruntime (services/onnx_reranker.py), which is what the iPhone runs — fetched in the background,
     # FlashRank is used until it is there or if it cannot be fetched.
-    reranker_precision: str = "int8"
+    reranker_precision: str = "fp32"
     # Hard wall-clock bound on a SINGLE MLX generation, enforced inside the token loop.
     #
     # This is the only place it CAN be enforced. `mlx_engine._run` dispatches to
