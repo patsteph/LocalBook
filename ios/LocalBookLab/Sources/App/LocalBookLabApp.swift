@@ -41,6 +41,12 @@ struct LabHomeView: View {
                                detail: "Step 1: find Macs over Bonjour. Pinned TLS pairing comes next")
                     }
                     NavigationLink {
+                        LibraryView()
+                    } label: {
+                        LabRow(number: 5, title: "Library on the phone",
+                               detail: "Phase 1: sync the Mac's chunks and vectors, then search them here")
+                    }
+                    NavigationLink {
                         SpeechTestView()
                     } label: {
                         LabRow(number: 4, title: "Speech behind a locked screen",

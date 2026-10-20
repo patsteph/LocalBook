@@ -164,27 +164,6 @@ final class ParityModel {
         reportURL = url
     }
 
-    /// swift-transformers falls back to raw bytes for the "▁" that stands for a space when the
-    /// next character has a canonical equivalent (a combining mark, U+2126 OHM SIGN → Ω, …).
-    /// The Mac's tokenizer emits the single "▁" token (236743). A real space is always
-    /// normalised to "▁", so these byte tokens only ever come from that bug:
-    /// <0x20> (270), or the UTF-8 bytes of "▁" itself, <0xE2><0x96><0x81> (464, 388, 367).
-    static func repairSpaceFallback(_ ids: [Int]) -> [Int] {
-        var out: [Int] = []
-        out.reserveCapacity(ids.count)
-        var i = 0
-        while i < ids.count {
-            if ids[i] == 270 {
-                out.append(236743); i += 1
-            } else if i + 2 < ids.count, ids[i] == 464, ids[i + 1] == 388, ids[i + 2] == 367 {
-                out.append(236743); i += 3
-            } else {
-                out.append(ids[i]); i += 1
-            }
-        }
-        return out
-    }
-
     /// Mode B: tokenise every string with the phone's tokenizer — the same tokenizer files the
     /// Mac loads — so we can prove new sources will be tokenised identically on the phone.
     private func tokenize(_ fixture: ParityFixture) async -> [String: [Int]]? {
@@ -192,7 +171,7 @@ final class ParityModel {
             let tokenizer = try await AutoTokenizer.from(pretrained: fixture.mac.tokenizerSource)
             var ids: [String: [Int]] = [:]
             for item in fixture.chunks + fixture.queries {
-                ids[item.id] = Self.repairSpaceFallback(tokenizer.encode(text: item.formattedText))
+                ids[item.id] = TokenRepair.spaceFallback(tokenizer.encode(text: item.formattedText))
             }
             return ids
         } catch {

@@ -123,6 +123,29 @@ enum MacLink {
         return "\(error.localizedDescription) [\(ns.domain) \(ns.code)] — \(t)"
     }
 
+    /// A signed JSON call to the Mac's phone link; returns the raw response body.
+    static func signedCall(_ mac: PairedMac, path: String, json: [String: Any] = [:],
+                           timeout: TimeInterval = 60) async throws -> Data {
+        let delegate = TrustCapture(pinned: mac.certDER, identity: nil)
+        let session = URLSession(configuration: .ephemeral, delegate: delegate, delegateQueue: nil)
+        defer { session.finishTasksAndInvalidate() }
+        let body = try JSONSerialization.data(withJSONObject: json, options: [.sortedKeys])
+        var req = URLRequest(url: URL(string: "https://\(mac.host):\(mac.syncPort)\(path)")!)
+        req.httpMethod = "POST"
+        req.timeoutInterval = timeout
+        req.httpBody = body
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let headers = try PhoneIdentity.signedHeaders(method: "POST", path: path, body: body,
+                                                      macDeviceId: mac.deviceId, macFingerprint: mac.fingerprint)
+        for (k, v) in headers { req.setValue(v, forHTTPHeaderField: k) }
+        let data: Data, response: URLResponse
+        do { (data, response) = try await session.data(for: req) }
+        catch { throw MacLinkError.detail(describe(error, delegate.trace)) }
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        guard status == 200 else { throw MacLinkError.http(status, String(decoding: data.prefix(200), as: UTF8.self)) }
+        return data
+    }
+
     private static func derFromPEM(_ pem: String) -> Data? {
         let b64 = pem.split(separator: "\n").filter { !$0.hasPrefix("-----") }.joined()
         return Data(base64Encoded: b64)
