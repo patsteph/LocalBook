@@ -131,16 +131,24 @@ final class LibraryModel {
         guard engine == nil else { return }
         do {
             searchState = .preparing("Search model…")
+            var t = Date()
+            func lap(_ what: String) { SoakTrace.log("startup: \(what) in \(String(format: "%.1f", Date().timeIntervalSince(t))) s"); t = Date() }
             let location = try await EmbeddingModelStore.prepare { _ in }
+            lap("search files checked")
             let e = try EmbeddingGemma2Engine(location: location)
             searchState = .preparing("Warming up (first time only)…")
             _ = try await e.warmUp()
+            lap("search model loaded")
             searchState = .preparing("Tokenizer…")
             tokenizer = try await AutoTokenizer.from(pretrained: LibrarySync.expectedModel)
+            lap("tokenizer loaded")
             engine = e
-            searchState = .ready
-        } catch { searchState = .failed(error.localizedDescription) }
+            searchState = .preparing("Re-ranker…")          // a question waits for the re-ranker, or its passages would be ordered worse
+        } catch { searchState = .failed(error.localizedDescription); return }
+        let t0 = Date()
         await prepareReranker()
+        SoakTrace.log("startup: reranker ready in \(String(format: "%.1f", Date().timeIntervalSince(t0))) s")
+        searchState = .ready
     }
 
     /// Load the Core ML reranker (the Mac's own model) and check it against scores the Mac produced.

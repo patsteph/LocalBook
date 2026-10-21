@@ -54,9 +54,15 @@ actor EmbeddingGemma2Engine {
 
     /// Load every length bucket up front. The first load on a device compiles each function
     /// for the Neural Engine (minutes, once); Core ML caches it afterwards.
-    func warmUp() throws -> TimeInterval {
+    /// Questions are short, so only the small lengths are loaded at launch; longer ones (a pasted note, a long
+    /// passage) load the first time they are needed.
+    func warmUp(buckets: [Int] = [32, 48, 64]) throws -> TimeInterval {
         let start = Date()
-        for s in Self.buckets { _ = try function(for: s) }
+        for s in buckets {
+            let t = Date()
+            _ = try function(for: s)
+            SoakTrace.log("startup: search length \(s) loaded in \(String(format: "%.1f", Date().timeIntervalSince(t))) s")
+        }
         return Date().timeIntervalSince(start)
     }
 
