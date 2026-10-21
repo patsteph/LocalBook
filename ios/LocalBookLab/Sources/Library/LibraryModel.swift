@@ -411,9 +411,10 @@ final class LibraryModel {
     /// recipe has been synced, otherwise the short built-in fallback.
     func generationSetup(question: String, hits: [LibraryHit], personal: PersonalContext? = nil, withEntityContext: Bool = true) -> (instructions: String, prompt: String, params: GenerateParameters, clean: (String, Bool) -> String) {
         if let r = recipe {
-            return (r.systemPrompt(for: question, personal: personal),
+            let length = AnswerLength.current
+            return (r.systemPrompt(for: question, personal: personal, lengthWords: length.words),
                     r.userPrompt(question: question, passages: hits.map(\.text), suffix: withEntityContext ? r.contextSuffix(question: question, personal: personal) : ""),
-                    r.generateParameters,
+                    r.parameters(maxTokens: length.maxTokens),
                     { text, cutOff in
                         let fixed = r.fixCitations(r.clean(text), count: hits.count)
                         return cutOff ? r.trimUnfinished(fixed) : fixed
@@ -614,4 +615,15 @@ private final class AnswerCheck: @unchecked Sendable {
     private var outcome: Bool?
     func finish(_ ok: Bool) { lock.lock(); outcome = ok; lock.unlock() }
     var value: Bool? { lock.lock(); defer { lock.unlock() }; return outcome }
+}
+
+/// How long the phone's answers may be. The Mac's own answers run about 200-300 words; the phone's model is wordier, so
+/// the length is asked for in the prompt and enough tokens are allowed for it to finish its last sentence.
+enum AnswerLength: String, CaseIterable, Identifiable {
+    case short, standard, detailed
+    var id: String { rawValue }
+    var label: String { switch self { case .short: "Short"; case .standard: "Standard"; case .detailed: "Detailed" } }
+    var words: Int { switch self { case .short: 200; case .standard: 350; case .detailed: 500 } }
+    var maxTokens: Int { Int(Double(words) * 1.9) + 60 }
+    static var current: AnswerLength { AnswerLength(rawValue: UserDefaults.standard.string(forKey: "answerLength") ?? "") ?? .standard }
 }

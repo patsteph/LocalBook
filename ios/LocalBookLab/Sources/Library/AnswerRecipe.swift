@@ -150,7 +150,7 @@ struct AnswerRecipe: Codable, Sendable {
 
     // MARK: prompts (rag_generation.generate_answer), without the user's profile and memory
 
-    func systemPrompt(for question: String, personal: PersonalContext? = nil) -> String {
+    func systemPrompt(for question: String, personal: PersonalContext? = nil, lengthWords: Int? = nil) -> String {
         let base = systemPrompts[classify(question)] ?? systemPrompts["synthesis"] ?? ""
         var parts: [String] = []
         if let p = personal {
@@ -162,7 +162,9 @@ struct AnswerRecipe: Codable, Sendable {
             let hint = formatHint(question)
             if !hint.isEmpty { parts.append(hint) }
         }
-        if let hint = generation.lengthHint, !hint.isEmpty { parts.append(hint) }
+        if let words = lengthWords {
+            parts.append("Keep the whole answer under \(words) words and finish every sentence.")      // the user's chosen length
+        } else if let hint = generation.lengthHint, !hint.isEmpty { parts.append(hint) }
         return parts.joined(separator: "\n\n")
     }
 
@@ -173,8 +175,10 @@ struct AnswerRecipe: Codable, Sendable {
         return userPrompt.replacingOccurrences(of: "{context}", with: context).replacingOccurrences(of: "{question}", with: question)
     }
 
-    var generateParameters: GenerateParameters {
-        var p = GenerateParameters(maxTokens: generation.maxTokens, temperature: generation.temperature)
+    var generateParameters: GenerateParameters { parameters(maxTokens: nil) }
+
+    func parameters(maxTokens: Int?) -> GenerateParameters {
+        var p = GenerateParameters(maxTokens: maxTokens ?? generation.maxTokens, temperature: generation.temperature)
         p.topP = generation.topP
         p.repetitionPenalty = generation.repetitionPenalty
         p.repetitionContextSize = generation.repetitionContextSize

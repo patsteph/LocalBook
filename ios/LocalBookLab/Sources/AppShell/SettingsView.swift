@@ -4,6 +4,7 @@ struct SettingsView: View {
     let library: LibraryModel
     let onForget: () -> Void
     @State private var confirmForget = false
+    @State private var length = AnswerLength.current.rawValue
     @State private var stoppable = UserDefaults.standard.bool(forKey: "stoppablePrefill")
 
     var body: some View {
@@ -25,6 +26,15 @@ struct SettingsView: View {
                     Text("Questions are searched and answered on this phone. Nothing about them is sent to your Mac or anywhere else. The library is a copy of what your Mac chose to share; keep a notebook on one device only, on your Mac, to stop it arriving.")
                         .font(.footnote)
                 } header: { Text("Privacy") }
+                Section {
+                    Picker("Answer length", selection: $length) {
+                        ForEach(AnswerLength.allCases) { Text($0.label).tag($0.rawValue) }
+                    }
+                    .pickerStyle(.segmented)
+                    .onChange(of: length) { _, v in UserDefaults.standard.set(v, forKey: "answerLength") }
+                } header: { Text("Answers") } footer: {
+                    Text("Short ≈ 200 words, Standard ≈ 350, Detailed ≈ 500. Longer answers take longer to write.")
+                }
                 Section {
                     Toggle("Stop safely when the screen locks", isOn: $stoppable)
                         .onChange(of: stoppable) { _, on in
