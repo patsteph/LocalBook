@@ -51,6 +51,9 @@ struct SettingsView: View {
                 Section("About") {
                     Text(library.recipeLine).font(.footnote).foregroundStyle(.secondary)
                     Text(library.rerankerLine).font(.footnote).foregroundStyle(.secondary)
+                    if FileManager.default.fileExists(atPath: SoakTrace.url.path) {
+                        ShareLink("Share diagnostics (startup and event log)", item: SoakTrace.url)
+                    }
                     LabeledContent("Version", value: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "—")
                 }
             }
