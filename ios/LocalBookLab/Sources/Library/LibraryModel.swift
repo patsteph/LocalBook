@@ -20,6 +20,12 @@ final class LibraryModel {
     private(set) var searchState: SearchState = .notReady
     enum ModelState: Equatable { case idle, loading, ready, failed(String) }
     private(set) var answerModelState: ModelState = .idle
+    /// Experimental: read prompts in small chunks that stop when the screen locks (StoppableLM). OFF by default — the first
+    /// phone test of it ended in a hot, unstable phone, so it stays out until it has been proven in a controlled test.
+    var useStoppablePrefill: Bool {
+        get { UserDefaults.standard.bool(forKey: "stoppablePrefill") }
+        set { UserDefaults.standard.set(newValue, forKey: "stoppablePrefill") }
+    }
     private(set) var notebooks: [LibraryNotebookInfo] = []
     private(set) var chunkCount = 0
     private(set) var lastSyncLine = "Never synced"
@@ -269,22 +275,31 @@ final class LibraryModel {
         guard answerModelState != .loading else { return }
         answerModelState = .loading
         do {
-            SoakTrace.log("answer model load begins")
+            SoakTrace.log("answer model load begins (stoppable prefill: \(useStoppablePrefill ? "on" : "off"))")
             Memory.cacheLimit = 64 * 1024 * 1024
             let plain = try await #huggingFaceLoadModelContainer(configuration: LLMRegistry.gemma4_e4b_it_4bit)
-            let wrapped = await StoppableLM.wrap(plain)
-            if await Self.producesAnAnswer(wrapped) {
-                gemma = wrapped
-                SoakTrace.log("answer model ready (stoppable prompt reading verified)")
+            if useStoppablePrefill {
+                let wrapped = await StoppableLM.wrap(plain)
+                if await Self.producesAnAnswer(wrapped) { gemma = wrapped; SoakTrace.log("answer model ready (stoppable prompt reading verified)") }
+                else { gemma = plain; SoakTrace.log("answer model ready — stoppable wrapper REJECTED; using the plain model") }
             } else {
                 gemma = plain
-                SoakTrace.log("answer model ready — stoppable wrapper REJECTED (no answer in time); using the plain model")
+                SoakTrace.log("answer model ready (plain)")
             }
             answerModelState = .ready
         } catch {
             answerModelState = .failed(error.localizedDescription)
             SoakTrace.log("answer model failed: \(error.localizedDescription)")
         }
+    }
+
+    /// Switch the experimental setting: drop the loaded model and load it again the new way.
+    func reloadAnswerModel() async {
+        stopAnswer()
+        gemma = nil
+        answerModelState = .idle
+        Memory.clearCache()
+        await prepareAnswerModel()
     }
 
     /// A tiny real generation: proves the model works and warms the GPU kernels so the first question is quick.
@@ -300,6 +315,14 @@ final class LibraryModel {
             try? await Task.sleep(for: .seconds(1))
         }
         return false
+    }
+
+    /// The phone is getting hot: stop generating rather than push it. Called when the thermal state changes.
+    func thermalCheck() {
+        let state = ProcessInfo.processInfo.thermalState
+        guard state == .serious || state == .critical else { return }
+        SoakTrace.log("THERMAL \(state == .critical ? "critical" : "serious") — stopping the answer")
+        if answering { stopAnswer(); answerStatus = "Stopped — the phone is hot. Let it cool, then ask again." }
     }
 
     func stopAnswer() { generation?.cancel() }
@@ -364,7 +387,7 @@ final class LibraryModel {
         if gemma == nil {
             SoakTrace.log("answer model load begins")
             Memory.cacheLimit = 64 * 1024 * 1024
-            gemma = await StoppableLM.wrap(try await #huggingFaceLoadModelContainer(configuration: LLMRegistry.gemma4_e4b_it_4bit))
+            gemma = try await #huggingFaceLoadModelContainer(configuration: LLMRegistry.gemma4_e4b_it_4bit)
             SoakTrace.log("answer model load ends")
         }
         guard let gemma else { throw LibraryError.badResponse("answer model not loaded") }
@@ -511,7 +534,7 @@ final class LibraryModel {
             if gemma == nil {
                 answerStatus = "Loading the answer model (4 GB)…"
                 Memory.cacheLimit = 64 * 1024 * 1024
-                gemma = await StoppableLM.wrap(try await #huggingFaceLoadModelContainer(configuration: LLMRegistry.gemma4_e4b_it_4bit))
+                gemma = try await #huggingFaceLoadModelContainer(configuration: LLMRegistry.gemma4_e4b_it_4bit)
             }
             guard let gemma else { return }
             guard GPUGuard.canStart else { answerStatus = "Open the app and ask again — answers can't run while the screen is off."; return }

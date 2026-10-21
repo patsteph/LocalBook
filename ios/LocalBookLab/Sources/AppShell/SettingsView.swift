@@ -4,6 +4,7 @@ struct SettingsView: View {
     let library: LibraryModel
     let onForget: () -> Void
     @State private var confirmForget = false
+    @State private var stoppable = UserDefaults.standard.bool(forKey: "stoppablePrefill")
 
     var body: some View {
         NavigationStack {
@@ -24,6 +25,15 @@ struct SettingsView: View {
                     Text("Questions are searched and answered on this phone. Nothing about them is sent to your Mac or anywhere else. The library is a copy of what your Mac chose to share; keep a notebook on one device only, on your Mac, to stop it arriving.")
                         .font(.footnote)
                 } header: { Text("Privacy") }
+                Section {
+                    Toggle("Stop safely when the screen locks", isOn: $stoppable)
+                        .onChange(of: stoppable) { _, on in
+                            library.useStoppablePrefill = on
+                            Task { await library.reloadAnswerModel() }
+                        }
+                } header: { Text("Experimental") } footer: {
+                    Text("Off is the proven setting. On reads each question in small steps so a lock can stop it cleanly; it is still being tested, and changing it reloads the answer model.")
+                }
                 Section("About") {
                     Text(library.recipeLine).font(.footnote).foregroundStyle(.secondary)
                     Text(library.rerankerLine).font(.footnote).foregroundStyle(.secondary)
