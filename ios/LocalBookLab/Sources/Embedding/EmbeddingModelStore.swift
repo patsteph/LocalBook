@@ -27,6 +27,12 @@ enum EmbeddingModelStore {
     static func prepare(progress: @escaping @Sendable (Double) -> Void) async throws -> Location {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
 
+        // Already downloaded and compiled: skip the Hub check (about a second at every launch).
+        let knownTable = root.appending(path: "hub/models/\(repo)/\(tableName)")
+        if FileManager.default.fileExists(atPath: compiledURL.path), FileManager.default.fileExists(atPath: knownTable.path) {
+            try? FileManager.default.removeItem(at: root.appending(path: "hub/models/\(repo)/\(packageName)"))   // an earlier build kept this copy
+            return Location(compiledModel: compiledURL, tokenTable: knownTable)
+        }
         let hub = HubApi(downloadBase: root.appending(path: "hub", directoryHint: .isDirectory))
         let snapshot = try await hub.snapshot(
             from: repo,
@@ -48,6 +54,7 @@ enum EmbeddingModelStore {
             let compiled = try await MLModel.compileModel(at: package)
             try? FileManager.default.removeItem(at: compiledURL)
             try FileManager.default.moveItem(at: compiled, to: compiledURL)
+            try? FileManager.default.removeItem(at: package)         // the compiled copy is all that is used: frees ~270 MB
         }
         return Location(compiledModel: compiledURL, tokenTable: table)
     }
@@ -84,6 +91,7 @@ enum EmbeddingModelStore {
         try FileManager.default.moveItem(at: compiled, to: compiledVisionURL)
         try? FileManager.default.removeItem(at: visionTableURL)
         try FileManager.default.copyItem(at: table, to: visionTableURL)
+        try? FileManager.default.removeItem(at: package)                  // only the compiled copy is used
         return VisionLocation(compiledModel: compiledVisionURL, positions: visionTableURL)
     }
 
