@@ -216,6 +216,58 @@ actor LibraryStore {
         return out
     }
 
+    // MARK: notes made on this phone (source ids start with LocalNotes.prefix; sync never touches them)
+
+    struct LocalNote: Sendable, Identifiable { let id: String; let notebookId: String; let title: String; let text: String; let kind: String }
+
+    func addLocalNote(notebook: String, sourceId: String, title: String, kind: String, chunks: [LibraryChunk], hash: String) throws {
+        dropMatrix()
+        try exec("BEGIN IMMEDIATE")
+        do {
+            let insert = try statement("""
+                INSERT OR REPLACE INTO chunks(notebook_id, source_id, chunk_index, text, summary, filename, source_type, vector)
+                VALUES (?,?,?,?,?,?,?,?)
+                """)
+            defer { sqlite3_finalize(insert) }
+            for c in chunks {
+                sqlite3_reset(insert)
+                bind(insert, 1, c.notebookId); bind(insert, 2, c.sourceId)
+                sqlite3_bind_int64(insert, 3, Int64(c.chunkIndex))
+                bind(insert, 4, c.text); sqlite3_bind_int(insert, 5, 0)
+                bind(insert, 6, c.filename); bind(insert, 7, kind)
+                c.vector.withUnsafeBytes { sqlite3_bind_blob(insert, 8, $0.baseAddress, Int32($0.count), Self.transient) }
+                guard sqlite3_step(insert) == SQLITE_DONE else { throw LibraryError.sqlite(String(cString: sqlite3_errmsg(db))) }
+            }
+            let s = try statement("INSERT OR REPLACE INTO sources(notebook_id, source_id, hash) VALUES (?,?,?)")
+            bind(s, 1, notebook); bind(s, 2, sourceId); bind(s, 3, hash); sqlite3_step(s); sqlite3_finalize(s)
+            try exec("COMMIT")
+        } catch { try? exec("ROLLBACK"); throw error }
+    }
+
+    func localNotes() -> [LocalNote] {
+        guard let s = try? statement("""
+            SELECT notebook_id, source_id, filename, GROUP_CONCAT(text, char(10)), MIN(source_type) FROM
+              (SELECT * FROM chunks WHERE source_id LIKE 'local:%' ORDER BY notebook_id, source_id, chunk_index)
+            GROUP BY notebook_id, source_id ORDER BY source_id DESC
+            """) else { return [] }
+        defer { sqlite3_finalize(s) }
+        var out: [LocalNote] = []
+        while sqlite3_step(s) == SQLITE_ROW {
+            out.append(.init(id: String(cString: sqlite3_column_text(s, 1)), notebookId: String(cString: sqlite3_column_text(s, 0)),
+                             title: String(cString: sqlite3_column_text(s, 2)), text: String(cString: sqlite3_column_text(s, 3)),
+                             kind: String(cString: sqlite3_column_text(s, 4))))
+        }
+        return out
+    }
+
+    func removeLocalNote(notebook: String, sourceId: String) throws {
+        dropMatrix()
+        for t in ["chunks", "sources"] {
+            let s = try statement("DELETE FROM \(t) WHERE notebook_id=? AND source_id=?")
+            bind(s, 1, notebook); bind(s, 2, sourceId); sqlite3_step(s); sqlite3_finalize(s)
+        }
+    }
+
     func chunkCount() -> Int {
         guard let s = try? statement("SELECT COUNT(*) FROM chunks") else { return 0 }
         defer { sqlite3_finalize(s) }

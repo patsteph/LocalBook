@@ -21,6 +21,7 @@ struct SettingsView: View {
                 Section("On this phone") {
                     LabeledContent("Notebooks", value: "\(library.notebooks.count)")
                     LabeledContent("Passages", value: "\(library.chunkCount)")
+                    NavigationLink("My notes") { MyNotesView(library: library) }
                     Text(library.lastSyncLine).font(.footnote).foregroundStyle(.secondary)
                 }
                 Section {
@@ -61,7 +62,7 @@ struct SettingsView: View {
                     }
                 }
             } message: {
-                Text("The copy of your library on this phone is deleted\(freed.isEmpty ? "" : ", freeing about \(freed)"). You can pair again any time.")
+                Text("The copy of your library on this phone is deleted, including any notes you made here, which are not on your Mac\(freed.isEmpty ? "" : ", freeing about \(freed)"). You can pair again any time.")
             }
         }
     }

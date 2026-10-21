@@ -94,7 +94,7 @@ enum LibrarySync {
             let remote = try await call(mac, "/phone/library/sources", ["notebook_id": nb.id], as: Sources.self, bytes: &sum.bytes)
             let have = await store.sourceHashes(notebook: nb.id)
             let remoteHashes = Dictionary(uniqueKeysWithValues: remote.sources.map { ($0.sourceId, $0.hash) })
-            let removed = have.keys.filter { remoteHashes[$0] == nil }
+            let removed = have.keys.filter { remoteHashes[$0] == nil && !$0.hasPrefix(LocalNotes.prefix) }   // notes made on this phone are not the Mac's to remove
             let resend = remote.sources.filter { have[$0.sourceId] != $0.hash }.map(\.sourceId)
             sum.sourcesRemoved += removed.count
             var rows: [LibraryChunk] = []

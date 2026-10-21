@@ -189,6 +189,9 @@ targets:
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
         NSLocalNetworkUsageDescription: LocalBook finds and syncs with your Mac on this network.
+        NSMicrophoneUsageDescription: LocalBook listens when you dictate a note.
+        NSSpeechRecognitionUsageDescription: LocalBook turns your dictation into text, on this phone where possible.
+        NSCameraUsageDescription: LocalBook photographs pages and whiteboards so the text can be added to a notebook.
         NSBonjourServices:
           - _localbook._tcp
         # Lets a hang-diagnosis trace (soak-trace.txt) be read from Files.
