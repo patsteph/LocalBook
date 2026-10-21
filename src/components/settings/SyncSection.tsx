@@ -11,7 +11,7 @@ import { EmbeddingSwitchPanel } from '../llm/EmbeddingSwitchPanel';
  *   1. header    one switch + one status line
  *   2. devices   everything paired (Macs and phones) as one list; address/port on hover only;
  *                pairing offers nearby devices with a single button
- *   3. what syncs  notebooks, with the per-notebook "on phones" switch
+ *   3. what syncs  notebooks, each with a switch; off = kept on this Mac only (no other device gets it)
  *   4. footer    what has synced, when, when next, and anything that needs attention
  *
  * Everything that is rarely needed (which Mac collects, conflicts, clean-up, backup folder) sits under
@@ -56,7 +56,7 @@ type Status = {
     } | null;
 };
 type Conflict = { id: string; tbl: string; pk?: string; field: string; kind: string; kept_value: any; other_value: any; created_at: string };
-type PhoneNotebook = { id: string; title: string; on_phone: boolean };
+type SyncNotebook = { id: string; title: string; syncs: boolean };
 
 function ago(t?: number | null): string {
     if (!t) return 'never';
@@ -98,7 +98,7 @@ export function SyncSection() {
     const [conflicts, setConflicts] = useState<Conflict[] | null>(null);
     const [found, setFound] = useState<FoundMac[] | null>(null);
     const [syncing, setSyncing] = useState(false);
-    const [phoneNotebooks, setPhoneNotebooks] = useState<PhoneNotebook[] | null>(null);
+    const [notebooks, setNotebooks] = useState<SyncNotebook[] | null>(null);
     const [menuFor, setMenuFor] = useState<string | null>(null);
     const [detailsFor, setDetailsFor] = useState<string | null>(null);
     const [advancedOpen, setAdvancedOpen] = useState(false);
@@ -143,13 +143,13 @@ export function SyncSection() {
     }, []);
     useEffect(() => { if (st?.enabled) void discover(); }, [st?.enabled, discover]);
 
-    const loadPhoneNotebooks = useCallback(async () => {
+    const loadNotebooks = useCallback(async () => {
         try {
-            const { data } = await api.get<{ notebooks: PhoneNotebook[] }>('/sync/phones/library');
-            setPhoneNotebooks(data.notebooks);
-        } catch { setPhoneNotebooks(null); }
+            const { data } = await api.get<{ notebooks: SyncNotebook[] }>('/sync/notebooks');
+            setNotebooks(data.notebooks);
+        } catch { setNotebooks(null); }
     }, []);
-    useEffect(() => { if (st?.enabled) void loadPhoneNotebooks(); }, [st?.enabled, loadPhoneNotebooks]);
+    useEffect(() => { if (st?.enabled) void loadNotebooks(); }, [st?.enabled, loadNotebooks]);
 
     const run = async (label: string, fn: () => Promise<any>) => {
         setBusy(label); setError(null);
@@ -158,11 +158,12 @@ export function SyncSection() {
         finally { setBusy(null); }
     };
 
-    const togglePhoneNotebook = (id: string, onPhone: boolean) => run(`phone-nb-${id}`, async () => {
-        const next = (phoneNotebooks ?? []).map((n) => (n.id === id ? { ...n, on_phone: onPhone } : n));
-        const { data } = await api.post<{ notebooks: PhoneNotebook[] }>(
-            '/sync/phones/library', { excluded: next.filter((n) => !n.on_phone).map((n) => n.id) });
-        setPhoneNotebooks(data.notebooks);
+    // Off = this notebook stays on this Mac: it syncs with no other device (Mac or phone).
+    const toggleNotebook = (id: string, syncs: boolean) => run(`nb-${id}`, async () => {
+        const next = (notebooks ?? []).map((n) => (n.id === id ? { ...n, syncs } : n));
+        const { data } = await api.post<{ notebooks: SyncNotebook[] }>(
+            '/sync/notebooks', { keep_local: next.filter((n) => !n.syncs).map((n) => n.id) });
+        setNotebooks(data.notebooks);
     });
 
     const turnOn = () => run('enable', async () => {
@@ -236,8 +237,8 @@ export function SyncSection() {
             {!st.enabled && (
                 <section className={card}>
                     <p className="text-gray-300">
-                        Keeps your notebooks, sources, notes and memory the same on your Macs, and lets your iPhone search them —
-                        directly between your devices on your network, encrypted, nothing in the cloud.
+                        Keeps your notebooks, sources, notes and memory the same across your devices — directly between them
+                        on your network, encrypted, nothing in the cloud. You choose which notebooks stay on this Mac only.
                     </p>
                     {!st.backup_destination && (
                         <div className="space-y-2">
@@ -433,22 +434,22 @@ export function SyncSection() {
                     </section>
 
                     {/* ── 3. what syncs ── */}
-                    {phoneNotebooks && phoneNotebooks.length > 0 && (
+                    {notebooks && notebooks.length > 0 && (
                         <section className={card}>
                             <div>
                                 <h3 className={zoneTitle}>What syncs</h3>
                                 <p className="mt-1 text-xs text-gray-500">
-                                    All notebooks sync between your Macs. The switch decides which ones your phones can read — new notebooks start on.
+                                    Turn a notebook off to keep it on this Mac only — it won't sync with any other device.
+                                    New notebooks sync. Devices that already have a copy keep it.
                                 </p>
                             </div>
                             <ul className="divide-y divide-gray-800">
-                                {phoneNotebooks.map((n) => (
+                                {notebooks.map((n) => (
                                     <li key={n.id} className="flex items-center justify-between gap-3 py-2">
                                         <span className="truncate text-gray-200">{n.title}</span>
                                         <span className="flex items-center gap-2 text-xs text-gray-400">
-                                            <Smartphone size={13} />
-                                            {n.on_phone ? 'On phones' : 'Kept off phones'}
-                                            <Switch on={n.on_phone} disabled={!!busy} label={`${n.title} on phones`} onChange={(v) => void togglePhoneNotebook(n.id, v)} />
+                                            {n.syncs ? 'Syncs' : 'This Mac only'}
+                                            <Switch on={n.syncs} disabled={!!busy} label={`Sync ${n.title}`} onChange={(v) => void toggleNotebook(n.id, v)} />
                                         </span>
                                     </li>
                                 ))}

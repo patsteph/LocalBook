@@ -144,6 +144,27 @@ async def set_phone_library(req: PhoneLibraryRequest):
     return {"notebooks": phone_library.settings_view()}
 
 
+@router.get("/notebooks")
+async def sync_notebooks():
+    """Every notebook and whether it syncs with other devices (off = kept on this Mac only)."""
+    from services.sync import phone_library
+    return {"notebooks": [{"id": n["id"], "title": n["title"], "syncs": n["on_phone"]}
+                          for n in phone_library.settings_view()]}
+
+
+class SyncNotebooksRequest(BaseModel):
+    keep_local: list[str]
+
+
+@router.post("/notebooks")
+async def set_sync_notebooks(req: SyncNotebooksRequest):
+    """Set which notebooks stay on this Mac only. Everything else syncs with every paired device."""
+    from services.sync import phone_library
+    phone_library.set_excluded(req.keep_local)
+    return {"notebooks": [{"id": n["id"], "title": n["title"], "syncs": n["on_phone"]}
+                          for n in phone_library.settings_view()]}
+
+
 @router.post("/phones/{device_id}/revoke")
 async def revoke_phone(device_id: str):
     return await _call(_svc().revoke_phone(device_id))

@@ -38,15 +38,14 @@ _cache_lock = threading.Lock()
 
 
 def excluded() -> List[str]:
-    from services.sync import store
-    return list(store.get(EXCLUDED_KEY, []) or [])
+    """Notebooks kept on this Mac only (they reach neither phones nor other Macs). See sync/scope.py."""
+    from services.sync import scope
+    return scope.local_notebooks()
 
 
 def set_excluded(notebook_ids: List[str]) -> List[str]:
-    from services.sync import store
-    clean = sorted({str(i) for i in notebook_ids})
-    store.put(EXCLUDED_KEY, clean)
-    return clean
+    from services.sync import scope
+    return scope.set_local(notebook_ids)["now"]
 
 
 def notebook_titles() -> Dict[str, str]:

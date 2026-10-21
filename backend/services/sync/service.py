@@ -15,7 +15,7 @@ import socket
 import time
 from typing import Any, Dict, List, Optional
 
-from services.sync import embedder_advice, discovery, genesis, identity, indexer, peer, progress, retention, runtime, store
+from services.sync import engine, embedder_advice, discovery, genesis, identity, indexer, peer, progress, retention, runtime, store, scope
 
 logger = logging.getLogger(__name__)
 
@@ -258,6 +258,7 @@ async def sync_with(device_id: str, user_initiated: bool = False, run=None) -> D
     d = _device(device_id)
     if d.get("mode") != "live":
         raise ValueError("preview and apply this Mac first")
+    await asyncio.to_thread(_apply_releases)
     if _busy.get(device_id):
         return {"skipped": "already syncing"}
     _busy[device_id] = True
@@ -298,6 +299,20 @@ async def sync_with(device_id: str, user_initiated: bool = False, run=None) -> D
         raise
     finally:
         _busy.pop(device_id, None)
+
+
+def _apply_releases() -> None:
+    """Notebooks that stopped being "kept on this Mac" re-enter sync: offer their rows again, ask for the peers' again."""
+    ids = scope.take_pending_release()
+    if not ids:
+        return
+    total = 0
+    for db in runtime.DB_FILES:
+        try:
+            total += engine.release(runtime.replica(db), ids)
+        except Exception as exc:
+            logger.warning("[sync] could not re-offer %s in %s: %s", ids, db, exc)
+    logger.info("[sync] %d notebook(s) back in sync; %d rows offered again", len(ids), total)
 
 
 def _local_pending(peer_vv: Dict[str, Dict[str, int]]) -> int:
@@ -519,3 +534,7 @@ def _collector_status() -> Dict[str, Any]:
     from services.sync import roles
     here, why = roles.collects_here()
     return {"chosen": roles.collector(), "here": here, "reason": why}
+
+
+# Keep the engine and the phone endpoints honest about notebooks kept on this Mac.
+scope.install(lambda r: scope.local_notebooks())

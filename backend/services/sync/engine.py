@@ -19,7 +19,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from services.sync import journal, merge, registry
+from services.sync import journal, merge, registry, scope
 from services.sync.hlc import Clock
 
 DATA_PREFIX = "@data/"
@@ -240,10 +240,16 @@ def export(r: Replica, peer_vv: Dict[str, int], limit: int = 500) -> Dict[str, A
     entries.sort(key=lambda e: (e[2], e[3]))
     page, more = entries[:limit], len(entries) > limit
     versions = []
+    block = scope.blocked(r)
+    seen: Dict[str, int] = {}                 # how far this page looked, per origin — skipped rows included
     for tbl, pk, origin, oseq in page:
+        seen[origin] = max(seen.get(origin, 0), int(oseq))
         t = registry.table(r.db, tbl)
         meta = _meta(r, tbl, pk)
         row = _read_row(r, t, json.loads(pk), journal.synced_columns(r.conn, t))
+        if block and row is not None and scope.touches(
+                block, scope.notebooks_of(r.db, tbl, json.loads(pk), t.pk, lambda c, _row=row: _row.get(c))):
+            continue                          # kept on this Mac: never leaves it
         state = {}
         for name, reg in meta.items():
             if name == merge.DEL:
@@ -253,7 +259,7 @@ def export(r: Replica, peer_vv: Dict[str, int], limit: int = 500) -> Dict[str, A
             else:
                 state[name] = {"v": None, "nv": True, "c": reg["c"], "h": reg["h"]}
         versions.append({"tbl": tbl, "pk": pk, "origin": origin, "oseq": oseq, "state": state})
-    return {"versions": versions, "more": more, "remaining": len(entries),
+    return {"versions": versions, "more": more, "remaining": len(entries), "seen": seen,
             "vv": vv(r.conn) if not more else {}}
 
 
@@ -306,6 +312,7 @@ def apply(r: Replica, page: Dict[str, Any], *, dry_run: bool = False) -> Dict[st
         order = {t.name: i for i, t in enumerate(registry.tables(r.db))}
         versions = sorted(page.get("versions", []), key=lambda v: order.get(v["tbl"], 999))
         max_seen: Dict[str, int] = {}
+        block = scope.blocked(r)
         for v in versions:
             r.clock.observe(max((reg["c"] for reg in v["state"].values()), default=None))
             max_seen[v["origin"]] = max(max_seen.get(v["origin"], 0), int(v["oseq"]))
@@ -313,7 +320,13 @@ def apply(r: Replica, page: Dict[str, Any], *, dry_run: bool = False) -> Dict[st
                 t = registry.table(r.db, v["tbl"])
             except KeyError:
                 continue
+            if block and scope.touches(block, scope.notebooks_of(
+                    r.db, v["tbl"], json.loads(v["pk"]), t.pk,
+                    lambda c, _st=v["state"]: merge.decode(_st[c]["v"]) if c in _st and not _st[c].get("nv") else None)):
+                continue                      # kept on this Mac: a peer's copy is not taken in
             _apply_one(r, t, v, report)
+        for origin, seq in (page.get("seen") or {}).items():
+            max_seen[origin] = max(max_seen.get(origin, 0), int(seq))
         after = conn.execute("SELECT COALESCE(MAX(seq), 0) FROM _changes").fetchone()[0]
         conn.execute("INSERT OR IGNORE INTO _remote_applied(seq) "
                      "SELECT seq FROM _changes WHERE seq > ? AND seq <= ?", (before, after))
@@ -474,3 +487,28 @@ def _record_conflict(conn, c: Dict[str, Any]) -> None:
         (c["id"], c["tbl"], c["pk"], c["field"], c.get("kind", "concurrent-edit"),
          json.dumps(c["kept_value"]), json.dumps(c["other_value"]),
          c["kept_clock"], c["other_clock"]))
+
+
+# ── taking a notebook off the "kept on this Mac" list ────────────────────────
+
+
+def release(r: Replica, notebook_ids: List[str]) -> int:
+    """These notebooks may sync again. Offer this Mac's copy anew (a fresh log entry per row) and forget what was
+    seen of the peers (so everything they hold arrives once more). Returns rows re-offered."""
+    ship(r)
+    ids = sorted(set(notebook_ids))
+    marks = ",".join("?" * len(ids))
+    n = 0
+    with _txn(r.conn):
+        for t in registry.tables(r.db):
+            col = "id" if t.name == "notebooks" else scope._COLUMN.get((r.db, t.name), "notebook_id")
+            if col not in journal.columns(r.conn, t.name):
+                continue
+            pk_sql = journal._pk_expr("x", t.pk)
+            rows = r.conn.execute(f'SELECT {pk_sql} FROM "{t.name}" AS x WHERE x."{col}" IN ({marks})', ids).fetchall()
+            for (pk,) in rows:
+                if _meta(r, t.name, pk):
+                    _log(r, t.name, pk, r.device, _next_oseq(r))
+                    n += 1
+        r.conn.execute("DELETE FROM _sync_vv WHERE origin != ?", (r.device,))
+    return n
