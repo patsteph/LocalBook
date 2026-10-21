@@ -4,6 +4,7 @@ struct SettingsView: View {
     let library: LibraryModel
     let onForget: () -> Void
     @State private var confirmForget = false
+    @State private var freed = ""
     @State private var length = AnswerLength.current.rawValue
     @State private var stoppable = UserDefaults.standard.bool(forKey: "stoppablePrefill")
 
@@ -15,7 +16,7 @@ struct SettingsView: View {
                         LabeledContent("Paired with", value: mac.name)
                         LabeledContent("This phone", value: PhoneIdentity.deviceName)
                     }
-                    Button("Remove this Mac and delete the library from this phone", role: .destructive) { confirmForget = true }
+                    Button("Remove this Mac and delete the library from this phone", role: .destructive) { freed = Self.librarySize(); confirmForget = true }
                 }
                 Section("On this phone") {
                     LabeledContent("Notebooks", value: "\(library.notebooks.count)")
@@ -35,14 +36,14 @@ struct SettingsView: View {
                 } header: { Text("Answers") } footer: {
                     Text("Short ≈ 200 words, Standard ≈ 350, Detailed ≈ 500. Longer answers take longer to write.")
                 }
-                Section {
+                DisclosureGroup("Advanced") {
                     Toggle("Stop safely when the screen locks", isOn: $stoppable)
                         .onChange(of: stoppable) { _, on in
                             library.useStoppablePrefill = on
                             Task { await library.reloadAnswerModel() }
                         }
-                } header: { Text("Experimental") } footer: {
-                    Text("Off is the proven setting. On reads each question in small steps so a lock can stop it cleanly; it is still being tested, and changing it reloads the answer model.")
+                    Text("Experimental. Off is the proven setting. On reads each question in small steps so a lock can stop it cleanly; it is still being tested, and changing it reloads the answer model.")
+                        .font(.footnote).foregroundStyle(.secondary)
                 }
                 Section("About") {
                     Text(library.recipeLine).font(.footnote).foregroundStyle(.secondary)
@@ -60,8 +61,17 @@ struct SettingsView: View {
                     }
                 }
             } message: {
-                Text("The copy of your library on this phone is deleted. You can pair again any time.")
+                Text("The copy of your library on this phone is deleted\(freed.isEmpty ? "" : ", freeing about \(freed)"). You can pair again any time.")
             }
         }
+    }
+
+    private static func librarySize() -> String {
+        let dir = LibraryStore.defaultURL().deletingLastPathComponent()
+        var total: Int64 = 0
+        if let files = FileManager.default.enumerator(at: dir, includingPropertiesForKeys: [.fileSizeKey]) {
+            for case let url as URL in files { total += Int64((try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0) }
+        }
+        return total > 0 ? ByteCountFormatter.string(fromByteCount: total, countStyle: .file) : ""
     }
 }

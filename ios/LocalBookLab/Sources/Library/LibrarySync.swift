@@ -13,7 +13,7 @@ enum LibrarySync {
             let modelId: String; let dims: Int; let maxTokens: Int
             let queryTemplate: String; let documentTemplate: String
         }
-        struct Notebook: Decodable { let id: String; let title: String; let section: String?; let sources: Int; let chunks: Int; let digest: String }
+        struct Notebook: Decodable { let id: String; let title: String; let section: String?; let color: String?; let collapsed: Bool?; let sources: Int; let chunks: Int; let digest: String }
         let embedder: Embedder
         let notebooks: [Notebook]
     }
@@ -119,7 +119,7 @@ enum LibrarySync {
                                   chunks: rows, hashes: remoteHashes.filter { resend.contains($0.key) })
         }
         // The desktop's order and sections (the manifest lists notebooks in the order the desktop shows them).
-        try await store.setLayout(manifest.notebooks.enumerated().map { (id: $1.id, position: $0, section: $1.section) })
+        try await store.setLayout(manifest.notebooks.enumerated().map { (id: $1.id, position: $0, section: $1.section, color: $1.color, collapsed: $1.collapsed ?? false) })
         try await store.setMeta("last_sync", ISO8601DateFormatter().string(from: Date()))
         sum.seconds = Date().timeIntervalSince(started)
         return sum

@@ -7,6 +7,7 @@ struct AskView: View {
     @State private var reader = ReadAloud()
     @State private var waited = 0
     @State private var queued: String?
+    @State private var atBottom = true
     @State private var openSource: SourceRef?
     @State private var length = AnswerLength.current.rawValue
     @State private var finishTick = 0
@@ -17,6 +18,7 @@ struct AskView: View {
     var body: some View {
         @Bindable var model = library
         NavigationStack {
+            ScrollViewReader { proxy in
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     if library.notebooks.isEmpty {
@@ -75,10 +77,27 @@ struct AskView: View {
                             }
                         }
                     }
+                    Color.clear.frame(height: 1).id("bottom")
                 }
                 .padding()
             }
+            .onScrollGeometryChange(for: Bool.self) { g in
+                g.contentOffset.y + g.containerSize.height >= g.contentSize.height - 60
+            } action: { _, now in atBottom = now }
+            .onChange(of: library.answerText) { _, _ in
+                if atBottom && library.answering { proxy.scrollTo("bottom", anchor: .bottom) }
+            }
+            .overlay(alignment: .bottom) {
+                if library.answering && !atBottom {
+                    Button { withAnimation(reduceMotion ? nil : .easeOut) { proxy.scrollTo("bottom", anchor: .bottom) } } label: {
+                        Label("Jump to latest", systemImage: "arrow.down").font(.footnote.weight(.semibold))
+                            .padding(.horizontal, 14).padding(.vertical, 10).background(.regularMaterial, in: Capsule())
+                    }
+                    .padding(.bottom, 8)
+                }
+            }
             .scrollDismissesKeyboard(.interactively)
+            }
             .safeAreaInset(edge: .bottom) { composer }
             .navigationTitle("Ask")
             .navigationBarTitleDisplayMode(.inline)

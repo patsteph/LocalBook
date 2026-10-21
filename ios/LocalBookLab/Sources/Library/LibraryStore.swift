@@ -35,6 +35,8 @@ struct LibraryNotebookInfo: Sendable, Identifiable {
     let digest: String
     let chunks: Int
     var section: String? = nil       // the desktop's section for it, if any
+    var color: String? = nil         // the desktop's notebook color (hex)
+    var sectionCollapsed = false     // whether the desktop shows its section folded
 }
 
 enum LibraryError: LocalizedError {
@@ -120,6 +122,8 @@ actor LibraryStore {
         // The desktop's order and sections for notebooks (older stores lack the columns).
         try? exec("ALTER TABLE notebooks ADD COLUMN position INTEGER NOT NULL DEFAULT 0")
         try? exec("ALTER TABLE notebooks ADD COLUMN section TEXT")
+        try? exec("ALTER TABLE notebooks ADD COLUMN color TEXT")
+        try? exec("ALTER TABLE notebooks ADD COLUMN collapsed INTEGER NOT NULL DEFAULT 0")
     }
 
     // No deinit: the store lives as long as the app, and SQLite closes the file with the process.
@@ -173,7 +177,7 @@ actor LibraryStore {
 
     func notebooks() -> [LibraryNotebookInfo] {
         guard let s = try? statement("""
-            SELECT n.id, n.title, n.digest, (SELECT COUNT(*) FROM chunks c WHERE c.notebook_id = n.id), n.section
+            SELECT n.id, n.title, n.digest, (SELECT COUNT(*) FROM chunks c WHERE c.notebook_id = n.id), n.section, n.color, n.collapsed
             FROM notebooks n ORDER BY n.position, n.title COLLATE NOCASE
             """) else { return [] }
         defer { sqlite3_finalize(s) }
@@ -181,18 +185,22 @@ actor LibraryStore {
         while sqlite3_step(s) == SQLITE_ROW {
             let section = sqlite3_column_type(s, 4) == SQLITE_NULL ? nil : String(cString: sqlite3_column_text(s, 4))
             out.append(.init(id: String(cString: sqlite3_column_text(s, 0)), title: String(cString: sqlite3_column_text(s, 1)),
-                             digest: String(cString: sqlite3_column_text(s, 2)), chunks: Int(sqlite3_column_int64(s, 3)), section: section))
+                             digest: String(cString: sqlite3_column_text(s, 2)), chunks: Int(sqlite3_column_int64(s, 3)), section: section,
+                             color: sqlite3_column_type(s, 5) == SQLITE_NULL ? nil : String(cString: sqlite3_column_text(s, 5)),
+                             sectionCollapsed: sqlite3_column_int(s, 6) != 0))
         }
         return out
     }
 
     /// The desktop's order and sections, as the Mac listed them.
-    func setLayout(_ items: [(id: String, position: Int, section: String?)]) throws {
+    func setLayout(_ items: [(id: String, position: Int, section: String?, color: String?, collapsed: Bool)]) throws {
         for item in items {
-            let s = try statement("UPDATE notebooks SET position=?, section=? WHERE id=?")
+            let s = try statement("UPDATE notebooks SET position=?, section=?, color=?, collapsed=? WHERE id=?")
             sqlite3_bind_int64(s, 1, Int64(item.position))
             if let sec = item.section { bind(s, 2, sec) } else { sqlite3_bind_null(s, 2) }
-            bind(s, 3, item.id)
+            if let c = item.color { bind(s, 3, c) } else { sqlite3_bind_null(s, 3) }
+            sqlite3_bind_int(s, 4, item.collapsed ? 1 : 0)
+            bind(s, 5, item.id)
             sqlite3_step(s); sqlite3_finalize(s)
         }
     }

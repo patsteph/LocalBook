@@ -172,16 +172,16 @@ def notebook_layout() -> List[Dict[str, Any]]:
     path = runtime.data_dir() / runtime.DB_FILES["main"]
     conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=10)
     try:
-        sections = conn.execute("SELECT id, name FROM notebook_sections ORDER BY sort_order, created_at").fetchall()
-        rows = conn.execute("SELECT id, title, section_id FROM notebooks ORDER BY created_at DESC").fetchall()
+        sections = conn.execute("SELECT id, name, collapsed FROM notebook_sections ORDER BY sort_order, created_at").fetchall()
+        rows = conn.execute("SELECT id, title, section_id, color FROM notebooks ORDER BY created_at DESC").fetchall()
     except sqlite3.Error:
         return []
     finally:
         conn.close()
-    names = {sid: name for sid, name in sections}
-    out = [{"id": i, "title": t, "section": None} for i, t, sec in rows if not sec or sec not in names]
-    for sid, name in sections:
-        out += [{"id": i, "title": t, "section": name} for i, t, sec in rows if sec == sid]
+    names = {sid: name for sid, name, _ in sections}
+    out = [{"id": i, "title": t, "section": None, "color": c, "collapsed": False} for i, t, sec, c in rows if not sec or sec not in names]
+    for sid, name, collapsed in sections:
+        out += [{"id": i, "title": t, "section": name, "color": c, "collapsed": bool(collapsed)} for i, t, sec, c in rows if sec == sid]
     return out
 
 
@@ -198,7 +198,8 @@ def manifest() -> Dict[str, Any]:
             continue
         sums = _summaries(table)
         digest = hashlib.sha256("".join(f'{sid}:{s["hash"]};' for sid, s in sorted(sums.items())).encode()).hexdigest()[:24]
-        notebooks.append({"id": nid, "title": title, "section": item["section"], "sources": len(sums),
+        notebooks.append({"id": nid, "title": title, "section": item["section"], "color": item.get("color"),
+                          "collapsed": item.get("collapsed", False), "sources": len(sums),
                           "chunks": sum(s["chunks"] for s in sums.values()), "digest": digest})
     return {"proto": PROTO, "embedder": embedder_key(), "notebooks": notebooks}
 
