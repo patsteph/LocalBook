@@ -54,9 +54,9 @@ actor EmbeddingGemma2Engine {
 
     /// Load every length bucket up front. The first load on a device compiles each function
     /// for the Neural Engine (minutes, once); Core ML caches it afterwards.
-    /// Questions are short, so only the small lengths are loaded at launch; longer ones (a pasted note, a long
+    /// Questions are short, so only the 64-token length is loaded at launch (each length takes about 13 s to load); longer ones (a pasted note, a long
     /// passage) load the first time they are needed.
-    func warmUp(buckets: [Int] = [32, 48, 64]) throws -> TimeInterval {
+    func warmUp(buckets: [Int] = [64]) throws -> TimeInterval {
         let start = Date()
         for s in buckets {
             let t = Date()
@@ -93,7 +93,8 @@ actor EmbeddingGemma2Engine {
         let n = entries.count
         guard n > 0 else { throw LabError.model("empty token list") }
         guard n <= Self.maxTokens else { throw LabError.tooLong(n) }
-        guard let s = Self.buckets.first(where: { $0 >= n }) else { throw LabError.tooLong(n) }
+        // Prefer a length already loaded (each takes ~13 s to load, and padding a short text up costs milliseconds).
+        guard let s = functions.keys.sorted().first(where: { $0 >= n }) ?? Self.buckets.first(where: { $0 >= n }) else { throw LabError.tooLong(n) }
         let rows = table.count / (Self.hidden * 2)
         for e in entries {
             switch e {
