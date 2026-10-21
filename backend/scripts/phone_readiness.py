@@ -33,7 +33,14 @@ for name in sorted(db.table_names()):
     text = sum(len(r["text"] or "") for r in t.search().select(["text"]).limit(rows).to_list())
     try:
         plan = m.plan_table(t, settings.embedding_model)
-        over = len([p for p in plan if p["kind"] != "near"])
+        stuck = [p for p in plan if p["kind"] != "near"]
+        over = len(stuck)
+        for p in stuck[:5]:                       # structure only — never the text itself
+            r = p["row"]
+            longest = max((len(w) for w in (r.get("text") or "").split()), default=0)
+            print(f"      over-limit chunk: {name[9:17]}…  source {str(r.get('source_id'))[:8]}…  chunk {r.get('chunk_index')}  "
+                  f"{p['tokens']} tokens  text={len(r.get('text') or '')} chars  questions={len((r.get('synthetic_questions') or ''))} chars  "
+                  f"longest word={longest} chars  file={str(r.get('filename'))[:40]}")
     except Exception as exc:
         over = -1
         print(f"  (could not plan {name[9:17]}: {exc})")

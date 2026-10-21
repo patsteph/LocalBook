@@ -47,6 +47,19 @@ def _applied(model: str, limit: int) -> bool:
         return False
 
 
+def _fit_questions(row: Dict[str, Any], prof, count: Callable[[str], int]) -> None:
+    """The piece that keeps the original chunk's questions must still fit WITH them. Pieces are cut to leave a
+    fixed room for questions; when the stored questions are longer than that room the row stayed over the limit
+    and was re-split to the same row at every pass. Trim the questions (never the text) until it fits."""
+    from services.embedding_migration import embedded_text
+
+    q = (row.get("synthetic_questions") or "").strip()
+    while q and count(prof.format_document(embedded_text({**row, "synthetic_questions": q}))) + 2 > prof.max_tokens:
+        cut = q[: int(len(q) * 0.8)]
+        q = cut.rsplit(" ", 1)[0].strip() if len(cut) > 20 and " " in cut else ""
+    row["synthetic_questions"] = q
+
+
 def _seen_versions(model: str, limit: int) -> Dict[str, Any]:
     """Table versions the last completed pass covered (empty when the marker is for another embedder/limit or
     predates version tracking — then every table is looked at once)."""
@@ -89,7 +102,10 @@ async def apply_table(db, name: str, plan: List[Dict[str, Any]], model: str, emb
     from services import embedding_profile
     from services.embedding_migration import embedded_text
 
+    from services import token_budget
+
     prof = embedding_profile.for_model(model)
+    count = token_budget.token_counter(model)
     table = db.open_table(name)
     last: Dict[str, int] = {}
     for r in await asyncio.to_thread(lambda: table.to_arrow().to_pylist()):
@@ -105,6 +121,8 @@ async def apply_table(db, name: str, plan: List[Dict[str, Any]], model: str, emb
             row = dict(r)
             row["text"] = piece
             row["synthetic_questions"] = r.get("synthetic_questions", "") if i == 0 else ""
+            if i == 0:
+                _fit_questions(row, prof, count)
             if i > 0:
                 last[r["source_id"]] += 1
                 row["chunk_index"] = last[r["source_id"]]
