@@ -5,6 +5,7 @@ struct AskView: View {
     @FocusState private var focused: Bool
     @State private var showSources = false
     @State private var picking = false
+    @State private var reader = ReadAloud()
     @State private var waited = 0
 
     var body: some View {
@@ -36,6 +37,7 @@ struct AskView: View {
                             if !library.answering, !library.answerStatus.isEmpty {
                                 Text(library.answerStatus).font(.caption2).foregroundStyle(.secondary)
                             }
+                            if !library.answering { actions }
                             sources
                             if !library.followUps.isEmpty {
                                 ForEach(library.followUps, id: \.self) { q in
@@ -83,6 +85,27 @@ struct AskView: View {
         .background(.quaternary, in: RoundedRectangle(cornerRadius: 12))
     }
 
+    @ViewBuilder private var actions: some View {
+        HStack(spacing: 18) {
+            Button { reader.toggle(library.answerText) } label: {
+                switch reader.state {
+                case .preparing: HStack(spacing: 6) { ProgressView().controlSize(.small); Text("Preparing voice…") }
+                case .speaking: Label("Pause", systemImage: "pause.fill")
+                case .paused: Label("Resume", systemImage: "play.fill")
+                default: Label("Listen", systemImage: "speaker.wave.2.fill")
+                }
+            }
+            if reader.isActive {
+                Button { reader.stop() } label: { Label("Stop", systemImage: "stop.fill") }
+                ProgressView(value: reader.fraction).frame(maxWidth: 80)
+            }
+            Spacer()
+            Button { UIPasteboard.general.string = library.answerText } label: { Label("Copy", systemImage: "doc.on.doc") }
+        }
+        .font(.footnote).buttonStyle(.borderless)
+        if case .failed(let why) = reader.state { Text(why).font(.caption).foregroundStyle(.orange) }
+    }
+
     @ViewBuilder private var sources: some View {
         if !library.answerSources.isEmpty {
             DisclosureGroup("Sources (\(library.answerSources.count))", isExpanded: $showSources) {
@@ -119,6 +142,7 @@ struct AskView: View {
 
     private func send() {
         guard ready, !library.answering else { return }
+        reader.stop()
         focused = false
         showSources = false
         Task { await library.ask() }

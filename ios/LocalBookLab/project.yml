@@ -168,6 +168,8 @@ targets:
         product: MLXHuggingFace
       - package: swift-huggingface
         product: HuggingFace
+      - package: FluidAudio
+        product: FluidAudio
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.patsteph.localbook.ios
@@ -190,5 +192,7 @@ targets:
         NSBonjourServices:
           - _localbook._tcp
         # Lets a hang-diagnosis trace (soak-trace.txt) be read from Files.
+        UIBackgroundModes:
+          - audio                      # read-aloud keeps playing with the screen locked
         UIFileSharingEnabled: true
         LSSupportsOpeningDocumentsInPlace: true
