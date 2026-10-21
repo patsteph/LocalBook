@@ -21,6 +21,7 @@ struct RootView: View {
                 let t0 = Date()
                 async let search: Void = {
                     await library.prepareSearch()
+                    await library.loadVisionIfInstalled()
                     SoakTrace.log("startup: search ready after \(String(format: "%.1f", Date().timeIntervalSince(t0))) s")
                 }()
                 async let answers: Void = {

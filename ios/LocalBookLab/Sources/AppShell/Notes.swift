@@ -122,6 +122,7 @@ struct NoteEditor: View {
     @State private var reading = false
     @State private var saving = false
     @State private var fromPhoto = false
+    @State private var photo: (image: CGImage, jpeg: Data, thumb: UIImage)?
     @State private var error: String?
 
     private var notebookTitle: String { library.notebooks.first { $0.id == notebookId }?.title ?? "Notebook" }
@@ -138,6 +139,20 @@ struct NoteEditor: View {
                 } footer: {
                     Text("Saved in “\(notebookTitle)” and searchable straight away. It is sent to your Mac when it is reachable and comes back through sync.")
                 }
+                if let photo {
+                    Section {
+                        HStack(spacing: 12) {
+                            Image(uiImage: photo.thumb).resizable().scaledToFill().frame(width: 72, height: 72).clipShape(RoundedRectangle(cornerRadius: 10))
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Photo attached").font(.subheadline)
+                                Text(library.vision != nil ? "Searchable by what it shows." : "Turn on picture search in Settings to find it by what it shows.")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Button("Remove", role: .destructive) { self.photo = nil }.font(.footnote)
+                        }
+                    }
+                }
                 if reading { Section { HStack { ProgressView(); Text("Reading the photo…").font(.footnote) } } }
                 if let msg = error ?? dictation.failure { Section { Text(msg).font(.footnote).foregroundStyle(.orange) } }
             }
@@ -146,7 +161,7 @@ struct NoteEditor: View {
                 ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dictation.stop(); dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Save") { Task { await save() } }
-                        .disabled(saving || text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        .disabled(saving || (text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && photo == nil))
                 }
                 ToolbarItemGroup(placement: .bottomBar) {
                     Button {
@@ -161,10 +176,14 @@ struct NoteEditor: View {
                 CameraPicker { image in
                     reading = true
                     Task {
+                        let small = image.scaledDown(toLongSide: 1600)
+                        if let cg = small.cgImage, let jpeg = small.jpegData(compressionQuality: 0.8) {
+                            photo = (cg, jpeg, small.scaledDown(toLongSide: 160))
+                            fromPhoto = true
+                        }
                         let found = await PhotoText.read(image)
                         reading = false
-                        if found.isEmpty { error = "No text found in that photo." }
-                        else { fromPhoto = true; text = text.isEmpty ? found : text + "\n\n" + found }
+                        if !found.isEmpty { text = text.isEmpty ? found : text + "\n\n" + found }
                     }
                 }.ignoresSafeArea()
             }
@@ -174,7 +193,8 @@ struct NoteEditor: View {
     private func save() async {
         dictation.stop(); saving = true; defer { saving = false }
         do {
-            try await library.addNote(notebook: notebookId, title: title, text: text, kind: fromPhoto ? "image" : "note")
+            try await library.addNote(notebook: notebookId, title: title, text: text, kind: fromPhoto ? "image" : "note",
+                                      photo: photo.map { ($0.image, $0.jpeg) })
             dismiss()
         } catch { self.error = "Couldn't save: \(error.localizedDescription)" }
     }
@@ -190,11 +210,16 @@ struct MyNotesView: View {
             if let why = library.noteSendProblem { Label(why, systemImage: "wifi.slash").font(.footnote).foregroundStyle(.orange) }
             if notes.isEmpty { Text("No notes yet. Tap New note on the Ask or Notebooks screen.").foregroundStyle(.secondary) }
             ForEach(notes) { n in
+                HStack(alignment: .top, spacing: 10) {
+                    if n.hasPicture, let ui = UIImage(contentsOfFile: LibraryModel.photoURL(n.id).path) {
+                        Image(uiImage: ui.scaledDown(toLongSide: 120)).resizable().scaledToFill().frame(width: 48, height: 48).clipShape(RoundedRectangle(cornerRadius: 8))
+                    }
                 VStack(alignment: .leading, spacing: 2) {
                     Text(n.title).font(.body)
                     Text((library.notebooks.first { $0.id == n.notebookId }?.title ?? "") + (sent.contains(n.id) ? " · sent to your Mac" : " · waiting to send"))
                         .font(.caption).foregroundStyle(.secondary)
                     Text(n.text).font(.footnote).foregroundStyle(.secondary).lineLimit(2)
+                }
                 }
                 .swipeActions { Button("Delete", role: .destructive) { Task { await library.removeNote(n); notes = await library.localNotes() } } }
             }
@@ -206,6 +231,42 @@ struct MyNotesView: View {
             var s: Set<String> = []
             for n in notes where await library.noteSentSourceId(n.id) != nil { s.insert(n.id) }
             sent = s
+        }
+    }
+}
+
+extension UIImage {
+    /// Scaled so the longer side is at most `side` points (pixels at scale 1); the same image if already smaller.
+    func scaledDown(toLongSide side: CGFloat) -> UIImage {
+        let longest = max(size.width, size.height) * scale
+        guard longest > side else { return self }
+        let f = side / longest
+        let target = CGSize(width: size.width * scale * f, height: size.height * scale * f)
+        let format = UIGraphicsImageRendererFormat(); format.scale = 1
+        return UIGraphicsImageRenderer(size: target, format: format).image { _ in draw(in: CGRect(origin: .zero, size: target)) }
+    }
+}
+
+/// Settings: the optional image encoder that lets a typed question find a photo by what it shows.
+struct PictureSearchSection: View {
+    let library: LibraryModel
+    var body: some View {
+        Section {
+            switch library.visionState {
+            case .none:
+                Button("Turn on picture search (\(EmbeddingModelStore.visionDownloadSize))") { Task { await library.installVision() } }
+                    .disabled(library.searchState != .ready)
+            case .downloading(let p):
+                HStack { ProgressView(value: p); Text("\(Int(p * 100))%").font(.footnote) }
+            case .ready:
+                Label("Picture search is on", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
+                Button("Turn off and remove", role: .destructive) { library.removeVision() }
+            case .failed(let why):
+                Text(why).font(.footnote).foregroundStyle(.orange)
+                Button("Try again") { Task { await library.installVision() } }
+            }
+        } header: { Text("Picture search") } footer: {
+            Text("Photos you add to a notebook become findable by what they show, not only by text in them. It downloads once, then works on this phone; nothing about your photos leaves it.")
         }
     }
 }

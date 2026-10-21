@@ -29,6 +29,7 @@ struct SettingsView: View {
                     Text("Questions are searched and answered on this phone. Nothing about them is sent to your Mac or anywhere else. The library is a copy of what your Mac chose to share; keep a notebook on one device only, on your Mac, to stop it arriving.")
                         .font(.footnote)
                 } header: { Text("Privacy") }
+                PictureSearchSection(library: library)
                 Section {
                     Picker("Answer length", selection: $length) {
                         ForEach(AnswerLength.allCases) { Text($0.label).tag($0.rawValue) }

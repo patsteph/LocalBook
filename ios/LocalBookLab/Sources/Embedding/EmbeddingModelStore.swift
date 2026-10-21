@@ -52,6 +52,48 @@ enum EmbeddingModelStore {
         return Location(compiledModel: compiledURL, tokenTable: table)
     }
 
+    // MARK: picture search (the image encoder, fetched only when the user asks for it)
+
+    static let visionPackage = "EmbeddingGemma2Vision.mlpackage"
+    static let positionTable = "position_embeddings.f16"
+    static let visionDownloadSize = "about 295 MB"
+
+    private static var compiledVisionURL: URL { root.appending(path: "EmbeddingGemma2Vision.mlmodelc", directoryHint: .isDirectory) }
+    private static var visionTableURL: URL { root.appending(path: positionTable) }
+
+    static var visionInstalled: Bool {
+        FileManager.default.fileExists(atPath: compiledVisionURL.path) && FileManager.default.fileExists(atPath: visionTableURL.path)
+    }
+
+    struct VisionLocation: Sendable { let compiledModel: URL; let positions: URL }
+
+    static func prepareVision(progress: @escaping @Sendable (Double) -> Void) async throws -> VisionLocation {
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        if visionInstalled { return VisionLocation(compiledModel: compiledVisionURL, positions: visionTableURL) }
+        let hub = HubApi(downloadBase: root.appending(path: "hub", directoryHint: .isDirectory))
+        let snapshot = try await hub.snapshot(from: repo, matching: ["\(visionPackage)/*", positionTable, "config.json"]) { p in
+            progress(p.fractionCompleted)
+        }
+        let package = snapshot.appending(path: visionPackage, directoryHint: .isDirectory)
+        let table = snapshot.appending(path: positionTable)
+        guard FileManager.default.fileExists(atPath: package.path), FileManager.default.fileExists(atPath: table.path) else {
+            throw LabError.model("the image model was not downloaded")
+        }
+        let compiled = try await MLModel.compileModel(at: package)
+        try? FileManager.default.removeItem(at: compiledVisionURL)
+        try FileManager.default.moveItem(at: compiled, to: compiledVisionURL)
+        try? FileManager.default.removeItem(at: visionTableURL)
+        try FileManager.default.copyItem(at: table, to: visionTableURL)
+        return VisionLocation(compiledModel: compiledVisionURL, positions: visionTableURL)
+    }
+
+    static func removeVision() {
+        try? FileManager.default.removeItem(at: compiledVisionURL)
+        try? FileManager.default.removeItem(at: visionTableURL)
+        let hubPackage = root.appending(path: "hub", directoryHint: .isDirectory)
+        try? FileManager.default.removeItem(at: hubPackage.appending(path: "models/\(repo)/\(visionPackage)"))
+    }
+
     static func reset() throws {
         if FileManager.default.fileExists(atPath: root.path) {
             try FileManager.default.removeItem(at: root)

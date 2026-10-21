@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 
 /// Notes (typed, dictated, or read from a photo) made on this phone and kept in a notebook beside the Mac's sources.
@@ -32,12 +33,19 @@ enum LocalNotes {
 }
 
 extension LibraryModel {
+    /// Where a note's picture is kept on this phone.
+    static func photoURL(_ sourceId: String) -> URL {
+        URL.applicationSupportDirectory.appending(path: "LocalBookLab/Photos/\(sourceId.replacingOccurrences(of: ":", with: "_")).jpg")
+    }
+
     /// Add a note to a notebook on this phone. It is searched and cited like any source, straight away.
-    func addNote(notebook: String, title: String, text: String, kind: String = "note") async throws {
+    /// With a picture, the picture is kept and, if picture search is installed, embedded so a typed question can find it.
+    func addNote(notebook: String, title: String, text: String, kind: String = "note", photo: (image: CGImage, jpeg: Data)? = nil) async throws {
         let body = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let store, !body.isEmpty else { return }
-        let name = title.trimmingCharacters(in: .whitespaces).isEmpty
-            ? String(body.prefix(40)).replacingOccurrences(of: "\n", with: " ") : title.trimmingCharacters(in: .whitespaces)
+        guard let store, !body.isEmpty || photo != nil else { return }
+        let cleanTitle = title.trimmingCharacters(in: .whitespaces)
+        let name = !cleanTitle.isEmpty ? cleanTitle
+            : (body.isEmpty ? "Photo" : String(body.prefix(40)).replacingOccurrences(of: "\n", with: " "))
         let id = LocalNotes.prefix + UUID().uuidString.lowercased()
         var chunks: [LibraryChunk] = []
         for (i, piece) in LocalNotes.split(body).enumerated() {
@@ -46,15 +54,57 @@ extension LibraryModel {
             chunks.append(.init(notebookId: notebook, sourceId: id, chunkIndex: i, text: piece, summary: false,
                                 filename: name, sourceType: kind, vector: half.withUnsafeBytes { Data($0) }))
         }
+        if let photo {
+            let url = Self.photoURL(id)
+            try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try photo.jpeg.write(to: url)
+            if let vision, let v = try? await vision.embed(photo.image) {          // picture search: the photo's own vector
+                let half = v.map { Float16($0) }
+                chunks.append(.init(notebookId: notebook, sourceId: id, chunkIndex: LibraryStore.pictureIndex,
+                                    text: body.isEmpty ? "Photo: \(name)" : "Photo: \(name). \(body.prefix(200))", summary: false,
+                                    filename: name, sourceType: "image", vector: half.withUnsafeBytes { Data($0) }))
+            }
+        }
+        guard !chunks.isEmpty else { throw LibraryError.badResponse("Nothing to save: picture search isn't installed and the photo had no text.") }
         try await store.addLocalNote(notebook: notebook, sourceId: id, title: name, kind: kind, chunks: chunks, hash: "local")
         await refresh()
         Task { await flushNotes() }
+    }
+
+    // MARK: picture search (the image encoder)
+
+    /// Load the image encoder if it is already on the phone (no download).
+    func loadVisionIfInstalled() async {
+        guard vision == nil, EmbeddingModelStore.visionInstalled, let engine else { return }
+        do {
+            let loc = try await EmbeddingModelStore.prepareVision { _ in }
+            vision = try VisionEncoder(location: loc, engine: engine)
+            visionState = .ready
+        } catch { visionState = .failed(error.localizedDescription) }
+    }
+
+    /// Download (about 295 MB) and load the image encoder. Only called when the user asks.
+    func installVision() async {
+        guard let engine else { visionState = .failed("Search isn't ready yet."); return }
+        visionState = .downloading(0)
+        do {
+            let loc = try await EmbeddingModelStore.prepareVision { p in Task { @MainActor in self.visionState = .downloading(p) } }
+            vision = try VisionEncoder(location: loc, engine: engine)
+            visionState = .ready
+        } catch { visionState = .failed(error.localizedDescription) }
+    }
+
+    func removeVision() {
+        vision = nil
+        EmbeddingModelStore.removeVision()
+        visionState = .none
     }
 
     func localNotes() async -> [LibraryStore.LocalNote] { await store?.localNotes() ?? [] }
 
     func removeNote(_ note: LibraryStore.LocalNote) async {
         try? await store?.removeLocalNote(notebook: note.notebookId, sourceId: note.id)
+        try? FileManager.default.removeItem(at: Self.photoURL(note.id))
         await refresh()
     }
 }
@@ -83,6 +133,7 @@ extension LibraryModel {
         var sentAny = false
         noteSendProblem = nil
         for note in await store.localNotes() where await noteSentSourceId(note.id) == nil {
+            if note.text.isEmpty { continue }                       // a picture with no text has nothing to send yet
             do {
                 let data = try await MacLink.signedCall(mac, path: "/phone/library/note", json: [
                     "notebook_id": note.notebookId, "client_id": note.id, "title": note.title, "text": note.text, "kind": note.kind,
@@ -98,10 +149,13 @@ extension LibraryModel {
         }
         if sentAny { await sync() }
         for note in await store.localNotes() {
-            guard let sid = await noteSentSourceId(note.id) else { continue }
+            guard !note.text.isEmpty, let sid = await noteSentSourceId(note.id) else { continue }
             if await store.sourceHashes(notebook: note.notebookId)[sid] != nil {
-                try? await store.removeLocalNote(notebook: note.notebookId, sourceId: note.id)
-                try? await store.setMeta(Self.sentKey(note.id), "")
+                if note.hasPicture { try? await store.removeLocalNoteText(notebook: note.notebookId, sourceId: note.id) }   // keep the picture
+                else {
+                    try? await store.removeLocalNote(notebook: note.notebookId, sourceId: note.id)
+                    try? await store.setMeta(Self.sentKey(note.id), "")
+                }
             }
         }
         await refresh()

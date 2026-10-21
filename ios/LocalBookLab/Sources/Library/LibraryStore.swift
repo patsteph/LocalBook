@@ -218,7 +218,7 @@ actor LibraryStore {
 
     // MARK: notes made on this phone (source ids start with LocalNotes.prefix; sync never touches them)
 
-    struct LocalNote: Sendable, Identifiable { let id: String; let notebookId: String; let title: String; let text: String; let kind: String }
+    struct LocalNote: Sendable, Identifiable { let id: String; let notebookId: String; let title: String; let text: String; let kind: String; var hasPicture = false }
 
     func addLocalNote(notebook: String, sourceId: String, title: String, kind: String, chunks: [LibraryChunk], hash: String) throws {
         dropMatrix()
@@ -244,10 +244,15 @@ actor LibraryStore {
         } catch { try? exec("ROLLBACK"); throw error }
     }
 
+    /// A note's picture is one extra chunk at this index, apart from its text chunks (0…).
+    static let pictureIndex = 1000
+
     func localNotes() -> [LocalNote] {
         guard let s = try? statement("""
-            SELECT notebook_id, source_id, filename, GROUP_CONCAT(text, char(10)), MIN(source_type) FROM
-              (SELECT * FROM chunks WHERE source_id LIKE 'local:%' ORDER BY notebook_id, source_id, chunk_index)
+            SELECT notebook_id, source_id, filename,
+                   COALESCE(GROUP_CONCAT(CASE WHEN chunk_index < \(Self.pictureIndex) THEN text END, char(10)), ''),
+                   MIN(source_type), MAX(chunk_index >= \(Self.pictureIndex))
+            FROM (SELECT * FROM chunks WHERE source_id LIKE 'local:%' ORDER BY notebook_id, source_id, chunk_index)
             GROUP BY notebook_id, source_id ORDER BY source_id DESC
             """) else { return [] }
         defer { sqlite3_finalize(s) }
@@ -255,9 +260,16 @@ actor LibraryStore {
         while sqlite3_step(s) == SQLITE_ROW {
             out.append(.init(id: String(cString: sqlite3_column_text(s, 1)), notebookId: String(cString: sqlite3_column_text(s, 0)),
                              title: String(cString: sqlite3_column_text(s, 2)), text: String(cString: sqlite3_column_text(s, 3)),
-                             kind: String(cString: sqlite3_column_text(s, 4))))
+                             kind: String(cString: sqlite3_column_text(s, 4)), hasPicture: sqlite3_column_int(s, 5) != 0))
         }
         return out
+    }
+
+    /// Drop a note's text chunks but keep its picture (the Mac now holds the text).
+    func removeLocalNoteText(notebook: String, sourceId: String) throws {
+        dropMatrix()
+        let s = try statement("DELETE FROM chunks WHERE notebook_id=? AND source_id=? AND chunk_index < ?")
+        bind(s, 1, notebook); bind(s, 2, sourceId); sqlite3_bind_int64(s, 3, Int64(Self.pictureIndex)); sqlite3_step(s); sqlite3_finalize(s)
     }
 
     func removeLocalNote(notebook: String, sourceId: String) throws {

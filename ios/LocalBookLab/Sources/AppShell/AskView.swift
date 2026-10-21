@@ -270,7 +270,13 @@ struct SourceSheet: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                Text(hit.text).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading).padding()
+                VStack(alignment: .leading, spacing: 12) {
+                    if hit.sourceId.hasPrefix(LocalNotes.prefix), let ui = UIImage(contentsOfFile: LibraryModel.photoURL(hit.sourceId).path) {
+                        Image(uiImage: ui).resizable().scaledToFit().clipShape(RoundedRectangle(cornerRadius: 12))
+                    }
+                    Text(hit.text).textSelection(.enabled)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading).padding()
             }
             .navigationTitle("Source \(number)")
             .navigationBarTitleDisplayMode(.inline)

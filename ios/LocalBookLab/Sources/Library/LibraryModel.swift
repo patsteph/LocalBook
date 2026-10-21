@@ -61,6 +61,9 @@ final class LibraryModel {
 
     var store: LibraryStore?
     var flushingNotes = false
+    var vision: VisionEncoder?
+    enum VisionState: Equatable { case none, downloading(Double), ready, failed(String) }
+    var visionState: VisionState = EmbeddingModelStore.visionInstalled ? .ready : .none
     var noteSendProblem: String?
     var engine: EmbeddingGemma2Engine?
     var tokenizer: (any Tokenizers.Tokenizer)?

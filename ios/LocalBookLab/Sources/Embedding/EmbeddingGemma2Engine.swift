@@ -70,15 +70,30 @@ actor EmbeddingGemma2Engine {
         return m
     }
 
+    /// One position of an input sequence: a vocabulary token (looked up in the table, scaled), or a vector that is
+    /// already in the model's 512-wide space (the audio and image encoders produce these, used as they are).
+    enum Entry: Sendable {
+        case token(Int)
+        case vector([Float16])
+    }
+
     /// One text's token ids (including `<bos>` and `<eos>`) → a unit-length 768-d vector.
     func embed(tokenIds: [Int]) throws -> [Float] {
-        let n = tokenIds.count
+        try embed(entries: tokenIds.map { .token($0) })
+    }
+
+    /// A mixed sequence (e.g. `<bos> <|image> image tokens <image|> <eos>`) → a unit-length 768-d vector.
+    func embed(entries: [Entry]) throws -> [Float] {
+        let n = entries.count
         guard n > 0 else { throw LabError.model("empty token list") }
         guard n <= Self.maxTokens else { throw LabError.tooLong(n) }
         guard let s = Self.buckets.first(where: { $0 >= n }) else { throw LabError.tooLong(n) }
         let rows = table.count / (Self.hidden * 2)
-        if let bad = tokenIds.first(where: { $0 < 0 || $0 >= rows }) {
-            throw LabError.model("token id \(bad) is outside the table")
+        for e in entries {
+            switch e {
+            case .token(let id): if id < 0 || id >= rows { throw LabError.model("token id \(id) is outside the table") }
+            case .vector(let v): if v.count != Self.hidden { throw LabError.model("a vector entry has \(v.count) values, expected \(Self.hidden)") }
+            }
         }
 
         let model = try function(for: s)
@@ -95,11 +110,16 @@ actor EmbeddingGemma2Engine {
                 let tStride = strides[1], dStride = strides[2]
                 for t in 0..<s {
                     if t < n {
-                        let rowStart = tokenIds[t] * Self.hidden * 2
-                        for d in 0..<Self.hidden {
-                            let bits = raw.loadUnaligned(fromByteOffset: rowStart + d * 2, as: UInt16.self)
-                            let value = Float(bitPattern: UInt32(UInt16(littleEndian: bits)) << 16) * Self.scale
-                            dst[t * tStride + d * dStride] = Float16(value)
+                        switch entries[t] {
+                        case .token(let id):
+                            let rowStart = id * Self.hidden * 2
+                            for d in 0..<Self.hidden {
+                                let bits = raw.loadUnaligned(fromByteOffset: rowStart + d * 2, as: UInt16.self)
+                                let value = Float(bitPattern: UInt32(UInt16(littleEndian: bits)) << 16) * Self.scale
+                                dst[t * tStride + d * dStride] = Float16(value)
+                            }
+                        case .vector(let v):
+                            for d in 0..<Self.hidden { dst[t * tStride + d * dStride] = v[d] }
                         }
                     } else {
                         for d in 0..<Self.hidden { dst[t * tStride + d * dStride] = 0 }
@@ -121,6 +141,18 @@ actor EmbeddingGemma2Engine {
         var v = [Float](repeating: 0, count: Self.dims)
         for i in 0..<Self.dims { v[i] = out[i].floatValue }
         return VectorMath.normalized(v)
+    }
+
+    /// The scaled table row for a special token, as the model expects it in a mixed sequence.
+    func tokenVector(_ id: Int) throws -> [Float16] {
+        let rows = table.count / (Self.hidden * 2)
+        guard id >= 0, id < rows else { throw LabError.model("token id \(id) is outside the table") }
+        return table.withUnsafeBytes { raw in
+            (0..<Self.hidden).map { d in
+                let bits = raw.loadUnaligned(fromByteOffset: id * Self.hidden * 2 + d * 2, as: UInt16.self)
+                return Float16(Float(bitPattern: UInt32(UInt16(littleEndian: bits)) << 16) * Self.scale)
+            }
+        }
     }
 }
 
