@@ -7,6 +7,7 @@ struct SettingsView: View {
     @State private var freed = ""
     @State private var unsent = 0
     @State private var length = AnswerLength.current.rawValue
+    @State private var searchUnits = UserDefaults.standard.string(forKey: "searchUnits") ?? "ane"
     @State private var stoppable = UserDefaults.standard.bool(forKey: "stoppablePrefill")
 
     var body: some View {
@@ -45,6 +46,13 @@ struct SettingsView: View {
                             library.useStoppablePrefill = on
                             Task { await library.reloadAnswerModel() }
                         }
+                    Picker("Search runs on", selection: $searchUnits) {
+                        Text("Neural Engine").tag("ane")
+                        Text("GPU").tag("gpu")
+                    }
+                    .onChange(of: searchUnits) { _, v in UserDefaults.standard.set(v, forKey: "searchUnits") }
+                    Text("Takes effect the next time the app opens. Neural Engine is the proven setting; GPU is being timed.")
+                        .font(.footnote).foregroundStyle(.secondary)
                     Text("Experimental. Off is the proven setting. On reads each question in small steps so a lock can stop it cleanly; it is still being tested, and changing it reloads the answer model.")
                         .font(.footnote).foregroundStyle(.secondary)
                 }

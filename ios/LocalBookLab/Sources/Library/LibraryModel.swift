@@ -147,7 +147,9 @@ final class LibraryModel {
             var t = Date()
             let location = try await EmbeddingModelStore.prepare { _ in }
             Self.lap("search files checked", since: t)
-            let e = try EmbeddingGemma2Engine(location: location)
+            let units: EmbeddingGemma2Engine.Units = UserDefaults.standard.string(forKey: "searchUnits") == "gpu" ? .gpu : .neuralEngine
+            SoakTrace.log("startup: search runs on \(units.rawValue)")
+            let e = try EmbeddingGemma2Engine(location: location, units: units)
             t = Date()
             _ = try await e.warmUp()
             Self.lap("search model loaded", since: t)
