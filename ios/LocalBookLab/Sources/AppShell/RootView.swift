@@ -17,8 +17,17 @@ struct RootView: View {
                     .tabItem { Label("Settings", systemImage: "gearshape") }.tag(2)
             }
             .task {
-                await library.prepareSearch()
-                await library.prepareAnswerModel()
+                // Search runs on the Neural Engine and the answer model on the GPU, so start both at once.
+                let t0 = Date()
+                async let search: Void = {
+                    await library.prepareSearch()
+                    SoakTrace.log("startup: search ready after \(String(format: "%.1f", Date().timeIntervalSince(t0))) s")
+                }()
+                async let answers: Void = {
+                    await library.prepareAnswerModel()
+                    SoakTrace.log("startup: answer model ready after \(String(format: "%.1f", Date().timeIntervalSince(t0))) s")
+                }()
+                _ = await (search, answers)
             }
         } else {
             OnboardingView(library: library, onDone: { paired = true })
