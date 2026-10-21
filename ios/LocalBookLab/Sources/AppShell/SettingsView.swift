@@ -5,6 +5,7 @@ struct SettingsView: View {
     let onForget: () -> Void
     @State private var confirmForget = false
     @State private var freed = ""
+    @State private var unsent = 0
     @State private var length = AnswerLength.current.rawValue
     @State private var stoppable = UserDefaults.standard.bool(forKey: "stoppablePrefill")
 
@@ -16,7 +17,7 @@ struct SettingsView: View {
                         LabeledContent("Paired with", value: mac.name)
                         LabeledContent("This phone", value: PhoneIdentity.deviceName)
                     }
-                    Button("Remove this Mac and delete the library from this phone", role: .destructive) { freed = Self.librarySize(); confirmForget = true }
+                    Button("Remove this Mac and delete the library from this phone", role: .destructive) { freed = Self.librarySize(); Task { unsent = await library.unsentNoteCount(); confirmForget = true } }
                 }
                 Section("On this phone") {
                     LabeledContent("Notebooks", value: "\(library.notebooks.count)")
@@ -62,7 +63,7 @@ struct SettingsView: View {
                     }
                 }
             } message: {
-                Text("The copy of your library on this phone is deleted, including any notes you made here, which are not on your Mac\(freed.isEmpty ? "" : ", freeing about \(freed)"). You can pair again any time.")
+                Text("The copy of your library on this phone is deleted\(unsent > 0 ? ", including \(unsent) note\(unsent == 1 ? "" : "s") you made here that haven't reached your Mac yet and will be lost" : "")\(freed.isEmpty ? "" : ", freeing about \(freed)"). You can pair again any time.")
             }
         }
     }

@@ -136,7 +136,7 @@ struct NoteEditor: View {
                             if text.isEmpty { Text("Write, dictate or photograph a note…").foregroundStyle(.tertiary).padding(.top, 8).padding(.leading, 5).allowsHitTesting(false) }
                         }
                 } footer: {
-                    Text("Saved in “\(notebookTitle)” on this phone and searchable straight away. It stays here and isn't added to your Mac.")
+                    Text("Saved in “\(notebookTitle)” and searchable straight away. It is sent to your Mac when it is reachable and comes back through sync.")
                 }
                 if reading { Section { HStack { ProgressView(); Text("Reading the photo…").font(.footnote) } } }
                 if let msg = error ?? dictation.failure { Section { Text(msg).font(.footnote).foregroundStyle(.orange) } }
@@ -184,19 +184,28 @@ struct NoteEditor: View {
 struct MyNotesView: View {
     let library: LibraryModel
     @State private var notes: [LibraryStore.LocalNote] = []
+    @State private var sent: Set<String> = []
     var body: some View {
         List {
+            if let why = library.noteSendProblem { Label(why, systemImage: "wifi.slash").font(.footnote).foregroundStyle(.orange) }
             if notes.isEmpty { Text("No notes yet. Tap New note on the Ask or Notebooks screen.").foregroundStyle(.secondary) }
             ForEach(notes) { n in
                 VStack(alignment: .leading, spacing: 2) {
                     Text(n.title).font(.body)
-                    Text(library.notebooks.first { $0.id == n.notebookId }?.title ?? "").font(.caption).foregroundStyle(.secondary)
+                    Text((library.notebooks.first { $0.id == n.notebookId }?.title ?? "") + (sent.contains(n.id) ? " · sent to your Mac" : " · waiting to send"))
+                        .font(.caption).foregroundStyle(.secondary)
                     Text(n.text).font(.footnote).foregroundStyle(.secondary).lineLimit(2)
                 }
                 .swipeActions { Button("Delete", role: .destructive) { Task { await library.removeNote(n); notes = await library.localNotes() } } }
             }
         }
         .navigationTitle("My notes")
-        .task { notes = await library.localNotes() }
+        .task {
+            await library.flushNotes()
+            notes = await library.localNotes()
+            var s: Set<String> = []
+            for n in notes where await library.noteSentSourceId(n.id) != nil { s.insert(n.id) }
+            sent = s
+        }
     }
 }

@@ -614,6 +614,17 @@ async def phone_library_chunks(request: Request):
     return out
 
 
+@phone_sync_app.post("/phone/library/note")
+async def phone_library_note(request: Request):
+    """Add a note made on the phone to a notebook here (indexed like any note; comes back through sync)."""
+    _check_enabled()
+    v = await _verified_phone(request)
+    from services.sync import phone_notes
+    b = v["body"]
+    return await phone_notes.add_note(str(b.get("notebook_id", "")), str(b.get("client_id", "")),
+                                      str(b.get("title", "")), str(b.get("text", "")), str(b.get("kind", "note")))
+
+
 _phone_ask_lock = asyncio.Lock()           # one phone question at a time: it uses the Mac's models
 PHONE_ASK_TIMEOUT = 240
 

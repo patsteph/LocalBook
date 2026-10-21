@@ -48,12 +48,62 @@ extension LibraryModel {
         }
         try await store.addLocalNote(notebook: notebook, sourceId: id, title: name, kind: kind, chunks: chunks, hash: "local")
         await refresh()
+        Task { await flushNotes() }
     }
 
     func localNotes() async -> [LibraryStore.LocalNote] { await store?.localNotes() ?? [] }
 
     func removeNote(_ note: LibraryStore.LocalNote) async {
         try? await store?.removeLocalNote(notebook: note.notebookId, sourceId: note.id)
+        await refresh()
+    }
+}
+
+extension LibraryModel {
+    private static func sentKey(_ id: String) -> String { "note_sent:" + id }
+
+    /// Where a note stands: not yet on the Mac, sent (waiting to come back through sync), or nothing recorded.
+    func noteSentSourceId(_ id: String) async -> String? {
+        guard let v = await store?.meta(Self.sentKey(id)), !v.isEmpty else { return nil }
+        return v
+    }
+
+    func unsentNoteCount() async -> Int {
+        var n = 0
+        for note in await localNotes() where await noteSentSourceId(note.id) == nil { n += 1 }
+        return n
+    }
+
+    /// Send notes made here to the Mac (it indexes them like its own), pull them back with a sync, and drop the
+    /// phone-only copies once the Mac's version has arrived. Quietly leaves them in place when the Mac is out of reach.
+    func flushNotes() async {
+        guard let store, let mac = MacLink.paired, !flushingNotes else { return }
+        flushingNotes = true
+        defer { flushingNotes = false }
+        var sentAny = false
+        noteSendProblem = nil
+        for note in await store.localNotes() where await noteSentSourceId(note.id) == nil {
+            do {
+                let data = try await MacLink.signedCall(mac, path: "/phone/library/note", json: [
+                    "notebook_id": note.notebookId, "client_id": note.id, "title": note.title, "text": note.text, "kind": note.kind,
+                ], timeout: 30)
+                let sid = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["source_id"] as? String
+                guard let sid, !sid.isEmpty else { noteSendProblem = "The Mac's reply wasn't understood."; break }
+                try await store.setMeta(Self.sentKey(note.id), sid)
+                sentAny = true
+            } catch {
+                noteSendProblem = "Waiting for the Mac: \(error.localizedDescription)"
+                break
+            }
+        }
+        if sentAny { await sync() }
+        for note in await store.localNotes() {
+            guard let sid = await noteSentSourceId(note.id) else { continue }
+            if await store.sourceHashes(notebook: note.notebookId)[sid] != nil {
+                try? await store.removeLocalNote(notebook: note.notebookId, sourceId: note.id)
+                try? await store.setMeta(Self.sentKey(note.id), "")
+            }
+        }
         await refresh()
     }
 }

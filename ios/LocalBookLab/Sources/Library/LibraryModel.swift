@@ -60,6 +60,8 @@ final class LibraryModel {
     var scopeToNotebook: String?
 
     var store: LibraryStore?
+    var flushingNotes = false
+    var noteSendProblem: String?
     var engine: EmbeddingGemma2Engine?
     var tokenizer: (any Tokenizers.Tokenizer)?
     var queryTemplate = "task: search result | query: {text}"
@@ -115,6 +117,7 @@ final class LibraryModel {
             lastSummary = summary
             await refresh()
             syncState = .idle
+            await flushNotes()
         } catch {
             syncState = .failed(error.localizedDescription)
         }
