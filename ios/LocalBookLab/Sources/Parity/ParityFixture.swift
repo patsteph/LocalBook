@@ -64,18 +64,3 @@ struct CortexProfile: Codable, Sendable {
     let eosTokenId: Int?
 }
 
-enum LabError: LocalizedError {
-    case fixture(String)
-    case model(String)
-    case tooLong(Int)
-    case background(String)
-
-    var errorDescription: String? {
-        switch self {
-        case .fixture(let m): "Fixture: \(m)"
-        case .model(let m): "Model: \(m)"
-        case .tooLong(let n): "Input is \(n) tokens; the phone model takes at most 512"
-        case .background(let m): "Background task: \(m)"
-        }
-    }
-}

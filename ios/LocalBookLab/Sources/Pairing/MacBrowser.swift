@@ -192,4 +192,39 @@ final class MacBrowser {
             }
         }
     }
+
+    /// The IPv4 address behind an advertised Bonjour service: connect once and read where the path actually goes.
+    func resolveHost(_ mac: Mac) async -> String? {
+        await withCheckedContinuation { cont in
+            let params = NWParameters.tcp
+            if let ip = params.defaultProtocolStack.internetProtocol as? NWProtocolIP.Options { ip.version = .v4 }
+            let conn = NWConnection(to: mac.endpoint, using: params)
+            let box = ResumeOnce(cont)
+            conn.stateUpdateHandler = { state in
+                switch state {
+                case .ready:
+                    if case let .hostPort(host, _)? = conn.currentPath?.remoteEndpoint {
+                        var text = "\(host)"
+                        if let pct = text.firstIndex(of: "%") { text = String(text[..<pct]) }
+                        box.resume(text)
+                    } else { box.resume(nil) }
+                    conn.cancel()
+                case .failed, .cancelled: box.resume(nil)
+                default: break
+                }
+            }
+            conn.start(queue: .main)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 8) { box.resume(nil); conn.cancel() }
+        }
+    }
+}
+
+private final class ResumeOnce: @unchecked Sendable {
+    private let lock = NSLock()
+    private var cont: CheckedContinuation<String?, Never>?
+    init(_ c: CheckedContinuation<String?, Never>) { cont = c }
+    func resume(_ value: String?) {
+        lock.lock(); let c = cont; cont = nil; lock.unlock()
+        c?.resume(returning: value)
+    }
 }

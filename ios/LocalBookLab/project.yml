@@ -45,6 +45,8 @@ targets:
     platform: iOS
     sources:
       - path: Sources
+        excludes:
+          - AppShell/**                 # the product app (target LocalBook)
       # The reranker: a Core ML conversion of the Mac's own model (tools/convert_reranker.py writes it).
       # Not committed (64 MB); the build still works without it and the phone then skips reranking.
       - path: tools/cache/RerankerL12.mlpackage
@@ -106,5 +108,66 @@ targets:
           - com.patsteph.localbook.lab.speech.*
         # Test 3 (pairing with a Mac) — Bonjour on the local network.
         NSLocalNetworkUsageDescription: LocalBook finds and syncs with your Macs on this network.
+        NSBonjourServices:
+          - _localbook._tcp
+
+  # The product app: phone-only. Shares the engines, the library and the pairing code with the Lab; leaves out every
+  # Lab screen, the Mac-vs-phone harness, speech and the soak test.
+  LocalBook:
+    type: application
+    platform: iOS
+    sources:
+      - path: Sources
+        excludes:
+          - App/**
+          - Parity/**
+          - Speech/**
+          - Library/AnswerParity.swift
+          - Library/Soak.swift
+          - Library/LibraryView.swift
+          - Generation/GemmaTestView.swift
+          - Pairing/FindMacsView.swift
+      - path: tools/cache/RerankerL12.mlpackage
+        optional: true
+      - path: Models/RerankerTokenizer
+        type: folder
+      - path: tools/cache/rerank_conformance.json
+        optional: true
+    dependencies:
+      - package: swift-transformers
+        product: Tokenizers
+      - package: swift-transformers
+        product: Hub
+      - package: swift-collections
+        product: Collections
+      - package: mlx-swift
+        product: MLX
+      - package: mlx-swift-lm
+        product: MLXLLM
+      - package: mlx-swift-lm
+        product: MLXLMCommon
+      - package: mlx-swift-lm
+        product: MLXHuggingFace
+      - package: swift-huggingface
+        product: HuggingFace
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.patsteph.localbook.ios
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+    entitlements:
+      path: Resources/LocalBook.entitlements
+      properties:
+        # Gemma 4 E4B plus the search model need more than the default per-app memory limit.
+        com.apple.developer.kernel.increased-memory-limit: true
+    info:
+      path: Resources/LocalBookInfo.plist
+      properties:
+        CFBundleDisplayName: LocalBook
+        UILaunchScreen: {}
+        UIRequiresFullScreen: true
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        NSLocalNetworkUsageDescription: LocalBook finds and syncs with your Mac on this network.
         NSBonjourServices:
           - _localbook._tcp

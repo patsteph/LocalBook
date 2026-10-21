@@ -260,6 +260,19 @@ final class LibraryModel {
 
     func stopAnswer() { generation?.cancel() }
 
+    /// Delete everything synced from the Mac (chunks, notebooks, recipe, profile data) and reset the screen state.
+    func wipeLibrary() async {
+        stopAnswer()
+        try? await store?.wipe()
+        try? await store?.removeNotebooks(except: [])
+        personalCache.removeAll()
+        recipe = nil
+        try? await store?.setMeta("recipe", "")
+        try? await store?.setMeta("last_sync", "")
+        await refresh()
+        answerText = ""; answerSources = []; answerStatus = ""; followUps = []; hits = []
+    }
+
     // MARK: UI-free building blocks (also used by the answer-parity test)
 
     struct LocalAnswer: Sendable {

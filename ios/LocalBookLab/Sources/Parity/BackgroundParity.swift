@@ -65,13 +65,6 @@ enum BackgroundParity {
     }
 }
 
-/// A thread-safe one-way flag.
-final class CancelFlag: @unchecked Sendable {
-    private let lock = NSLock()
-    private var value = false
-    var isSet: Bool { lock.withLock { value } }
-    func set() { lock.withLock { value = true } }
-}
 
 /// Carries a non-Sendable system object (the background task) into a Task. The task is only
 /// touched through its thread-safe `progress` and completion methods.

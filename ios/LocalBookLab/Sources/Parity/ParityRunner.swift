@@ -230,32 +230,6 @@ struct ParityReport: Codable, Sendable {
     }
 }
 
-struct DeviceInfo: Codable, Sendable {
-    let model: String
-    let system: String
-    let memoryGB: Double
-    let thermalState: String
-
-    @MainActor static func current() -> DeviceInfo {
-        var sys = utsname()
-        uname(&sys)
-        let machine = withUnsafeBytes(of: &sys.machine) { raw in
-            String(decoding: raw.prefix { $0 != 0 }, as: UTF8.self)
-        }
-        let thermal: String = switch ProcessInfo.processInfo.thermalState {
-        case .nominal: "nominal"
-        case .fair: "fair"
-        case .serious: "serious"
-        case .critical: "critical"
-        @unknown default: "unknown"
-        }
-        return DeviceInfo(model: machine,
-                          system: "\(UIDevice.current.systemName) \(UIDevice.current.systemVersion)",
-                          memoryGB: (Double(ProcessInfo.processInfo.physicalMemory) / 1_073_741_824 * 10).rounded() / 10,
-                          thermalState: thermal)
-    }
-}
-
 /// Whether the app is in the background right now, so the report can say how much work the
 /// Neural Engine did behind a locked screen.
 @MainActor final class AppStateTracker {
