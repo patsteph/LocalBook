@@ -134,13 +134,13 @@ final class LibraryModel {
         searchState = .preparing("Search…")
         async let tokenizerLoad: any Tokenizers.Tokenizer = {
             let t = Date()
-            let tok = try await AutoTokenizer.from(pretrained: LibrarySync.expectedModel)
+            let tok = try await Signpost.measure("tokenizer load") { try await AutoTokenizer.from(pretrained: LibrarySync.expectedModel) }
             Self.lap("tokenizer loaded", since: t)
             return tok
         }()
         async let rerankerLoad: Void = {
             let t = Date()
-            await self.prepareReranker()
+            await Signpost.measure("reranker load") { await self.prepareReranker() }
             Self.lap("reranker loaded", since: t)
         }()
         do {
@@ -151,7 +151,7 @@ final class LibraryModel {
             SoakTrace.log("startup: search runs on \(units.rawValue)")
             let e = try EmbeddingGemma2Engine(location: location, units: units)
             t = Date()
-            _ = try await e.warmUp()
+            _ = try await Signpost.measure("search model load") { try await e.warmUp() }
             Self.lap("search model loaded", since: t)
             tokenizer = try await tokenizerLoad
             await rerankerLoad
@@ -550,7 +550,7 @@ final class LibraryModel {
         do {
             answerStatus = "Searching notebook…"
             let t0 = Date()
-            var result = try await retrieve(question: query, notebook: scope)
+            var result = try await Signpost.measure("retrieve passages") { try await retrieve(question: query, notebook: scope) }
             hits = result.hits
             sourceScoreIsRelevance = false
             answerSources = result.hits

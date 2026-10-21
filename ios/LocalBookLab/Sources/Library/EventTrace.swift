@@ -38,3 +38,18 @@ extension SoakTrace {
         }
     }
 }
+
+import os
+
+/// Intervals for Instruments (Points of Interest / os_signpost), beside the trace file: startup phases and the
+/// stages of a question, so a profile shows where the seconds go.
+enum Signpost {
+    private static let signposter = OSSignposter(subsystem: "com.patsteph.localbook", category: .pointsOfInterest)
+
+    static func measure<T>(_ name: StaticString, isolation: isolated (any Actor)? = #isolation, _ body: () async throws -> T) async rethrows -> T {
+        let id = signposter.makeSignpostID()
+        let state = signposter.beginInterval(name, id: id)
+        defer { signposter.endInterval(name, state) }
+        return try await body()
+    }
+}
