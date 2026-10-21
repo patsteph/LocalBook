@@ -3,10 +3,16 @@ import SwiftUI
 struct AskView: View {
     let library: LibraryModel
     @FocusState private var focused: Bool
-    @State private var showSources = false
     @State private var picking = false
     @State private var reader = ReadAloud()
     @State private var waited = 0
+    @State private var queued: String?
+    @State private var openSource: SourceRef?
+    @State private var length = AnswerLength.current.rawValue
+    @State private var finishTick = 0
+    @State private var failTick = 0
+    @State private var sendTick = 0
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         @Bindable var model = library
@@ -17,14 +23,31 @@ struct AskView: View {
                         ContentUnavailableView("No notebooks yet", systemImage: "books.vertical",
                                                description: Text("Open the Notebooks tab and sync with your Mac."))
                     } else {
-                        if !ready {
-                            PreparingCard(library: library)
-                        } else if library.answerText.isEmpty && !library.answering && library.answerStatus.isEmpty {
+                        if !ready { ReadyBar(library: library) }
+                        if let q = queued {
+                            HStack {
+                                Label("Queued: \(q)", systemImage: "clock").lineLimit(2)
+                                Spacer()
+                                Button("Cancel") { queued = nil }
+                            }
+                            .font(.footnote).padding(12).background(.quaternary, in: RoundedRectangle(cornerRadius: 12))
+                        }
+                        if library.answering || !library.answerText.isEmpty || !library.answerStatus.isEmpty, !library.shownQuestion.isEmpty {
+                            Text(library.shownQuestion).font(.subheadline.weight(.medium))
+                                .padding(.horizontal, 12).padding(.vertical, 8)
+                                .background(.tint.opacity(0.15), in: RoundedRectangle(cornerRadius: 14))
+                                .frame(maxWidth: .infinity, alignment: .trailing)
+                        } else if queued == nil {
                             intro
                         }
                         if library.answering && library.answerText.isEmpty {
-                            VStack(alignment: .leading, spacing: 6) {
-                                HStack { ProgressView(); Text("Reading your notebook… \(waited) s").font(.footnote).foregroundStyle(.secondary) }
+                            VStack(alignment: .leading, spacing: 8) {
+                                HStack { ProgressView(); Text(library.answerStatus.isEmpty ? "Working…" : library.answerStatus).font(.footnote).foregroundStyle(.secondary) }
+                                if !library.answerSources.isEmpty {
+                                    ForEach(Array(library.answerSources.prefix(4).enumerated()), id: \.element.id) { i, h in
+                                        Label(h.filename, systemImage: "doc.text").font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                                    }
+                                }
                                 if waited > 30 { Text("This is taking longer than usual. You can stop and ask again.").font(.caption).foregroundStyle(.orange) }
                             }
                             .task(id: library.answering) {
@@ -34,6 +57,12 @@ struct AskView: View {
                         }
                         if !library.answerText.isEmpty {
                             Text(AnswerText.render(library.answerText)).textSelection(.enabled)
+                                .environment(\.openURL, OpenURLAction { url in
+                                    if url.scheme == "lb-source", let n = Int(url.host ?? ""), n >= 1, n <= library.answerSources.count {
+                                        openSource = SourceRef(number: n); return .handled
+                                    }
+                                    return .systemAction
+                                })
                             if !library.answering, !library.answerStatus.isEmpty {
                                 Text(library.answerStatus).font(.caption2).foregroundStyle(.secondary)
                             }
@@ -66,6 +95,23 @@ struct AskView: View {
                 }
             }
             .sheet(isPresented: $picking) { NotebookPicker(library: library) }
+            .sheet(item: $openSource) { ref in
+                SourceSheet(number: ref.number, hit: library.answerSources[ref.number - 1])
+                    .presentationDetents([.medium, .large])
+            }
+            .sensoryFeedback(.impact(weight: .light), trigger: sendTick)
+            .sensoryFeedback(.success, trigger: finishTick)
+            .sensoryFeedback(.warning, trigger: failTick)
+            .onChange(of: library.answering) { was, now in
+                guard was, !now else { return }
+                if library.answerText.isEmpty { failTick += 1 } else { finishTick += 1 }
+            }
+            .onChange(of: ready) { _, isReady in
+                guard isReady, let q = queued else { return }
+                queued = nil
+                library.query = q
+                Task { await library.ask() }
+            }
         }
     }
 
@@ -76,13 +122,17 @@ struct AskView: View {
     }
 
     private var intro: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Label("Private by design", systemImage: "lock.fill").font(.footnote.weight(.semibold))
-            Text("Ask about anything in “\(currentTitle)”. The question is searched and answered on this phone; nothing is sent to your Mac or anywhere else.")
-                .font(.footnote).foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 10) {
+            Text(currentTitle).font(.title3.bold())
+            Text("Try asking:").font(.footnote).foregroundStyle(.secondary)
+            ForEach(["What are the main points in this notebook?", "What changed most recently?", "Who is mentioned most often?"], id: \.self) { q in
+                Button { library.query = q; send() } label: {
+                    Text(q).font(.subheadline).multilineTextAlignment(.leading).frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(12).background(.quaternary, in: RoundedRectangle(cornerRadius: 12))
+                }
+                .buttonStyle(.plain)
+            }
         }
-        .padding().frame(maxWidth: .infinity, alignment: .leading)
-        .background(.quaternary, in: RoundedRectangle(cornerRadius: 12))
     }
 
     @ViewBuilder private var actions: some View {
@@ -108,43 +158,57 @@ struct AskView: View {
 
     @ViewBuilder private var sources: some View {
         if !library.answerSources.isEmpty {
-            DisclosureGroup("Sources (\(library.answerSources.count))", isExpanded: $showSources) {
-                VStack(alignment: .leading, spacing: 10) {
-                    ForEach(Array(library.answerSources.enumerated()), id: \.element.id) { i, h in
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("[\(i + 1)] \(h.filename)").font(.footnote.weight(.medium))
-                            Text(h.text.count > 240 ? String(h.text.prefix(240)) + "…" : h.text).font(.footnote).foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Sources").font(.footnote.weight(.semibold)).foregroundStyle(.secondary)
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ForEach(Array(library.answerSources.enumerated()), id: \.element.id) { i, h in
+                            Button { openSource = SourceRef(number: i + 1) } label: {
+                                Text("\(i + 1)").font(.subheadline.weight(.semibold)).frame(minWidth: 44, minHeight: 44)
+                                    .background(.tint.opacity(0.15), in: Circle())
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel("Source \(i + 1): \(h.filename)")
                         }
                     }
                 }
-                .padding(.top, 6)
             }
-            .font(.footnote)
         }
     }
 
     private var composer: some View {
         @Bindable var model = library
         return HStack(alignment: .bottom, spacing: 8) {
-            TextField("Ask your notebook", text: $model.query, axis: .vertical)
+            Menu {
+                Picker("Answer length", selection: $length) {
+                    ForEach(AnswerLength.allCases) { Text($0.label).tag($0.rawValue) }
+                }
+            } label: { Image(systemName: "text.alignleft").font(.title3).frame(width: 44, height: 44) }
+            .accessibilityLabel("Answer length")
+            .onChange(of: length) { _, v in UserDefaults.standard.set(v, forKey: "answerLength") }
+            TextField(ready ? "Ask your notebook" : "Ask now, answers when ready", text: $model.query, axis: .vertical)
                 .lineLimit(1...4).focused($focused)
                 .padding(10).background(.quaternary, in: RoundedRectangle(cornerRadius: 18))
                 .submitLabel(.send).onSubmit(send)
             if library.answering {
-                Button { library.stopAnswer() } label: { Image(systemName: "stop.circle.fill").font(.title) }
+                Button { library.stopAnswer() } label: { Image(systemName: "stop.circle.fill").font(.title).frame(width: 44, height: 44) }
+                    .accessibilityLabel("Stop")
             } else {
-                Button(action: send) { Image(systemName: "arrow.up.circle.fill").font(.title) }
-                    .disabled(library.query.trimmingCharacters(in: .whitespaces).isEmpty || !ready)
+                Button(action: send) { Image(systemName: "arrow.up.circle.fill").font(.title).frame(width: 44, height: 44) }
+                    .disabled(library.query.trimmingCharacters(in: .whitespaces).isEmpty)
+                    .accessibilityLabel("Send")
             }
         }
         .padding(.horizontal).padding(.vertical, 8).background(.bar)
     }
 
     private func send() {
-        guard ready, !library.answering else { return }
+        let q = library.query.trimmingCharacters(in: .whitespaces)
+        guard !q.isEmpty, !library.answering else { return }
         reader.stop()
         focused = false
-        showSources = false
+        sendTick += 1
+        if !ready { queued = q; library.query = ""; return }
         Task { await library.ask() }
     }
 }
@@ -156,6 +220,7 @@ enum AnswerText {
         for (i, line) in raw.split(separator: "\n", omittingEmptySubsequences: false).enumerated() {
             var text = String(line)
             var heading = false
+            text = text.replacingOccurrences(of: #"\[(\d{1,2})\]"#, with: "[\\[$1\\]](lb-source://$1)", options: .regularExpression)
             if let r = text.range(of: #"^#{1,4}\s+"#, options: .regularExpression) { text.removeSubrange(r); heading = true }
             if let r = text.range(of: #"^(\s*)[\*\-]\s+"#, options: .regularExpression) {
                 let indent = text[r].prefix { $0 == " " }
@@ -170,36 +235,50 @@ enum AnswerText {
     }
 }
 
-/// What the phone is getting ready before the first question: a short, honest checklist.
-struct PreparingCard: View {
-    let library: LibraryModel
+struct SourceRef: Identifiable { let number: Int; var id: Int { number } }
 
+struct SourceSheet: View {
+    let number: Int
+    let hit: LibraryHit
+    @Environment(\.dismiss) private var dismiss
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Getting ready").font(.headline)
-            row("Your notebooks", done: !library.notebooks.isEmpty)
-            row("Search", done: library.searchState == .ready, failed: failure(library.searchState))
-            row("Answers", done: library.answerModelState == .ready, failed: answerFailure)
-            Text("This happens once each time the app opens, and takes about a minute. You can read your notebooks meanwhile.")
-                .font(.footnote).foregroundStyle(.secondary)
-        }
-        .padding().frame(maxWidth: .infinity, alignment: .leading)
-        .background(.quaternary, in: RoundedRectangle(cornerRadius: 12))
-    }
-
-    private func failure(_ s: LibraryModel.SearchState) -> String? { if case .failed(let why) = s { return why } else { return nil } }
-    private var answerFailure: String? { if case .failed(let why) = library.answerModelState { return why } else { return nil } }
-
-    @ViewBuilder private func row(_ title: String, done: Bool, failed: String? = nil) -> some View {
-        HStack(alignment: .top, spacing: 10) {
-            if let failed {
-                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
-                VStack(alignment: .leading) { Text(title); Text(failed).font(.caption).foregroundStyle(.secondary) }
-            } else if done {
-                Image(systemName: "checkmark.circle.fill").foregroundStyle(.green); Text(title)
-            } else {
-                ProgressView().controlSize(.small); Text(title).foregroundStyle(.secondary)
+        NavigationStack {
+            ScrollView {
+                Text(hit.text).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading).padding()
+            }
+            .navigationTitle("Source \(number)")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
+            .safeAreaInset(edge: .top) {
+                Text(hit.filename).font(.footnote).foregroundStyle(.secondary).padding(.horizontal).frame(maxWidth: .infinity, alignment: .leading)
             }
         }
+    }
+}
+
+/// One calm line while the phone gets ready; the question field stays usable.
+struct ReadyBar: View {
+    let library: LibraryModel
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if let why = failure {
+                Label(why, systemImage: "exclamationmark.triangle.fill").font(.footnote).foregroundStyle(.orange)
+            } else {
+                Text("Getting ready — about a minute. You can ask now; the answer starts when ready.").font(.footnote).foregroundStyle(.secondary)
+                ProgressView(value: progress)
+            }
+        }
+        .accessibilityElement(children: .combine)
+    }
+    private var progress: Double {
+        var p = library.notebooks.isEmpty ? 0.0 : 0.2
+        if library.searchState == .ready { p += 0.3 }
+        if library.answerModelState == .ready { p += 0.5 }
+        return p
+    }
+    private var failure: String? {
+        if case .failed(let why) = library.searchState { return why }
+        if case .failed(let why) = library.answerModelState { return why }
+        return nil
     }
 }

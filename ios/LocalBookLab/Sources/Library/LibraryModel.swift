@@ -35,6 +35,7 @@ final class LibraryModel {
     private(set) var answerText = ""
     private(set) var answerSources: [LibraryHit] = []
     private(set) var answerStatus = ""
+    private(set) var shownQuestion = ""
     private(set) var followUps: [String] = []
     private(set) var sourceScoreIsConfidence = false
     private(set) var sourceScoreIsRelevance = false
@@ -508,14 +509,16 @@ final class LibraryModel {
               !query.trimmingCharacters(in: .whitespaces).isEmpty, let scope = scopeToNotebook else { return }
         answering = true
         answerText = ""; answerSources = []
+        shownQuestion = query
         defer { answering = false }
         do {
-            answerStatus = "Finding passages (offline mode: vectors + keywords)…"
+            answerStatus = "Searching notebook…"
             let t0 = Date()
             var result = try await retrieve(question: query, notebook: scope)
             hits = result.hits
             sourceScoreIsRelevance = false
             answerSources = result.hits
+            answerStatus = "Reading \(result.hits.count) passage\(result.hits.count == 1 ? "" : "s")…"
             let findSeconds = Date().timeIntervalSince(t0)
             var withContext = true
             var corrected = false
@@ -533,7 +536,7 @@ final class LibraryModel {
             }
 
             if gemma == nil {
-                answerStatus = "Loading the answer model (4 GB)…"
+                answerStatus = "Getting the answer model ready…"
                 Memory.cacheLimit = 64 * 1024 * 1024
                 gemma = try await #huggingFaceLoadModelContainer(configuration: LLMRegistry.gemma4_e4b_it_4bit)
             }
@@ -546,7 +549,7 @@ final class LibraryModel {
                 let setup = generationSetup(question: query, hits: current.hits, personal: personal, withEntityContext: withContext)
                 let prompt = setup.prompt
                 let session = ChatSession(gemma, instructions: setup.instructions, generateParameters: setup.params)
-                answerStatus = corrected ? "Looking again, then answering…" : "Answering…"
+                answerStatus = corrected ? "Looking again, then writing…" : "Writing…"
                 answerText = ""
                 let started = Date()
                 var firstWord: Double?
