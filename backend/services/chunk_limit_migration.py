@@ -47,6 +47,18 @@ def _applied(model: str, limit: int) -> bool:
         return False
 
 
+def _seen_versions(model: str, limit: int) -> Dict[str, Any]:
+    """Table versions the last completed pass covered (empty when the marker is for another embedder/limit or
+    predates version tracking — then every table is looked at once)."""
+    try:
+        m = json.loads(_marker_path().read_text())
+        if m.get("model") == model and m.get("max_tokens") == limit:
+            return dict(m.get("versions") or {})
+    except Exception:
+        pass
+    return {}
+
+
 def plan_table(table, model: str) -> List[Dict[str, Any]]:
     """The rows of one table that are over the limit, each with how to fix it."""
     from services import embedding_profile, token_budget
@@ -129,8 +141,6 @@ async def run(embed: Embedder, *, force: bool = False,
     prof = embedding_profile.for_model(model)
     if prof.max_tokens <= 0:
         return {"skipped": "embedder has no token limit"}
-    if not force and _applied(model, prof.max_tokens):
-        return {"skipped": "already applied"}
     if em.index_model() not in (None, model):
         return {"skipped": "index was built by a different embedder"}
     if em.status().get("running"):
@@ -138,9 +148,17 @@ async def run(embed: Embedder, *, force: bool = False,
 
     live = em._live_dir()
     db = await asyncio.to_thread(lambda: lancedb.connect(str(live)))
+    # A one-time marker was not enough: chunks that arrive LATER (sync from a Mac with an older chunker, new
+    # ingest) can be over the limit too and were never looked at again. The marker now remembers each table's
+    # version, so only tables that changed since the last pass are checked.
+    seen = _seen_versions(model, prof.max_tokens)
+    tables = em._tables(live)
+    changed = [n for n in tables if force or seen.get(n) != em._table_version(db, n)]
+    if not changed:
+        return {"skipped": "already applied"}
     fixed = written = 0
     backup = Path(settings.data_dir) / BACKUP_DIR
-    for name in em._tables(live):
+    for name in changed:
         plan = await asyncio.to_thread(lambda n=name: plan_table(db.open_table(n), model))
         if not plan:
             continue
@@ -153,7 +171,8 @@ async def run(embed: Embedder, *, force: bool = False,
         fixed += len(plan)
         logger.info("[chunk-limit] %s: %d rows over %d tokens fixed", name, len(plan), prof.max_tokens)
     result = {"model": model, "max_tokens": prof.max_tokens, "rows_fixed": fixed,
-              "rows_written": written, "at": time.strftime("%Y-%m-%dT%H:%M:%S")}
+              "rows_written": written, "at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+              "versions": {n: em._table_version(db, n) for n in tables}}
     _marker_path().write_text(json.dumps(result, indent=2))
     return result
 
