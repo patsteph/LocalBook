@@ -61,6 +61,7 @@ final class LibraryModel {
     private(set) var recipeLine = "No answer recipe yet — sync first"
 
     func open() async {
+        GPUGate.installReopenOnActive()
         guard store == nil else { return }
         do {
             let s = try LibraryStore()
@@ -320,7 +321,7 @@ final class LibraryModel {
         if gemma == nil {
             SoakTrace.log("answer model load begins")
             Memory.cacheLimit = 64 * 1024 * 1024
-            gemma = try await #huggingFaceLoadModelContainer(configuration: LLMRegistry.gemma4_e4b_it_4bit)
+            gemma = await StoppableLM.wrap(try await #huggingFaceLoadModelContainer(configuration: LLMRegistry.gemma4_e4b_it_4bit))
             SoakTrace.log("answer model load ends")
         }
         guard let gemma else { throw LibraryError.badResponse("answer model not loaded") }
@@ -467,7 +468,7 @@ final class LibraryModel {
             if gemma == nil {
                 answerStatus = "Loading the answer model (4 GB)…"
                 Memory.cacheLimit = 64 * 1024 * 1024
-                gemma = try await #huggingFaceLoadModelContainer(configuration: LLMRegistry.gemma4_e4b_it_4bit)
+                gemma = await StoppableLM.wrap(try await #huggingFaceLoadModelContainer(configuration: LLMRegistry.gemma4_e4b_it_4bit))
             }
             guard let gemma else { return }
             guard GPUGuard.canStart else { answerStatus = "Open the app and ask again — answers can't run while the screen is off."; return }

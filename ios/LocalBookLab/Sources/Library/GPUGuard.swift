@@ -9,6 +9,7 @@ import UIKit
 enum GPUGuard {
     static func protect<T: Sendable>(_ task: Task<T, any Error>, label: String = "answer", onLock: @escaping @Sendable () -> Void = {}) -> NSObjectProtocol {
         NotificationCenter.default.addObserver(forName: UIApplication.willResignActiveNotification, object: nil, queue: nil) { _ in
+            GPUGate.close()                                 // 0. prompt processing queues nothing more
             onLock()
             task.cancel()                                   // 1. no new tokens
             SoakTrace.log("GPUGuard[\(label)]: cancelled, draining GPU")
