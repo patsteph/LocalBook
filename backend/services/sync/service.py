@@ -472,12 +472,23 @@ def status() -> Dict[str, Any]:
                           "last_sync": store.get(f"last_sync:{d['device_id']}"),
                           "model_mismatch": store.get(f"model_mismatch:{d['device_id']}") or {},
                           "preview_state": store.get(f"preview_state:{d['device_id']}")})
+    stats = {"notebooks": None, "sources": None}
     try:
         c = runtime.replica("main").conn
         open_conflicts = c.execute("SELECT COUNT(*) FROM sync_conflicts WHERE status='open'").fetchone()[0]
+        try:
+            stats = {"notebooks": c.execute("SELECT COUNT(*) FROM notebooks").fetchone()[0],
+                     "sources": c.execute("SELECT COUNT(*) FROM sources").fetchone()[0]}
+        except Exception:
+            pass
         c.close()
     except Exception:
         open_conflicts = None
+    try:
+        from services.schedule_store import schedule_store
+        interval = int(schedule_store.get_interval(SCHEDULE_ID, DEFAULT_INTERVAL) or DEFAULT_INTERVAL)
+    except Exception:
+        interval = DEFAULT_INTERVAL
     return {
         "enabled": store.enabled(),
         "this_mac": {"device_id": identity.device_id(), "name": identity.device_name(),
@@ -490,6 +501,8 @@ def status() -> Dict[str, Any]:
         "phones": [{k: p.get(k) for k in ("device_id", "name", "paired_at", "last_seen")}
                    for p in store.phones().values() if not p.get("revoked_at")],
         "open_conflicts": open_conflicts,
+        "stats": stats,
+        "interval_seconds": max(15, interval),
         "backup_destination": str(backup_scheduler.configured_destination() or "") or None,
         "proposed_backup": _proposed_backup(),
         "first_apply_backup": store.get("first_apply_backup"),
