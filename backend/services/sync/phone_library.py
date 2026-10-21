@@ -165,19 +165,40 @@ def _sorted_rows(table) -> List[Dict[str, Any]]:
     return rows
 
 
+def notebook_layout() -> List[Dict[str, Any]]:
+    """Notebooks in the order the desktop app shows them: those in no section first, then each section (by its
+    sort order) with its notebooks — all newest first, as notebook_store.list() returns them."""
+    from services.sync import runtime
+    path = runtime.data_dir() / runtime.DB_FILES["main"]
+    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=10)
+    try:
+        sections = conn.execute("SELECT id, name FROM notebook_sections ORDER BY sort_order, created_at").fetchall()
+        rows = conn.execute("SELECT id, title, section_id FROM notebooks ORDER BY created_at DESC").fetchall()
+    except sqlite3.Error:
+        return []
+    finally:
+        conn.close()
+    names = {sid: name for sid, name in sections}
+    out = [{"id": i, "title": t, "section": None} for i, t, sec in rows if not sec or sec not in names]
+    for sid, name in sections:
+        out += [{"id": i, "title": t, "section": name} for i, t, sec in rows if sec == sid]
+    return out
+
+
 def manifest() -> Dict[str, Any]:
     titles = notebook_titles()
     off = set(excluded())
     notebooks = []
-    for nid, title in sorted(titles.items(), key=lambda kv: kv[1].lower()):
-        if nid in off:
+    for item in notebook_layout() or [{"id": i, "title": t, "section": None} for i, t in sorted(titles.items(), key=lambda kv: kv[1].lower())]:
+        nid, title = item["id"], item["title"]
+        if nid in off or nid not in titles:
             continue
         table = _table(nid)
         if table is None:
             continue
         sums = _summaries(table)
         digest = hashlib.sha256("".join(f'{sid}:{s["hash"]};' for sid, s in sorted(sums.items())).encode()).hexdigest()[:24]
-        notebooks.append({"id": nid, "title": title, "sources": len(sums),
+        notebooks.append({"id": nid, "title": title, "section": item["section"], "sources": len(sums),
                           "chunks": sum(s["chunks"] for s in sums.values()), "digest": digest})
     return {"proto": PROTO, "embedder": embedder_key(), "notebooks": notebooks}
 

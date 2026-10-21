@@ -18,6 +18,8 @@ final class LibraryModel {
 
     private(set) var syncState: SyncState = .idle
     private(set) var searchState: SearchState = .notReady
+    enum ModelState: Equatable { case idle, loading, ready, failed(String) }
+    private(set) var answerModelState: ModelState = .idle
     private(set) var notebooks: [LibraryNotebookInfo] = []
     private(set) var chunkCount = 0
     private(set) var lastSyncLine = "Never synced"
@@ -89,7 +91,8 @@ final class LibraryModel {
         }
         // The app searches one notebook at a time (only the curator sees across all of them).
         if scopeToNotebook == nil || !notebooks.contains(where: { $0.id == scopeToNotebook }) {
-            scopeToNotebook = notebooks.max(by: { $0.chunks < $1.chunks })?.id
+            let last = UserDefaults.standard.string(forKey: "lastNotebook")
+            scopeToNotebook = notebooks.first(where: { $0.id == last })?.id ?? notebooks.first?.id      // the desktop's order: first is the top one
         }
         let nb = scopeToNotebook
         Task.detached { await store.warmUp(notebook: nb) }          // build that notebook's vector block before the first question
@@ -257,6 +260,46 @@ final class LibraryModel {
               let p = try? JSONDecoder().decode(PersonalContext.self, from: data) else { return nil }
         personalCache[notebook] = p
         return p
+    }
+
+    /// Load the answer model as soon as the app opens, so the first question never waits for it. The wrapper that makes
+    /// prompt reading stoppable is checked with a short real answer first; if it does not produce one, the plain model is used.
+    func prepareAnswerModel() async {
+        if gemma != nil { answerModelState = .ready; return }
+        guard answerModelState != .loading else { return }
+        answerModelState = .loading
+        do {
+            SoakTrace.log("answer model load begins")
+            Memory.cacheLimit = 64 * 1024 * 1024
+            let plain = try await #huggingFaceLoadModelContainer(configuration: LLMRegistry.gemma4_e4b_it_4bit)
+            let wrapped = await StoppableLM.wrap(plain)
+            if await Self.producesAnAnswer(wrapped) {
+                gemma = wrapped
+                SoakTrace.log("answer model ready (stoppable prompt reading verified)")
+            } else {
+                gemma = plain
+                SoakTrace.log("answer model ready — stoppable wrapper REJECTED (no answer in time); using the plain model")
+            }
+            answerModelState = .ready
+        } catch {
+            answerModelState = .failed(error.localizedDescription)
+            SoakTrace.log("answer model failed: \(error.localizedDescription)")
+        }
+    }
+
+    /// A tiny real generation: proves the model works and warms the GPU kernels so the first question is quick.
+    private static func producesAnAnswer(_ container: ModelContainer) async -> Bool {
+        let result = AnswerCheck()
+        Task.detached {
+            let session = ChatSession(container, generateParameters: GenerateParameters(maxTokens: 6, temperature: 0))
+            let reply = (try? await session.respond(to: "Reply with the single word OK.")) ?? ""
+            result.finish(!reply.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        }
+        for _ in 0..<90 {                                   // up to 90 s; never wait on a model that may be stuck
+            if let done = result.value { return done }
+            try? await Task.sleep(for: .seconds(1))
+        }
+        return false
     }
 
     func stopAnswer() { generation?.cancel() }
@@ -541,4 +584,11 @@ final class LibraryModel {
             timing = "Question embedded in \(Int(embedSeconds * 1000)) ms · scanned \(result.scanned) chunks in \(Int(result.seconds * 1000)) ms"
         } catch { searchState = .failed(error.localizedDescription) }
     }
+}
+
+private final class AnswerCheck: @unchecked Sendable {
+    private let lock = NSLock()
+    private var outcome: Bool?
+    func finish(_ ok: Bool) { lock.lock(); outcome = ok; lock.unlock() }
+    var value: Bool? { lock.lock(); defer { lock.unlock() }; return outcome }
 }

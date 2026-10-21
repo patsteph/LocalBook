@@ -4,6 +4,8 @@ struct AskView: View {
     let library: LibraryModel
     @FocusState private var focused: Bool
     @State private var showSources = false
+    @State private var picking = false
+    @State private var waited = 0
 
     var body: some View {
         @Bindable var model = library
@@ -14,11 +16,20 @@ struct AskView: View {
                         ContentUnavailableView("No notebooks yet", systemImage: "books.vertical",
                                                description: Text("Open the Notebooks tab and sync with your Mac."))
                     } else {
-                        if library.answerText.isEmpty && !library.answering && library.answerStatus.isEmpty {
+                        if !ready {
+                            PreparingCard(library: library)
+                        } else if library.answerText.isEmpty && !library.answering && library.answerStatus.isEmpty {
                             intro
                         }
                         if library.answering && library.answerText.isEmpty {
-                            HStack { ProgressView(); Text(library.answerStatus.isEmpty ? "Thinking…" : library.answerStatus).font(.footnote).foregroundStyle(.secondary) }
+                            VStack(alignment: .leading, spacing: 6) {
+                                HStack { ProgressView(); Text("Reading your notebook… \(waited) s").font(.footnote).foregroundStyle(.secondary) }
+                                if waited > 30 { Text("This is taking longer than usual. You can stop and ask again.").font(.caption).foregroundStyle(.orange) }
+                            }
+                            .task(id: library.answering) {
+                                waited = 0
+                                while library.answering && library.answerText.isEmpty { try? await Task.sleep(for: .seconds(1)); waited += 1 }
+                            }
                         }
                         if !library.answerText.isEmpty {
                             Text(AnswerText.render(library.answerText)).textSelection(.enabled)
@@ -39,20 +50,24 @@ struct AskView: View {
             .scrollDismissesKeyboard(.interactively)
             .safeAreaInset(edge: .bottom) { composer }
             .navigationTitle("Ask")
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Menu {
-                        Picker("Notebook", selection: $model.scopeToNotebook) {
-                            ForEach(library.notebooks) { Text($0.title).tag(String?.some($0.id)) }
+                ToolbarItem(placement: .principal) {
+                    Button { picking = true } label: {
+                        HStack(spacing: 4) {
+                            Text(currentTitle).font(.headline).lineLimit(1)
+                            Image(systemName: "chevron.down").font(.caption.weight(.semibold))
                         }
-                    } label: {
-                        Label(currentTitle, systemImage: "books.vertical").labelStyle(.titleAndIcon).font(.footnote)
                     }
-                    .disabled(library.notebooks.isEmpty)
+                    .buttonStyle(.plain).disabled(library.notebooks.isEmpty || library.answering)
+                    .accessibilityLabel("Notebook: \(currentTitle). Tap to change.")
                 }
             }
+            .sheet(isPresented: $picking) { NotebookPicker(library: library) }
         }
     }
+
+    private var ready: Bool { library.searchState == .ready && library.answerModelState == .ready }
 
     private var currentTitle: String {
         library.notebooks.first { $0.id == library.scopeToNotebook }?.title ?? "Notebook"
@@ -63,8 +78,6 @@ struct AskView: View {
             Label("Private by design", systemImage: "lock.fill").font(.footnote.weight(.semibold))
             Text("Ask about anything in “\(currentTitle)”. The question is searched and answered on this phone; nothing is sent to your Mac or anywhere else.")
                 .font(.footnote).foregroundStyle(.secondary)
-            if case .preparing(let what) = library.searchState { HStack { ProgressView(); Text(what).font(.caption) } }
-            if case .failed(let why) = library.searchState { Text(why).font(.caption).foregroundStyle(.red) }
         }
         .padding().frame(maxWidth: .infinity, alignment: .leading)
         .background(.quaternary, in: RoundedRectangle(cornerRadius: 12))
@@ -98,14 +111,14 @@ struct AskView: View {
                 Button { library.stopAnswer() } label: { Image(systemName: "stop.circle.fill").font(.title) }
             } else {
                 Button(action: send) { Image(systemName: "arrow.up.circle.fill").font(.title) }
-                    .disabled(library.query.trimmingCharacters(in: .whitespaces).isEmpty || library.searchState != .ready)
+                    .disabled(library.query.trimmingCharacters(in: .whitespaces).isEmpty || !ready)
             }
         }
         .padding(.horizontal).padding(.vertical, 8).background(.bar)
     }
 
     private func send() {
-        guard library.searchState == .ready, !library.answering else { return }
+        guard ready, !library.answering else { return }
         focused = false
         showSources = false
         Task { await library.ask() }
@@ -130,5 +143,39 @@ enum AnswerText {
             out.append(piece)
         }
         return out
+    }
+}
+
+/// What the phone is getting ready before the first question: a short, honest checklist.
+struct PreparingCard: View {
+    let library: LibraryModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Getting ready").font(.headline)
+            row("Your notebooks", done: !library.notebooks.isEmpty)
+            row("Search", done: library.searchState == .ready, failed: failure(library.searchState))
+            row("Answers", done: library.answerModelState == .ready, failed: answerFailure)
+            Text("This happens once each time the app opens, and takes about a minute. You can read your notebooks meanwhile.")
+                .font(.footnote).foregroundStyle(.secondary)
+        }
+        .padding().frame(maxWidth: .infinity, alignment: .leading)
+        .background(.quaternary, in: RoundedRectangle(cornerRadius: 12))
+    }
+
+    private func failure(_ s: LibraryModel.SearchState) -> String? { if case .failed(let why) = s { return why } else { return nil } }
+    private var answerFailure: String? { if case .failed(let why) = library.answerModelState { return why } else { return nil } }
+
+    @ViewBuilder private func row(_ title: String, done: Bool, failed: String? = nil) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            if let failed {
+                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                VStack(alignment: .leading) { Text(title); Text(failed).font(.caption).foregroundStyle(.secondary) }
+            } else if done {
+                Image(systemName: "checkmark.circle.fill").foregroundStyle(.green); Text(title)
+            } else {
+                ProgressView().controlSize(.small); Text(title).foregroundStyle(.secondary)
+            }
+        }
     }
 }

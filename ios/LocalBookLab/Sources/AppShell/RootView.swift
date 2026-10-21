@@ -15,7 +15,10 @@ struct RootView: View {
                 SettingsView(library: library, onForget: { paired = false })
                     .tabItem { Label("Settings", systemImage: "gearshape") }
             }
-            .task { await library.prepareSearch() }
+            .task {                                    // the app is not usable until both are ready, so start them at once
+                await library.prepareSearch()
+                await library.prepareAnswerModel()
+            }
         } else {
             OnboardingView(library: library, onDone: { paired = true })
         }

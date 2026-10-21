@@ -6,19 +6,19 @@ struct NotebooksView: View {
     var body: some View {
         NavigationStack {
             List {
-                Section {
-                    ForEach(library.notebooks) { n in
-                        HStack {
-                            Text(n.title)
-                            Spacer()
-                            Text("\(n.chunks) passages").font(.footnote).foregroundStyle(.secondary)
+                ForEach(NotebookGroups(library.notebooks).groups) { group in
+                    Section(group.section ?? "Notebooks") {
+                        ForEach(group.items) { n in
+                            HStack {
+                                Text(n.title)
+                                Spacer()
+                                Text("\(n.chunks) passages").font(.footnote).foregroundStyle(.secondary)
+                            }
                         }
                     }
-                    if library.notebooks.isEmpty {
-                        Text("Nothing here yet. Tap Sync to copy your library from your Mac.").foregroundStyle(.secondary)
-                    }
-                } footer: {
-                    Text("Notebooks kept on a single device never arrive.")
+                }
+                if library.notebooks.isEmpty {
+                    Section { Text("Nothing here yet. Tap Sync to copy your library from your Mac.").foregroundStyle(.secondary) }
                 }
                 Section {
                     switch library.syncState {
