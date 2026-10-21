@@ -138,31 +138,40 @@ async def phone_library_settings():
 
 @router.post("/phones/library")
 async def set_phone_library(req: PhoneLibraryRequest):
-    """Set which notebooks are kept off phones (everything else is visible)."""
+    """Older endpoint: sets the device-only list (the notebooks that sync with no other device)."""
     from services.sync import phone_library
     phone_library.set_excluded(req.excluded)
     return {"notebooks": phone_library.settings_view()}
 
 
+def _notebook_view():
+    from services.sync import phone_library, scope
+    local, legacy = set(scope.local_notebooks()), set(scope.legacy_phone_only())
+    return {"notebooks": [{"id": i, "title": t, "syncs": i not in local, "phones_only_off": i in legacy and i not in local}
+                          for i, t in sorted(phone_library.notebook_titles().items(), key=lambda kv: kv[1].lower())]}
+
+
 @router.get("/notebooks")
 async def sync_notebooks():
-    """Every notebook and whether it syncs with other devices (off = kept on this Mac only)."""
-    from services.sync import phone_library
-    return {"notebooks": [{"id": n["id"], "title": n["title"], "syncs": n["on_phone"]}
-                          for n in phone_library.settings_view()]}
+    """Every notebook and whether it syncs with other devices (off = kept on this device only).
+    `phones_only_off` marks a notebook from the older setting that kept it off phones but let Macs sync it."""
+    return _notebook_view()
 
 
 class SyncNotebooksRequest(BaseModel):
     keep_local: list[str]
+    share_with_phones: list[str] = []
 
 
 @router.post("/notebooks")
 async def set_sync_notebooks(req: SyncNotebooksRequest):
-    """Set which notebooks stay on this Mac only. Everything else syncs with every paired device."""
-    from services.sync import phone_library
-    phone_library.set_excluded(req.keep_local)
-    return {"notebooks": [{"id": n["id"], "title": n["title"], "syncs": n["on_phone"]}
-                          for n in phone_library.settings_view()]}
+    """Set which notebooks stay on this device only (they sync with no other device). `share_with_phones` lifts an
+    older phones-only mark without changing how the notebook syncs between Macs."""
+    from services.sync import scope
+    scope.set_local(req.keep_local)
+    if req.share_with_phones:
+        scope.clear_phones_only(req.share_with_phones)
+    return _notebook_view()
 
 
 @router.post("/phones/{device_id}/revoke")

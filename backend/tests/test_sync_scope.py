@@ -74,3 +74,32 @@ def test_tables_that_name_the_notebook_differently_are_covered():
     assert scope.notebooks_of("main", "documents", ["core_memory", "x"], ("kind", "key"), lambda c: None) == set()
     assert scope.notebooks_of("brain", "insights", ["u"], ("uid",), lambda c: '["a","b"]' if c == "notebooks" else None) == {"a", "b"}
     assert scope.notebooks_of("main", "notebooks", ["n4"], ("id",), lambda c: None) == {"n4"}
+
+
+def test_a_memory_learned_in_a_device_only_notebook_is_not_shared():
+    scope.install_conversations(lambda cid: ["private"] if cid == "conv-1" else [])
+    try:
+        body = '{"key": "likes", "value": "x", "source_conversation_id": "conv-1"}'
+        found = scope.notebooks_of("main", "documents", ["core_memory", "m1"], ("kind", "key"),
+                                   lambda c: body if c == "body_json" else None)
+        assert found == {"private"} and scope.touches(frozenset({"private"}), found)
+        other = scope.notebooks_of("main", "documents", ["core_memory", "m2"], ("kind", "key"),
+                                   lambda c: '{"source_conversation_id": "other"}' if c == "body_json" else None)
+        assert other == set()
+    finally:
+        scope.install_conversations(lambda cid: ())
+
+
+def test_older_phones_only_marks_keep_their_meaning(monkeypatch):
+    kv = {"phone_excluded_notebooks": ["old"], "local_only_notebooks": []}
+    from services.sync import store
+    monkeypatch.setattr(store, "get", lambda k, d=None: kv.get(k, d))
+    monkeypatch.setattr(store, "put", lambda k, v: kv.__setitem__(k, v))
+    assert scope.local_notebooks() == [] and scope.hidden_from_phones() == ["old"]      # Macs still sync it; phones don't read it
+    scope.set_local(["new"])
+    assert scope.hidden_from_phones() == ["new", "old"] and scope.local_notebooks() == ["new"]
+    scope.set_local(["new", "old"])                                                     # now device-only: the older mark is redundant
+    assert kv["phone_excluded_notebooks"] == [] and scope.local_notebooks() == ["new", "old"]
+    scope.clear_phones_only(["old"])                                                    # (no effect now) and nothing breaks
+    scope.set_local([])
+    assert scope.hidden_from_phones() == []

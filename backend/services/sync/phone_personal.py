@@ -2,7 +2,7 @@
 notebook's entities and relationships (which the Mac uses to boost passages and to add context).
 
 Query-dependent memory (archival search, recent chat turns) is not sent: it changes with every question.
-Notebooks the user keeps off phones send nothing."""
+Notebooks kept on one device send nothing, and neither does anything learned in them."""
 import hashlib
 import json
 from typing import Any, Dict, List, Optional
@@ -40,7 +40,14 @@ def personal(notebook_id: str) -> Optional[Dict[str, Any]]:
     from api.settings import build_user_context, get_user_profile_sync
     from storage.memory_store import memory_store
     try:
-        core = memory_store.load_core_memory().to_prompt_block()
+        from models.memory import CoreMemory
+        from services.sync import scope
+        hidden = frozenset(phone_library.excluded())
+        memory = memory_store.load_core_memory()
+        # nothing learned in a notebook phones may not read goes to the phone
+        kept = [e for e in memory.entries
+                if not scope.touches(hidden, scope.conversation_notebooks(e.source_conversation_id))]
+        core = CoreMemory(entries=kept).to_prompt_block()
     except Exception:
         core = ""
     body = {"notebook_id": notebook_id, "user_context": build_user_context(get_user_profile_sync()),

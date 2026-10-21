@@ -538,3 +538,23 @@ def _collector_status() -> Dict[str, Any]:
 
 # Keep the engine and the phone endpoints honest about notebooks kept on this Mac.
 scope.install(lambda r: scope.local_notebooks())
+
+
+def _conversation_notebooks(conversation_id: str):
+    """Notebook ids of a conversation (this Mac's recall database, read-only)."""
+    import sqlite3
+    path = runtime.data_dir() / runtime.DB_FILES["recall"]
+    if not path.exists():
+        return ()
+    c = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=5)
+    try:
+        return [r[0] for r in c.execute(
+            "SELECT DISTINCT notebook_id FROM recall_entries WHERE conversation_id=? AND notebook_id IS NOT NULL",
+            (conversation_id,))]
+    except Exception:
+        return ()
+    finally:
+        c.close()
+
+
+scope.install_conversations(_conversation_notebooks)

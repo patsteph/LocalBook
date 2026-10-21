@@ -25,7 +25,7 @@ struct LibraryView: View {
                         .font(.footnote).foregroundStyle(.secondary)
                 }
             } header: { Text("Library") } footer: {
-                Text("Needs the Mac app running with sync on, and this phone paired (row 3). Notebooks switched to “Keep off phones” on the Mac never arrive.")
+                Text("Needs the Mac app running with sync on, and this phone paired (row 3). Notebooks kept on a single device never arrive.")
             }
 
             Section("Notebooks") {

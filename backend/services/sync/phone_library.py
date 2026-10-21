@@ -9,7 +9,7 @@ Read-only. Three calls, all signed by the phone (peer._verified_phone):
   sources   one notebook's sources, each with a content hash (the phone diffs against its own)
   chunks    a page of chunks (text + float16 vector) for a notebook, optionally for chosen sources
 
-Privacy: every notebook is visible unless the owner switched it to "Keep off phones". The switch is
+Privacy: every notebook is visible unless the owner kept it on one device only (sync/scope.py). The list is
 a per-Mac setting (sync.db), not a synced one. Excluded notebooks are indistinguishable from missing
 ones to the phone.
 """
@@ -38,12 +38,13 @@ _cache_lock = threading.Lock()
 
 
 def excluded() -> List[str]:
-    """Notebooks kept on this Mac only (they reach neither phones nor other Macs). See sync/scope.py."""
+    """Notebooks phones must not read: the device-only ones (sync/scope.py) plus the older phones-only marks."""
     from services.sync import scope
-    return scope.local_notebooks()
+    return scope.hidden_from_phones()
 
 
 def set_excluded(notebook_ids: List[str]) -> List[str]:
+    """Kept for callers of the old phones-only endpoint: it now sets the device-only list."""
     from services.sync import scope
     return scope.set_local(notebook_ids)["now"]
 

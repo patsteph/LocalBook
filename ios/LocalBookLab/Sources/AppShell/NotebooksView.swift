@@ -18,7 +18,7 @@ struct NotebooksView: View {
                         Text("Nothing here yet. Tap Sync to copy your library from your Mac.").foregroundStyle(.secondary)
                     }
                 } footer: {
-                    Text("Notebooks you switched to “Kept off phones” on the Mac never arrive.")
+                    Text("Notebooks kept on a single device never arrive.")
                 }
                 Section {
                     switch library.syncState {

@@ -21,7 +21,7 @@ struct SettingsView: View {
                     Text(library.lastSyncLine).font(.footnote).foregroundStyle(.secondary)
                 }
                 Section {
-                    Text("Questions are searched and answered on this phone. Nothing about them is sent to your Mac or anywhere else. The library is a copy of what your Mac chose to share; switch a notebook to “Kept off phones” on the Mac to stop it arriving.")
+                    Text("Questions are searched and answered on this phone. Nothing about them is sent to your Mac or anywhere else. The library is a copy of what your Mac chose to share; keep a notebook on one device only, on your Mac, to stop it arriving.")
                         .font(.footnote)
                 } header: { Text("Privacy") }
                 Section("About") {

@@ -56,7 +56,7 @@ type Status = {
     } | null;
 };
 type Conflict = { id: string; tbl: string; pk?: string; field: string; kind: string; kept_value: any; other_value: any; created_at: string };
-type SyncNotebook = { id: string; title: string; syncs: boolean };
+type SyncNotebook = { id: string; title: string; syncs: boolean; phones_only_off?: boolean };
 
 function ago(t?: number | null): string {
     if (!t) return 'never';
@@ -158,11 +158,18 @@ export function SyncSection() {
         finally { setBusy(null); }
     };
 
-    // Off = this notebook stays on this Mac: it syncs with no other device (Mac or phone).
+    // Off = this notebook stays on this device: it syncs with no other device (Mac or phone).
     const toggleNotebook = (id: string, syncs: boolean) => run(`nb-${id}`, async () => {
         const next = (notebooks ?? []).map((n) => (n.id === id ? { ...n, syncs } : n));
         const { data } = await api.post<{ notebooks: SyncNotebook[] }>(
             '/sync/notebooks', { keep_local: next.filter((n) => !n.syncs).map((n) => n.id) });
+        setNotebooks(data.notebooks);
+    });
+
+    // A notebook from the older setting that syncs between Macs but is not shared with phones: lift that, nothing else.
+    const shareWithPhones = (id: string) => run(`nb-${id}`, async () => {
+        const { data } = await api.post<{ notebooks: SyncNotebook[] }>(
+            '/sync/notebooks', { keep_local: (notebooks ?? []).filter((n) => !n.syncs).map((n) => n.id), share_with_phones: [id] });
         setNotebooks(data.notebooks);
     });
 
@@ -439,16 +446,24 @@ export function SyncSection() {
                             <div>
                                 <h3 className={zoneTitle}>What syncs</h3>
                                 <p className="mt-1 text-xs text-gray-500">
-                                    Turn a notebook off to keep it on this Mac only — it won't sync with any other device.
+                                    Turn a notebook off to keep it on this device only — it won't sync with any other device.
                                     New notebooks sync. Devices that already have a copy keep it.
                                 </p>
                             </div>
                             <ul className="divide-y divide-gray-800">
                                 {notebooks.map((n) => (
                                     <li key={n.id} className="flex items-center justify-between gap-3 py-2">
-                                        <span className="truncate text-gray-200">{n.title}</span>
-                                        <span className="flex items-center gap-2 text-xs text-gray-400">
-                                            {n.syncs ? 'Syncs' : 'This Mac only'}
+                                        <span className="min-w-0 truncate text-gray-200">
+                                            {n.title}
+                                            {n.phones_only_off && (
+                                                <span className="ml-2 text-xs text-amber-300">
+                                                    not shared with phones (earlier setting){' '}
+                                                    <button className="text-blue-300 hover:underline" disabled={!!busy} onClick={() => void shareWithPhones(n.id)}>Share</button>
+                                                </span>
+                                            )}
+                                        </span>
+                                        <span className="flex shrink-0 items-center gap-2 text-xs text-gray-400">
+                                            <span className={n.syncs ? '' : 'text-amber-300'}>{n.syncs ? 'Sync this notebook' : 'Kept on this device only'}</span>
                                             <Switch on={n.syncs} disabled={!!busy} label={`Sync ${n.title}`} onChange={(v) => void toggleNotebook(n.id, v)} />
                                         </span>
                                     </li>
