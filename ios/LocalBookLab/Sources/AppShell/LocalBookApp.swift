@@ -15,6 +15,9 @@ struct LocalBookApp: App {
                     library.askMode = .phone
                     await library.open()
                 }
+                .onReceive(NotificationCenter.default.publisher(for: UIApplication.didReceiveMemoryWarningNotification)) { _ in
+                    library.trimMemory()
+                }
                 .onReceive(NotificationCenter.default.publisher(for: ProcessInfo.thermalStateDidChangeNotification)) { _ in
                     library.thermalCheck()
                 }

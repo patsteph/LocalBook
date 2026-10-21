@@ -126,30 +126,47 @@ final class LibraryModel {
         }
     }
 
-    /// Download/compile the search model if needed and load the tokenizer.
+    /// Load the search model, the tokenizer and the re-ranker at the same time (they use different parts of the
+    /// phone, and the search model alone takes about 13 s), then open Ask.
     func prepareSearch() async {
         guard engine == nil else { return }
+        let started = Date()
+        searchState = .preparing("Search…")
+        async let tokenizerLoad: any Tokenizers.Tokenizer = {
+            let t = Date()
+            let tok = try await AutoTokenizer.from(pretrained: LibrarySync.expectedModel)
+            Self.lap("tokenizer loaded", since: t)
+            return tok
+        }()
+        async let rerankerLoad: Void = {
+            let t = Date()
+            await self.prepareReranker()
+            Self.lap("reranker loaded", since: t)
+        }()
         do {
-            searchState = .preparing("Search model…")
             var t = Date()
-            func lap(_ what: String) { SoakTrace.log("startup: \(what) in \(String(format: "%.1f", Date().timeIntervalSince(t))) s"); t = Date() }
             let location = try await EmbeddingModelStore.prepare { _ in }
-            lap("search files checked")
+            Self.lap("search files checked", since: t)
             let e = try EmbeddingGemma2Engine(location: location)
-            searchState = .preparing("Warming up (first time only)…")
+            t = Date()
             _ = try await e.warmUp()
-            lap("search model loaded")
-            searchState = .preparing("Tokenizer…")
-            tokenizer = try await AutoTokenizer.from(pretrained: LibrarySync.expectedModel)
-            lap("tokenizer loaded")
+            Self.lap("search model loaded", since: t)
+            tokenizer = try await tokenizerLoad
+            await rerankerLoad
             engine = e
-            searchState = .preparing("Re-ranker…")          // a question waits for the re-ranker, or its passages would be ordered worse
-        } catch { searchState = .failed(error.localizedDescription); return }
-        let t0 = Date()
-        await prepareReranker()
-        SoakTrace.log("startup: reranker ready in \(String(format: "%.1f", Date().timeIntervalSince(t0))) s")
-        searchState = .ready
+            searchState = .ready                        // a question waits for all three, or its passages would be ordered worse
+            Self.lap("search ready", since: started)
+        } catch {
+            searchState = .failed(error.localizedDescription)
+            _ = try? await tokenizerLoad
+            await rerankerLoad
+        }
     }
+
+    nonisolated static func lap(_ what: String, since t: Date) { SoakTrace.log("startup: \(what) in \(String(format: "%.1f", Date().timeIntervalSince(t))) s") }
+
+    /// Drop MLX's spare buffers when iOS says memory is tight (the answer model's weights stay).
+    func trimMemory() { Memory.clearCache() }
 
     /// Load the Core ML reranker (the Mac's own model) and check it against scores the Mac produced.
     func prepareReranker() async {
@@ -161,11 +178,14 @@ final class LibraryModel {
         do {
             rerankerLine = "Reranker: loading…"
             let r = try await RerankerEngine()
-            let c = try await r.check()
             reranker = r
-            rerankerLine = "Reranker (the Mac's MiniLM-L-12): token match \(c.encodingMatches)/\(c.encodingTotal) · "
-                + "score agreement with the Mac \(String(format: "%.2f", c.rankCorrelation)) · same top 5 \(Int(c.top5Overlap * 100))% · "
-                + "\(Int(c.millisecondsPerBatch)) ms per 12 passages"
+            rerankerLine = "Reranker: loaded, checking against the Mac…"
+            Task {                                                    // the check is proof for the About screen, not needed to answer
+                guard let c = try? await r.check() else { self.rerankerLine = "Reranker: loaded (check failed)"; return }
+                self.rerankerLine = "Reranker (the Mac's MiniLM-L-12): token match \(c.encodingMatches)/\(c.encodingTotal) · "
+                    + "score agreement with the Mac \(String(format: "%.2f", c.rankCorrelation)) · same top 5 \(Int(c.top5Overlap * 100))% · "
+                    + "\(Int(c.millisecondsPerBatch)) ms per 12 passages"
+            }
         } catch { rerankerLine = "Reranker failed: \(error.localizedDescription)" }
     }
 
