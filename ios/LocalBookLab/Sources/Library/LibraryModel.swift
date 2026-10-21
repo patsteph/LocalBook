@@ -487,7 +487,7 @@ final class LibraryModel {
                     for try await item in session.streamDetails(to: prompt) {
                         switch item {
                         case .chunk(let s):
-                            if firstWord == nil { firstWord = Date().timeIntervalSince(started) }
+                            if firstWord == nil { firstWord = Date().timeIntervalSince(started); SoakTrace.log("first token after \(String(format: "%.1f", firstWord ?? 0)) s") }
                             answerText += s
                         case .info(let i): info = i
                         default: break

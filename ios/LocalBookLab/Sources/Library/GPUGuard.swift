@@ -12,11 +12,27 @@ enum GPUGuard {
             onLock()
             task.cancel()                                   // 1. no new tokens
             SoakTrace.log("GPUGuard[\(label)]: cancelled, draining GPU")
-            Stream().synchronize()                          // 2. finish the step already on the GPU, while that is still allowed
-            Thread.sleep(forTimeInterval: 0.04)             // 3. a step the loop queued while it was being cancelled…
-            Stream().synchronize()                          //    …is drained too
-            SoakTrace.log("GPUGuard[\(label)]: GPU idle")
+            // 2. let the GPU finish what is queued while we are still allowed to use it — but never wait forever: a
+            //    GPU that has already stopped answering must not take the main thread (and the whole app) with it.
+            let drained = drain(timeout: 2.0)
+            SoakTrace.log("GPUGuard[\(label)]: GPU \(drained ? "idle" : "STILL BUSY after 2 s — not waiting longer")")
+            if !drained { GPUGuard.suspect = true }
         }
+    }
+
+    /// Set when the GPU did not drain in time after a lock: the next answer reloads the model first.
+    nonisolated(unsafe) static var suspect = false
+
+    /// Wait (bounded) for everything queued on the GPU to complete. Runs the wait off the calling thread.
+    static func drain(timeout: TimeInterval) -> Bool {
+        let done = DispatchSemaphore(value: 0)
+        DispatchQueue.global(qos: .userInitiated).async {
+            Stream().synchronize()
+            Thread.sleep(forTimeInterval: 0.04)             // a step queued while the loop was being cancelled…
+            Stream().synchronize()                          // …is drained too
+            done.signal()
+        }
+        return done.wait(timeout: .now() + timeout) == .success
     }
 
     /// Don't start GPU work unless the app is in front.

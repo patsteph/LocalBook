@@ -6,6 +6,8 @@ import SwiftUI
 struct LocalBookApp: App {
     @State private var library = LibraryModel()
 
+    init() { SoakTrace.startSession("LocalBook") }
+
     var body: some Scene {
         WindowGroup {
             RootView(library: library)
