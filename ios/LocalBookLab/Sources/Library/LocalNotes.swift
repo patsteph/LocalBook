@@ -126,38 +126,50 @@ extension LibraryModel {
 
     /// Send notes made here to the Mac (it indexes them like its own), pull them back with a sync, and drop the
     /// phone-only copies once the Mac's version has arrived. Quietly leaves them in place when the Mac is out of reach.
+    /// Keeps going while there is something to send (notes added meanwhile) or the Mac is still indexing what it got.
     func flushNotes() async {
         guard let store, let mac = MacLink.paired, !flushingNotes else { return }
         flushingNotes = true
         defer { flushingNotes = false }
-        var sentAny = false
         noteSendProblem = nil
-        for note in await store.localNotes() where await noteSentSourceId(note.id) == nil {
-            if note.text.isEmpty { continue }                       // a picture with no text has nothing to send yet
-            do {
-                let data = try await MacLink.signedCall(mac, path: "/phone/library/note", json: [
-                    "notebook_id": note.notebookId, "client_id": note.id, "title": note.title, "text": note.text, "kind": note.kind,
-                ], timeout: 180)
-                let sid = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["source_id"] as? String
-                guard let sid, !sid.isEmpty else { noteSendProblem = "The Mac's reply wasn't understood."; break }
-                try await store.setMeta(Self.sentKey(note.id), sid)
-                sentAny = true
-            } catch {
-                noteSendProblem = "Waiting for the Mac: \(error.localizedDescription)"
-                break
-            }
-        }
-        if sentAny { await sync() }
-        for note in await store.localNotes() {
-            guard !note.text.isEmpty, let sid = await noteSentSourceId(note.id) else { continue }
-            if await store.sourceHashes(notebook: note.notebookId)[sid] != nil {
-                if note.hasPicture { try? await store.removeLocalNoteText(notebook: note.notebookId, sourceId: note.id) }   // keep the picture
-                else {
-                    try? await store.removeLocalNote(notebook: note.notebookId, sourceId: note.id)
-                    try? await store.setMeta(Self.sentKey(note.id), "")
+        var waits = 0
+        while true {
+            var sentAny = false
+            for note in await store.localNotes() where await noteSentSourceId(note.id) == nil {
+                if note.text.isEmpty { continue }                       // a picture with no text has nothing to send yet
+                do {
+                    let data = try await MacLink.signedCall(mac, path: "/phone/library/note", json: [
+                        "notebook_id": note.notebookId, "client_id": note.id, "title": note.title, "text": note.text, "kind": note.kind,
+                    ], timeout: 180)
+                    let sid = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["source_id"] as? String
+                    guard let sid, !sid.isEmpty else { noteSendProblem = "The Mac's reply wasn't understood."; await refresh(); return }
+                    try await store.setMeta(Self.sentKey(note.id), sid)
+                    sentAny = true
+                } catch {
+                    noteSendProblem = "Waiting for the Mac: \(error.localizedDescription)"
+                    await refresh()
+                    return
                 }
             }
+            if sentAny { await sync() }
+            var pending = 0                                             // sent, but the Mac has not finished indexing it yet
+            var unsent = 0
+            for note in await store.localNotes() where !note.text.isEmpty {
+                guard let sid = await noteSentSourceId(note.id) else { unsent += 1; continue }
+                if await store.sourceHashes(notebook: note.notebookId)[sid] != nil {
+                    if note.hasPicture { try? await store.removeLocalNoteText(notebook: note.notebookId, sourceId: note.id) }   // keep the picture
+                    else {
+                        try? await store.removeLocalNote(notebook: note.notebookId, sourceId: note.id)
+                        try? await store.setMeta(Self.sentKey(note.id), "")
+                    }
+                } else { pending += 1 }
+            }
+            await refresh()
+            if unsent > 0 { continue }
+            guard pending > 0, waits < 30 else { return }               // look again every 20 s for up to 10 minutes
+            waits += 1
+            try? await Task.sleep(for: .seconds(20))
+            await sync()
         }
-        await refresh()
     }
 }
