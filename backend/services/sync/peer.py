@@ -447,6 +447,20 @@ phone_pair_app = FastAPI(title="LocalBook phone pairing", docs_url=None, redoc_u
 phone_sync_app = FastAPI(title="LocalBook phone sync", docs_url=None, redoc_url=None, openapi_url=None)
 
 
+@phone_sync_app.middleware("http")
+async def _log_phone_request(request: Request, call_next):
+    """One line per phone request (they are few): what arrived, how it ended, how long it took."""
+    started = time.monotonic()
+    logger.warning("[phone] %s arrived", request.url.path)
+    try:
+        response = await call_next(request)
+    except BaseException as exc:
+        logger.warning("[phone] %s failed after %.1fs: %s", request.url.path, time.monotonic() - started, type(exc).__name__)
+        raise
+    logger.warning("[phone] %s -> %s in %.1fs", request.url.path, response.status_code, time.monotonic() - started)
+    return response
+
+
 def phone_pair_port() -> int:
     return sync_port() + 2
 
