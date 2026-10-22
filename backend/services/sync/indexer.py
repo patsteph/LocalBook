@@ -80,9 +80,13 @@ def _index_state(notebook_id: str):
     crowd search results with the same passage, so such a source is re-indexed once."""
     from services import rag_storage
 
+    from services import embedding_migration as em
+
     db = rag_storage._get_db()
     name = f"notebook_{notebook_id}"
-    if name not in db.table_names():
+    # By directory, not db.table_names(): that lists only the first 10 tables, so every notebook after the tenth
+    # looked unindexed and ALL of its sources were deleted and re-embedded at every sync (found 2026-10-22).
+    if name not in em._tables(em._live_dir()):
         return set(), set()
     t = db.open_table(name)
     try:
@@ -245,9 +249,9 @@ def _pace() -> float:
 
 
 def _tables() -> List[str]:
-    from services import rag_storage
+    from services import embedding_migration as em
 
-    return [n[len("notebook_"):] for n in rag_storage._get_db().table_names() if n.startswith("notebook_")]
+    return [n[len("notebook_"):] for n in em._tables(em._live_dir())]
 
 
 def _forget(reindex: Iterable[str] = (), unindex: Iterable[str] = ()) -> None:
