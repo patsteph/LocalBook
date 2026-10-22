@@ -140,11 +140,22 @@ def plan() -> Dict[str, Any]:
     for s in srcs:
         by_nb.setdefault(s["notebook_id"], []).append(s)
     todo = []
+    why: Dict[str, List[str]] = {"changed": [], "duplicate chunks": [], "no index rows": []}
     for nb, items in by_nb.items():
         have, dupes = _index_state(nb)
         for s in items:
-            if s["id"] in re_ids or s["id"] in dupes or (s["chunks"] > 0 and s["id"] not in have):
-                todo.append(s)
+            if s["id"] in re_ids:
+                why["changed"].append(s["filename"])
+            elif s["id"] in dupes:
+                why["duplicate chunks"].append(s["filename"])
+            elif s["chunks"] > 0 and s["id"] not in have:
+                why["no index rows"].append(s["filename"])
+            else:
+                continue
+            todo.append(s)
+    if todo:
+        logger.warning("[sync-index] %d source(s) to index: %s", len(todo),
+                       "; ".join(f"{len(v)} {k} (e.g. {', '.join(v[:2])})" for k, v in why.items() if v))
     present = {s["id"] for s in srcs}
     gone = [sid for sid in p.get("unindex", []) if sid not in present]
     return {"index": todo, "unindex": gone}
