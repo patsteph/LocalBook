@@ -476,6 +476,26 @@ def _proposed_backup() -> Optional[str]:
         return None
 
 
+def _with_line(last):
+    return {**last, "line": cycle_line(last)} if isinstance(last, dict) else last
+
+
+def cycle_line(last: Optional[Dict[str, Any]]) -> Optional[str]:
+    """One plain line for what the last sync cycle moved: "nothing changed", or the counts."""
+    if not last or not isinstance(last.get("result"), dict):
+        return None
+    try:
+        s = summarize(last["result"])
+        got, sent = sum(s["received"].values()), sum(s["sent"].values())
+        files = sum(int(v) for k, v in s["files"].items() if k in ("fetched", "sent") and isinstance(v, (int, float)))
+        idx = s["index"] if isinstance(s["index"], dict) else {}
+        indexed = sum(int(v) for k, v in idx.items() if k in ("indexed", "reindexed", "removed") and isinstance(v, (int, float)))
+        parts = [f"{n} {what}" for n, what in ((got, "received"), (sent, "sent"), (files, "files"), (indexed, "indexed")) if n]
+        return "nothing changed" if not parts else ", ".join(parts)
+    except Exception:
+        return None
+
+
 def status() -> Dict[str, Any]:
     from services import backup_scheduler
 
@@ -484,7 +504,7 @@ def status() -> Dict[str, Any]:
         devices.append({k: d.get(k) for k in ("device_id", "name", "host", "port", "role", "mode",
                                                "paired_at", "last_seen", "last_error")}
                        | {"fingerprint": d["fingerprint"][:16], "preview": store.preview(d["device_id"]),
-                          "last_sync": store.get(f"last_sync:{d['device_id']}"),
+                          "last_sync": _with_line(store.get(f"last_sync:{d['device_id']}")),
                           "model_mismatch": store.get(f"model_mismatch:{d['device_id']}") or {},
                           "preview_state": store.get(f"preview_state:{d['device_id']}")})
     stats = {"notebooks": None, "sources": None}

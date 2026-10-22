@@ -56,7 +56,8 @@ struct NotebooksView: View {
                         Label("Mac not reachable. Showing the copy on this phone.", systemImage: "wifi.slash").font(.footnote).foregroundStyle(.orange)
                         Button("Try again") { Task { await library.sync() } }
                     }
-                    Text(library.lastSyncLine).font(.footnote).foregroundStyle(.secondary)
+                    Text(library.lastSyncLine + (library.lastSummary.map { " · " + $0.changeLine } ?? ""))
+                        .font(.footnote).foregroundStyle(.secondary)
                 } header: { Text("Sync") } footer: {
                     Text("Your Mac must be running LocalBook with Sync on, on the same network.")
                 }

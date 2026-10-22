@@ -32,6 +32,14 @@ enum LibrarySync {
         var seconds = 0.0, bytes = 0
         var recipeVersion: String?
         var recipeProblems: [String] = []
+        /// What the last sync moved, in one plain line.
+        var changeLine: String {
+            if sourcesFetched == 0 && sourcesRemoved == 0 { return "nothing changed" }
+            var parts: [String] = []
+            if sourcesFetched > 0 { parts.append("\(sourcesFetched) sources copied") }
+            if sourcesRemoved > 0 { parts.append("\(sourcesRemoved) removed") }
+            return parts.joined(separator: ", ")
+        }
     }
 
     private static var decoder: JSONDecoder {

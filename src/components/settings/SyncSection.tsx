@@ -24,7 +24,7 @@ type Device = {
     device_id: string; name?: string; host?: string; port?: number; role?: string; mode?: string;
     last_seen?: number; last_error?: string; fingerprint: string;
     preview?: { genesis?: Record<string, number>; incoming?: { inserted: number; updated: number; deleted: number; conflicts: number }; created_at?: number } | null;
-    last_sync?: { at: number } | null;
+    last_sync?: { at: number; line?: string | null } | null;
     model_mismatch?: Record<string, { here: string; there: string }>;
     preview_state?: string | null;
 };
@@ -291,7 +291,7 @@ export function SyncSection() {
                                 const dot = bad ? 'bg-amber-400' : live && recent ? 'bg-emerald-400' : 'bg-gray-500';
                                 const sub = d.preview_state ? `${d.preview_state}…`
                                     : !live ? (d.preview ? 'Ready to start' : 'Paired — not syncing yet')
-                                    : `Synced ${ago(d.last_sync?.at)}`;
+                                    : `Synced ${ago(d.last_sync?.at)}${d.last_sync?.line ? ` · ${d.last_sync.line}` : ''}`;
                                 return (
                                     <li key={d.device_id} className="rounded border border-gray-700/60 bg-gray-800/40 px-3 py-2">
                                         <div className="flex items-center justify-between gap-3">
