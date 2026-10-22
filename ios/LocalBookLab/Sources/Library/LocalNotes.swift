@@ -137,19 +137,28 @@ extension LibraryModel {
             var sentAny = false
             for note in await store.localNotes() where await noteSentSourceId(note.id) == nil {
                 if note.text.isEmpty { continue }                       // a picture with no text has nothing to send yet
-                do {
-                    let data = try await MacLink.signedCall(mac, path: "/phone/library/note", json: [
-                        "notebook_id": note.notebookId, "client_id": note.id, "title": note.title, "text": note.text, "kind": note.kind,
-                    ], timeout: 180)
-                    let sid = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["source_id"] as? String
-                    guard let sid, !sid.isEmpty else { noteSendProblem = "The Mac's reply wasn't understood."; await refresh(); return }
-                    try await store.setMeta(Self.sentKey(note.id), sid)
-                    sentAny = true
-                } catch {
-                    noteSendProblem = "Waiting for the Mac: \(error.localizedDescription)"
-                    await refresh()
-                    return
+                var sid: String?
+                var attempt = 0
+                while sid == nil {
+                    do {
+                        let data = try await MacLink.signedCall(mac, path: "/phone/library/note", json: [
+                            "notebook_id": note.notebookId, "client_id": note.id, "title": note.title, "text": note.text, "kind": note.kind,
+                        ], timeout: 60)
+                        sid = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["source_id"] as? String
+                        if sid?.isEmpty != false { noteSendProblem = "The Mac's reply wasn't understood."; await refresh(); return }
+                    } catch {
+                        // The Mac may be busy indexing the last note. Asking again is safe: the same note id gets the same note.
+                        attempt += 1
+                        noteSendProblem = attempt < 5 ? "The Mac is busy; trying again (\(attempt) of 5)…"
+                                                      : "Waiting for the Mac: \(error.localizedDescription)"
+                        await refresh()
+                        if attempt >= 5 { return }
+                        try? await Task.sleep(for: .seconds(15))
+                    }
                 }
+                noteSendProblem = nil
+                try await store.setMeta(Self.sentKey(note.id), sid!)
+                sentAny = true
             }
             if sentAny { await sync() }
             var pending = 0                                             // sent, but the Mac has not finished indexing it yet

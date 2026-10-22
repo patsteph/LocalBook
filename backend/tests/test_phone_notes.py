@@ -13,7 +13,7 @@ def test_note_is_added_once_and_validated(tmp_path, monkeypatch):
     import api.sources as sources
     calls = []
 
-    async def fake_create(nb, req, bg, on_created=None):
+    async def fake_create(nb, req, bg, on_created=None, enable_hyde=True):
         calls.append((nb, req.title, req.content))
         await on_created(f"src{len(calls)}")
         return {"source_id": f"src{len(calls)}"}
@@ -39,7 +39,7 @@ def test_a_dropped_request_still_finishes_the_note_and_a_retry_gets_the_same_one
     import api.sources as sources
     calls = []
 
-    async def slow_create(nb, req, bg, on_created=None):
+    async def slow_create(nb, req, bg, on_created=None, enable_hyde=True):
         calls.append(req.title)
         await asyncio.sleep(0.3)
         await on_created("src1")
@@ -67,7 +67,7 @@ def test_timeline_work_queued_by_the_note_is_run(tmp_path, monkeypatch):
     import api.sources as sources
     ran = []
 
-    async def create(nb, req, bg, on_created=None):
+    async def create(nb, req, bg, on_created=None, enable_hyde=True):
         await on_created("src1")
         bg.add_task(lambda: ran.append("timeline"))
         return {"source_id": "src1"}
@@ -88,7 +88,7 @@ def test_the_phone_is_answered_before_indexing_finishes(tmp_path, monkeypatch):
     monkeypatch.setattr(phone_library, "is_visible", lambda n: True)
     import api.sources as sources
 
-    async def stuck(nb, req, bg, on_created=None):
+    async def stuck(nb, req, bg, on_created=None, enable_hyde=True):
         await on_created("src1")
         await asyncio.sleep(30)                           # indexing that never comes back in time
 

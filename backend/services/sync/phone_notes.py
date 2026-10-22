@@ -62,7 +62,7 @@ async def _create(notebook_id: str, client_id: str, key: str, title: str, text: 
 
     try:
         made = await make_note(notebook_id, NoteCreateRequest(title=title.strip()[:200] or "Phone note", content=text),
-                               background, on_created=_recorded)
+                               background, on_created=_recorded, enable_hyde=False)   # HyDE waits for an idle Mac; a note is searchable without it
     except BaseException as exc:
         if not started.done():
             started.set_exception(exc)
