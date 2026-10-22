@@ -13,11 +13,12 @@ def test_note_is_added_once_and_validated(tmp_path, monkeypatch):
     import api.sources as sources
     calls = []
 
-    async def fake_create(nb, req, bg):
+    async def fake_create(nb, req, bg, on_created=None):
         calls.append((nb, req.title, req.content))
+        await on_created(f"src{len(calls)}")
         return {"source_id": f"src{len(calls)}"}
 
-    monkeypatch.setattr(sources, "create_note", fake_create)
+    monkeypatch.setattr(sources, "make_note", fake_create)
 
     first = asyncio.run(phone_notes.add_note("nb", "c1", "T", "hello"))
     again = asyncio.run(phone_notes.add_note("nb", "c1", "T", "hello"))
@@ -38,12 +39,14 @@ def test_a_dropped_request_still_finishes_the_note_and_a_retry_gets_the_same_one
     import api.sources as sources
     calls = []
 
-    async def slow_create(nb, req, bg):
+    async def slow_create(nb, req, bg, on_created=None):
         calls.append(req.title)
+        await asyncio.sleep(0.3)
+        await on_created("src1")
         await asyncio.sleep(0.3)
         return {"source_id": "src1"}
 
-    monkeypatch.setattr(sources, "create_note", slow_create)
+    monkeypatch.setattr(sources, "make_note", slow_create)
 
     async def scenario():
         first = asyncio.create_task(phone_notes.add_note("nb", "c1", "T", "hello"))
@@ -64,15 +67,37 @@ def test_timeline_work_queued_by_the_note_is_run(tmp_path, monkeypatch):
     import api.sources as sources
     ran = []
 
-    async def create(nb, req, bg):
+    async def create(nb, req, bg, on_created=None):
+        await on_created("src1")
         bg.add_task(lambda: ran.append("timeline"))
         return {"source_id": "src1"}
 
-    monkeypatch.setattr(sources, "create_note", create)
+    monkeypatch.setattr(sources, "make_note", create)
 
     async def scenario():
         await phone_notes.add_note("nb", "c1", "T", "hello")
+        await asyncio.sleep(0.05)
         await asyncio.gather(*list(phone_notes._after))
 
     asyncio.run(scenario())
     assert ran == ["timeline"]
+
+
+def test_the_phone_is_answered_before_indexing_finishes(tmp_path, monkeypatch):
+    monkeypatch.setattr(runtime, "data_dir", lambda: tmp_path)
+    monkeypatch.setattr(phone_library, "is_visible", lambda n: True)
+    import api.sources as sources
+
+    async def stuck(nb, req, bg, on_created=None):
+        await on_created("src1")
+        await asyncio.sleep(30)                           # indexing that never comes back in time
+
+    monkeypatch.setattr(sources, "make_note", stuck)
+
+    async def scenario():
+        out = await asyncio.wait_for(phone_notes.add_note("nb", "c1", "T", "hello"), 2)
+        for t, _ in list(phone_notes._inflight.values()):
+            t.cancel()
+        return out
+
+    assert asyncio.run(scenario()) == {"source_id": "src1", "duplicate": False}

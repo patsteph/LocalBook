@@ -509,6 +509,12 @@ async def create_note(notebook_id: str, request: NoteCreateRequest, background_t
     Notes are first-class sources with type='note' and format='markdown'.
     They are indexed into LanceDB just like uploaded documents.
     """
+    return await make_note(notebook_id, request, background_tasks)
+
+
+async def make_note(notebook_id: str, request: NoteCreateRequest, background_tasks: BackgroundTasks, on_created=None):
+    """The work behind create_note. `on_created(source_id)` is awaited as soon as the source row exists,
+    before the (slow) indexing, for callers that need the id early."""
     from api.timeline import extract_timeline_for_source
 
     title = request.title.strip() or "Untitled Note"
@@ -529,6 +535,9 @@ async def create_note(notebook_id: str, request: NoteCreateRequest, background_t
             "status": "processing",
         }
     )
+
+    if on_created:
+        await on_created(source["id"])
 
     # 2. Ingest into RAG
     try:
