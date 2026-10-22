@@ -137,7 +137,7 @@ extension LibraryModel {
             do {
                 let data = try await MacLink.signedCall(mac, path: "/phone/library/note", json: [
                     "notebook_id": note.notebookId, "client_id": note.id, "title": note.title, "text": note.text, "kind": note.kind,
-                ], timeout: 30)
+                ], timeout: 180)
                 let sid = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["source_id"] as? String
                 guard let sid, !sid.isEmpty else { noteSendProblem = "The Mac's reply wasn't understood."; break }
                 try await store.setMeta(Self.sentKey(note.id), sid)
