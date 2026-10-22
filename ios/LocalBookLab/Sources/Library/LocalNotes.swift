@@ -157,7 +157,7 @@ extension LibraryModel {
                     }
                 }
                 noteSendProblem = nil
-                try await store.setMeta(Self.sentKey(note.id), sid!)
+                try? await store.setMeta(Self.sentKey(note.id), sid!)
                 sentAny = true
             }
             if sentAny { await sync() }
