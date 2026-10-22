@@ -48,7 +48,7 @@ enum LibrarySync {
 
     private static func call<T: Decodable>(_ mac: PairedMac, _ path: String, _ json: [String: Any] = [:],
                                            as: T.Type, bytes: inout Int) async throws -> T {
-        let data = try await MacLink.signedCall(mac, path: path, json: json)
+        let data = try await MacLink.signedCall(mac, path: path, json: json, timeout: 180)   // the Mac can take a while to total a big notebook
         bytes += data.count
         do { return try decoder.decode(T.self, from: data) }
         catch { throw LibraryError.badResponse("\(path): \(error.localizedDescription)") }
@@ -105,8 +105,13 @@ enum LibrarySync {
             let removed = have.keys.filter { remoteHashes[$0] == nil && !$0.hasPrefix(LocalNotes.prefix) }   // notes made on this phone are not the Mac's to remove
             let resend = remote.sources.filter { have[$0.sourceId] != $0.hash }.map(\.sourceId)
             sum.sourcesRemoved += removed.count
-            var rows: [LibraryChunk] = []
-            for batch in stride(from: 0, to: resend.count, by: 40).map({ Array(resend[$0..<min($0 + 40, resend.count)]) }) {
+            // Stored batch by batch: a sync that is cut short (phone locked, app closed, memory pressure) keeps
+            // what it already copied, and the next one fetches only the sources still missing. The notebook's
+            // digest is written with the last batch only, so a partial copy never looks finished.
+            let batches = stride(from: 0, to: resend.count, by: 40).map { Array(resend[$0..<min($0 + 40, resend.count)]) }
+            var received = 0
+            for (n, batch) in batches.enumerated() {
+                var rows: [LibraryChunk] = []
                 var after: ChunkPage.After?
                 repeat {
                     var body: [String: Any] = ["notebook_id": nb.id, "source_ids": batch, "limit": 200]
@@ -117,14 +122,21 @@ enum LibrarySync {
                         rows.append(.init(notebookId: nb.id, sourceId: r.sourceId, chunkIndex: r.chunkIndex, text: r.text,
                                           summary: r.summary, filename: r.filename, sourceType: r.sourceType, vector: vec))
                     }
-                    progress("\(nb.title): \(rows.count) chunks received")
+                    progress("\(nb.title): \(received + rows.count) chunks received")
                     after = page.more ? page.after : nil
                 } while after != nil
+                received += rows.count
+                let last = n == batches.count - 1
+                try await store.apply(notebook: nb.id, title: nb.title, digest: last ? nb.digest : "partial",
+                                      removed: n == 0 ? removed : [], resent: batch, chunks: rows,
+                                      hashes: remoteHashes.filter { batch.contains($0.key) })
+            }
+            if batches.isEmpty {
+                try await store.apply(notebook: nb.id, title: nb.title, digest: nb.digest, removed: removed, resent: [],
+                                      chunks: [], hashes: [:])
             }
             sum.sourcesFetched += resend.count
-            sum.chunksFetched += rows.count
-            try await store.apply(notebook: nb.id, title: nb.title, digest: nb.digest, removed: removed, resent: resend,
-                                  chunks: rows, hashes: remoteHashes.filter { resend.contains($0.key) })
+            sum.chunksFetched += received
         }
         // The desktop's order and sections (the manifest lists notebooks in the order the desktop shows them).
         try await store.setLayout(manifest.notebooks.enumerated().map { (id: $1.id, position: $0, section: $1.section, color: $1.color, collapsed: $1.collapsed ?? false) })
