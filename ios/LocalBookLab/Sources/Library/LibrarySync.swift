@@ -105,6 +105,7 @@ enum LibrarySync {
             let removed = have.keys.filter { remoteHashes[$0] == nil && !$0.hasPrefix(LocalNotes.prefix) }   // notes made on this phone are not the Mac's to remove
             let resend = remote.sources.filter { have[$0.sourceId] != $0.hash }.map(\.sourceId)
             sum.sourcesRemoved += removed.count
+            progress("\(nb.title): \(resend.count) of \(remote.sources.count) sources changed")
             // Stored batch by batch: a sync that is cut short (phone locked, app closed, memory pressure) keeps
             // what it already copied, and the next one fetches only the sources still missing. The notebook's
             // digest is written with the last batch only, so a partial copy never looks finished.

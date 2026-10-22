@@ -204,13 +204,36 @@ def manifest() -> Dict[str, Any]:
     return {"proto": PROTO, "embedder": embedder_key(), "notebooks": notebooks}
 
 
+_last_seen: Dict[str, Dict[str, Any]] = {}      # per notebook: what the last /sources answer said, to spot churn
+
+
+def _note_churn(notebook_id: str, sums: Dict[str, Dict[str, Any]]) -> None:
+    """Log how much of a notebook changed between two phone comparisons. A notebook nobody touched should
+    report 0: a large number means something on this Mac keeps rewriting it."""
+    before = _last_seen.get(notebook_id)
+    _last_seen[notebook_id] = {sid: (s["hash"], s["chunks"]) for sid, s in sums.items()}
+    if before is None:
+        return
+    changed = [sid for sid, v in _last_seen[notebook_id].items() if before.get(sid) != v]
+    gone = [sid for sid in before if sid not in sums]
+    if changed or gone:
+        sample = ", ".join(f'{sums[sid]["filename"]} ({before.get(sid, ("new", 0))[1]}->{sums[sid]["chunks"]} chunks)'
+                           for sid in changed[:3])
+        logger.warning("[phone-sync] %s: %d of %d sources differ from the last comparison, %d gone; e.g. %s",
+                       notebook_id[:8], len(changed), len(sums), len(gone), sample)
+    else:
+        logger.warning("[phone-sync] %s: %d sources, none differ from the last comparison", notebook_id[:8], len(sums))
+
+
 def sources(notebook_id: str) -> Optional[Dict[str, Any]]:
     if not _visible(notebook_id):
         return None
     table = _table(notebook_id)
     if table is None:
         return None
-    return {"notebook_id": notebook_id, "sources": list(_summaries(table).values())}
+    sums = _summaries(table)
+    _note_churn(notebook_id, sums)
+    return {"notebook_id": notebook_id, "sources": list(sums.values())}
 
 
 def chunks(notebook_id: str, *, source_ids: Optional[List[str]] = None,
