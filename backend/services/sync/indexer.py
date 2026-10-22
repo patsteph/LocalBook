@@ -80,15 +80,15 @@ def _index_state(notebook_id: str):
     crowd search results with the same passage, so such a source is re-indexed once."""
     from services import rag_storage
 
-    from services import embedding_migration as em
-
     db = rag_storage._get_db()
     name = f"notebook_{notebook_id}"
-    # By directory, not db.table_names(): that lists only the first 10 tables, so every notebook after the tenth
-    # looked unindexed and ALL of its sources were deleted and re-embedded at every sync (found 2026-10-22).
-    if name not in em._tables(em._live_dir()):
+    # Open the table, never look it up in db.table_names(): that lists only the first 10 tables, so every notebook
+    # after the tenth looked unindexed and ALL of its sources were deleted and re-embedded at every sync
+    # (found 2026-10-22).
+    try:
+        t = db.open_table(name)
+    except Exception:
         return set(), set()
-    t = db.open_table(name)
     try:
         names = t.schema.names
         cols = [c for c in ("source_id", "chunk_index", "source_type") if c in names]

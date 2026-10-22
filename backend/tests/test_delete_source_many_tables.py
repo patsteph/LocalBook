@@ -10,14 +10,13 @@ lancedb = pytest.importorskip("lancedb")
 
 
 def test_a_source_in_the_twelfth_table_is_really_deleted(tmp_path, monkeypatch):
-    from services import embedding_migration as em, rag_storage
+    from services import rag_storage
 
     db = lancedb.connect(str(tmp_path))
     row = lambda sid, i: {"vector": [0.0, 1.0], "text": "t", "source_id": sid, "chunk_index": i}
     for n in range(12):
         db.create_table(f"notebook_nb{n:02d}", data=[row("keep", 0), row("drop", 0), row("drop", 1)])
     monkeypatch.setattr(rag_storage, "_get_db", lambda: db)
-    monkeypatch.setattr(em, "_live_dir", lambda: tmp_path)
 
     assert asyncio.run(rag_storage.delete_source("nb11", "drop"))
     left = db.open_table("notebook_nb11").to_arrow().to_pylist()

@@ -543,15 +543,14 @@ async def delete_source(notebook_id: str, source_id: str) -> bool:
         db = _get_db()
         table_name = f"notebook_{notebook_id}"
 
-        # Check if table even exists - if not, nothing to delete. By directory: db.table_names() lists only the
-        # first 10 tables, so for every later notebook this returned "nothing to delete" and the caller then
-        # ADDED the source's chunks a second time (a re-index grew a source from 319 to 330 chunks, every sync).
-        from services import embedding_migration as _em
-        if table_name not in _em._tables(_em._live_dir()):
+        # Open it rather than look it up in db.table_names(): that lists only the first 10 tables, so for every
+        # later notebook this returned "nothing to delete" and the caller then ADDED the source's chunks a second
+        # time (a re-index grew a source from 319 to 330 chunks, at every sync).
+        try:
+            table = db.open_table(table_name)
+        except Exception:
             print(f"[RAG] No table exists for notebook {notebook_id}, nothing to delete")
             return True
-
-        table = db.open_table(table_name)
 
         # LanceDB delete uses SQL-like filter syntax
         table.delete(f"source_id = '{source_id}'")
