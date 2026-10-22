@@ -205,6 +205,14 @@ struct MyNotesView: View {
     let library: LibraryModel
     @State private var notes: [LibraryStore.LocalNote] = []
     @State private var sent: Set<String> = []
+
+    private func load() async {
+        notes = await library.localNotes()
+        var s: Set<String> = []
+        for n in notes where await library.noteSentSourceId(n.id) != nil { s.insert(n.id) }
+        sent = s
+    }
+
     var body: some View {
         List {
             if let why = library.noteSendProblem { Label(why, systemImage: "wifi.slash").font(.footnote).foregroundStyle(.orange) }
@@ -226,11 +234,9 @@ struct MyNotesView: View {
         }
         .navigationTitle("My notes")
         .task {
+            await load()                                   // show the list at once; sending can take minutes
             await library.flushNotes()
-            notes = await library.localNotes()
-            var s: Set<String> = []
-            for n in notes where await library.noteSentSourceId(n.id) != nil { s.insert(n.id) }
-            sent = s
+            await load()
         }
     }
 }

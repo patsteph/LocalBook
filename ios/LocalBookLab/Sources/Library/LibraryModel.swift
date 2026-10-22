@@ -57,7 +57,13 @@ final class LibraryModel {
     private var generation: Task<Void, Never>?
     var gemma: ModelContainer?
     var query = ""
-    var scopeToNotebook: String?
+    var scopeToNotebook: String? {
+        didSet {
+            // An answer belongs to the notebook it was asked in: show none of it in another one.
+            guard oldValue != scopeToNotebook, !answering else { return }
+            answerText = ""; answerSources = []; answerStatus = ""; followUps = []; hits = []; shownQuestion = ""
+        }
+    }
 
     var store: LibraryStore?
     var flushingNotes = false
@@ -545,12 +551,14 @@ final class LibraryModel {
               !query.trimmingCharacters(in: .whitespaces).isEmpty, let scope = scopeToNotebook else { return }
         answering = true
         answerText = ""; answerSources = []
-        shownQuestion = query
+        let question = query.trimmingCharacters(in: .whitespaces)
+        shownQuestion = question
+        query = ""                                        // the field is empty again once the question is on its way
         defer { answering = false }
         do {
             answerStatus = "Searching notebook…"
             let t0 = Date()
-            var result = try await Signpost.measure("retrieve passages") { try await retrieve(question: query, notebook: scope) }
+            var result = try await Signpost.measure("retrieve passages") { try await retrieve(question: question, notebook: scope) }
             hits = result.hits
             sourceScoreIsRelevance = false
             answerSources = result.hits
@@ -560,7 +568,7 @@ final class LibraryModel {
             var corrected = false
             if result.nothingRelevant || result.hits.isEmpty {          // as the Mac: no relevant passages, no guessing…
                 answerStatus = "Nothing relevant yet — looking again with rewritten queries…"
-                if let second = try await correctiveRetrieve(question: query, notebook: scope, first: result.pool),     // …but it looks again first
+                if let second = try await correctiveRetrieve(question: question, notebook: scope, first: result.pool),     // …but it looks again first
                    !second.nothingRelevant, !second.hits.isEmpty {
                     result = second; corrected = true; withContext = false
                     hits = second.hits; answerSources = second.hits
@@ -582,7 +590,7 @@ final class LibraryModel {
             var current = result
             var line = ""
             while true {
-                let setup = generationSetup(question: query, hits: current.hits, personal: personal, withEntityContext: withContext)
+                let setup = generationSetup(question: question, hits: current.hits, personal: personal, withEntityContext: withContext)
                 let prompt = setup.prompt
                 let session = ChatSession(gemma, instructions: setup.instructions, generateParameters: setup.params)
                 answerStatus = corrected ? "Looking again, then writing…" : "Writing…"
@@ -615,10 +623,10 @@ final class LibraryModel {
                 line += " · memory \(Int(MemoryProbe.footprintMB())) MB"
                 if cancelled { line += " · stopped"; break }
                 // The Mac's second look: a weak answer retriggers retrieval with rewritten queries and one more answer.
-                guard !corrected, let r = recipe, !r.answerLooksGood(question: query, answer: answerText, type: r.classify(query)) else { break }
+                guard !corrected, let r = recipe, !r.answerLooksGood(question: question, answer: answerText, type: r.classify(question)) else { break }
                 corrected = true
                 answerStatus = "Looking again with rewritten queries…"
-                guard let second = try await correctiveRetrieve(question: query, notebook: scope, first: current.pool) else { break }
+                guard let second = try await correctiveRetrieve(question: question, notebook: scope, first: current.pool) else { break }
                 current = second
                 withContext = false
                 hits = second.hits

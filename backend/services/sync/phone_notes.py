@@ -52,6 +52,7 @@ async def _create(notebook_id: str, client_id: str, key: str, title: str, text: 
     background = BackgroundTasks()
 
     async def _recorded(source_id: str) -> None:
+        logger.info("[phone-notes] %s: source %s created, answering the phone; indexing continues", key, source_id)
         async with _lock:
             ledger = _load()
             ledger[key] = source_id
@@ -79,6 +80,7 @@ async def _create(notebook_id: str, client_id: str, key: str, title: str, text: 
         except Exception as exc:        # non-fatal, same as for a note made on this Mac
             logger.warning("[phone-notes] timeline extraction failed: %s", exc)
 
+    logger.info("[phone-notes] %s: indexed", key)
     task = asyncio.create_task(_timeline())
     _after.add(task)
     task.add_done_callback(_after.discard)
@@ -95,6 +97,7 @@ async def add_note(notebook_id: str, client_id: str, title: str, text: str, kind
     if not await asyncio.to_thread(phone_library.is_visible, notebook_id):
         raise HTTPException(404, "no such notebook")
     key = f"{notebook_id}:{client_id}"
+    logger.info("[phone-notes] %s: note received (%d characters)", key, len(text))
     async with _lock:
         ledger = _load()
         if key in ledger:
