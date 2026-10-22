@@ -533,6 +533,7 @@ async def _verified_phone(request: Request) -> Dict[str, Any]:
     """The phone, if it is paired and the v2 signature (nonce, this Mac, fresh) holds."""
     ip = request.client.host if request.client else "?"
     if _phone_failures.blocked(ip):
+        logger.warning("[phone] %s %s refused: too many failed attempts from %s", request.method, request.url.path, ip)
         raise HTTPException(429, "too many failed attempts; try again later")
     body = await request.body()
     dev_id = request.headers.get("X-LB-Device", "")
@@ -542,10 +543,13 @@ async def _verified_phone(request: Request) -> Dict[str, Any]:
         d["cert_pem"], request.method, request.url.path, request.headers.get("X-LB-Time", "0"), nonce,
         body, request.headers.get("X-LB-Sig", ""))
     if not ok:
+        logger.warning("[phone] %s refused: not a paired phone, or a bad signature (device %s, from %s)",
+                       request.url.path, dev_id[:8], ip)
         _phone_failures.failure(ip)
         raise HTTPException(403, "not a paired phone, or a bad signature")
     # Only a VALID signature may spend a nonce, so strangers cannot fill the cache.
     if not _phone_nonces.first_use(f"{dev_id}:{nonce}"):
+        logger.warning("[phone] %s refused: request already used (device %s)", request.url.path, dev_id[:8])
         _phone_failures.failure(ip)
         raise HTTPException(403, "request already used")
     store.touch_phone(dev_id)
@@ -617,6 +621,7 @@ async def phone_library_chunks(request: Request):
 @phone_sync_app.post("/phone/library/note")
 async def phone_library_note(request: Request):
     """Add a note made on the phone to a notebook here (indexed like any note; comes back through sync)."""
+    logger.warning("[phone] note request arrived")
     _check_enabled()
     v = await _verified_phone(request)
     from services.sync import phone_notes
