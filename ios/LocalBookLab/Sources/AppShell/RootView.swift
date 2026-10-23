@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Pairing comes first; after that the app is three tabs, usable at once. Models load in the background.
+/// Pairing comes first; after that the app is four tabs, usable at once. Models load in the background.
 struct RootView: View {
     let library: LibraryModel
     @State private var tab = 0
@@ -13,8 +13,10 @@ struct RootView: View {
                     .tabItem { Label("Ask", systemImage: "text.bubble") }.tag(0)
                 NotebooksView(library: library, onAsk: { tab = 0 })
                     .tabItem { Label("Notebooks", systemImage: "books.vertical") }.tag(1)
+                StudioView(library: library)
+                    .tabItem { Label("Studio", systemImage: "sparkles.rectangle.stack") }.tag(2)
                 SettingsView(library: library, onForget: { paired = false })
-                    .tabItem { Label("Settings", systemImage: "gearshape") }.tag(2)
+                    .tabItem { Label("Settings", systemImage: "gearshape") }.tag(3)
             }
             .task {
                 // Search runs on the Neural Engine and the answer model on the GPU, so start both at once.
