@@ -133,7 +133,7 @@ struct StudioItemView: View {
             Group {
                 switch item.kind {
                 case .doc: ScrollView { MarkdownText(text: item.body).padding() }
-                case .quiz: QuizRun(questions: (try? JSONDecoder().decode([StudioQuestion].self, from: Data(item.body.utf8))) ?? [])
+                case .quiz: QuizRun(questions: (try? JSONDecoder().decode([StudioQuestion].self, from: Data(item.body.utf8))) ?? [], subject: item.title.replacingOccurrences(of: "Quiz: ", with: ""))
                 case .cards: CardRun(cards: (try? JSONDecoder().decode([StudioCard].self, from: Data(item.body.utf8))) ?? [])
                 }
             }
@@ -145,13 +145,17 @@ struct StudioItemView: View {
 
 private struct QuizRun: View {
     let questions: [StudioQuestion]
+    let subject: String
     @State private var index = 0
     @State private var picked: Int?
     @State private var score = 0
+    @State private var missed: [StudioQuestion] = []
 
     var body: some View {
         if index >= questions.count {
-            VStack(spacing: 8) { Text("\(score) of \(questions.count)").font(.largeTitle); Text("correct").foregroundStyle(.secondary) }.frame(maxHeight: .infinity)
+            QuizResult(score: score, total: questions.count, missed: missed, subject: subject) {
+                index = 0; picked = nil; score = 0; missed = []
+            }
         } else {
             let q = questions[index]
             List {
@@ -160,7 +164,8 @@ private struct QuizRun: View {
                     ForEach(q.choices.indices, id: \.self) { i in
                         Button {
                             guard picked == nil else { return }
-                            picked = i; if i == q.answer { score += 1 }
+                            picked = i
+                            if i == q.answer { score += 1 } else { missed.append(q) }
                         } label: {
                             HStack {
                                 Text(q.choices[i]).foregroundStyle(.primary)
@@ -173,11 +178,94 @@ private struct QuizRun: View {
                 if picked != nil {
                     Section {
                         if let why = q.why { Text(why).font(.footnote) }
-                        Button(index + 1 < questions.count ? "Next" : "Finish") { index += 1; picked = nil }
+                        Button(index + 1 < questions.count ? "Next" : "See how you did") { index += 1; picked = nil }
                     }
                 }
             }
         }
+    }
+}
+
+private struct QuizResult: View {
+    let score: Int
+    let total: Int
+    let missed: [StudioQuestion]
+    let subject: String
+    let again: () -> Void
+    @State private var shown = false
+
+    private var fraction: Double { total == 0 ? 0 : Double(score) / Double(total) }
+    private var tier: (title: String, line: String, symbol: String, color: Color) {
+        switch fraction {
+        case 1: ("Perfect!", "Every single one. Incredible.", "trophy.fill", .yellow)
+        case 0.8...: ("Amazing!", "You really know this material.", "star.circle.fill", .orange)
+        case 0.6...: ("Great job!", "Solid. A few more and you've got it.", "hand.thumbsup.fill", .green)
+        case 0.4...: ("Good start", "Try again; it sticks the second time.", "arrow.triangle.2.circlepath.circle.fill", .blue)
+        default: ("You'll get it next time", "Every miss is a thing learned. Have another go.", "leaf.fill", .teal)
+        }
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(spacing: 18) {
+                ZStack {
+                    Circle().stroke(tier.color.opacity(0.2), lineWidth: 14)
+                    Circle().trim(from: 0, to: shown ? fraction : 0)
+                        .stroke(tier.color, style: StrokeStyle(lineWidth: 14, lineCap: .round)).rotationEffect(.degrees(-90))
+                    VStack(spacing: 4) {
+                        Image(systemName: tier.symbol).font(.system(size: 44)).foregroundStyle(tier.color)
+                            .symbolEffect(.bounce, value: shown)
+                        Text("\(score) of \(total)").font(.headline).monospacedDigit()
+                    }
+                }
+                .frame(width: 190, height: 190).padding(.top, 24)
+                .overlay { if fraction >= 0.8 && shown { Confetti() } }
+
+                Text(tier.title).font(.largeTitle.bold())
+                Text(tier.line).foregroundStyle(.secondary).multilineTextAlignment(.center)
+
+                if !missed.isEmpty {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("Worth another look").font(.headline)
+                        ForEach(missed) { q in
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(q.question).font(.subheadline)
+                                Text("Answer: \(q.choices[q.answer])").font(.footnote).foregroundStyle(.green)
+                            }
+                        }
+                        Label("Ask about “\(missed[0].question)” on the Ask tab, with detail, to do better next time.", systemImage: "lightbulb.fill")
+                            .font(.footnote).foregroundStyle(.secondary).padding(.top, 4)
+                    }
+                    .padding().frame(maxWidth: .infinity, alignment: .leading)
+                    .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 16))
+                }
+
+                Button(fraction == 1 ? "Play again" : "Try again", action: again).buttonStyle(.borderedProminent).controlSize(.large)
+            }
+            .padding()
+        }
+        .onAppear { withAnimation(.easeOut(duration: 1.0)) { shown = true } }
+    }
+}
+
+/// A short, calm burst of confetti for a great score.
+private struct Confetti: View {
+    @State private var go = false
+    private let pieces: [(x: CGFloat, y: CGFloat, color: Color, size: CGFloat)] = (0..<18).map { i in
+        let a = Double(i) / 18 * 2 * .pi
+        return (CGFloat(cos(a)) * CGFloat.random(in: 110...170), CGFloat(sin(a)) * CGFloat.random(in: 110...170),
+                [Color.yellow, .orange, .pink, .mint, .blue, .purple][i % 6], CGFloat.random(in: 6...11))
+    }
+    var body: some View {
+        ZStack {
+            ForEach(pieces.indices, id: \.self) { i in
+                Circle().fill(pieces[i].color).frame(width: pieces[i].size, height: pieces[i].size)
+                    .offset(x: go ? pieces[i].x : 0, y: go ? pieces[i].y : 0)
+                    .opacity(go ? 0 : 1)
+            }
+        }
+        .allowsHitTesting(false)
+        .onAppear { withAnimation(.easeOut(duration: 1.4)) { go = true } }
     }
 }
 
