@@ -36,7 +36,7 @@ settings:
     # Set your team here or in Xcode › Signing & Capabilities.
     DEVELOPMENT_TEAM: ""
     CODE_SIGN_STYLE: Automatic
-    TARGETED_DEVICE_FAMILY: "1,2"
+    TARGETED_DEVICE_FAMILY: "1"
     ENABLE_USER_SCRIPT_SANDBOXING: YES
 
 schemes:
@@ -108,8 +108,6 @@ targets:
       properties:
         CFBundleDisplayName: LocalBook Lab
         UILaunchScreen: {}
-        # A Lab, portrait only: say so, or iPad validation wants every orientation.
-        UIRequiresFullScreen: true
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
         # Drop fixtures into the app from Finder (iPhone › Files) or the Files app.
@@ -185,7 +183,6 @@ targets:
       properties:
         CFBundleDisplayName: LocalBook
         UILaunchScreen: {}
-        UIRequiresFullScreen: true
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
         NSLocalNetworkUsageDescription: LocalBook finds and syncs with your Mac on this network.

@@ -1,7 +1,7 @@
 import SwiftUI
 import AVFoundation
 import Speech
-import Vision
+@preconcurrency import Vision
 import UIKit
 
 /// Dictation: speech to text on the phone (on-device recognition where the language supports it).
@@ -44,7 +44,19 @@ final class Dictation {
             self.onText = onText
             let input = engine.inputNode
             input.removeTap(onBus: 0)
-            input.installTap(onBus: 0, bufferSize: 1024, format: input.outputFormat(forBus: 0)) { buf, _ in req.append(buf) }
+            nonisolated(unsafe) let sink = req          // appended to only from the audio thread
+            try input.installAudioTap(onBus: 0, bufferSize: 4096, format: input.outputFormat(forBus: 0)) { ro, _ in
+                guard let buf = AVAudioPCMBuffer(pcmFormat: ro.format, frameCapacity: AVAudioFrameCount(ro.frameLength)) else { return }
+                buf.frameLength = AVAudioFrameCount(ro.frameLength)
+                ro.withUnsafeAudioBufferList { src in
+                    let from = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: src))
+                    let to = UnsafeMutableAudioBufferListPointer(buf.mutableAudioBufferList)
+                    for (a, b) in zip(from, to) where a.mData != nil && b.mData != nil {
+                        memcpy(b.mData, a.mData, Int(min(a.mDataByteSize, b.mDataByteSize)))
+                    }
+                }
+                sink.append(buf)
+            }
             engine.prepare()
             try engine.start()
             listening = true
@@ -74,14 +86,13 @@ enum PhotoText {
     static func read(_ image: UIImage) async -> String {
         guard let cg = image.cgImage else { return "" }
         return await withCheckedContinuation { cont in
-            let req = VNRecognizeTextRequest { r, _ in
-                let lines = (r.results as? [VNRecognizedTextObservation])?.compactMap { $0.topCandidates(1).first?.string } ?? []
-                cont.resume(returning: lines.joined(separator: "\n"))
-            }
-            req.recognitionLevel = .accurate
-            req.usesLanguageCorrection = true
             DispatchQueue.global(qos: .userInitiated).async {
-                do { try VNImageRequestHandler(cgImage: cg).perform([req]) } catch { cont.resume(returning: "") }
+                let req = VNRecognizeTextRequest()
+                req.recognitionLevel = .accurate
+                req.usesLanguageCorrection = true
+                try? VNImageRequestHandler(cgImage: cg).perform([req])
+                let lines = req.results?.compactMap { $0.topCandidates(1).first?.string } ?? []
+                cont.resume(returning: lines.joined(separator: "\n"))
             }
         }
     }

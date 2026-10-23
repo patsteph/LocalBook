@@ -111,8 +111,7 @@ final class ReadAloud {
             Task { @MainActor in if self?.state == .paused { self?.resume() } else { self?.pause() } }; return .success
         }
         NotificationCenter.default.addObserver(forName: AVAudioSession.interruptionNotification, object: nil, queue: .main) { [weak self] note in
-            guard let raw = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
-                  AVAudioSession.InterruptionType(rawValue: raw) == .began else { return }
+            guard let raw = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt, raw == 1 else { return }   // 1 = began
             Task { @MainActor in self?.pause() }
         }
     }

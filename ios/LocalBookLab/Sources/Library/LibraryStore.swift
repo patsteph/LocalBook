@@ -235,7 +235,7 @@ actor LibraryStore {
                 sqlite3_bind_int64(insert, 3, Int64(c.chunkIndex))
                 bind(insert, 4, c.text); sqlite3_bind_int(insert, 5, 0)
                 bind(insert, 6, c.filename); bind(insert, 7, kind)
-                c.vector.withUnsafeBytes { sqlite3_bind_blob(insert, 8, $0.baseAddress, Int32($0.count), Self.transient) }
+                _ = c.vector.withUnsafeBytes { sqlite3_bind_blob(insert, 8, $0.baseAddress, Int32($0.count), Self.transient) }
                 guard sqlite3_step(insert) == SQLITE_DONE else { throw LibraryError.sqlite(String(cString: sqlite3_errmsg(db))) }
             }
             let s = try statement("INSERT OR REPLACE INTO sources(notebook_id, source_id, hash) VALUES (?,?,?)")
@@ -343,7 +343,7 @@ actor LibraryStore {
                 sqlite3_bind_int64(insert, 3, Int64(c.chunkIndex))
                 bind(insert, 4, c.text); sqlite3_bind_int(insert, 5, c.summary ? 1 : 0)
                 bind(insert, 6, c.filename); bind(insert, 7, c.sourceType)
-                c.vector.withUnsafeBytes { sqlite3_bind_blob(insert, 8, $0.baseAddress, Int32($0.count), Self.transient) }
+                _ = c.vector.withUnsafeBytes { sqlite3_bind_blob(insert, 8, $0.baseAddress, Int32($0.count), Self.transient) }
                 guard sqlite3_step(insert) == SQLITE_DONE else { throw LibraryError.sqlite(String(cString: sqlite3_errmsg(db))) }
             }
             for (sid, h) in hashes {
@@ -381,7 +381,7 @@ actor LibraryStore {
             guard rows > 0 else { continue }
             var scores = [Float](repeating: 0, count: rows)
             matrix.withUnsafeBufferPointer { m in
-                cblas_sgemv(CblasRowMajor, CblasNoTrans, Int32(rows), Int32(Self.dims), 1, m.baseAddress!, Int32(Self.dims), query, 1, 0, &scores, 1)
+                vDSP_mmul(m.baseAddress!, 1, query, 1, &scores, 1, vDSP_Length(rows), 1, vDSP_Length(Self.dims))
             }
             if let top = scores.max(), top > (best?.score ?? -Float.infinity) { best = (n.id, top) }
         }
@@ -468,8 +468,7 @@ actor LibraryStore {
         guard rows > 0, query.count == Self.dims else { return ([], 0, Date().timeIntervalSince(started)) }
         var scores = [Float](repeating: 0, count: rows)
         matrix.withUnsafeBufferPointer { m in
-            cblas_sgemv(CblasRowMajor, CblasNoTrans, Int32(rows), Int32(Self.dims), 1,
-                        m.baseAddress! + range.lowerBound * Self.dims, Int32(Self.dims), query, 1, 0, &scores, 1)
+            vDSP_mmul(m.baseAddress! + range.lowerBound * Self.dims, 1, query, 1, &scores, 1, vDSP_Length(rows), 1, vDSP_Length(Self.dims))
         }
         let order = (0..<rows).sorted { scores[$0] > scores[$1] }
         var vectorRank: [Int: Double] = [:]

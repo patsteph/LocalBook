@@ -647,7 +647,7 @@ final class LibraryModel {
     }
 
     func search() async {
-        guard let store, let engine, let tokenizer, !query.trimmingCharacters(in: .whitespaces).isEmpty else { return }
+        guard store != nil, engine != nil, tokenizer != nil, !query.trimmingCharacters(in: .whitespaces).isEmpty else { return }
         do {
             let result = try await retrieve(question: query, notebook: scopeToNotebook)
             let embedSeconds = result.embedSeconds
