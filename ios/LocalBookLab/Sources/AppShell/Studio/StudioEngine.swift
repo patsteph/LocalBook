@@ -283,17 +283,35 @@ extension StudioEngine {
         // 2. The voices.
         status = "Warming up the microphones…"
         caption = ""
-        let kokoro = KokoroAneManager(version: .legacy)
-        do { try await kokoro.initialize(preloadVoices: Set(Self.voices)) }
-        catch {
-            do { try await kokoro.initialize() } catch { self.error = "Couldn't start the voices: \(error.localizedDescription)"; return nil }
+        // The voice engine is tried in two versions: "legacy" (what Read aloud uses) and "v3", which FluidAudio's
+        // maintainers report running clean on iOS 27.2 (their issue #889). The audio is made with the app in front,
+        // so v3's use of the GPU is fine here. Each failure is logged so the cause is visible.
+        var engine: KokoroAneManager?
+        var lastFailure = ""
+        for version in [KokoroAneVersion.legacy, .v3] {
+            let k = KokoroAneManager(version: version)
+            do {
+                do { try await k.initialize(preloadVoices: Set(Self.voices)) } catch { try await k.initialize() }
+                _ = try await k.synthesizeDetailed(text: "Hello there.", voice: nil)
+                engine = k
+                SoakTrace.log("studio audio: voice engine \(version) ready")
+                break
+            } catch {
+                lastFailure = error.localizedDescription
+                SoakTrace.log("studio audio: voice engine \(version) failed its check: \(error)")
+                await k.cleanup()
+            }
         }
+        guard let kokoro = engine else { self.error = "Couldn't start the voices: \(lastFailure)"; return nil }
         // Check each host's voice with a short phrase; one that fails falls back to the default voice (nil).
         status = "Checking the voices…"
         var voiceFor: [String?] = [Self.voices[0], Self.voices[1]]
         for i in 0..<2 {
             do { _ = try await kokoro.synthesizeDetailed(text: "Hello there.", voice: voiceFor[i]) }
-            catch { voiceFor[i] = nil }
+            catch {
+                SoakTrace.log("studio audio: voice \(voiceFor[i] ?? "default") failed its check: \(error)")
+                voiceFor[i] = nil
+            }
         }
         let id = UUID().uuidString
         let file = id + ".m4a"
@@ -324,7 +342,10 @@ extension StudioEngine {
                     let speed: Float = voiceFor[0] == voiceFor[1] && line.host == 1 ? 1.08 : 1.0
                     let r: KokoroAneSynthesisResult
                     do { r = try await kokoro.synthesizeDetailed(text: part, voice: voiceFor[line.host], speed: speed) }
-                    catch { r = try await kokoro.synthesizeDetailed(text: part, voice: nil, speed: speed) }     // one retry on the default voice
+                    catch {
+                        SoakTrace.log("studio audio: line \(i + 1) failed on \(voiceFor[line.host] ?? "default"): \(error)")
+                        r = try await kokoro.synthesizeDetailed(text: part, voice: nil, speed: speed)               // one retry on the default voice
+                    }
                     write(r.samples); written += r.samples.count
                 }
                 write(gap); written += gap.count
