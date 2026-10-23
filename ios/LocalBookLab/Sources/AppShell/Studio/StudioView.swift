@@ -132,6 +132,7 @@ private struct MakeSheet: View {
     @State private var topic = ""
     @State private var count: Int
     @State private var style: AudioStyle = .casual
+    @State private var accent: AudioAccent = .british
     @State private var notebookOnly = true
     @State private var layout: VisualSpec.Layout = .mindmap
     @State private var detail: VisualSpec.Detail = .standard
@@ -174,6 +175,9 @@ private struct MakeSheet: View {
                             Section("Style") {
                                 Picker("Style", selection: $style) { ForEach(AudioStyle.allCases) { Text($0.label).tag($0) } }.pickerStyle(.menu)
                             }
+                            Section("Voices") {
+                                Picker("Voices", selection: $accent) { ForEach(AudioAccent.allCases) { Text($0.label).tag($0) } }.pickerStyle(.segmented)
+                            }
                         }
                         Section {
                             Toggle("Only from this notebook", isOn: $notebookOnly)
@@ -199,7 +203,7 @@ private struct MakeSheet: View {
     }
 
     private func make() async {
-        if let made = await engine.make(kind, in: notebook, topic: topic, count: count, notebookOnly: notebookOnly, style: style, layout: layout, detail: detail, library: library) {
+        if let made = await engine.make(kind, in: notebook, topic: topic, count: count, notebookOnly: notebookOnly, style: style, accent: accent, layout: layout, detail: detail, library: library) {
             onMade(made); dismiss()
         }
     }

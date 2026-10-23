@@ -226,21 +226,24 @@ struct MakingGlyph: View {
         }
     }
 
-    /// A hub with nodes that pop out on lines and settle: a diagram being drawn.
+    /// A hub with nodes that pop out on lines and settle: a diagram being drawn. One Canvas, so it costs one draw call per frame.
     private func network(_ t: Double) -> some View {
-        let colors: [Color] = [.blue, .orange, .green, .pink, .purple, .teal]
-        return ZStack {
-            ForEach(0..<6, id: \.self) { i in
+        Canvas { ctx, size in
+            let colors: [Color] = [.blue, .orange, .green, .pink, .purple, .teal]
+            let c = CGPoint(x: size.width / 2, y: size.height / 2)
+            for i in 0..<6 {
                 let a = Double(i) / 6 * 2 * .pi + t * 0.25
-                let grow = 0.5 + 0.5 * sin(t * 1.6 + Double(i) * 1.1)             // 0…1, each node on its own beat
+                let grow = 0.5 + 0.5 * sin(t * 1.6 + Double(i) * 1.1)
                 let r = 30 + 38 * grow
-                let x = cos(a) * r * 1.5, y = sin(a) * r * 0.9
-                Path { p in p.move(to: CGPoint(x: 110, y: 55)); p.addLine(to: CGPoint(x: 110 + x, y: 55 + y)) }
-                    .stroke(colors[i].opacity(0.45), style: StrokeStyle(lineWidth: 2, lineCap: .round, dash: [4, 4], dashPhase: -t * 16))
-                Circle().fill(colors[i]).frame(width: 10 + 12 * grow, height: 10 + 12 * grow).offset(x: x, y: y)
+                let p = CGPoint(x: c.x + cos(a) * r * 1.5, y: c.y + sin(a) * r * 0.9)
+                var line = Path(); line.move(to: c); line.addLine(to: p)
+                ctx.stroke(line, with: .color(colors[i].opacity(0.45)),
+                           style: StrokeStyle(lineWidth: 2, lineCap: .round, dash: [4, 4], dashPhase: -t * 16))
+                let d = 10 + 12 * grow
+                ctx.fill(Path(ellipseIn: CGRect(x: p.x - d / 2, y: p.y - d / 2, width: d, height: d)), with: .color(colors[i]))
             }
-            Circle().fill(.tint).frame(width: 30 + 4 * sin(t * 3), height: 30 + 4 * sin(t * 3))
-            Image(systemName: "chart.bar.doc.horizontal").font(.footnote).foregroundStyle(.white)
+            let hub = 30 + 4 * sin(t * 3)
+            ctx.fill(Path(ellipseIn: CGRect(x: c.x - hub / 2, y: c.y - hub / 2, width: hub, height: hub)), with: .color(.accentColor))
         }
     }
 

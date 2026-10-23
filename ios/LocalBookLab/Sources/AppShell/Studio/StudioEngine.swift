@@ -24,12 +24,12 @@ final class StudioEngine {
     func stop() { stopped = true; task?.cancel() }
 
     /// Returns the saved item, or nil (with `error` set) when it could not be made.
-    func make(_ kind: StudioItem.Kind, in notebook: LibraryNotebookInfo, topic: String, count: Int, notebookOnly: Bool, style: AudioStyle = .casual, layout: VisualSpec.Layout = .mindmap, detail: VisualSpec.Detail = .standard, library: LibraryModel) async -> StudioItem? {
+    func make(_ kind: StudioItem.Kind, in notebook: LibraryNotebookInfo, topic: String, count: Int, notebookOnly: Bool, style: AudioStyle = .casual, accent: AudioAccent = .british, layout: VisualSpec.Layout = .mindmap, detail: VisualSpec.Detail = .standard, library: LibraryModel) async -> StudioItem? {
         guard !working else { return nil }
         working = true; error = nil; preview = ""; progress = 0; caption = ""; stopped = false
         try? await Task.sleep(for: .milliseconds(200))              // let the making screen appear before the heavy work starts
         let began = Date()
-        if kind == .audio { working = false; return await makeAudio(in: notebook, topic: topic, segments: count, notebookOnly: notebookOnly, style: style, library: library) }
+        if kind == .audio { working = false; return await makeAudio(in: notebook, topic: topic, segments: count, notebookOnly: notebookOnly, style: style, accent: accent, library: library) }
         defer { working = false; status = "" }
         guard let gemma = library.gemma else { error = "The answer model is still getting ready. Try again in a moment."; return nil }
         guard GPUGuard.canStart else { error = "Open the app and try again: this can't run while the screen is off."; return nil }
@@ -61,10 +61,12 @@ final class StudioEngine {
         /// Streams one request to the model; returns its text, or nil if it was stopped.
         func run(_ prompt: String, tokens: Int) async -> String? {
             preview = ""
+            let runStart = Date()
             let session = ChatSession(gemma, instructions: instructions, generateParameters: GenerateParameters(maxTokens: tokens))
             let work = Task { @MainActor in
                 for try await item in session.streamDetails(to: prompt) {
                     if case .chunk(let s) = item {
+                        if self.preview.isEmpty { SoakTrace.log("studio \(kind.rawValue): first words after \(String(format: "%.1f", Date().timeIntervalSince(runStart))) s") }
                         self.preview += s
                         if kind == .doc || kind == .visual || kind == .cards { self.progress = min(0.95, Double(self.preview.count) / (Double(tokens) * 2.6)) }
                     }
@@ -230,7 +232,6 @@ final class StudioEngine {
 extension StudioEngine {
     nonisolated static let hostNames = ["Alex", "Sam"]
     /// Voices for Alex and Sam. They download once on first use.
-    nonisolated static let voices = ["af_heart", "am_michael"]
     nonisolated static let linesPerSegment = 8
 
     /// How fast a line is spoken for the feeling it carries.
@@ -248,7 +249,7 @@ extension StudioEngine {
     /// A two-host spoken overview of one notebook, made entirely on the phone: the answer model writes the
     /// conversation a segment at a time from different parts of the notebook, then Kokoro voices it in two voices
     /// into one audio file.
-    func makeAudio(in notebook: LibraryNotebookInfo, topic: String, segments: Int, notebookOnly: Bool, style: AudioStyle, library: LibraryModel) async -> StudioItem? {
+    func makeAudio(in notebook: LibraryNotebookInfo, topic: String, segments: Int, notebookOnly: Bool, style: AudioStyle, accent: AudioAccent, library: LibraryModel) async -> StudioItem? {
         guard !working else { return nil }
         working = true; error = nil; preview = ""; progress = 0; caption = ""; stopped = false
         defer { working = false; status = "" }
@@ -333,7 +334,7 @@ extension StudioEngine {
         for version in [KokoroAneVersion.legacy, .v3] {
             let k = KokoroAneManager(version: version)
             do {
-                do { try await k.initialize(preloadVoices: Set(Self.voices)) } catch { try await k.initialize() }
+                do { try await k.initialize(preloadVoices: Set(accent.voices)) } catch { try await k.initialize() }
                 _ = try await k.synthesizeDetailed(text: "Hello there.", voice: nil)
                 engine = k
                 SoakTrace.log("studio audio: voice engine \(version) ready")
@@ -347,7 +348,7 @@ extension StudioEngine {
         guard let kokoro = engine else { self.error = "Couldn't start the voices: \(lastFailure)"; return nil }
         // Check each host's voice with a short phrase; one that fails falls back to the default voice (nil).
         status = "Checking the voices…"
-        var voiceFor: [String?] = [Self.voices[0], Self.voices[1]]
+        var voiceFor: [String?] = [accent.voices[0], accent.voices[1]]
         for i in 0..<2 {
             do { _ = try await kokoro.synthesizeDetailed(text: "Hello there.", voice: voiceFor[i]) }
             catch {
@@ -449,4 +450,13 @@ enum AudioStyle: String, CaseIterable, Identifiable, Sendable {
         case .storyteller: "Style: Alex tells the story of this material as a gripping narrative with scenes, stakes and a through-line; Sam reacts, asks what happened next, and adds the telling detail."
         }
     }
+}
+
+/// Which accent the two hosts speak with. Voices download once on first use; a voice that can't load falls back to the default.
+enum AudioAccent: String, CaseIterable, Identifiable, Sendable {
+    case british, american
+    var id: String { rawValue }
+    var label: String { self == .british ? "British" : "American" }
+    /// Alex, then Sam.
+    var voices: [String] { self == .british ? ["bf_emma", "bm_george"] : ["af_heart", "am_michael"] }
 }
