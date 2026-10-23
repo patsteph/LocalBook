@@ -11,6 +11,7 @@ struct StudioView: View {
     @State private var count = 5
     @State private var notebookOnly = true
     @State private var opened: StudioItem?
+    @FocusState private var typing: Bool
 
     private var notebook: LibraryNotebookInfo? { library.notebooks.first { $0.id == notebookId } }
     private var counts: [Int] { kind == .quiz ? [5, 10, 15, 20] : [10, 20, 30] }
@@ -27,14 +28,14 @@ struct StudioView: View {
                     Picker("Make", selection: $kind) {
                         ForEach(StudioItem.Kind.allCases, id: \.self) { Text($0.label).tag($0) }
                     }.pickerStyle(.segmented)
-                    TextField("Subject (optional)", text: $topic)
+                    TextField("Subject (optional)", text: $topic).focused($typing).submitLabel(.done).onSubmit { typing = false }
                     if kind != .doc {
                         Picker(kind == .quiz ? "Questions" : "Cards", selection: $count) {
                             ForEach(counts, id: \.self) { Text("\($0)").tag($0) }
                         }
                     }
                     Toggle("Only from this notebook", isOn: $notebookOnly)
-                    Button { if let notebook { Task { await make(notebook) } } } label: {
+                    Button { typing = false; if let notebook { Task { await make(notebook) } } } label: {
                         Label("Make \(kind.label.lowercased())", systemImage: kind.symbol).frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.borderedProminent)
@@ -52,7 +53,7 @@ struct StudioView: View {
                 Section("Saved") {
                     if items.isEmpty { Text("Nothing yet.").foregroundStyle(.secondary) }
                     ForEach(items) { item in
-                        Button { opened = item } label: {
+                        Button { typing = false; opened = item } label: {
                             VStack(alignment: .leading, spacing: 2) {
                                 Label(item.title, systemImage: item.kind.symbol).foregroundStyle(.primary)
                                 Text(item.created.formatted(date: .abbreviated, time: .shortened)).font(.caption).foregroundStyle(.secondary)
@@ -63,12 +64,14 @@ struct StudioView: View {
                 }
             }
             .navigationTitle("Studio")
+            .scrollDismissesKeyboard(.interactively)
+            .toolbar { ToolbarItemGroup(placement: .keyboard) { Spacer(); Button("Done") { typing = false } } }
             .onAppear { if notebookId == nil || notebook == nil { notebookId = library.scopeToNotebook ?? library.notebooks.first?.id } }
             .onChange(of: library.scopeToNotebook) { _, id in if let id { notebookId = id } }
             .onChange(of: notebookId) { _, _ in reload() }
             .onChange(of: kind) { _, _ in count = kind == .quiz ? 5 : 10 }
             .task { reload() }
-            .sheet(item: $opened) { StudioItemView(item: $0) }
+            .sheet(item: $opened, onDismiss: { typing = false }) { StudioItemView(item: $0) }
         }
     }
 
