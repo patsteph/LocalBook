@@ -3,6 +3,7 @@ import FluidAudio
 import Foundation
 import MLXLMCommon
 import Observation
+import SwiftUI
 import UIKit
 
 /// Makes Studio items on the phone: gathers passages from one notebook with the same search as questions, then
@@ -24,12 +25,13 @@ final class StudioEngine {
     func stop() { stopped = true; task?.cancel() }
 
     /// Returns the saved item, or nil (with `error` set) when it could not be made.
-    func make(_ kind: StudioItem.Kind, in notebook: LibraryNotebookInfo, topic: String, count: Int, notebookOnly: Bool, style: AudioStyle = .casual, accent: AudioAccent = .british, layout: VisualSpec.Layout = .mindmap, detail: VisualSpec.Detail = .standard, library: LibraryModel) async -> StudioItem? {
+    func make(_ kind: StudioItem.Kind, in notebook: LibraryNotebookInfo, topic: String, count: Int, notebookOnly: Bool, style: AudioStyle = .casual, videoStyle: VideoStyle = .clean, accent: AudioAccent = .british, layout: VisualSpec.Layout = .mindmap, detail: VisualSpec.Detail = .standard, library: LibraryModel) async -> StudioItem? {
         guard !working else { return nil }
         working = true; error = nil; preview = ""; progress = 0; caption = ""; stopped = false
         try? await Task.sleep(for: .milliseconds(200))              // let the making screen appear before the heavy work starts
         let began = Date()
         if kind == .audio { working = false; return await makeAudio(in: notebook, topic: topic, segments: count, notebookOnly: notebookOnly, style: style, accent: accent, library: library) }
+        if kind == .video { working = false; return await makeVideo(in: notebook, topic: topic, slides: count, notebookOnly: notebookOnly, style: videoStyle, accent: accent, library: library) }
         defer { working = false; status = "" }
         guard let gemma = library.gemma else { error = "The answer model is still getting ready. Try again in a moment."; return nil }
         guard GPUGuard.canStart else { error = "Open the app and try again: this can't run while the screen is off."; return nil }
@@ -413,7 +415,7 @@ extension StudioEngine {
     }
 
     /// Streams one request to the answer model; nil if it was stopped. Updates `caption` with the latest spoken line.
-    private func generate(_ gemma: ModelContainer, instructions: String, prompt: String, tokens: Int) async -> String? {
+    fileprivate func generate(_ gemma: ModelContainer, instructions: String, prompt: String, tokens: Int) async -> String? {
         preview = ""
         let session = ChatSession(gemma, instructions: instructions, generateParameters: GenerateParameters(maxTokens: tokens))
         let work = Task { @MainActor in
@@ -459,4 +461,150 @@ enum AudioAccent: String, CaseIterable, Identifiable, Sendable {
     var label: String { self == .british ? "British" : "American" }
     /// Alex, then Sam.
     var voices: [String] { self == .british ? ["bf_emma", "bm_george"] : ["af_heart", "am_michael"] }
+}
+
+// MARK: video
+
+extension StudioEngine {
+    /// A narrated slide video made entirely on the phone: the answer model writes the slides and what is said over
+    /// each, Kokoro speaks it, each slide is drawn as a frame, and the frames and narration are joined into an MP4.
+    func makeVideo(in notebook: LibraryNotebookInfo, topic: String, slides count: Int, notebookOnly: Bool, style: VideoStyle, accent: AudioAccent, library: LibraryModel) async -> StudioItem? {
+        guard !working else { return nil }
+        working = true; error = nil; preview = ""; progress = 0; caption = ""; stopped = false
+        defer { working = false; status = "" }
+        guard let gemma = library.gemma else { error = "The answer model is still getting ready. Try again in a moment."; return nil }
+        guard GPUGuard.canStart else { error = "Open the app and try again: this can't run while the screen is off."; return nil }
+        UIApplication.shared.isIdleTimerDisabled = true
+        defer { UIApplication.shared.isIdleTimerDisabled = false }
+
+        let topic = topic.trimmingCharacters(in: .whitespacesAndNewlines)
+        status = "Reading the notebook…"
+        let t = topic.isEmpty ? "" : topic + " "
+        var seeds = topic.isEmpty ? ["the main ideas and key points"] : [topic]
+        seeds += ["\(t)important facts, names, dates and numbers", "\(t)definitions and explanations", "\(t)examples, processes and steps", "\(t)conclusions, decisions and recommendations"]
+        var pool: [LibraryHit] = []
+        var seen = Set<String>()
+        for seed in seeds {
+            if let found = try? await library.retrieve(question: seed, notebook: notebook.id) {
+                for hit in found.hits where seen.insert(hit.id).inserted { pool.append(hit) }
+            }
+        }
+        pool = Array(pool.prefix(min(24, max(10, count * 3))))
+        guard !pool.isEmpty else { error = "Nothing in this notebook matches that yet."; return nil }
+
+        // 1. The slides and what is said over each.
+        status = "Writing the slides…"
+        let about = topic.isEmpty ? "the notebook “\(notebook.title)”" : "“\(topic)” in the notebook “\(notebook.title)”"
+        let source = notebookOnly ? "Use ONLY facts from the numbered passages from the user's own notes."
+            : "Use mainly the numbered passages from the user's own notes; you may add well-established general knowledge about the subject."
+        let instructions = "You make a short narrated explainer video. \(source) Plain text: no markdown, no citations or bracketed numbers. You reply with JSON only."
+        let numbered = pool.enumerated().map { i, h in "[\(i + 1)] (\(h.filename))\n\(String(h.text.prefix(700)))" }.joined(separator: "\n\n")
+        let prompt = """
+        Passages:
+
+        \(numbered)
+
+        Write exactly \(count) slides for an explainer video about \(about). The first slide introduces the subject; the last wraps up with the takeaway. \
+        Reply with ONLY a JSON array. Each item: {"title": a short headline of at most 7 words, "points": 2 or 3 bullets of at most 12 words each, \
+        "narration": two or three sentences, spoken naturally in plain language, that explain the slide and do not just read the bullets}.
+        """
+        guard let raw = await generate(gemma, instructions: instructions, prompt: prompt, tokens: 600 + count * 260) else { error = "Stopped."; return nil }
+        struct Slide { var title: String; var points: [String]; var narration: String }
+        let slides: [Slide] = Self.jsonObjects(in: raw).compactMap { o in
+            guard let title = (o["title"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty,
+                  let narration = (o["narration"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !narration.isEmpty else { return nil }
+            let points = (o["points"] as? [String] ?? []).map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }.prefix(3)
+            return Slide(title: title, points: Array(points), narration: narration)
+        }
+        guard slides.count >= 2 else { error = "The slides didn't come out right. Try again."; return nil }
+        progress = 0.35
+
+        // 2. The voice.
+        status = "Warming up the microphone…"
+        caption = ""
+        var voice: KokoroAneManager?
+        var lastFailure = ""
+        for version in [KokoroAneVersion.legacy, .v3] {
+            let k = KokoroAneManager(version: version)
+            do {
+                do { try await k.initialize(preloadVoices: Set([accent.voices[0]])) } catch { try await k.initialize() }
+                _ = try await k.synthesizeDetailed(text: "Hello there.", voice: nil)
+                voice = k
+                break
+            } catch {
+                lastFailure = error.localizedDescription
+                SoakTrace.log("studio video: voice engine \(version) failed its check: \(error)")
+                await k.cleanup()
+            }
+        }
+        guard let kokoro = voice else { self.error = "Couldn't start the voice: \(lastFailure)"; return nil }
+        var voiceName: String? = accent.voices[0]
+        do { _ = try await kokoro.synthesizeDetailed(text: "Hello there.", voice: voiceName) } catch { voiceName = nil }
+
+        let id = UUID().uuidString
+        let narrationURL = FileManager.default.temporaryDirectory.appendingPathComponent(id + ".m4a")
+        let videoFile = id + ".mp4"
+        let videoURL = StudioStore.audioURL(videoFile)
+        defer { try? FileManager.default.removeItem(at: narrationURL) }
+        let rate = Double(KokoroAneConstants.sampleRate)
+        var out: AVAudioFile? = try? AVAudioFile(forWriting: narrationURL, settings: [AVFormatIDKey: kAudioFormatMPEG4AAC, AVSampleRateKey: rate,
+                                                                    AVNumberOfChannelsKey: 1, AVEncoderBitRateKey: 56_000],
+                                         commonFormat: .pcmFormatFloat32, interleaved: false)
+        guard out != nil, let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: rate, channels: 1, interleaved: false) else {
+            error = "Couldn't create the audio file."; return nil
+        }
+        func write(_ samples: [Float]) {
+            guard !samples.isEmpty, let buf = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(samples.count)) else { return }
+            buf.frameLength = AVAudioFrameCount(samples.count)
+            samples.withUnsafeBufferPointer { buf.floatChannelData![0].update(from: $0.baseAddress!, count: samples.count) }
+            try? out?.write(from: buf)
+        }
+        var written = 0
+        var starts: [Double] = []
+        let breath = [Float](repeating: 0, count: Int(rate * 0.7))
+        do {
+            for (i, slide) in slides.enumerated() {
+                if stopped { error = "Stopped."; return nil }
+                caption = slide.title
+                status = "Recording slide \(i + 1) of \(slides.count)…"
+                starts.append(Double(written) / rate)
+                for part in SpeechText.chunks(from: slide.narration) {
+                    let r: KokoroAneSynthesisResult
+                    do { r = try await kokoro.synthesizeDetailed(text: part, voice: voiceName, speed: 1.0) }
+                    catch { r = try await kokoro.synthesizeDetailed(text: part, voice: nil, speed: 1.0) }
+                    write(r.samples); written += r.samples.count
+                }
+                write(breath); written += breath.count
+                progress = 0.35 + 0.45 * Double(i + 1) / Double(slides.count)
+            }
+        } catch {
+            self.error = "Couldn't voice the narration: \(error.localizedDescription)"; return nil
+        }
+        await kokoro.cleanup()
+        out = nil
+        let duration = Double(written) / rate
+
+        // 3. The picture, then the video.
+        status = "Drawing the slides…"
+        var frames: [(image: CGImage, start: Double)] = []
+        for (i, slide) in slides.enumerated() {
+            let renderer = ImageRenderer(content: VideoSlideView(title: slide.title, points: slide.points, number: i + 1, total: slides.count, style: style))
+            renderer.scale = 1
+            guard let image = renderer.cgImage else { error = "Couldn't draw a slide."; return nil }
+            frames.append((image, starts[i]))
+        }
+        progress = 0.9
+        status = "Putting the video together…"
+        do { try await VideoMaker.write(frames: frames, duration: duration, narration: narrationURL, to: videoURL) }
+        catch { try? FileManager.default.removeItem(at: videoURL); self.error = "Couldn't make the video: \(error.localizedDescription)"; return nil }
+
+        let info = VideoInfo(file: videoFile, duration: duration, lines: slides.map(\.narration))
+        guard let data = try? JSONEncoder().encode(info) else { return nil }
+        let title = topic.isEmpty ? "Video: \(notebook.title)" : "Video: \(topic)"
+        var item = StudioItem(id: id, notebookId: notebook.id, kind: .video, title: title, created: Date(), body: String(decoding: data, as: UTF8.self))
+        item.mediaFile = videoFile
+        StudioStore.save(item)
+        progress = 1
+        return item
+    }
 }

@@ -59,7 +59,7 @@ struct StudioView: View {
                     .buttonStyle(.plain)
                     .listRowSeparator(.hidden).listRowBackground(Color.clear)
                     LazyVGrid(columns: [GridItem(.flexible(), spacing: 12), GridItem(.flexible(), spacing: 12)], spacing: 12) {
-                        ForEach(StudioItem.Kind.allCases.filter { $0 != .video }) { kind in
+                        ForEach(StudioItem.Kind.allCases) { kind in
                             Button { making = kind } label: {
                                 VStack(alignment: .leading, spacing: 10) {
                                     Image(systemName: kind.symbol).font(.title2).foregroundStyle(kind.tint)
@@ -164,6 +164,7 @@ struct StudioView: View {
             let size = item.mediaBytes.map { " (" + ByteCountFormatter.string(fromByteCount: Int64($0), countStyle: .file) + ")" } ?? ""
             return " · from your Mac, tap to download" + size
         }
+        if item.kind == .visual || item.kind == .video { return " · on this phone" }
         return sent.contains(item.id) ? " · on your Mac" : " · waiting to send"
     }
 
@@ -186,6 +187,7 @@ private struct MakeSheet: View {
     @State private var topic = ""
     @State private var count: Int
     @State private var style: AudioStyle = .casual
+    @State private var videoStyle: VideoStyle = .clean
     @State private var accent: AudioAccent = .british
     @State private var notebookOnly = true
     @State private var layout: VisualSpec.Layout = .mindmap
@@ -195,10 +197,10 @@ private struct MakeSheet: View {
     init(kind: StudioItem.Kind, notebook: LibraryNotebookInfo, library: LibraryModel, engine: StudioEngine, topic: String = "", onMade: @escaping (StudioItem) -> Void) {
         _topic = State(initialValue: topic)
         self.kind = kind; self.notebook = notebook; self.library = library; self.engine = engine; self.onMade = onMade
-        _count = State(initialValue: kind == .quiz ? 5 : (kind == .audio ? 4 : 10))
+        _count = State(initialValue: kind == .quiz ? 5 : (kind == .audio ? 4 : (kind == .video ? 6 : 10)))
     }
 
-    private var counts: [Int] { kind == .quiz ? [5, 10, 15, 20] : (kind == .audio ? [2, 4, 7] : [10, 20, 30]) }
+    private var counts: [Int] { kind == .quiz ? [5, 10, 15, 20] : (kind == .audio ? [2, 4, 7] : (kind == .video ? [4, 6, 8] : [10, 20, 30])) }
     private func countLabel(_ n: Int) -> String { kind == .audio ? "\(n == 2 ? 3 : (n == 4 ? 5 : 9)) min" : "\(n)" }
 
     var body: some View {
@@ -222,8 +224,16 @@ private struct MakeSheet: View {
                             }
                         }
                         if kind != .doc && kind != .visual {
-                            Section(kind == .quiz ? "Questions" : (kind == .audio ? "Length" : "Cards")) {
+                            Section(kind == .quiz ? "Questions" : (kind == .audio ? "Length" : (kind == .video ? "Slides" : "Cards"))) {
                                 Picker("", selection: $count) { ForEach(counts, id: \.self) { Text(countLabel($0)).tag($0) } }.pickerStyle(.segmented)
+                            }
+                        }
+                        if kind == .video {
+                            Section("Look") {
+                                Picker("Look", selection: $videoStyle) { ForEach(VideoStyle.allCases) { Text($0.label).tag($0) } }.pickerStyle(.segmented)
+                            }
+                            Section("Voice") {
+                                Picker("Voice", selection: $accent) { ForEach(AudioAccent.allCases) { Text($0.label).tag($0) } }.pickerStyle(.segmented)
                             }
                         }
                         if kind == .audio {
@@ -258,7 +268,7 @@ private struct MakeSheet: View {
     }
 
     private func make() async {
-        if let made = await engine.make(kind, in: notebook, topic: topic, count: count, notebookOnly: notebookOnly, style: style, accent: accent, layout: layout, detail: detail, library: library) {
+        if let made = await engine.make(kind, in: notebook, topic: topic, count: count, notebookOnly: notebookOnly, style: style, videoStyle: videoStyle, accent: accent, layout: layout, detail: detail, library: library) {
             onMade(made); dismiss()
         }
     }
