@@ -1,0 +1,200 @@
+# LocalBook Lab — Phase 0 spike harness.
+# Generate the Xcode project with:  brew install xcodegen && xcodegen generate
+name: LocalBookLab
+options:
+  bundleIdPrefix: com.patsteph.localbook
+  deploymentTarget:
+    iOS: "27.0"
+  createIntermediateGroups: true
+
+packages:
+  swift-transformers:
+    url: https://github.com/huggingface/swift-transformers
+    from: "1.3.5"
+  mlx-swift:
+    url: https://github.com/ml-explore/mlx-swift
+    minorVersion: "0.31.4"
+  mlx-swift-lm:
+    url: https://github.com/ml-explore/mlx-swift-lm
+    # 3.32.x adds a FoundationModels adapter that does not compile against the iOS 27 beta SDK;
+    # 3.31.4 has Gemma 4 E4B and none of that.
+    exactVersion: "3.31.4"
+  FluidAudio:
+    url: https://github.com/FluidInference/FluidAudio
+    from: "0.17.6"
+  swift-huggingface:
+    url: https://github.com/huggingface/swift-huggingface
+    from: "0.9.0"
+  # 1.7.x needs -enable-experimental-feature BorrowingSequence; keep to the stable line.
+  swift-collections:
+    url: https://github.com/apple/swift-collections
+    exactVersion: "1.3.0"
+
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    # Set your team here or in Xcode › Signing & Capabilities.
+    DEVELOPMENT_TEAM: ""
+    CODE_SIGN_STYLE: Automatic
+    TARGETED_DEVICE_FAMILY: "1"
+    ENABLE_USER_SCRIPT_SANDBOXING: YES
+
+schemes:
+  LocalBookLab:
+    build:
+      targets:
+        LocalBookLab: all
+    run:
+      config: Debug
+  LocalBook:
+    build:
+      targets:
+        LocalBook: all
+    run:
+      config: Debug
+
+targets:
+  LocalBookLab:
+    type: application
+    platform: iOS
+    sources:
+      - path: Sources
+        excludes:
+          - AppShell/**                 # the product app (target LocalBook)
+      # The reranker: a Core ML conversion of the Mac's own model (tools/convert_reranker.py writes it).
+      # Not committed (64 MB); the build still works without it and the phone then skips reranking.
+      - path: tools/cache/RerankerL12.mlpackage
+        optional: true
+      - path: Models/RerankerTokenizer
+        type: folder
+      - path: tools/cache/rerank_conformance.json
+        optional: true
+    dependencies:
+      - package: swift-transformers
+        product: Tokenizers
+      - package: swift-transformers
+        product: Hub
+      - package: swift-collections
+        product: Collections
+      - package: mlx-swift
+        product: MLX
+      - package: mlx-swift
+        product: MLXNN
+      - package: mlx-swift-lm
+        product: MLXLLM
+      - package: mlx-swift-lm
+        product: MLXLMCommon
+      - package: mlx-swift-lm
+        product: MLXHuggingFace
+      - package: swift-huggingface
+        product: HuggingFace
+      - package: FluidAudio
+        product: FluidAudio
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.patsteph.localbook.lab
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+    entitlements:
+      path: Resources/LocalBookLab.entitlements
+      properties:
+        # iOS 27: lets a background task keep running inference on the Neural Engine.
+        # Also required for ANY background Neural Engine use from iOS 27 on.
+        com.apple.developer.background-tasks.continued-processing.inference: true
+        # Gemma 4 E4B (test 2) needs more than the default per-app memory limit.
+        com.apple.developer.kernel.increased-memory-limit: true
+    info:
+      path: Resources/Info.plist
+      properties:
+        CFBundleDisplayName: LocalBook Lab
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        # Drop fixtures into the app from Finder (iPhone › Files) or the Files app.
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: true
+        UIBackgroundModes:
+          - processing
+          # Test 4: read-aloud keeps playing with the screen locked.
+          - audio
+        BGTaskSchedulerPermittedIdentifiers:
+          - com.patsteph.localbook.lab.parity.*
+          - com.patsteph.localbook.lab.speech.*
+        # Test 3 (pairing with a Mac) — Bonjour on the local network.
+        NSLocalNetworkUsageDescription: LocalBook finds and syncs with your Macs on this network.
+        NSBonjourServices:
+          - _localbook._tcp
+
+  # The product app: phone-only. Shares the engines, the library and the pairing code with the Lab; leaves out every
+  # Lab screen, the Mac-vs-phone harness, speech and the soak test.
+  LocalBook:
+    type: application
+    platform: iOS
+    sources:
+      - path: Sources
+        excludes:
+          - App/**
+          - Parity/**
+          - Speech/**
+          - Library/AnswerParity.swift
+          - Library/Soak.swift
+          - Library/LibraryView.swift
+          - Generation/GemmaTestView.swift
+          - Pairing/FindMacsView.swift
+      - path: tools/cache/RerankerL12.mlpackage
+        optional: true
+      - path: Models/RerankerTokenizer
+        type: folder
+      - path: tools/cache/rerank_conformance.json
+        optional: true
+    dependencies:
+      - package: swift-transformers
+        product: Tokenizers
+      - package: swift-transformers
+        product: Hub
+      - package: swift-collections
+        product: Collections
+      - package: mlx-swift
+        product: MLX
+      - package: mlx-swift
+        product: MLXNN
+      - package: mlx-swift-lm
+        product: MLXLLM
+      - package: mlx-swift-lm
+        product: MLXLMCommon
+      - package: mlx-swift-lm
+        product: MLXHuggingFace
+      - package: swift-huggingface
+        product: HuggingFace
+      - package: FluidAudio
+        product: FluidAudio
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.patsteph.localbook.ios
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+    entitlements:
+      path: Resources/LocalBook.entitlements
+      properties:
+        # Gemma 4 E4B plus the search model need more than the default per-app memory limit.
+        com.apple.developer.kernel.increased-memory-limit: true
+    info:
+      path: Resources/LocalBookInfo.plist
+      properties:
+        CFBundleDisplayName: LocalBook
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        NSLocalNetworkUsageDescription: LocalBook finds and syncs with your Mac on this network.
+        NSMicrophoneUsageDescription: LocalBook listens when you dictate a note or record a meeting.
+        NSSpeechRecognitionUsageDescription: LocalBook turns your dictation into text, on this phone where possible.
+        NSCameraUsageDescription: LocalBook photographs pages and whiteboards so the text can be added to a notebook.
+        NSBonjourServices:
+          - _localbook._tcp
+        # Lets a hang-diagnosis trace (soak-trace.txt) be read from Files.
+        UIBackgroundModes:
+          - audio                      # read-aloud keeps playing with the screen locked
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: true

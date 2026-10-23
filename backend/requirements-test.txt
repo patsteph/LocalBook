@@ -7,17 +7,17 @@
 # CI-pure tests don't need. Tests that DO need those (e.g. _phase5_test.py → langgraph,
 # _runprofile_test.py → live Ollama) stay in the local-only tier and are not run in CI.
 pytest
-pydantic
-pydantic-settings
-numpy
-httpx
-psutil
-fastapi
+pydantic[email]==2.12.5
+pydantic-settings==2.14.2
+numpy==1.26.4
+httpx==0.28.1
+psutil==7.2.1
+fastapi==0.128.0
 # Real runtime dep (requirements.in) — cursor_sql._validate_sql parses SQL with it and
 # SILENTLY DISABLES validation when it's absent, so omitting it here didn't skip
 # Real runtime dep (requirements.in) — py_compute's `read_df` data handle returns a DataFrame,
 # and tests/test_py_compute.py exercises it.
-pandas
+pandas==2.3.3
 # Static undefined-name check (tests/test_no_undefined_names.py). Test-tier only — it must NOT
 # go in requirements.in or it ships inside the app for nothing. Without it that test skips
 # silently, which is how five NameErrors reached a release build at once.
@@ -25,3 +25,31 @@ pyflakes
 # LB-12 sync harness (tests/test_sync_harness.py): property tests over three replicas.
 # Test-tier only — never in requirements.in.
 hypothesis
+
+# Runtime deps the backend tests now import at module load. Versions are pinned to the ones in
+# requirements.txt so CI exercises what ships (an unpinned fastmcp, for one, changed its API).
+# Still deliberately excluded: the Apple-Silicon stack (mlx*, pyobjc) and torch/bertopic.
+starlette==0.50.0
+aiohttp==3.14.3
+cryptography==46.0.7
+lancedb==0.26.1
+pyarrow==22.0.0
+keyring==25.7.0
+pillow==12.3.0
+tiktoken==0.12.0
+mnemonic==0.21
+fastmcp==2.14.3
+av==19.0.0
+lxml[html-clean]==6.0.2
+python-multipart==0.0.31
+nbformat==5.10.4
+trafilatura==2.0.0
+openai==2.15.0
+scikit-learn==1.8.0
+truststore==0.10.4
+uvicorn[standard]==0.40.0
+langchain-core==1.3.3
+huggingface-hub==1.33.0
+beautifulsoup4==4.14.3
+youtube-transcript-api==1.2.3
+langgraph==1.0.10

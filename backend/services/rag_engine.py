@@ -71,6 +71,18 @@ _concept_extraction_semaphore = asyncio.Semaphore(int(os.getenv("LOCALBOOK_KG_CO
 _search_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="lancedb_search")
 
 
+class _NullMetrics:
+    """Stands in for rag_metrics when a question must leave no trace (see `query(phone_only=True)`).
+    The real tracker keeps ONE global "current query", so even harmless-looking calls would write into
+    whichever Mac question is in flight; this swallows them all."""
+
+    async def end_query(self, *args, **kwargs):
+        return None
+
+    def __getattr__(self, name):
+        return lambda *args, **kwargs: None
+
+
 class RAGEngine:
     """RAG engine for document Q&A"""
 
@@ -162,6 +174,7 @@ class RAGEngine:
         enable_hyde: bool = True,
         precomputed_summary=None,
         deferred: bool = False,
+        precomputed_questions=None,
     ) -> Dict:
         """Ingest a document into the RAG system.
 
@@ -172,7 +185,7 @@ class RAGEngine:
         return await rag_storage.ingest_document(
             notebook_id, source_id, text, filename, source_type, reporter=reporter,
             enable_hyde=enable_hyde, precomputed_summary=precomputed_summary,
-            deferred=deferred,
+            deferred=deferred, precomputed_questions=precomputed_questions,
         )
 
     async def append_to_document(
@@ -223,8 +236,13 @@ class RAGEngine:
         enable_web_search: bool = False,
         llm_provider: Optional[str] = None,
         extra_system_context: Optional[str] = None,
+        phone_only: bool = False,
     ) -> Dict:
         """Query the RAG system (non-streaming).
+
+        phone_only: the question came from a paired phone and must stay private to that phone. Nothing
+        about it is recorded on this Mac: no metrics row (which keeps a preview of the question), no
+        answer-cache entry, no memory extraction. The answer is still personalised from existing memory.
 
         extra_system_context: Optional extra text prepended to the system
         prompt. Used by api/chat.py to inject the curator's mental model
@@ -232,25 +250,27 @@ class RAGEngine:
         preserves existing behaviour for all other callers.
         """
         total_start = time.time()
+        metrics = _NullMetrics() if phone_only else rag_metrics
         query_id = str(uuid.uuid4())
         query_type = self._classify_query(question)
         
         # v1.0.3: Start metrics tracking
-        rag_metrics.start_query(query_id, notebook_id, question, query_type)
+        metrics.start_query(query_id, notebook_id, question, query_type)
         
         print(f"\n{'='*60}")
-        print(f"[RAG] Starting query: '{question[:50]}...'")
+        print("[RAG] Starting query from a paired phone (kept private)" if phone_only
+              else f"[RAG] Starting query: '{question[:50]}...'")
         print(f"{'='*60}")
 
         # Step 1: PARALLEL query analysis + embedding (0ms added latency)
-        rag_metrics.start_stage(RAGStage.QUERY_ANALYSIS)
+        metrics.start_stage(RAGStage.QUERY_ANALYSIS)
         step_start = time.time()
         
         # Check query pattern cache first
         cache_key = question.lower().strip()[:100]
         cached_analysis = self._query_pattern_cache.get(cache_key)
         query_cache_hit = cached_analysis is not None
-        rag_metrics.record_cache_hit("query", query_cache_hit)
+        metrics.record_cache_hit("query", query_cache_hit)
         
         if cached_analysis:
             query_analysis = cached_analysis
@@ -258,19 +278,19 @@ class RAGEngine:
             analysis_task = safe_create_task(self._analyze_query_with_llm(question), name="query-analysis")
         
         # Generate embedding with cache
-        rag_metrics.start_stage(RAGStage.EMBEDDING)
+        metrics.start_stage(RAGStage.EMBEDDING)
         basic_expanded = self._expand_query(question)
         
         # v1.0.3: Use embedding cache
         cached_emb = embedding_cache.get(basic_expanded)
         if cached_emb is not None:
             query_embedding = cached_emb
-            rag_metrics.record_cache_hit("embedding", True)
+            metrics.record_cache_hit("embedding", True)
         else:
             query_embedding = self.encode(basic_expanded, is_query=True)[0].tolist()
             embedding_cache.put(basic_expanded, query_embedding)
-            rag_metrics.record_cache_hit("embedding", False)
-        rag_metrics.end_stage(RAGStage.EMBEDDING)
+            metrics.record_cache_hit("embedding", False)
+        metrics.end_stage(RAGStage.EMBEDDING)
         
         if not cached_analysis:
             query_analysis = await analysis_task
@@ -279,16 +299,16 @@ class RAGEngine:
                 keys = list(self._query_pattern_cache.keys())
                 for k in keys[:20]:
                     del self._query_pattern_cache[k]
-        rag_metrics.end_stage(RAGStage.QUERY_ANALYSIS)
+        metrics.end_stage(RAGStage.QUERY_ANALYSIS)
         
         print(f"[RAG] Step 1 - Parallel Analysis+Embedding: {time.time() - step_start:.2f}s")
         
         # v1.0.3: Check answer cache EARLY (before expensive search)
         cached_answer = await answer_cache.get(question, notebook_id, query_embedding)
         if cached_answer is not None:
-            rag_metrics.record_cache_hit("answer", True)
+            metrics.record_cache_hit("answer", True)
             total_time = (time.time() - total_start) * 1000
-            await rag_metrics.end_query(total_time)
+            await metrics.end_query(total_time)
             print(f"[RAG] ⚡ Answer cache hit ({cached_answer.get('cache_type', 'unknown')}) - {total_time:.0f}ms")
             return {
                 "answer": cached_answer["answer"],
@@ -299,7 +319,7 @@ class RAGEngine:
                 "low_confidence": False,
                 "cache_hit": True
             }
-        rag_metrics.record_cache_hit("answer", False)
+        metrics.record_cache_hit("answer", False)
         
         # Build optimized search query
         expanded_query = self._build_search_query(query_analysis, question)
@@ -326,7 +346,7 @@ class RAGEngine:
                 print(f"[RAG] Query decomposed into {len(sub_questions)} sub-questions ({complexity_type})")
 
         # Step 3: Adaptive search with multiple strategies
-        rag_metrics.start_stage(RAGStage.VECTOR_SEARCH)
+        metrics.start_stage(RAGStage.VECTOR_SEARCH)
         step_start = time.time()
         overcollect_k = settings.retrieval_overcollect if self._use_reranker else top_k
         
@@ -371,11 +391,11 @@ class RAGEngine:
                     table, question, query_embedding, query_analysis, overcollect_k
                 )
             
-            rag_metrics.end_stage(RAGStage.VECTOR_SEARCH)
+            metrics.end_stage(RAGStage.VECTOR_SEARCH)
             print(f"[RAG] Step 2 - Adaptive Search ({len(results)} results): {time.time() - step_start:.2f}s")
         except Exception as e:
-            rag_metrics.record_error(str(e), RAGStage.VECTOR_SEARCH)
-            await rag_metrics.end_query((time.time() - total_start) * 1000)
+            metrics.record_error(str(e), RAGStage.VECTOR_SEARCH)
+            await metrics.end_query((time.time() - total_start) * 1000)
             print(f"Search error: {e}")
             return {
                 "answer": "I encountered an error searching your documents.",
@@ -389,10 +409,10 @@ class RAGEngine:
 
         # Step 3b: Rerank
         if self._use_reranker and len(results) > top_k:
-            rag_metrics.start_stage(RAGStage.RERANKING)
+            metrics.start_stage(RAGStage.RERANKING)
             step_start = time.time()
             results = self.rerank(question, results, top_k=top_k + 1)
-            rag_metrics.end_stage(RAGStage.RERANKING)
+            metrics.end_stage(RAGStage.RERANKING)
             print(f"[RAG] Step 3 - Reranking ({len(results)} results): {time.time() - step_start:.2f}s")
 
         # Step 3c: Entity-aware boost
@@ -408,7 +428,7 @@ class RAGEngine:
         results = source_router.apply_routing_boost(results, routing_decision)
 
         # Step 4: Build citations and context (shared helper)
-        rag_metrics.start_stage(RAGStage.CONTEXT_BUILD)
+        metrics.start_stage(RAGStage.CONTEXT_BUILD)
         step_start = time.time()
         citations, sources, context, low_confidence = await self._build_citations_and_context(results, "[RAG]")
         num_citations = len(citations)
@@ -417,7 +437,7 @@ class RAGEngine:
         confidences = [c.get("confidence", 0) for c in citations]
         max_conf = max(confidences) if confidences else 0
         avg_conf = sum(confidences) / len(confidences) if confidences else 0
-        rag_metrics.record_retrieval(
+        metrics.record_retrieval(
             chunks_retrieved=len(results),
             chunks_after_rerank=len(results),
             citations_used=num_citations,
@@ -457,7 +477,7 @@ class RAGEngine:
             context += "\n\n---\nAdditional context:\n" + "\n".join(supplementary)
             print(f"[RAG] Added {len(supplementary)} supplementary context sections")
         
-        rag_metrics.end_stage(RAGStage.CONTEXT_BUILD)
+        metrics.end_stage(RAGStage.CONTEXT_BUILD)
         print(f"[RAG] Step 4 - Build context: {time.time() - step_start:.2f}s")
 
         # Step 4b: If query was decomposed, structure context with sub-question awareness
@@ -469,7 +489,7 @@ class RAGEngine:
             print(f"[RAG] Injected decomposed synthesis structure ({len(sub_questions)} sub-questions)")
 
         # Step 5: Generate answer
-        rag_metrics.start_stage(RAGStage.LLM_GENERATION)
+        metrics.start_stage(RAGStage.LLM_GENERATION)
         step_start = time.time()
         conversation_id = str(uuid.uuid4())
         answer_result = await self._generate_answer(
@@ -479,19 +499,19 @@ class RAGEngine:
         answer = answer_result["answer"]
         memory_used = answer_result.get("memory_used", [])
         memory_context_summary = answer_result.get("memory_context_summary")
-        rag_metrics.end_stage(RAGStage.LLM_GENERATION)
+        metrics.end_stage(RAGStage.LLM_GENERATION)
         print(f"[RAG] Step 5 - LLM answer: {time.time() - step_start:.2f}s")
         
         # Step 5b: Quality check + corrective retrieval if needed
-        rag_metrics.start_stage(RAGStage.QUALITY_CHECK)
+        metrics.start_stage(RAGStage.QUALITY_CHECK)
         quality_ok, quality_reason = self._check_answer_quality(question, answer, query_type)
-        rag_metrics.record_quality_check(quality_ok, quality_reason)
-        rag_metrics.end_stage(RAGStage.QUALITY_CHECK)
+        metrics.record_quality_check(quality_ok, quality_reason)
+        metrics.end_stage(RAGStage.QUALITY_CHECK)
         
         if not quality_ok:
             print(f"[RAG] Quality check failed: {quality_reason}")
-            rag_metrics.start_stage(RAGStage.CORRECTIVE_RETRIEVAL)
-            rag_metrics.record_corrective_retrieval(True)
+            metrics.start_stage(RAGStage.CORRECTIVE_RETRIEVAL)
+            metrics.record_corrective_retrieval(True)
             step_start = time.time()
             
             # Corrective retrieval with query variants
@@ -516,9 +536,9 @@ class RAGEngine:
                 )
                 answer = answer_result["answer"]
                 print(f"[RAG] Step 5b - Corrective retrieval + re-answer: {time.time() - step_start:.2f}s")
-            rag_metrics.end_stage(RAGStage.CORRECTIVE_RETRIEVAL)
+            metrics.end_stage(RAGStage.CORRECTIVE_RETRIEVAL)
         else:
-            rag_metrics.record_corrective_retrieval(False)
+            metrics.record_corrective_retrieval(False)
             print("[RAG] Quality check passed")
 
         # Step 5c: Web search fallback if confidence still too low
@@ -557,10 +577,10 @@ class RAGEngine:
                     print(f"[RAG] Web fallback error (continuing without): {e}")
 
         # Step 6: Generate follow-up questions
-        rag_metrics.start_stage(RAGStage.FOLLOWUP_GENERATION)
+        metrics.start_stage(RAGStage.FOLLOWUP_GENERATION)
         step_start = time.time()
         follow_up_questions = await self._generate_follow_up_questions_fast(question, context)
-        rag_metrics.end_stage(RAGStage.FOLLOWUP_GENERATION)
+        metrics.end_stage(RAGStage.FOLLOWUP_GENERATION)
         print(f"[RAG] Step 6 - Follow-ups: {time.time() - step_start:.2f}s")
 
         # Step 7: Memory extraction (fire-and-forget)
@@ -577,14 +597,16 @@ class RAGEngine:
             except Exception as e:
                 print(f"[RAG] Memory extraction failed (non-fatal): {e}")
         
-        safe_create_task(_extract_memories_background(), name="memory-extraction")
+        if not phone_only:
+            safe_create_task(_extract_memories_background(), name="memory-extraction")
 
         # v1.0.3: Cache this answer for future similar queries
-        await answer_cache.put(question, notebook_id, query_embedding, answer, citations)
+        if not phone_only:
+            await answer_cache.put(question, notebook_id, query_embedding, answer, citations)
 
         # v1.0.3: Finalize metrics
         total_time_ms = (time.time() - total_start) * 1000
-        await rag_metrics.end_query(total_time_ms)
+        await metrics.end_query(total_time_ms)
         
         print(f"{'='*60}")
         print(f"[RAG] TOTAL query time: {total_time_ms/1000:.2f}s")
@@ -1243,7 +1265,7 @@ Answer the question, citing sources inline as [N]. Do not list references at the
         
         # Run comprehensive cleanup (strips bibliography sections the stream missed)
         streamed_answer = full_answer
-        full_answer = rag_generation.clean_llm_output(full_answer)
+        full_answer = rag_generation.fix_citations(rag_generation.clean_llm_output(full_answer), num_citations)
         # If cleanup changed the answer, send replace_answer to fix what the user already saw
         if full_answer != streamed_answer:
             print(f"[RAG STREAM] Post-stream cleanup removed {len(streamed_answer) - len(full_answer)} chars of bibliography leakage")

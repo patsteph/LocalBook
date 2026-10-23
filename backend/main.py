@@ -210,6 +210,19 @@ try:
 except Exception as e:
     print(f"⚠️ prefs migration skipped: {e}")
 
+# A requested embedding-model switch (or roll back) is applied HERE: after the volume gate,
+# before the saved models are restored and before anything opens LanceDB — it renames index
+# folders and rewrites the saved embedder (services/embedding_migration.py).
+try:
+    from services.volume_gate import current as _gate_for_switch
+    if not _gate_for_switch().locked:
+        from services.embedding_migration import apply_pending_at_startup as _apply_embedder_switch
+        _switch = _apply_embedder_switch()
+        if _switch:
+            print(f"[SafeStart] embedding model switch: {_switch}")
+except Exception as _e:
+    print(f"[SafeStart] embedding model switch skipped: {_e}")
+
 if _prefs_path.exists():
     try:
         _prefs = _json.loads(_prefs_path.read_text())
@@ -239,6 +252,31 @@ if _prefs_path.exists():
 # restored (or not: a fresh install needs it most), before anything loads a model.
 from services.model_profile import apply_at_startup as _apply_profile
 _apply_profile()
+
+# Saved embedder ≠ the model that built the index (switched in the Locker before the shadow
+# build existed, or a new default): keep searching with the index's model and build the saved
+# one alongside — the old answer, drop every table and re-ingest, emptied search for hours.
+try:
+    from services.embedding_migration import reconcile_at_startup as _reconcile_embedder
+    _emb = _reconcile_embedder()
+    if _emb:
+        print(f"[SafeStart] embedding index: {_emb}")
+except Exception as _e:
+    print(f"[SafeStart] embedding index check skipped: {_e}")
+
+# The embedding dimension follows the embedding MODEL (its registry profile), never a
+# remembered number: the Locker's .env write lands in the working directory — inside the app
+# bundle — and the old key was ignored anyway, so after a restart a 768-dim model ran against
+# a 1024 setting and every vector was zero-filled. Startup checks act on this value.
+try:
+    from services.embedding_profile import for_model as _embed_profile
+    _dims = _embed_profile(settings.embedding_model).dims
+    if _dims and _dims != settings.embedding_dim:
+        print(f"[SafeStart] embedding_dim {settings.embedding_dim} → {_dims} "
+              f"(from {settings.embedding_model}'s profile)")
+        settings.embedding_dim = _dims
+except Exception as _e:
+    print(f"[SafeStart] embedding dim not derived (keeping {settings.embedding_dim}): {_e}")
 
 from utils.tasks import safe_create_task
 from utils.diagnostics import install_signal_handlers, start_heartbeat, stop_heartbeat, record_endpoint
@@ -654,10 +692,19 @@ async def _run_startup_tasks():
                 )
                 if dropped:
                     print(f"🧹 Reconciled derived stores — dropped {dropped} orphaned notebook entr(ies)")
+                from services import rag_storage
+                tables = await asyncio.to_thread(rag_storage.reconcile_vector_tables, live)
+                if tables["dropped_empty"] or tables["orphans_with_data"]:
+                    print(f"🧹 Vector tables: dropped {tables['dropped_empty']} empty orphan(s); "
+                          f"{tables['orphans_with_data']} orphan table(s) still hold data (see scripts/data_integrity.py)")
             except Exception as e:
                 print(f"⚠️ Derived-store reconcile failed (non-fatal): {e}")
 
         safe_create_task(_reconcile_derived_stores(), name="reconcile-derived-stores")
+        # Stored chunks longer than the embedder's shared token limit are split / re-embedded
+        # once, in the background, so every device sees the same vector for the same text.
+        from services.chunk_limit_migration import run_at_startup as _fit_chunks_to_limit
+        safe_create_task(_fit_chunks_to_limit(), name="chunk-limit-migration")
 
     await _step("starting", "Starting background services...", 75, _start_services())
 

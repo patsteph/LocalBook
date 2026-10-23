@@ -289,7 +289,6 @@ never tagged; its notes are kept in full below.
   library and `lxml`.
 
 ---
----
 
 ## v1.8.0 — Studio Redesign, iPhone Scan Capture, Sidecar Lifecycle, Multi-Provider LLM
 

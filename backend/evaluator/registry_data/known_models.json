@@ -1048,7 +1048,67 @@
         "open-source",
         "enterprise-ok"
       ],
-      "provider": "mlx"
+      "provider": "mlx",
+      "embedding_profile": {
+        "loader": "mlx_embeddings",
+        "pooling": "cls",
+        "query_template": "query: {text}",
+        "document_template": "{text}",
+        "min_dtype": "bfloat16"
+      }
+    },
+    {
+      "ollama_name": "mlx-community/embeddinggemma-2-bf16",
+      "display_name": "EmbeddingGemma 2 (MLX)",
+      "family": "gemma",
+      "parameter_count": "740M",
+      "vendor": "Google",
+      "origin_country": "US",
+      "license": "Apache-2.0",
+      "supported_roles": [
+        "embedding_model"
+      ],
+      "context_window": 8192,
+      "embedding_dim": 768,
+      "disk_size_gb": 1.49,
+      "min_ram_gb": 2,
+      "recommended_ram_gb": 4,
+      "policy_tags": [
+        "us-origin",
+        "open-source",
+        "enterprise-ok"
+      ],
+      "provider": "mlx",
+      "embedding_profile": {
+        "loader": "mlx_vlm",
+        "pooling": "model",
+        "query_template": "task: search result | query: {text}",
+        "document_template": "title: {title} | text: {text}",
+        "mrl_dims": [
+          768,
+          512,
+          256,
+          128
+        ],
+        "min_dtype": "bfloat16",
+        "max_tokens": 512,
+        "task_templates": {
+          "clustering": "task: clustering | query: {text}",
+          "similarity": "task: sentence similarity | query: {text}",
+          "classification": "task: classification | query: {text}"
+        },
+        "thresholds": {
+          "router": 0.928,
+          "consensus": 0.915,
+          "perspectives": 0.936,
+          "contradiction": 0.855,
+          "articles": 0.91,
+          "canvas_assign": 0.893,
+          "canvas_seed": 0.923,
+          "answer_cache": 0.963,
+          "core_memory": 0.953
+        }
+      }
     }
   ]
 }

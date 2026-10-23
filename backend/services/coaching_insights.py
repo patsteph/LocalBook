@@ -159,7 +159,7 @@ class CoachingInsightGenerator:
 
             for q in queries:
                 try:
-                    embedding = (await rag_engine.encode_async([q]))[0]
+                    embedding = (await rag_engine.encode_async([q], is_query=True))[0]
                     results = table.search(embedding).limit(3).to_list()
                     for r in results:
                         text = r.get("text", "")[:300]

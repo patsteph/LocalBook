@@ -27,9 +27,14 @@ from typing import Any, Dict, List
 
 def index(conn: sqlite3.Connection) -> Dict[str, Any]:
     """What a seed tells a joiner: its notebooks and sources' identities."""
-    nbs = [{"id": i, "title": t} for i, t in conn.execute("SELECT id, title FROM notebooks")]
+    try:                                           # notebooks kept on this Mac are not offered for matching
+        from services.sync import scope
+        keep = set(scope.blocked(None))
+    except Exception:
+        keep = set()
+    nbs = [{"id": i, "title": t} for i, t in conn.execute("SELECT id, title FROM notebooks") if i not in keep]
     srcs = [{"id": i, "notebook_id": n, "content_hash": h}
-            for i, n, h in conn.execute("SELECT id, notebook_id, content_hash FROM sources")]
+            for i, n, h in conn.execute("SELECT id, notebook_id, content_hash FROM sources") if n not in keep]
     return {"notebooks": nbs, "sources": srcs}
 
 

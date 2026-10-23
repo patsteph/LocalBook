@@ -125,6 +125,60 @@ async def discover():
     return {"macs": [m for m in found if m.get("device_id") not in paired]}
 
 
+class PhoneLibraryRequest(BaseModel):
+    excluded: list[str]
+
+
+@router.get("/phones/library")
+async def phone_library_settings():
+    """Every notebook and whether paired phones may read it."""
+    from services.sync import phone_library
+    return {"notebooks": phone_library.settings_view()}
+
+
+@router.post("/phones/library")
+async def set_phone_library(req: PhoneLibraryRequest):
+    """Older endpoint: sets the device-only list (the notebooks that sync with no other device)."""
+    from services.sync import phone_library
+    phone_library.set_excluded(req.excluded)
+    return {"notebooks": phone_library.settings_view()}
+
+
+def _notebook_view():
+    from services.sync import phone_library, scope
+    local, legacy = set(scope.local_notebooks()), set(scope.legacy_phone_only())
+    return {"notebooks": [{"id": i, "title": t, "syncs": i not in local, "phones_only_off": i in legacy and i not in local}
+                          for i, t in sorted(phone_library.notebook_titles().items(), key=lambda kv: kv[1].lower())]}
+
+
+@router.get("/notebooks")
+async def sync_notebooks():
+    """Every notebook and whether it syncs with other devices (off = kept on this device only).
+    `phones_only_off` marks a notebook from the older setting that kept it off phones but let Macs sync it."""
+    return _notebook_view()
+
+
+class SyncNotebooksRequest(BaseModel):
+    keep_local: list[str]
+    share_with_phones: list[str] = []
+
+
+@router.post("/notebooks")
+async def set_sync_notebooks(req: SyncNotebooksRequest):
+    """Set which notebooks stay on this device only (they sync with no other device). `share_with_phones` lifts an
+    older phones-only mark without changing how the notebook syncs between Macs."""
+    from services.sync import scope
+    scope.set_local(req.keep_local)
+    if req.share_with_phones:
+        scope.clear_phones_only(req.share_with_phones)
+    return _notebook_view()
+
+
+@router.post("/phones/{device_id}/revoke")
+async def revoke_phone(device_id: str):
+    return await _call(_svc().revoke_phone(device_id))
+
+
 @router.post("/devices/{device_id}/revoke")
 async def revoke(device_id: str):
     return await _call(_svc().revoke(device_id))

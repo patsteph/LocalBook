@@ -23,6 +23,7 @@ import re
 import sqlite3
 from datetime import datetime, timezone
 from typing import Dict, List, Optional
+from utils.lancedb_tables import has_table
 
 logger = logging.getLogger(__name__)
 
@@ -149,7 +150,7 @@ def purge(companion_id: str, store=None) -> Dict[str, int]:
         conn.close()
 
     try:
-        if "archival_memories" in s.archival_db.table_names():
+        if has_table(s.archival_db, "archival_memories"):
             table = s.archival_db.open_table("archival_memories")
             df = table.to_pandas()
             mask = (df["namespace"] == ns) | df["source_id"].astype(str).str.startswith(f"{ns}:")

@@ -24,6 +24,13 @@ class CacheEntry:
     last_hit: float = 0
 
 
+def _active_embed_model() -> str:
+    try:
+        return settings.embedding_model or ""
+    except Exception:
+        return ""
+
+
 class EmbeddingCache:
     """LRU cache for text embeddings.
     
@@ -46,8 +53,10 @@ class EmbeddingCache:
             self._load_cache()
     
     def _hash_text(self, text: str) -> str:
-        """Create a hash key for text."""
-        return hashlib.md5(text.encode('utf-8')).hexdigest()
+        """Hash key for text UNDER THE ACTIVE EMBEDDER. Keyed by text alone, a switch of
+        embedding model kept serving the old model's vectors (another dimension, another
+        space) for every cached query, forever — the cache never expires."""
+        return hashlib.md5(f"{_active_embed_model()}\x00{text}".encode('utf-8')).hexdigest()
     
     def _load_cache(self):
         """Load cache from disk."""
@@ -337,6 +346,8 @@ class AnswerCache:
             
             best_match = None
             best_similarity = 0
+            from services.embedding_profile import threshold as _profile_thr
+            _thr = _profile_thr("answer_cache", self.similarity_threshold)
             
             for key, cached_emb in self._embeddings.items():
                 if key not in self._cache:
@@ -346,9 +357,15 @@ class AnswerCache:
                 # Skip expired or different notebook
                 if self._is_expired(entry) or entry.get("notebook_id") != notebook_id:
                     continue
+                # Only compare vectors from the SAME embedder (an entry from before a model
+                # switch is another space and possibly another dimension). Untagged entries
+                # predate tagging and were all made by the model that was live then.
+                if entry.get("embed_model", _active_embed_model()) != _active_embed_model() \
+                        or getattr(cached_emb, "shape", None) != getattr(query_emb, "shape", None):
+                    continue
                 
                 similarity = self._cosine_similarity(query_emb, cached_emb)
-                if similarity > best_similarity and similarity >= self.similarity_threshold:
+                if similarity > best_similarity and similarity >= _thr:
                     best_similarity = similarity
                     best_match = (key, entry)
             
@@ -393,7 +410,8 @@ class AnswerCache:
                 "answer": answer,
                 "citations": citations,
                 "timestamp": time.time(),
-                "hits": 0
+                "hits": 0,
+                "embed_model": _active_embed_model(),
             }
             self._embeddings[key] = np.array(query_embedding) if not isinstance(query_embedding, np.ndarray) else query_embedding
             

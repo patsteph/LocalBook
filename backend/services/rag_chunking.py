@@ -13,6 +13,12 @@ from config import settings
 # ─── Smart Chunking Router ──────────────────────────────────────────────────────
 
 def chunk_text_smart(text: str, source_type: str, filename: str) -> List[str]:
+    """Chunks for ingest, each within the embedder's shared token limit (see token_budget)."""
+    from services import token_budget
+    return token_budget.enforce(_chunk_text_by_type(text, source_type, filename))
+
+
+def _chunk_text_by_type(text: str, source_type: str, filename: str) -> List[str]:
     """Smart chunking that adapts strategy based on source type.
     
     Different file types need different chunking strategies:

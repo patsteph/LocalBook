@@ -57,6 +57,7 @@ from utils.json_io import atomic_write_json
 # hitting SQLite's expression-depth limit.
 _FTS_MAX_TERMS = 32
 import logging
+from utils.lancedb_tables import has_table
 logger = logging.getLogger(__name__)
 
 
@@ -118,7 +119,7 @@ class MemoryStore:
     # Embedding Model - Uses Ollama (same as RAG engine for consistency)
     # =========================================================================
     
-    def get_embedding(self, text: str) -> List[float]:
+    def get_embedding(self, text: str, *, is_query: bool = False) -> List[float]:
         """Generate embedding via the shared RAG embedding path (batched /api/embed).
 
         Routes through rag_embeddings.encode so memory uses the same model AND the
@@ -134,7 +135,9 @@ class MemoryStore:
         """
         try:
             from services import rag_embeddings
-            arr = rag_embeddings.encode(text)
+            # A search asks a QUESTION of stored memories (query format); everything else
+            # embeds a memory itself (document format) — the two must not be mixed.
+            arr = rag_embeddings.encode(text, is_query=is_query)
             emb = arr[0].tolist() if len(arr) else []
             return emb if emb else [0.0] * settings.embedding_dim
         except Exception as e:
@@ -265,8 +268,11 @@ class MemoryStore:
         memory = self.load_core_memory()
         return [e for e in memory.entries if e.category == category]
     
-    def find_similar_core_memory(self, content: str, threshold: float = 0.85) -> Optional[CoreMemoryEntry]:
+    def find_similar_core_memory(self, content: str, threshold: Optional[float] = None) -> Optional[CoreMemoryEntry]:
         """Find core memory with similar content using embeddings"""
+        if threshold is None:
+            from services.embedding_profile import threshold as _thr
+            threshold = _thr("core_memory", 0.85)
         memory = self.load_core_memory()
         if not memory.entries:
             return None
@@ -777,8 +783,16 @@ class MemoryStore:
     # =========================================================================
     
     def _init_archival_db(self) -> None:
-        """Initialize LanceDB for archival memory with namespace support"""
+        """Initialize LanceDB for archival memory with namespace support.
+
+        The table is an INDEX over `archival_records` (the synced SQLite text, LB-12 D2), so
+        a table that has to be recreated — a missing column, or vectors of another dimension
+        after an embedder switch — loses nothing: `archival_needs_reembed` is set and startup
+        re-embeds every record (`archival_records.reconcile`). The dimension is the LIVE
+        embedder's, never a constant (this was a fixed 1024)."""
         self.archival_db = lancedb.connect(str(self.archival_db_path))
+        self.archival_needs_reembed = False
+        dim = int(getattr(settings, "embedding_dim", 0) or 1024)
         
         import pyarrow as pa
         required_schema = pa.schema([
@@ -795,10 +809,10 @@ class MemoryStore:
             pa.field("created_at", pa.string()),
             pa.field("last_accessed", pa.string()),
             pa.field("access_count", pa.int32()),
-            pa.field("vector", pa.list_(pa.float32(), 1024)),  # snowflake-arctic-embed2 dimensions
+            pa.field("vector", pa.list_(pa.float32(), dim)),
         ])
         
-        if "archival_memories" not in self.archival_db.table_names():
+        if not has_table(self.archival_db, "archival_memories"):
             self.archival_db.create_table("archival_memories", schema=required_schema)
         else:
             # Migrate existing table if schema is outdated (e.g. missing 'namespace' column)
@@ -807,10 +821,14 @@ class MemoryStore:
                 existing_names = set(table.schema.names)
                 required_names = set(required_schema.names)
                 missing = required_names - existing_names
-                if missing:
-                    print(f"[MEMORY] Archival table missing columns {missing}, recreating with new schema")
+                vec = table.schema.field("vector").type if "vector" in existing_names else None
+                stored_dim = getattr(vec, "list_size", None)
+                if missing or (stored_dim and stored_dim != dim):
+                    why = f"missing columns {missing}" if missing else f"{stored_dim}-dim vectors, live model is {dim}"
+                    print(f"[MEMORY] Archival index rebuilt ({why}); records re-embed at startup")
                     self.archival_db.drop_table("archival_memories")
                     self.archival_db.create_table("archival_memories", schema=required_schema)
+                    self.archival_needs_reembed = True
             except Exception as e:
                 print(f"[MEMORY] Archival table migration check failed ({e}), recreating")
                 try:
@@ -818,6 +836,7 @@ class MemoryStore:
                 except Exception as _e:
                     logger.warning(f"[memory-store] {type(_e).__name__}: {_e}")
                 self.archival_db.create_table("archival_memories", schema=required_schema)
+                self.archival_needs_reembed = True
     
     def add_archival_memory(
         self, 
@@ -920,7 +939,7 @@ class MemoryStore:
         table = self.archival_db.open_table("archival_memories")
         
         # Generate query embedding
-        query_embedding = self.get_embedding(query)
+        query_embedding = self.get_embedding(query, is_query=True)
         
         # Vector search - get more results to filter
         results = table.search(query_embedding).limit(limit * 3).to_list()

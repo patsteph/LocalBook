@@ -70,7 +70,7 @@ mlx-whisper; sys_platform == "darwin"  # Apple MLX Whisper — fast transcriptio
 #     0.30.6; mlx-whisper needs only >=0.11 and kokoro is loose, so the bump is verified safe)
 #   • sentencepiece + protobuf (gemma / phi tokenizers)
 # All lazy-imported — never loaded unless a role's engine == "mlx".
-mlx>=0.32; sys_platform == "darwin"        # bumped from 0.30.6 (was transitive via mlx-whisper) for mlx-lm/mlx-vlm
+mlx>=0.32.3; sys_platform == "darwin"      # 0.32.3+: mlx-vlm 0.7.8 / EmbeddingGemma 2 (was >=0.32 for mlx-lm/mlx-vlm)
 sentencepiece; sys_platform == "darwin"    # mlx-lm/mlx-vlm tokenizers (gemma, phi)
 protobuf; sys_platform == "darwin"         # mlx-lm/mlx-vlm tokenizers
 # Wave 9.2 — MLX gemma-4 (mlx-vlm/mlx-lm) needs the gemma-4 processor from transformers 5.x
@@ -80,7 +80,13 @@ protobuf; sys_platform == "darwin"         # mlx-lm/mlx-vlm tokenizers
 # each verified unconstrained (nothing caps them below). VERIFIED: backend imports,
 # sentence-transformers embeds, MLX gemma streams. ⚠️ hf-hub 0→1 has broad HF blast radius
 # (TTS/whisper/downloads) — verify in the built app.
-transformers>=5.5,<5.13
+transformers>=5.18,<5.20
+# 2026-10-14 — EmbeddingGemma 2 (mlx-vlm 0.7.8's embedding_loader) needs transformers>=5.18.
+# transformers 5.19 accepts huggingface-hub <3, and pip resolves hub 2.x — a major bump with a new
+# httpx2/httpcore2 stack. Held on 1.x (1.33.0 verified): mflux and datasets declare <2.0, and the hub
+# is on every download path. VERIFIED: arctic vectors identical (cos 1.0, max diff 3.7e-7), gemma
+# text/JSON/vision + phi JSON via mlx_engine, every MLX module imports.
+huggingface-hub>=1.31,<2
 # Wave 9.6 — torchvision is a HARD requirement for the gemma-4 MLX vision path. transformers 5.x
 # `Gemma4Processor` eagerly imports `transformers.models.gemma4.image_processing_gemma4`, whose
 # module-level `from torchvision.transforms.v2 import functional` raises ModuleNotFoundError when

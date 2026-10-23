@@ -92,6 +92,51 @@ FORMAT REQUIREMENTS (mandatory):
 
 # ─── Output Cleaning ─────────────────────────────────────────────────────────────
 
+_CITE_ITEM = (r'(?:\d+(?:\.\d+)*(?:\s+in\s+Source\s+\d+)?'
+              r'|(?:Local(?:Book)?\s+|Contextual\s+)?(?:Context|Note))')
+_CITATION_BRACKET = re.compile(rf'( ?)\[\s*({_CITE_ITEM}(?:\s*[,;]\s*{_CITE_ITEM})*)\s*\]', re.IGNORECASE)
+_CITE_IN_SOURCE = re.compile(r'\bin\s+Source\s+(\d+)$', re.IGNORECASE)
+
+
+def fix_citations(text: str, num_citations: int) -> str:
+    """Make every citation bracket point at a real source.
+
+    The model sometimes copies a number from the passages themselves ("section 16.7.3", "[562]") into its
+    citation brackets, writes "[16.2.1 in Source 2]" (a section number plus a source), or tags a note
+    "[Local Context]". In a bracket made only of such items: a whole number from 1 to the count of sources
+    stays; "<section> in Source N" becomes N when N is a real source; everything else goes, and a bracket
+    left empty is removed with the space before it.
+    """
+    if num_citations < 1:
+        return text
+
+    def _one(item: str) -> Optional[int]:
+        item = item.strip()
+        if item.isdigit():
+            n = int(item)
+        else:
+            m = _CITE_IN_SOURCE.search(item)
+            if not m:
+                return None
+            n = int(m.group(1))
+        return n if 1 <= n <= num_citations else None
+
+    def _fix(m: "re.Match") -> str:
+        items = re.split(r'\s*[,;]\s*', m.group(2).strip())
+        keep: List[str] = []
+        for it in items:
+            n = _one(it)
+            if n is not None and str(n) not in keep:
+                keep.append(str(n))
+        if len(keep) == len(items) and all(i.strip().isdigit() for i in items):
+            return m.group(0)
+        if not keep:
+            return ''
+        return f"{m.group(1)}[{', '.join(keep)}]"
+
+    return _CITATION_BRACKET.sub(_fix, text)
+
+
 def clean_llm_output(text: str) -> str:
     """Clean up CHAT-ANSWER LLM output artifacts.
 
@@ -246,7 +291,7 @@ Answer the question, citing sources inline as [N]. Do not list references at the
     # Simplification S1/B2 (2026-07-03): cloud providers removed — LocalBook is
     # 100% local by design; no UI ever surfaced openai/anthropic. llm_provider is
     # kept in signatures only to avoid a wide call-chain refactor.
-    answer = await llm_service.generate_text(system_prompt, prompt)
+    answer = fix_citations(await llm_service.generate_text(system_prompt, prompt), num_citations)
 
     return {
         "answer": answer,

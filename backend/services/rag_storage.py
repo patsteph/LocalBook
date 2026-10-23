@@ -29,6 +29,7 @@ from services.entity_extractor import entity_extractor
 from services.entity_graph import entity_graph
 from services.progress_reporter import ProgressReporter, get_noop_reporter
 import logging
+from utils.lancedb_tables import list_tables
 logger = logging.getLogger(__name__)
 
 _concept_extraction_semaphore = asyncio.Semaphore(int(os.getenv("LOCALBOOK_KG_CONCURRENCY", "4")))
@@ -136,8 +137,13 @@ async def ingest_document(
     enable_hyde: bool = True,
     precomputed_summary: Optional[str] = None,
     deferred: bool = False,
+    precomputed_questions: Optional[List[str]] = None,
 ) -> Dict:
     """Ingest a document into the RAG system.
+
+    precomputed_questions: one HyDE questions string per chunk, made by another Mac for this exact text
+    (sync carries them in the source's metadata, see hyde_record). Used only when it matches this
+    chunking; otherwise ignored.
 
     deferred: make it searchable now, and leave the topic model and entity graph
     to sustained idle (DEEP jobs). For BULK re-indexing — sync's catch-up indexed
@@ -185,12 +191,15 @@ async def ingest_document(
     # Generate synthetic questions for HyDE — pure retrieval enrichment, so skip
     # it entirely for background/auto-collected ingest (enable_hyde=False) where it
     # was the biggest fast-model multiplier with marginal ROI (2026-06-26).
-    if enable_hyde:
+    if precomputed_questions is not None and len(precomputed_questions) == len(chunks):
+        questions = list(precomputed_questions)              # carried over from the Mac that made them
+    elif enable_hyde:
         await reporter.emit(
             "hyde_questions", 68,
             "Generating synthetic questions to improve retrieval (HyDE)...",
         )
         questions = await generate_chunk_questions(chunks)
+        await _remember_questions(notebook_id, source_id, text, questions)
     else:
         questions = [""] * len(chunks)
     texts_to_embed = [f"{c}\n\nQuestions this answers:\n{q}" if q else c for c, q in zip(chunks, questions)]
@@ -198,7 +207,8 @@ async def ingest_document(
     # Generate embeddings
     await reporter.emit(
         "embedding", 72,
-        f"Computing {len(texts_to_embed)} embeddings (1024-dim snowflake-arctic)...",
+        f"Computing {len(texts_to_embed)} embeddings ({settings.embedding_dim}-dim "
+        f"{settings.embedding_model.rsplit('/', 1)[-1]})...",
         details={"vector_count": len(texts_to_embed)},
     )
     # Serialize the (core) embedding step behind any active foreground
@@ -426,14 +436,18 @@ async def append_to_document(
     # Get existing table
     table = get_table(notebook_id)
 
-    # Get existing chunk count for this source to continue numbering
+    # Continue numbering after this source's HIGHEST chunk. A filtered scan, not a vector
+    # search: `.where` after a vector search post-filters the 1000 nearest rows of the whole
+    # notebook, so in a big notebook it missed this source's chunks and the appended ones
+    # reused their numbers (and on any error this fell back to 0 — the same collision).
     try:
-        existing = table.search([0.0] * settings.embedding_dim).where(
-            f"source_id = '{source_id}'"
-        ).limit(1000).to_list()
-        max_chunk_index = max((r.get("chunk_index", 0) for r in existing), default=0)
-    except Exception:
-        max_chunk_index = 0
+        existing = table.search().where(f"source_id = '{source_id}'").select(["chunk_index"]) \
+            .limit(1_000_000).to_list()
+        max_chunk_index = max((int(r.get("chunk_index") or 0) for r in existing), default=0)
+    except Exception as e:
+        logger.warning(f"[rag_storage] could not read chunk numbering for {source_id} ({e}); "
+                       f"appending after a safe offset")
+        max_chunk_index = 100_000
 
     # Check if table supports legacy columns
     has_parent_text = table_has_parent_text(table)
@@ -470,13 +484,55 @@ def drop_notebook_table(notebook_id: str) -> bool:
     Deleting a notebook never did this, so every notebook ever created left its
     table behind — 74 of 79 tables in one real data dir belonged to notebooks
     that no longer exist.
+
+    `table_names()` can under-report on this storage format (services/embedding_migration walks table
+    DIRECTORIES for the same reason), so a table is dropped by name and, failing that, by removing its
+    directory — never skipped because it was not listed.
     """
     db = _get_db()
     table_name = f"notebook_{notebook_id}"
-    if table_name not in db.table_names():
-        return False
-    db.drop_table(table_name)
-    return True
+    try:
+        db.drop_table(table_name)
+        return True
+    except Exception as exc:
+        logger.debug("[rag-storage] drop_table(%s): %s", table_name, exc)
+    import shutil
+    from pathlib import Path
+    d = Path(str(settings.db_path)) / f"{table_name}.lance"
+    if d.exists():
+        shutil.rmtree(d, ignore_errors=True)
+        return True
+    return False
+
+
+def reconcile_vector_tables(live_notebook_ids) -> dict:
+    """Housekeeping at start-up: vector tables that belong to no live notebook.
+
+    Empty ones (no real rows: placeholders created for ids that were never notebooks, or emptied by deleted
+    sources) are dropped. Ones that still hold chunks are only COUNTED — deleting stored data is the owner's
+    call (scripts/data_integrity.py lists them). Never runs against an empty live list."""
+    from pathlib import Path
+    live = set(live_notebook_ids)
+    if not live:
+        return {"dropped_empty": 0, "orphans_with_data": 0}
+    db_dir = Path(str(settings.db_path))
+    db = _get_db()
+    dropped = with_data = 0
+    for d in sorted(db_dir.glob("notebook_*.lance")):
+        nb = d.name[:-len(".lance")][len("notebook_"):]
+        if nb in live:
+            continue
+        try:
+            t = db.open_table(f"notebook_{nb}")
+            real = t.count_rows() - len(t.search().where("source_id = 'placeholder'").limit(10).to_list())
+        except Exception:
+            continue
+        if real <= 0:
+            if drop_notebook_table(nb):
+                dropped += 1
+        else:
+            with_data += 1
+    return {"dropped_empty": dropped, "orphans_with_data": with_data}
 
 
 async def delete_source(notebook_id: str, source_id: str) -> bool:
@@ -488,12 +544,14 @@ async def delete_source(notebook_id: str, source_id: str) -> bool:
         db = _get_db()
         table_name = f"notebook_{notebook_id}"
 
-        # Check if table even exists - if not, nothing to delete
-        if table_name not in db.table_names():
+        # Open it rather than look it up in db.table_names(): that lists only the first 10 tables, so for every
+        # later notebook this returned "nothing to delete" and the caller then ADDED the source's chunks a second
+        # time (a re-index grew a source from 319 to 330 chunks, at every sync).
+        try:
+            table = db.open_table(table_name)
+        except Exception:
             print(f"[RAG] No table exists for notebook {notebook_id}, nothing to delete")
             return True
-
-        table = db.open_table(table_name)
 
         # LanceDB delete uses SQL-like filter syntax
         table.delete(f"source_id = '{source_id}'")
@@ -548,6 +606,36 @@ _HYDE_MAX_CONCURRENT_BATCHES = 3
 # Guard: never fan HyDE out unboundedly. Beyond this many chunks, the overflow
 # chunks embed WITHOUT synthetic questions (still searchable, slightly weaker
 # HyDE) rather than melting Ollama on a giant document.
+def hyde_record(text: str, questions: List[str]) -> Dict:
+    """What travels with a source so another Mac can reuse its questions: they are only valid for the exact
+    text (hash) and chunking (count) they were made for."""
+    import hashlib
+    return {"hash": hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()[:16],
+            "n": len(questions), "q": questions}
+
+
+def hyde_usable(record, text: str, chunk_count: int) -> Optional[List[str]]:
+    """The questions in `record` if they were made for this text and this many chunks, else None."""
+    if not isinstance(record, dict) or not isinstance(record.get("q"), list):
+        return None
+    import hashlib
+    if record.get("hash") != hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()[:16]:
+        return None
+    return record["q"] if len(record["q"]) == chunk_count and record.get("n") == chunk_count else None
+
+
+async def _remember_questions(notebook_id: str, source_id: str, text: str, questions: List[str]) -> None:
+    """Keep the generated questions in the source's metadata so sync can hand them to the other Mac (which
+    re-indexes synced sources without making its own). Non-fatal: it only saves the other Mac some work."""
+    if not any(q.strip() for q in questions):
+        return
+    try:
+        from storage.source_store import source_store
+        await source_store.update(notebook_id, source_id, {"hyde_questions": hyde_record(text, questions)})
+    except Exception as e:
+        logger.debug("[HyDE] could not store questions for sync: %s", e)
+
+
 _HYDE_MAX_CHUNKS = 200
 _HYDE_LINE_RE = re.compile(r'(?im)^\s*P\s*(\d+)\s*[:\-.]\s*(.+?)\s*$')
 
@@ -596,12 +684,16 @@ async def generate_chunk_questions(chunks: List[str]) -> List[str]:
                     timeout=60.0,
                 )
                 raw = _resp.get("response", "") or ""
+                got = 0
                 for m in _HYDE_LINE_RE.finditer(raw):
                     idx = int(m.group(1)) - 1
                     if 0 <= idx < len(batch):
                         results[start + idx] = m.group(2).strip()
+                        got += 1
+                if got < len(batch):
+                    logger.warning("[HyDE] batch at chunk %d: %d of %d passages got questions", start, got, len(batch))
             except Exception as e:
-                print(f"[RAG] HyDE batch at {start} failed: {e}")  # leave "" for this batch
+                logger.warning("[HyDE] batch at chunk %d failed: %s", start, e)   # leave "" for this batch
 
     await asyncio.gather(*[
         _run_batch(s) for s in range(0, eligible, _HYDE_CHUNKS_PER_BATCH)
@@ -780,7 +872,7 @@ def check_embedding_dimension_mismatch() -> List[str]:
     current_dim = rag_embeddings.get_current_embedding_dim()
     mismatched_notebooks = []
 
-    for table_name in db.table_names():
+    for table_name in list_tables(db):
         if table_name.startswith("notebook_"):
             try:
                 table = db.open_table(table_name)

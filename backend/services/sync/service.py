@@ -15,7 +15,7 @@ import socket
 import time
 from typing import Any, Dict, List, Optional
 
-from services.sync import discovery, genesis, identity, indexer, peer, progress, retention, runtime, store
+from services.sync import engine, embedder_advice, discovery, genesis, identity, indexer, peer, progress, retention, runtime, store, scope
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +53,8 @@ async def disable() -> Dict[str, Any]:
     discovery.stop()
     await peer.stop("sync")
     await peer.stop("pair")
+    await peer.stop("phone_sync")
+    await peer.stop("phone_pair")
     return status()
 
 
@@ -99,6 +101,11 @@ async def confirm_pairing(pairing_id: str) -> Dict[str, Any]:
     req = store.take_pairing(pairing_id)
     if not req:
         raise ValueError("that pairing request has expired — start again")
+    if store.is_phone_pairing(pairing_id):                  # an iPhone: pinned apart from the Macs
+        store.forget_phone_pairing(pairing_id)
+        store.pin_phone(req)
+        await peer.start_phone_listener()                   # the phone trust store changed
+        return status()
     role = "joiner" if req["direction"] == "incoming" else "seed"
     store.pin(req, role)
     _adopt_recovery_key(req.get("recovery_pub"))
@@ -168,6 +175,13 @@ def _adopt_recovery_key(pub: Optional[str]) -> None:
 
 def reject_pairing(pairing_id: str) -> None:
     store.take_pairing(pairing_id)
+    store.forget_phone_pairing(pairing_id)
+
+
+async def revoke_phone(device_id: str) -> Dict[str, Any]:
+    store.revoke_phone(device_id)
+    await peer.start_phone_listener()                      # drop it from the trust store
+    return status()
 
 
 async def revoke(device_id: str) -> Dict[str, Any]:
@@ -244,6 +258,7 @@ async def sync_with(device_id: str, user_initiated: bool = False, run=None) -> D
     d = _device(device_id)
     if d.get("mode") != "live":
         raise ValueError("preview and apply this Mac first")
+    await asyncio.to_thread(_apply_releases)
     if _busy.get(device_id):
         return {"skipped": "already syncing"}
     _busy[device_id] = True
@@ -284,6 +299,20 @@ async def sync_with(device_id: str, user_initiated: bool = False, run=None) -> D
         raise
     finally:
         _busy.pop(device_id, None)
+
+
+def _apply_releases() -> None:
+    """Notebooks that stopped being "kept on this Mac" re-enter sync: offer their rows again, ask for the peers' again."""
+    ids = scope.take_pending_release()
+    if not ids:
+        return
+    total = 0
+    for db in runtime.DB_FILES:
+        try:
+            total += engine.release(runtime.replica(db), ids)
+        except Exception as exc:
+            logger.warning("[sync] could not re-offer %s in %s: %s", ids, db, exc)
+    logger.info("[sync] %d notebook(s) back in sync; %d rows offered again", len(ids), total)
 
 
 def _local_pending(peer_vv: Dict[str, Dict[str, int]]) -> int:
@@ -447,6 +476,26 @@ def _proposed_backup() -> Optional[str]:
         return None
 
 
+def _with_line(last):
+    return {**last, "line": cycle_line(last)} if isinstance(last, dict) else last
+
+
+def cycle_line(last: Optional[Dict[str, Any]]) -> Optional[str]:
+    """One plain line for what the last sync cycle moved: "nothing changed", or the counts."""
+    if not last or not isinstance(last.get("result"), dict):
+        return None
+    try:
+        s = summarize(last["result"])
+        got, sent = sum(s["received"].values()), sum(s["sent"].values())
+        files = sum(int(v) for k, v in s["files"].items() if k in ("fetched", "sent") and isinstance(v, (int, float)))
+        idx = s["index"] if isinstance(s["index"], dict) else {}
+        indexed = sum(int(v) for k, v in idx.items() if k in ("indexed", "reindexed", "removed") and isinstance(v, (int, float)))
+        parts = [f"{n} {what}" for n, what in ((got, "received"), (sent, "sent"), (files, "files"), (indexed, "indexed")) if n]
+        return "nothing changed" if not parts else ", ".join(parts)
+    except Exception:
+        return None
+
+
 def status() -> Dict[str, Any]:
     from services import backup_scheduler
 
@@ -455,15 +504,26 @@ def status() -> Dict[str, Any]:
         devices.append({k: d.get(k) for k in ("device_id", "name", "host", "port", "role", "mode",
                                                "paired_at", "last_seen", "last_error")}
                        | {"fingerprint": d["fingerprint"][:16], "preview": store.preview(d["device_id"]),
-                          "last_sync": store.get(f"last_sync:{d['device_id']}"),
+                          "last_sync": _with_line(store.get(f"last_sync:{d['device_id']}")),
                           "model_mismatch": store.get(f"model_mismatch:{d['device_id']}") or {},
                           "preview_state": store.get(f"preview_state:{d['device_id']}")})
+    stats = {"notebooks": None, "sources": None}
     try:
         c = runtime.replica("main").conn
         open_conflicts = c.execute("SELECT COUNT(*) FROM sync_conflicts WHERE status='open'").fetchone()[0]
+        try:
+            stats = {"notebooks": c.execute("SELECT COUNT(*) FROM notebooks").fetchone()[0],
+                     "sources": c.execute("SELECT COUNT(*) FROM sources").fetchone()[0]}
+        except Exception:
+            pass
         c.close()
     except Exception:
         open_conflicts = None
+    try:
+        from services.schedule_store import schedule_store
+        interval = int(schedule_store.get_interval(SCHEDULE_ID, DEFAULT_INTERVAL) or DEFAULT_INTERVAL)
+    except Exception:
+        interval = DEFAULT_INTERVAL
     return {
         "enabled": store.enabled(),
         "this_mac": {"device_id": identity.device_id(), "name": identity.device_name(),
@@ -473,13 +533,20 @@ def status() -> Dict[str, Any]:
         "pairing": [{k: p[k] for k in ("id", "direction", "device_id", "name", "sas", "host")}
                     for p in store.pairing_requests()],
         "devices": devices,
+        "phones": [{k: p.get(k) for k in ("device_id", "name", "paired_at", "last_seen")}
+                   for p in store.phones().values() if not p.get("revoked_at")],
         "open_conflicts": open_conflicts,
+        "stats": stats,
+        "interval_seconds": max(15, interval),
         "backup_destination": str(backup_scheduler.configured_destination() or "") or None,
         "proposed_backup": _proposed_backup(),
         "first_apply_backup": store.get("first_apply_backup"),
         "schema_head": runtime.ledger_head(),
         "collector": _collector_status(),
         "retention": {"last": store.get("retention_last"), "held_by": retention.stale_peers()},
+        # This device searches with a different embedder than its library — for Settings,
+        # Data Health and any other client (the iPhone app reads this).
+        "embedder_advice": embedder_advice.advice(),
     }
 
 
@@ -487,3 +554,27 @@ def _collector_status() -> Dict[str, Any]:
     from services.sync import roles
     here, why = roles.collects_here()
     return {"chosen": roles.collector(), "here": here, "reason": why}
+
+
+# Keep the engine and the phone endpoints honest about notebooks kept on this Mac.
+scope.install(lambda r: scope.local_notebooks())
+
+
+def _conversation_notebooks(conversation_id: str):
+    """Notebook ids of a conversation (this Mac's recall database, read-only)."""
+    import sqlite3
+    path = runtime.data_dir() / runtime.DB_FILES["recall"]
+    if not path.exists():
+        return ()
+    c = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=5)
+    try:
+        return [r[0] for r in c.execute(
+            "SELECT DISTINCT notebook_id FROM recall_entries WHERE conversation_id=? AND notebook_id IS NOT NULL",
+            (conversation_id,))]
+    except Exception:
+        return ()
+    finally:
+        c.close()
+
+
+scope.install_conversations(_conversation_notebooks)

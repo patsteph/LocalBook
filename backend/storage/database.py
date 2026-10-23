@@ -443,6 +443,12 @@ class Database:
         except sqlite3.OperationalError as _e:
             if "duplicate column" not in str(_e).lower():
                 raise
+        # 2026-10-15 — which embedder made `embedding` (NULL = the legacy one); per Mac.
+        try:
+            cursor.execute("ALTER TABLE articles ADD COLUMN embed_model TEXT")
+        except sqlite3.OperationalError as _e:
+            if "duplicate column" not in str(_e).lower():
+                raise
         # P1C.2 (2026-06-10) — character offset of this article's body
         # within the parent newsletter's flattened text. Used for exact
         # scroll-to-article in the source viewer. -1 if unknown.

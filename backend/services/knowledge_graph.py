@@ -28,6 +28,7 @@ from models.knowledge_graph import (
 from config import settings
 from storage.notebook_store import notebook_store
 import logging
+from utils.lancedb_tables import has_table
 logger = logging.getLogger(__name__)
 
 
@@ -80,7 +81,7 @@ class KnowledgeGraphService:
         """Generate embedding for text via the canonical Ollama service."""
         try:
             from services.llm_runtime import llm_runtime
-            data = await llm_runtime.embed(text, model=self.embedding_model_name)
+            data = await llm_runtime.embed(text, model=self.embedding_model_name, task="similarity")
             embs = data.get("embeddings") or []
             if embs:
                 return embs[0]
@@ -111,7 +112,7 @@ class KnowledgeGraphService:
         self.db = lancedb.connect(str(self.db_path))
         
         # Concepts table
-        if "concepts" not in self.db.table_names():
+        if not has_table(self.db, "concepts"):
             schema = pa.schema([
                 pa.field("id", pa.string()),
                 pa.field("name", pa.string()),
@@ -123,12 +124,12 @@ class KnowledgeGraphService:
                 pa.field("cluster_id", pa.string()),
                 pa.field("created_at", pa.string()),
                 pa.field("updated_at", pa.string()),
-                pa.field("vector", pa.list_(pa.float32(), 1024)),  # snowflake-arctic-embed2 dimensions
+                pa.field("vector", pa.list_(pa.float32(), int(settings.embedding_dim or 1024))),  # live embedder
             ])
             self.db.create_table("concepts", schema=schema)
         
         # Links table
-        if "links" not in self.db.table_names():
+        if not has_table(self.db, "links"):
             schema = pa.schema([
                 pa.field("id", pa.string()),
                 pa.field("source_id", pa.string()),
@@ -146,7 +147,7 @@ class KnowledgeGraphService:
             self.db.create_table("links", schema=schema)
         
         # Clusters table
-        if "clusters" not in self.db.table_names():
+        if not has_table(self.db, "clusters"):
             schema = pa.schema([
                 pa.field("id", pa.string()),
                 pa.field("name", pa.string()),
@@ -161,7 +162,7 @@ class KnowledgeGraphService:
             self.db.create_table("clusters", schema=schema)
         
         # Contradictions table
-        if "contradictions" not in self.db.table_names():
+        if not has_table(self.db, "contradictions"):
             schema = pa.schema([
                 pa.field("id", pa.string()),
                 pa.field("chunk_id_1", pa.string()),
@@ -177,7 +178,7 @@ class KnowledgeGraphService:
             self.db.create_table("contradictions", schema=schema)
         
         # v0.60: Entities table for lightweight entity graph
-        if "entities" not in self.db.table_names():
+        if not has_table(self.db, "entities"):
             schema = pa.schema([
                 pa.field("id", pa.string()),
                 pa.field("name", pa.string()),
@@ -192,7 +193,7 @@ class KnowledgeGraphService:
             self.db.create_table("entities", schema=schema)
         
         # v0.60: Entity relationships table
-        if "entity_relationships" not in self.db.table_names():
+        if not has_table(self.db, "entity_relationships"):
             schema = pa.schema([
                 pa.field("id", pa.string()),
                 pa.field("source_entity_id", pa.string()),
@@ -208,7 +209,7 @@ class KnowledgeGraphService:
     
     def _create_clusters_table(self) -> None:
         """Create clusters table (used after dropping for reset)"""
-        if "clusters" not in self.db.table_names():
+        if not has_table(self.db, "clusters"):
             schema = pa.schema([
                 pa.field("id", pa.string()),
                 pa.field("name", pa.string()),
@@ -840,7 +841,7 @@ Respond ONLY with JSON:"""
         await notify_cluster_progress({"phase": "saving", "progress": 95})
         
         try:
-            if "clusters" in self.db.table_names():
+            if has_table(self.db, "clusters"):
                 self.db.drop_table("clusters")
             self._create_clusters_table()
             
@@ -979,7 +980,7 @@ What theme or topic connects them? Respond with just a 2-4 word name (no punctua
                 edges.append(edge)
         
         # Get clusters if requested
-        if include_clusters and "clusters" in self.db.table_names():
+        if include_clusters and has_table(self.db, "clusters"):
             clusters_table = self.db.open_table("clusters")
             clusters_df = clusters_table.to_pandas()
             
@@ -1135,12 +1136,12 @@ What theme or topic connects them? Respond with just a 2-4 word name (no punctua
                 concepts_table.delete(f"id IN {tuple(concept_ids_to_delete)}" if len(concept_ids_to_delete) > 1 else f"id = '{concept_ids_to_delete[0]}'")
             
             # Clear links for this notebook
-            if "links" in self.db.table_names():
+            if has_table(self.db, "links"):
                 links_table = self.db.open_table("links")
                 links_table.delete(f"source_notebook_id = '{notebook_id}'")
             
             # Clear clusters that include this notebook
-            if "clusters" in self.db.table_names():
+            if has_table(self.db, "clusters"):
                 clusters_table = self.db.open_table("clusters")
                 clusters_df = clusters_table.to_pandas()
                 if len(clusters_df) > 0:

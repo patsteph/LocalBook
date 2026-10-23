@@ -31,7 +31,8 @@ from typing import Iterable, Optional
 
 from cryptography import x509
 from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric import ed25519
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.asymmetric import ec, ed25519
 from cryptography.x509.oid import NameOID
 
 PROTOCOL = 1
@@ -111,6 +112,60 @@ def cert_pem() -> str:
     return pem
 
 
+# ── the phone-facing identity: ECDSA P-256 ───────────────────────────────────
+# Apple's TLS stack cannot do Ed25519 (measured 2026-10-18: handshake fails with -9824 against
+# an Ed25519 certificate, works against P-256), and Security.framework cannot hold an Ed25519
+# client key either. So an iPhone talks to a second, P-256 identity on this Mac. The Ed25519
+# identity above is untouched: Mac-to-Mac pairings keep working exactly as before.
+
+
+def phone_private_key() -> ec.EllipticCurvePrivateKey:
+    """Derived from the Ed25519 `device_identity` seed (HKDF, fixed label), not stored apart:
+    it is recoverable exactly when the main identity is, and keyvault needs no new purpose."""
+    from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+    from services import keyvault
+
+    seed = keyvault.get_or_create("device_identity")
+    okm = HKDF(algorithm=hashes.SHA256(), length=32, salt=None, info=b"localbook-phone-p256-v1").derive(seed)
+    order = 0xFFFFFFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632551   # P-256 group order
+    return ec.derive_private_key(int.from_bytes(okm, "big") % (order - 1) + 1, ec.SECP256R1())
+
+
+def phone_cert_pem() -> str:
+    """The certificate a phone pins: self-signed P-256, made once while the key is unchanged."""
+    key = phone_private_key()
+    p = _dir() / "device_p256.crt"
+    pub_der = lambda k: k.public_bytes(serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)
+    if p.exists():
+        cert = x509.load_pem_x509_certificate(p.read_bytes())
+        if pub_der(cert.public_key()) == pub_der(key.public_key()):
+            return p.read_text()
+    pub = key.public_key()
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, f"LocalBook phone link {device_id()}")])
+    now = datetime.datetime.now(datetime.timezone.utc)
+    cert = (x509.CertificateBuilder().subject_name(name).issuer_name(name).public_key(pub)
+            .serial_number(x509.random_serial_number())
+            .not_valid_before(now - datetime.timedelta(days=1))
+            .not_valid_after(now + datetime.timedelta(days=365 * 20))
+            .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
+            .add_extension(x509.KeyUsage(True, False, False, False, False, True, False, False, False),
+                           critical=True)
+            .add_extension(x509.SubjectKeyIdentifier.from_public_key(pub), critical=False)
+            .add_extension(x509.AuthorityKeyIdentifier.from_issuer_public_key(pub), critical=False)
+            .sign(key, hashes.SHA256()))
+    pem = cert.public_bytes(serialization.Encoding.PEM).decode()
+    p.write_text(pem)
+    return pem
+
+
+def is_p256_cert(pem: str) -> bool:
+    try:
+        pub = x509.load_pem_x509_certificate(pem.encode()).public_key()
+        return isinstance(pub, ec.EllipticCurvePublicKey) and isinstance(pub.curve, ec.SECP256R1)
+    except Exception:
+        return False
+
+
 def fingerprint(pem: str) -> str:
     der = x509.load_pem_x509_certificate(pem.encode()).public_bytes(serialization.Encoding.DER)
     return hashlib.sha256(der).hexdigest()
@@ -148,7 +203,47 @@ def verify_signature(cert: str, method: str, path: str, ts: str, body: bytes, si
         if abs(int(time.time()) - int(ts)) > max_skew:
             return False
         pub = x509.load_pem_x509_certificate(cert.encode()).public_key()
-        pub.verify(base64.b64decode(sig_b64), _message(method, path, ts, body))
+        sig = base64.b64decode(sig_b64)
+        msg = _message(method, path, ts, body)
+        if isinstance(pub, ec.EllipticCurvePublicKey):          # a phone: P-256, DER, SHA-256
+            pub.verify(sig, msg, ec.ECDSA(hashes.SHA256()))
+        else:
+            pub.verify(sig, msg)
+        return True
+    except Exception:
+        return False
+
+
+# ── phone request signing (v2): replay-proof and bound to ONE Mac ─────────────────────────
+# The phone link has no client certificate, so this signature is what authenticates the device.
+# It covers the method, path, time, a one-time nonce, THIS Mac's device id and phone-certificate
+# fingerprint, and the body hash. A captured request cannot be replayed (the nonce is remembered),
+# cannot be redirected to another Mac the same phone is paired with (the Mac id and fingerprint are
+# inside the signature), and goes stale after PHONE_MAX_SKEW seconds.
+
+PHONE_PROTO = "LBP2"
+PHONE_MAX_SKEW = 120
+
+
+def phone_message(method: str, path: str, ts: str, nonce: str, mac_id: str, mac_fp: str, body: bytes) -> bytes:
+    return b"\n".join([PHONE_PROTO.encode(), method.upper().encode(), path.encode(), ts.encode(),
+                       nonce.encode(), mac_id.encode(), mac_fp.encode(),
+                       hashlib.sha256(body or b"").hexdigest().encode()])
+
+
+def verify_phone_signature(cert: str, method: str, path: str, ts: str, nonce: str, body: bytes,
+                           sig_b64: str, max_skew: int = PHONE_MAX_SKEW) -> bool:
+    """True if `sig_b64` is the phone's ECDSA signature over a v2 message addressed to THIS Mac."""
+    try:
+        if abs(int(time.time()) - int(ts)) > max_skew:
+            return False
+        if not (16 <= len(nonce) <= 64) or not all(c in "0123456789abcdefABCDEF-_" for c in nonce):
+            return False
+        pub = x509.load_pem_x509_certificate(cert.encode()).public_key()
+        if not isinstance(pub, ec.EllipticCurvePublicKey):
+            return False
+        msg = phone_message(method, path, ts, nonce, device_id(), fingerprint(phone_cert_pem()), body)
+        pub.verify(base64.b64decode(sig_b64), msg, ec.ECDSA(hashes.SHA256()))
         return True
     except Exception:
         return False
@@ -157,15 +252,16 @@ def verify_signature(cert: str, method: str, path: str, ts: str, body: bytes, si
 # ── TLS contexts ─────────────────────────────────────────────────────────────
 
 
-def _load_own(ctx) -> None:
+def _load_own(ctx, p256: bool = False) -> None:
     key_path = _dir() / f".key-{os.getpid()}-{time.time_ns()}.pem"
-    cert_path = _dir() / "device.crt"
-    cert_pem()
+    cert_path = _dir() / ("device_p256.crt" if p256 else "device.crt")
+    (phone_cert_pem if p256 else cert_pem)()
+    key = phone_private_key() if p256 else private_key()
     fd = os.open(key_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     try:
-        os.write(fd, private_key().private_bytes(serialization.Encoding.PEM,
-                                                 serialization.PrivateFormat.PKCS8,
-                                                 serialization.NoEncryption()))
+        os.write(fd, key.private_bytes(serialization.Encoding.PEM,
+                                       serialization.PrivateFormat.PKCS8,
+                                       serialization.NoEncryption()))
     finally:
         os.close(fd)
     try:
@@ -174,13 +270,18 @@ def _load_own(ctx) -> None:
         key_path.unlink(missing_ok=True)
 
 
-def server_context(peer_pems: Iterable[str], require_client: bool = True):
+def server_context(peer_pems: Iterable[str], require_client: bool = True, p256: bool = False,
+                   optional_client: bool = False):
+    """`optional_client`: a client certificate is checked against the pinned ones IF presented,
+    but is not demanded. Used for phones: every request is signed with the phone's pinned key
+    (peer.py `_verified_phone`), which is what authenticates the device. Apple's TLS stack would
+    not complete client-certificate auth in testing, and demanding it only kept phones out."""
     ctx = _ctx_class()(ssl.PROTOCOL_TLS_SERVER)
     _set(ctx, "minimum_version", ssl.TLSVersion.TLSv1_3)
-    _load_own(ctx)
+    _load_own(ctx, p256)
     pems = "".join(peer_pems)
-    if require_client:
-        _set(ctx, "verify_mode", ssl.CERT_REQUIRED)
+    if require_client or optional_client:
+        _set(ctx, "verify_mode", ssl.CERT_REQUIRED if require_client else ssl.CERT_OPTIONAL)
         if pems:
             ctx.load_verify_locations(cadata=pems)
     else:

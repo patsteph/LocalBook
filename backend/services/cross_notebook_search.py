@@ -66,7 +66,7 @@ class CrossNotebookSearch:
         if not target_ids:
             return {"results": [], "notebooks_searched": 0}
 
-        query_embedding = (await rag_engine.encode_async(query))[0]
+        query_embedding = (await rag_engine.encode_async(query, is_query=True))[0]
 
         all_results: List[Dict] = []
         notebooks_searched = 0

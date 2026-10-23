@@ -66,10 +66,10 @@ export const EmbeddingSelector: React.FC<EmbeddingSelectorProps> = () => {
               Embedding Model
             </div>
             <div className="text-sm text-gray-600 dark:text-gray-400">
-              {embeddingInfo?.model || 'snowflake-arctic-embed2'}
+              {embeddingInfo?.model || 'Embedding model'}
             </div>
             <div className="text-xs text-gray-500 dark:text-gray-500 mt-1">
-              {embeddingInfo?.dimensions || 1024} dimensions • Frontier quality
+              {embeddingInfo?.dimensions ? `${embeddingInfo.dimensions} dimensions` : '—'}
             </div>
           </div>
         </div>

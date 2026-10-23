@@ -64,7 +64,9 @@ class ProbedCapabilities:
             # the sensible default, but the user may pin either).
             r.append("main_model")
             r.append("fast_model")
-        if self.vision:
+        if self.vision and not self.embedding:
+            # A multimodal EMBEDDER (EmbeddingGemma 2 carries an image encoder) embeds
+            # images; it cannot describe one. The Vision slot needs a generator.
             r.append("vision_model")
         return r
 
@@ -256,9 +258,11 @@ def probe_capabilities(model: str, provider: str = "mlx") -> Optional[ProbedCapa
         # Curated entry present → additive overlay only.
         if not caps.vision and getattr(info, "supports_vision", False):
             caps.vision = True
-        if not caps.embedding and getattr(info, "embedding_dim", 0):
+        if getattr(info, "embedding_dim", 0):
+            # The registry wins on dimension: the probe reads `hidden_size`, which is the
+            # backbone width — EmbeddingGemma 2 projects 512 → 768, so the probe says 512.
             caps.embedding = True
-            caps.embedding_dim = caps.embedding_dim or int(info.embedding_dim)
+            caps.embedding_dim = int(info.embedding_dim)
         if not caps.native_ctx and getattr(info, "context_window", 0):
             caps.native_ctx = int(info.context_window)
         caps.source = "probe+registry"

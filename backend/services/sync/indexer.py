@@ -14,7 +14,8 @@ What needs work is decided by looking, not by trusting metadata:
   * removed   — a source an apply deleted (engine report `unindex`)
 Changed/removed ids are persisted in sync.db so a restart does not lose them.
 
-Embeddings only: HyDE is off and the stored summary is reused, so this never
+Embeddings only: HyDE questions are not generated here (the other Mac's travel with the source when they
+match this text and chunking) and the stored summary is reused, so this never
 puts the main model to work. Entity extraction is queued the normal way.
 """
 
@@ -33,6 +34,11 @@ _PENDING = "index_pending"
 _DIRTY = "index_dirty"      # set when an apply touched sources; the diff only runs then
 _task: Optional[asyncio.Task] = None
 _again = False
+# ONE indexing pass at a time. The background loop only checked for a user-started sync
+# when IT began; a sync started a moment later indexed the same sources alongside it —
+# every source embedded twice, and interleaved delete+insert left duplicate chunks
+# (2026-10-15, MBP: 69 sources, each twice). A second pass waits, then re-plans.
+_run_lock = asyncio.Lock()
 
 
 # ── what arrived ─────────────────────────────────────────────────────────────
@@ -63,19 +69,50 @@ def mark_dirty() -> None:
 
 
 def _indexed_ids(notebook_id: str) -> Set[str]:
+    return _index_state(notebook_id)[0]
+
+
+def _index_state(notebook_id: str):
+    """(source ids present in this Mac's index, source ids with DUPLICATE chunks).
+
+    A duplicate is the same (source_id, chunk_index) more than once — what two indexing
+    runs interleaving delete+insert on one source leave behind (2026-10-15). Duplicates
+    crowd search results with the same passage, so such a source is re-indexed once."""
     from services import rag_storage
 
     db = rag_storage._get_db()
     name = f"notebook_{notebook_id}"
-    if name not in db.table_names():
-        return set()
-    t = db.open_table(name)
+    # Open the table, never look it up in db.table_names(): that lists only the first 10 tables, so every notebook
+    # after the tenth looked unindexed and ALL of its sources were deleted and re-embedded at every sync
+    # (found 2026-10-22).
     try:
-        col = t.to_arrow().column("source_id")
-        return set(col.to_pylist())
+        t = db.open_table(name)
+    except Exception:
+        return set(), set()
+    try:
+        names = t.schema.names
+        cols = [c for c in ("source_id", "chunk_index", "source_type") if c in names]
+        tbl = t.to_arrow().select(cols)
+        sids = tbl.column("source_id").to_pylist()
+        if "chunk_index" not in cols:
+            return set(sids), set()
+        # MAIN chunks only. Appended content (image descriptions etc., `supplementary`)
+        # exists only in the index — re-indexing from the source text would drop it — and
+        # its numbering could collide with the main chunks' (rag_storage.append_to_document
+        # once estimated the next index from a post-filtered vector search). The race this
+        # repairs only ever duplicates main chunks and the summary.
+        kinds = tbl.column("source_type").to_pylist() if "source_type" in cols else [None] * len(sids)
+        seen, dupes = set(), set()
+        for sid, ci, kind in zip(sids, tbl.column("chunk_index").to_pylist(), kinds):
+            if kind == "supplementary":
+                continue
+            if (sid, ci) in seen:
+                dupes.add(sid)
+            seen.add((sid, ci))
+        return set(sids), dupes
     except Exception as exc:
         logger.debug("[sync-index] could not read %s: %s", name, exc)
-        return set()
+        return set(), set()
 
 
 def _sources() -> List[Dict[str, Any]]:
@@ -93,7 +130,8 @@ def _sources() -> List[Dict[str, Any]]:
             m = {}
         out.append({"id": sid, "notebook_id": nb, "filename": filename or "Unknown",
                     "type": typ or fmt or "document", "chunks": int(m.get("chunks") or 0),
-                    "status": m.get("status") or "completed", "summary": m.get("summary") or ""})
+                    "status": m.get("status") or "completed", "summary": m.get("summary") or "",
+                    "hyde": m.get("hyde_questions")})
     return out
 
 
@@ -106,11 +144,22 @@ def plan() -> Dict[str, Any]:
     for s in srcs:
         by_nb.setdefault(s["notebook_id"], []).append(s)
     todo = []
+    why: Dict[str, List[str]] = {"changed": [], "duplicate chunks": [], "no index rows": []}
     for nb, items in by_nb.items():
-        have = _indexed_ids(nb)
+        have, dupes = _index_state(nb)
         for s in items:
-            if s["id"] in re_ids or (s["chunks"] > 0 and s["id"] not in have):
-                todo.append(s)
+            if s["id"] in re_ids:
+                why["changed"].append(s["filename"])
+            elif s["id"] in dupes:
+                why["duplicate chunks"].append(s["filename"])
+            elif s["chunks"] > 0 and s["id"] not in have:
+                why["no index rows"].append(s["filename"])
+            else:
+                continue
+            todo.append(s)
+    if todo:
+        logger.warning("[sync-index] %d source(s) to index: %s", len(todo),
+                       "; ".join(f"{len(v)} {k} (e.g. {', '.join(v[:2])})" for k, v in why.items() if v))
     present = {s["id"] for s in srcs}
     gone = [sid for sid in p.get("unindex", []) if sid not in present]
     return {"index": todo, "unindex": gone}
@@ -126,6 +175,13 @@ async def run_into(run, paced: bool = False) -> Dict[str, Any]:
     paced: a run the user did not start (startup catch-up, the background loop,
     another Mac's push) rests between sources while the user is active, so a
     100-source catch-up trickles instead of pinning the Mac."""
+    if _run_lock.locked():
+        run.step("index", total=0, unit="sources")          # waiting for the pass already running
+    async with _run_lock:
+        return await _run_into_locked(run, paced)
+
+
+async def _run_into_locked(run, paced: bool) -> Dict[str, Any]:
     from services.rag_engine import rag_engine
     from storage.source_store import source_store
 
@@ -156,7 +212,8 @@ async def run_into(run, paced: bool = False) -> Dict[str, Any]:
                 await rag_engine.ingest_document(
                     notebook_id=s["notebook_id"], source_id=s["id"], text=text,
                     filename=s["filename"], source_type=s["type"],
-                    enable_hyde=False, precomputed_summary=s["summary"], deferred=True)
+                    enable_hyde=False, precomputed_summary=s["summary"], deferred=True,
+                    precomputed_questions=_carried_questions(s, text))
                 indexed += 1
             _forget(reindex=[s["id"]])
         except Exception as exc:
@@ -174,6 +231,15 @@ async def run_into(run, paced: bool = False) -> Dict[str, Any]:
     return out
 
 
+def _carried_questions(s: Dict[str, Any], text: str) -> Optional[List[str]]:
+    """The other Mac's HyDE questions for this source, if they were made for exactly this text and chunking."""
+    if not s.get("hyde"):
+        return None
+    from services import rag_chunking, rag_storage
+    chunks = rag_chunking.chunk_text_smart(text, s["type"], s["filename"])
+    return rag_storage.hyde_usable(s["hyde"], text, len(chunks))
+
+
 def _pace() -> float:
     try:
         from services import presence
@@ -183,9 +249,9 @@ def _pace() -> float:
 
 
 def _tables() -> List[str]:
-    from services import rag_storage
+    from services import embedding_migration as em
 
-    return [n[len("notebook_"):] for n in rag_storage._get_db().table_names() if n.startswith("notebook_")]
+    return [n[len("notebook_"):] for n in em._tables(em._live_dir())]
 
 
 def _forget(reindex: Iterable[str] = (), unindex: Iterable[str] = ()) -> None:

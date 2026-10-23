@@ -91,7 +91,7 @@ def test_assign_and_persist_stamps_topic_ids(monkeypatch):
     monkeypatch.setattr(ts, "upsert_topic", lambda nb, t: (store.append(dict(t)) or t["id"]))
     monkeypatch.setattr(ts, "delete_missing", lambda nb, keep: None)
 
-    async def _fake_embed(texts):
+    async def _fake_embed(texts, **kw):
         # node 0,1 similar (a topic); node 2 distinct (orphan)
         return [[1.0, 0.0], [0.98, 0.02], [0.0, 1.0]]
     monkeypatch.setattr(llm_runtime, "embed_batch", _fake_embed)

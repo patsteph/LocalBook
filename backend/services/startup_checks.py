@@ -11,11 +11,13 @@ Model verification used to ask Ollama over HTTP (`/api/version`, `/api/tags`). M
 live in the HuggingFace cache, so presence is a filesystem question — `model_presence` answers
 it without a server, and there is no engine version to floor-check any more.
 """
+import asyncio
 import lancedb
 import pyarrow as pa
 from typing import List, Tuple, Dict, Any
 from config import settings
 import logging
+from utils.lancedb_tables import has_table, list_tables
 logger = logging.getLogger(__name__)
 
 # Required models — derived ENTIRELY from the configured roles, never a hardcoded set.
@@ -24,7 +26,7 @@ logger = logging.getLogger(__name__)
 _ROLE_DESCRIPTIONS = [
     ("main_model", "Main model (chat/synthesis)"),
     ("fast_model", "Fast response model for follow-ups"),
-    ("embedding_model", "Embedding model (1024 dimensions)"),
+    ("embedding_model", "Embedding model"),
     ("vision_model", "Vision model for PDF image/chart extraction"),
 ]
 
@@ -45,9 +47,19 @@ def _required_models() -> List[Tuple[str, str]]:
 # this stays a plain list so the import in api/health_portal.py keeps working.
 REQUIRED_MODELS = _required_models()
 
-# Expected embedding dimension for snowflake-arctic-embed2
-# Updated from 768 (nomic-embed-text) to 1024 in v0.6.0
-EXPECTED_EMBEDDING_DIM = 1024
+def expected_embedding_dim() -> int:
+    """The LIVE embedder's dimension (settings.embedding_dim), not a constant.
+
+    This was a hardcoded 1024 (arctic). Every check below acts on a mismatch — a forced
+    re-index that drops the notebook tables, a knowledge-graph reset, an archival-memory
+    reset — so after a deliberate switch to a 768-dim model (EmbeddingGemma 2) a constant
+    would have rebuilt everything on every launch, and a stale 1024 after a restart would
+    have rebuilt it back.
+    """
+    try:
+        return int(getattr(settings, "embedding_dim", 0) or 1024)
+    except Exception:
+        return 1024
 
 
 async def run_all_startup_checks(status_callback=None) -> Dict[str, Any]:
@@ -95,7 +107,14 @@ async def run_all_startup_checks(status_callback=None) -> Dict[str, Any]:
                 f"Models not installed: {_missing_names}. Install them in LLM Studio. "
                 f"(Not auto-downloaded — Wave 9 decision.)")
         
-        # Step 3: Check RAG embedding dimensions
+        # Step 3: Check RAG embedding dimensions. A saved embedder that differs from the
+        # index's is handled WITHOUT dropping anything: the launch kept the index's model and
+        # the new model's index builds alongside (services/embedding_migration).
+        try:
+            from services.embedding_migration import kick_auto_target
+            await kick_auto_target()
+        except Exception as e:
+            print(f"[Startup] background index build not started: {e}")
         update_status("checking", "Checking embedding compatibility...", 50)
         rag_needs_migration = check_rag_embedding_dimensions()
         results["embedding_migration"] = "needed" if rag_needs_migration else "ok"
@@ -117,8 +136,18 @@ async def run_all_startup_checks(status_callback=None) -> Dict[str, Any]:
         update_status("checking", "Checking memory store...", 90)
         memory_needs_migration = check_memory_store_dimensions()
         if memory_needs_migration:
-            update_status("migrating", "Resetting memory store for new embeddings...", 95)
-            await reset_memory_store_tables()
+            update_status("migrating", "Re-embedding archival memory...", 95)
+            # The archival TEXT lives in SQLite (archival_records); LanceDB is only its index,
+            # which memory_store has already rebuilt empty. Re-embed it now — `reconcile`
+            # otherwise only runs after a sync, so a Mac without sync would keep an empty
+            # archival search forever.
+            try:
+                from storage import archival_records
+                from storage.memory_store import memory_store
+                rebuilt = await asyncio.to_thread(archival_records.reconcile, memory_store)
+                print(f"[Startup] archival memory re-embedded from its records: {rebuilt}")
+            except Exception as e:
+                print(f"[Startup] archival re-embed deferred (records are intact): {e}")
         
         update_status("ready", "All checks complete!", 100)
         
@@ -194,7 +223,7 @@ def check_rag_embedding_dimensions() -> bool:
         
         db = lancedb.connect(str(db_path))
         
-        for table_name in db.table_names():
+        for table_name in list_tables(db):
             if table_name.startswith("notebook_"):
                 table = db.open_table(table_name)
                 if table.count_rows() == 0:
@@ -205,8 +234,8 @@ def check_rag_embedding_dimensions() -> bool:
                     if field.name == "vector":
                         if hasattr(field.type, 'list_size'):
                             stored_dim = field.type.list_size
-                            if stored_dim != EXPECTED_EMBEDDING_DIM:
-                                print(f"[Startup] RAG table {table_name} has {stored_dim}-dim vectors, need {EXPECTED_EMBEDDING_DIM}")
+                            if stored_dim != expected_embedding_dim():
+                                print(f"[Startup] RAG table {table_name} has {stored_dim}-dim vectors, need {expected_embedding_dim()}")
                                 return True
         return False
     except Exception as e:
@@ -236,7 +265,7 @@ def check_knowledge_graph_dimensions() -> bool:
         
         db = lancedb.connect(str(kg_path))
         
-        if "concepts" not in db.table_names():
+        if not has_table(db, "concepts"):
             return False
         
         table = db.open_table("concepts")
@@ -248,8 +277,8 @@ def check_knowledge_graph_dimensions() -> bool:
             if field.name == "vector":
                 if hasattr(field.type, 'list_size'):
                     stored_dim = field.type.list_size
-                    if stored_dim != EXPECTED_EMBEDDING_DIM:
-                        print(f"[Startup] Knowledge graph has {stored_dim}-dim vectors, need {EXPECTED_EMBEDDING_DIM}")
+                    if stored_dim != expected_embedding_dim():
+                        print(f"[Startup] Knowledge graph has {stored_dim}-dim vectors, need {expected_embedding_dim()}")
                         return True
         return False
     except Exception as e:
@@ -265,7 +294,7 @@ async def reset_knowledge_graph_tables():
         
         # Drop tables if they exist
         for table_name in ["concepts", "links", "clusters", "contradictions"]:
-            if table_name in db.table_names():
+            if has_table(db, table_name):
                 db.drop_table(table_name)
                 print(f"[Startup] Dropped KG table: {table_name}")
         
@@ -281,7 +310,7 @@ async def reset_knowledge_graph_tables():
             pa.field("cluster_id", pa.string()),
             pa.field("created_at", pa.string()),
             pa.field("updated_at", pa.string()),
-            pa.field("vector", pa.list_(pa.float32(), EXPECTED_EMBEDDING_DIM)),
+            pa.field("vector", pa.list_(pa.float32(), expected_embedding_dim())),
         ])
         db.create_table("concepts", schema=schema)
         
@@ -331,7 +360,7 @@ async def reset_knowledge_graph_tables():
         ])
         db.create_table("contradictions", schema=schema)
         
-        print(f"[Startup] Knowledge graph tables recreated with {EXPECTED_EMBEDDING_DIM}-dim schema")
+        print(f"[Startup] Knowledge graph tables recreated with {expected_embedding_dim()}-dim schema")
         
         # Reset the singleton service state
         try:
@@ -347,69 +376,15 @@ async def reset_knowledge_graph_tables():
 
 
 def check_memory_store_dimensions() -> bool:
-    """
-    Check if memory store has wrong embedding dimensions.
-    Returns True if reset is needed.
-    """
+    """Whether archival memory's index must be re-embedded. `memory_store` owns the table and
+    its schema; it rebuilds the table itself when the dimension or columns are wrong and
+    flags it here. (This used to inspect `memory/archival_db` — a path the store never used —
+    so it could never fire.)"""
     try:
-        memory_path = settings.data_dir / "memory" / "archival_db"
-        if not memory_path.exists():
-            return False
-        
-        db = lancedb.connect(str(memory_path))
-        
-        if "archival_memories" not in db.table_names():
-            return False
-        
-        table = db.open_table("archival_memories")
-        if table.count_rows() == 0:
-            return False
-        
-        schema = table.schema
-        for field in schema:
-            if field.name == "vector":
-                if hasattr(field.type, 'list_size'):
-                    stored_dim = field.type.list_size
-                    if stored_dim != EXPECTED_EMBEDDING_DIM:
-                        print(f"[Startup] Memory store has {stored_dim}-dim vectors, need {EXPECTED_EMBEDDING_DIM}")
-                        return True
-        return False
+        from storage.memory_store import memory_store
+        return bool(getattr(memory_store, "archival_needs_reembed", False))
     except Exception as e:
         print(f"[Startup] Error checking memory dimensions: {e}")
         return False
 
 
-async def reset_memory_store_tables():
-    """Drop and recreate memory store tables with correct schema."""
-    try:
-        memory_path = settings.data_dir / "memory" / "archival_db"
-        if not memory_path.exists():
-            return
-        
-        db = lancedb.connect(str(memory_path))
-        
-        if "archival_memories" in db.table_names():
-            db.drop_table("archival_memories")
-            print("[Startup] Dropped archival_memories table")
-        
-        # Recreate with correct embedding dimensions
-        schema = pa.schema([
-            pa.field("id", pa.string()),
-            pa.field("content", pa.string()),
-            pa.field("content_type", pa.string()),
-            pa.field("source_type", pa.string()),
-            pa.field("source_id", pa.string()),
-            pa.field("source_notebook_id", pa.string()),
-            pa.field("topics", pa.string()),
-            pa.field("entities", pa.string()),
-            pa.field("importance", pa.string()),
-            pa.field("created_at", pa.string()),
-            pa.field("last_accessed", pa.string()),
-            pa.field("access_count", pa.int32()),
-            pa.field("vector", pa.list_(pa.float32(), EXPECTED_EMBEDDING_DIM)),
-        ])
-        db.create_table("archival_memories", schema=schema)
-        print(f"[Startup] Memory store table recreated with {EXPECTED_EMBEDDING_DIM}-dim schema")
-        
-    except Exception as e:
-        print(f"[Startup] Error resetting memory tables: {e}")

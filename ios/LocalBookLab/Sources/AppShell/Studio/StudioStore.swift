@@ -1,0 +1,90 @@
+import Foundation
+
+/// One thing made in Studio on this phone: a written piece, a quiz or a set of flashcards. Kept as a small JSON file
+/// per item, so it is there offline and nothing about it leaves the phone.
+struct StudioItem: Codable, Identifiable, Sendable, Hashable {
+    enum Kind: String, Codable, CaseIterable, Sendable {
+        case doc, quiz, cards, audio, visual, video
+        var label: String { switch self { case .doc: "Briefing"; case .quiz: "Quiz"; case .cards: "Flashcards"; case .audio: "Audio overview"; case .visual: "Visual"; case .video: "Video" } }
+        var short: String { self == .audio ? "Audio" : label }
+        var symbol: String { switch self { case .doc: "doc.text"; case .quiz: "checklist"; case .cards: "rectangle.stack"; case .audio: "waveform"; case .visual: "chart.bar.doc.horizontal"; case .video: "film" } }
+    }
+    var id: String
+    var notebookId: String
+    var kind: Kind
+    var title: String
+    var created: Date
+    /// visual: the JSON of a VisualSpec. audio: the JSON of an AudioScript. doc: the text (Markdown-light). quiz / cards: the JSON of [StudioQuestion] / [StudioCard].
+    var body: String
+    /// Items brought over from a Mac: "mac". Phone-made items leave this empty.
+    var origin: String? = nil
+    /// The Mac's revision stamp for a Mac item, so only changed ones are fetched again.
+    var rev: String? = nil
+    /// Audio or video file kept next to the item (Mac items download on request), and its size on the Mac.
+    var mediaFile: String? = nil
+    var mediaBytes: Int? = nil
+}
+
+/// A video: the file, how long it is, and the narration lines it speaks.
+struct VideoInfo: Codable, Sendable, Hashable {
+    var file: String
+    var duration: Double
+    var lines: [String] = []
+}
+
+struct StudioQuestion: Codable, Sendable, Identifiable, Hashable {
+    var id: String { question }
+    let question: String
+    let choices: [String]
+    let answer: Int
+    let why: String?
+}
+
+struct StudioCard: Codable, Sendable, Identifiable, Hashable {
+    var id: String { front }
+    let front: String
+    let back: String
+}
+
+enum StudioStore {
+    static var folder: URL {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        let dir = base.appendingPathComponent("Studio", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }
+
+    private static func url(_ id: String) -> URL { folder.appendingPathComponent(id + ".json") }
+
+    static func all(notebook: String?) -> [StudioItem] {
+        let files = (try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)) ?? []
+        let decoder = JSONDecoder()
+        let items = files.filter { $0.pathExtension == "json" }.compactMap { try? decoder.decode(StudioItem.self, from: Data(contentsOf: $0)) }
+        return items.filter { notebook == nil || $0.notebookId == notebook }.sorted { $0.created > $1.created }
+    }
+
+    static func save(_ item: StudioItem) {
+        if let data = try? JSONEncoder().encode(item) { try? data.write(to: url(item.id), options: .atomic) }
+    }
+
+    static func delete(_ item: StudioItem) {
+        if let media = item.mediaFile { try? FileManager.default.removeItem(at: audioURL(media)) }
+        if item.kind == .video, let info = try? JSONDecoder().decode(VideoInfo.self, from: Data(item.body.utf8)) {
+            try? FileManager.default.removeItem(at: audioURL(info.file))
+        }
+        if item.kind == .audio, let script = try? JSONDecoder().decode(AudioScript.self, from: Data(item.body.utf8)) {
+            try? FileManager.default.removeItem(at: audioURL(script.file))
+        }
+        try? FileManager.default.removeItem(at: url(item.id))
+    }
+
+    static func audioURL(_ file: String) -> URL { folder.appendingPathComponent(file) }
+}
+
+/// A phone-made audio overview: the spoken lines (host 0 = Alex, 1 = Sam) with where each starts in the audio file.
+struct AudioScript: Codable, Sendable, Hashable {
+    struct Line: Codable, Sendable, Hashable { var host: Int; var text: String; var start: Double }
+    var file: String
+    var duration: Double
+    var lines: [Line]
+}

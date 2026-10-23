@@ -10,6 +10,7 @@ from services.rag_cache import embedding_cache, answer_cache
 from services.entity_extractor import entity_extractor
 from services.entity_graph import entity_graph
 from services.community_detection import community_detector
+from utils.lancedb_tables import has_table
 
 router = APIRouter(prefix="/rag", tags=["RAG Health"])
 
@@ -200,7 +201,7 @@ async def backfill_entities(notebook_id: str):
     db = lancedb.connect(str(settings.db_path))
     table_name = f"notebook_{notebook_id}"
     
-    if table_name not in db.table_names():
+    if not has_table(db, table_name):
         return {"error": "Notebook not found", "notebook_id": notebook_id}
     
     table = db.open_table(table_name)
