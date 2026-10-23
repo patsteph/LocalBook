@@ -24,7 +24,7 @@ final class StudioEngine {
     func stop() { stopped = true; task?.cancel() }
 
     /// Returns the saved item, or nil (with `error` set) when it could not be made.
-    func make(_ kind: StudioItem.Kind, in notebook: LibraryNotebookInfo, topic: String, count: Int, notebookOnly: Bool, style: AudioStyle = .casual, library: LibraryModel) async -> StudioItem? {
+    func make(_ kind: StudioItem.Kind, in notebook: LibraryNotebookInfo, topic: String, count: Int, notebookOnly: Bool, style: AudioStyle = .casual, layout: VisualSpec.Layout = .mindmap, library: LibraryModel) async -> StudioItem? {
         guard !working else { return nil }
         working = true; error = nil; preview = ""; progress = 0; caption = ""; stopped = false
         if kind == .audio { working = false; return await makeAudio(in: notebook, topic: topic, segments: count, notebookOnly: notebookOnly, style: style, library: library) }
@@ -53,7 +53,7 @@ final class StudioEngine {
         func numbered(_ list: [LibraryHit]) -> String {
             list.enumerated().map { i, h in "[\(i + 1)] (\(h.filename))\n\(String(h.text.prefix(900)))" }.joined(separator: "\n\n")
         }
-        let (instructions, request, tokens) = Self.prompt(kind, notebookTitle: notebook.title, topic: topic, count: count, notebookOnly: notebookOnly)
+        let (instructions, request, tokens) = Self.prompt(kind, notebookTitle: notebook.title, topic: topic, count: count, notebookOnly: notebookOnly, layout: layout)
 
         /// Streams one request to the model; returns its text, or nil if it was stopped.
         func run(_ prompt: String, tokens: Int) async -> String? {
@@ -97,11 +97,21 @@ final class StudioEngine {
                 round += 1
             }
         } else {
-            status = kind == .doc ? "Writing…" : "Making the cards…"
+            status = kind == .doc ? "Writing…" : (kind == .visual ? "Drawing…" : "Making the cards…")
             guard let out = await run("Passages:\n\n\(numbered(passages))\n\n\(request)", tokens: tokens) else { error = "Stopped."; return nil }
             raw = out
         }
 
+        if kind == .visual {
+            guard let spec = VisualSpec.parse(raw, layout: layout), let data = try? JSONEncoder().encode(spec) else {
+                error = "The model's answer couldn't be drawn. Try again."; return nil
+            }
+            let item = StudioItem(id: UUID().uuidString, notebookId: notebook.id, kind: .visual,
+                                  title: spec.title.isEmpty ? "\(layout.label): \(notebook.title)" : "\(layout.label): \(spec.title)",
+                                  created: Date(), body: String(decoding: data, as: UTF8.self))
+            StudioStore.save(item)
+            return item
+        }
         guard var body = Self.body(for: kind, from: raw) else {
             error = "The model's answer couldn't be read as \(kind == .quiz ? "a quiz" : "flashcards"). Try again."
             return nil
@@ -120,7 +130,7 @@ final class StudioEngine {
 
     // MARK: prompts and parsing
 
-    static func prompt(_ kind: StudioItem.Kind, notebookTitle: String, topic: String, count: Int, notebookOnly: Bool) -> (String, String, Int) {
+    static func prompt(_ kind: StudioItem.Kind, notebookTitle: String, topic: String, count: Int, notebookOnly: Bool, layout: VisualSpec.Layout = .mindmap) -> (String, String, Int) {
         let about = topic.isEmpty ? "the notebook “\(notebookTitle)”" : "“\(topic)” in the notebook “\(notebookTitle)”"
         let base = (notebookOnly
             ? "You write ONLY from the numbered passages from the user's own notes. Never add facts that are not in them."
@@ -134,6 +144,8 @@ final class StudioEngine {
             return (base + " You reply with JSON only.",
                     "Write exactly \(count) multiple-choice questions about \(about). Reply with ONLY a JSON array, no other text. Each item: {\"question\": string, \"choices\": [4 short strings], \"answer\": index 0-3 of the correct choice, \"why\": one sentence from the passages}.",
                     max(600, count * 230))
+        case .visual:
+            return (base + " Keep every label short. You reply with JSON only.", VisualSpec.request(layout, about: about), 1_300)
         case .cards, .audio:
             return (base + " You reply with JSON only.",
                     "Write exactly \(count) flashcards about \(about). Reply with ONLY a JSON array, no other text. Each item: {\"front\": a short question or term, \"back\": a short answer from the passages}.",
@@ -172,6 +184,8 @@ final class StudioEngine {
             return String(decoding: out, as: UTF8.self)
         case .doc, .audio:
             return raw
+        case .visual:
+            return nil     // handled by the caller, which knows the layout
         }
     }
 

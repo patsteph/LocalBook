@@ -8,10 +8,11 @@ extension StudioItem.Kind: Identifiable {
         case .quiz: "Test yourself"
         case .cards: "Flip and learn"
         case .audio: "Two hosts talk it through"
+        case .visual: "Maps, flows and infographics"
         }
     }
     var tint: Color {
-        switch self { case .doc: .blue; case .quiz: .orange; case .cards: .green; case .audio: .pink }
+        switch self { case .doc: .blue; case .quiz: .orange; case .cards: .green; case .audio: .pink; case .visual: .purple }
     }
 }
 
@@ -118,6 +119,7 @@ private struct MakeSheet: View {
     @State private var count: Int
     @State private var style: AudioStyle = .casual
     @State private var notebookOnly = true
+    @State private var layout: VisualSpec.Layout = .mindmap
     @FocusState private var typing: Bool
 
     init(kind: StudioItem.Kind, notebook: LibraryNotebookInfo, library: LibraryModel, engine: StudioEngine, onMade: @escaping (StudioItem) -> Void) {
@@ -138,7 +140,12 @@ private struct MakeSheet: View {
                         Section {
                             TextField("Subject (optional)", text: $topic).focused($typing).submitLabel(.done).onSubmit { typing = false }
                         } footer: { Text("Leave empty to cover the whole notebook, or name what to focus on.") }
-                        if kind != .doc {
+                        if kind == .visual {
+                            Section("Layout") {
+                                Picker("Layout", selection: $layout) { ForEach(VisualSpec.Layout.allCases) { Label($0.label, systemImage: $0.symbol).tag($0) } }.pickerStyle(.menu)
+                            }
+                        }
+                        if kind != .doc && kind != .visual {
                             Section(kind == .quiz ? "Questions" : (kind == .audio ? "Length" : "Cards")) {
                                 Picker("", selection: $count) { ForEach(counts, id: \.self) { Text(countLabel($0)).tag($0) } }.pickerStyle(.segmented)
                             }
@@ -172,7 +179,7 @@ private struct MakeSheet: View {
     }
 
     private func make() async {
-        if let made = await engine.make(kind, in: notebook, topic: topic, count: count, notebookOnly: notebookOnly, style: style, library: library) {
+        if let made = await engine.make(kind, in: notebook, topic: topic, count: count, notebookOnly: notebookOnly, style: style, layout: layout, library: library) {
             onMade(made); dismiss()
         }
     }
@@ -234,6 +241,7 @@ struct StudioItemView: View {
                 case .doc: ScrollView { MarkdownText(text: item.body).padding() }
                 case .quiz: QuizRun(questions: (try? JSONDecoder().decode([StudioQuestion].self, from: Data(item.body.utf8))) ?? [], subject: item.title.replacingOccurrences(of: "Quiz: ", with: ""))
                 case .audio: if let script = try? JSONDecoder().decode(AudioScript.self, from: Data(item.body.utf8)) { AudioOverviewView(script: script, title: item.title) } else { Text("This audio can't be opened.") }
+                case .visual: if let spec = try? JSONDecoder().decode(VisualSpec.self, from: Data(item.body.utf8)) { VisualItemView(spec: spec, title: item.title) } else { Text("This visual can't be opened.") }
                 case .cards: CardRun(cards: (try? JSONDecoder().decode([StudioCard].self, from: Data(item.body.utf8))) ?? [])
                 }
             }

@@ -4,17 +4,17 @@ import Foundation
 /// per item, so it is there offline and nothing about it leaves the phone.
 struct StudioItem: Codable, Identifiable, Sendable, Hashable {
     enum Kind: String, Codable, CaseIterable, Sendable {
-        case doc, quiz, cards, audio
-        var label: String { switch self { case .doc: "Briefing"; case .quiz: "Quiz"; case .cards: "Flashcards"; case .audio: "Audio overview" } }
+        case doc, quiz, cards, audio, visual
+        var label: String { switch self { case .doc: "Briefing"; case .quiz: "Quiz"; case .cards: "Flashcards"; case .audio: "Audio overview"; case .visual: "Visual" } }
         var short: String { self == .audio ? "Audio" : label }
-        var symbol: String { switch self { case .doc: "doc.text"; case .quiz: "checklist"; case .cards: "rectangle.stack"; case .audio: "waveform" } }
+        var symbol: String { switch self { case .doc: "doc.text"; case .quiz: "checklist"; case .cards: "rectangle.stack"; case .audio: "waveform"; case .visual: "chart.bar.doc.horizontal" } }
     }
     var id: String
     var notebookId: String
     var kind: Kind
     var title: String
     var created: Date
-    /// audio: the JSON of an AudioScript. doc: the text (Markdown-light). quiz / cards: the JSON of [StudioQuestion] / [StudioCard].
+    /// visual: the JSON of a VisualSpec. audio: the JSON of an AudioScript. doc: the text (Markdown-light). quiz / cards: the JSON of [StudioQuestion] / [StudioCard].
     var body: String
 }
 
