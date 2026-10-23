@@ -72,6 +72,11 @@ struct VisualSpec: Codable, Hashable, Sendable {
     }
 }
 
+private struct MindBounds: PreferenceKey {
+    static var defaultValue: [String: Anchor<CGRect>] = [:]
+    static func reduce(value: inout [String: Anchor<CGRect>], nextValue: () -> [String: Anchor<CGRect>]) { value.merge(nextValue()) { $1 } }
+}
+
 private let palette: [Color] = [.blue, .orange, .green, .pink, .purple, .teal]
 
 /// Draws a VisualSpec at phone width.
@@ -80,8 +85,9 @@ struct VisualCanvas: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
-            Text(spec.title).font(.title2.bold()).frame(maxWidth: .infinity, alignment: spec.layout == .mindmap ? .center : .leading)
-                .multilineTextAlignment(spec.layout == .mindmap ? .center : .leading)
+            if spec.layout != .mindmap {              // a mind map carries its title in the middle
+                Text(spec.title).font(.title2.bold()).frame(maxWidth: .infinity, alignment: .leading)
+            }
             switch spec.layout {
             case .mindmap: mindmap
             case .flowchart: flowchart
@@ -94,27 +100,51 @@ struct VisualCanvas: View {
         .background(Color(.systemBackground))
     }
 
+    /// A classic mind map: the topic in the middle, branches fanning out to both sides on curved lines.
     private var mindmap: some View {
-        VStack(spacing: 0) {
-            ForEach(spec.items.indices, id: \.self) { i in
-                let c = palette[i % palette.count]
-                VStack(spacing: 0) {
-                    Rectangle().fill(c.opacity(0.4)).frame(width: 2, height: 14)
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text(spec.items[i].title).font(.headline).foregroundStyle(c)
-                        ForEach(spec.items[i].children, id: \.self) { child in
-                            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                                Circle().fill(c).frame(width: 6, height: 6)
-                                Text(child).font(.subheadline)
+        let left = Array(spec.items.enumerated()).filter { $0.offset % 2 == 1 }
+        let right = Array(spec.items.enumerated()).filter { $0.offset % 2 == 0 }
+        return HStack(alignment: .center, spacing: 0) {
+            VStack(spacing: 14) { ForEach(left, id: \.offset) { branch($0.offset, $0.element, leading: false) } }.frame(maxWidth: .infinity)
+            Text(spec.title).font(.subheadline.bold()).multilineTextAlignment(.center).foregroundStyle(.white)
+                .padding(10).frame(width: 92, height: 92)
+                .background(Circle().fill(LinearGradient(colors: [.indigo, .purple], startPoint: .topLeading, endPoint: .bottomTrailing)))
+                .anchorPreference(key: MindBounds.self, value: .bounds) { ["center": $0] }
+                .padding(.horizontal, 22)
+            VStack(spacing: 14) { ForEach(right, id: \.offset) { branch($0.offset, $0.element, leading: true) } }.frame(maxWidth: .infinity)
+        }
+        .overlayPreferenceValue(MindBounds.self) { anchors in
+            GeometryReader { geo in
+                if let c = anchors["center"].map({ geo[$0] }) {
+                    ForEach(spec.items.indices, id: \.self) { i in
+                        if let a = anchors["b\(i)"] {
+                            let b = geo[a]
+                            let toRight = i % 2 == 0
+                            let from = CGPoint(x: toRight ? c.maxX : c.minX, y: c.midY)
+                            let to = CGPoint(x: toRight ? b.minX : b.maxX, y: b.midY)
+                            Path { p in
+                                p.move(to: from)
+                                p.addCurve(to: to, control1: CGPoint(x: (from.x + to.x) / 2, y: from.y), control2: CGPoint(x: (from.x + to.x) / 2, y: to.y))
                             }
+                            .stroke(palette[i % palette.count].opacity(0.7), style: StrokeStyle(lineWidth: 3, lineCap: .round))
                         }
                     }
-                    .padding(14).frame(maxWidth: .infinity, alignment: .leading)
-                    .background(c.opacity(0.12), in: RoundedRectangle(cornerRadius: 16))
-                    .overlay(RoundedRectangle(cornerRadius: 16).stroke(c.opacity(0.35), lineWidth: 1))
                 }
             }
         }
+    }
+
+    private func branch(_ i: Int, _ item: VisualSpec.Item, leading: Bool) -> some View {
+        let c = palette[i % palette.count]
+        return VStack(alignment: leading ? .leading : .trailing, spacing: 5) {
+            Text(item.title).font(.footnote.bold()).foregroundStyle(.white)
+                .padding(.horizontal, 10).padding(.vertical, 6).background(c, in: Capsule())
+                .anchorPreference(key: MindBounds.self, value: .bounds) { ["b\(i)": $0] }
+            ForEach(item.children, id: \.self) { child in
+                Text(child).font(.caption2).foregroundStyle(.secondary).multilineTextAlignment(leading ? .leading : .trailing)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: leading ? .leading : .trailing)
     }
 
     private var flowchart: some View {

@@ -21,8 +21,19 @@ final class AudioOverviewPlayer {
     func load(_ script: AudioScript, title: String) {
         stop()
         self.script = script; self.title = title
-        guard let p = try? AVAudioPlayer(contentsOf: StudioStore.audioURL(script.file)) else { return }
-        player = p; duration = p.duration; time = 0; current = 0
+        let url = StudioStore.audioURL(script.file)
+        Task {
+            let p = await Task.detached { try? AVAudioPlayer(contentsOf: url) }.value
+            guard let p, self.script == script else { return }
+            player = p; duration = p.duration; time = 0; current = 0
+        }
+    }
+
+    /// Category and activation happen off the main thread (Apple flags them there as a hang risk).
+    nonisolated private static func prepareSession() async {
+        let session = AVAudioSession.sharedInstance()
+        try? session.setCategory(.playback, mode: .spokenAudio)
+        _ = try? await session.activate(options: [])
     }
 
     func toggle() { playing ? pause() : play() }
@@ -31,9 +42,7 @@ final class AudioOverviewPlayer {
         guard player != nil else { return }
         playing = true                                   // the button flips at once; the session starts without blocking the UI
         Task {
-            let session = AVAudioSession.sharedInstance()
-            try? session.setCategory(.playback, mode: .spokenAudio)
-            _ = try? await session.activate(options: [])
+            await Self.prepareSession()
             begin()
         }
     }
@@ -68,7 +77,7 @@ final class AudioOverviewPlayer {
         for (command, token) in tokens { command.removeTarget(token) }
         tokens = []
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
-        Task { _ = try? await AVAudioSession.sharedInstance().deactivate(options: .notifyOthersOnDeactivation) }
+        Task.detached { _ = try? await AVAudioSession.sharedInstance().deactivate(options: .notifyOthersOnDeactivation) }
     }
 
     private func tick() {
@@ -167,24 +176,7 @@ struct MakingView: View {
 
     var body: some View {
         VStack(spacing: 16) {
-            TimelineView(.animation) { ctx in
-                let t = ctx.date.timeIntervalSinceReferenceDate
-                HStack(alignment: .center, spacing: 5) {
-                    ForEach(0..<19, id: \.self) { i in
-                        let phase = t * 3 + Double(i) * 0.55
-                        let h = 14 + 46 * abs(sin(phase) * cos(phase * 0.43 + Double(i)))
-                        Capsule()
-                            .fill(LinearGradient(colors: [.orange, .pink, .purple], startPoint: .bottom, endPoint: .top))
-                            .frame(width: 7, height: h)
-                    }
-                }
-                .frame(height: 72)
-                .overlay(alignment: .top) {
-                    Image(systemName: kind.symbol).font(.title).foregroundStyle(.tint)
-                        .offset(y: -34 + 5 * sin(t * 2))
-                }
-            }
-            .padding(.top, 30)
+            MakingGlyph(kind: kind).padding(.top, 24)
 
             TimelineView(.periodic(from: .now, by: 3)) { ctx in
                 let i = Int(ctx.date.timeIntervalSinceReferenceDate / 3) % max(1, quips.count)
@@ -200,5 +192,90 @@ struct MakingView: View {
             Button("Stop", role: .cancel, action: stop).buttonStyle(.bordered)
         }
         .frame(maxWidth: .infinity).padding(.vertical, 8)
+    }
+}
+
+
+/// The animation shown while an item is made: each kind has its own, so it matches what is being built.
+struct MakingGlyph: View {
+    let kind: StudioItem.Kind
+
+    var body: some View {
+        TimelineView(.animation) { ctx in
+            let t = ctx.date.timeIntervalSinceReferenceDate
+            ZStack {
+                switch kind {
+                case .audio: waves(t)
+                case .visual: network(t)
+                case .doc: lines(t)
+                case .quiz: bubbles(t)
+                case .cards: deck(t)
+                }
+            }
+            .frame(width: 220, height: 110)
+        }
+    }
+
+    private func waves(_ t: Double) -> some View {
+        HStack(alignment: .center, spacing: 5) {
+            ForEach(0..<19, id: \.self) { i in
+                let phase = t * 3 + Double(i) * 0.55
+                Capsule().fill(LinearGradient(colors: [.orange, .pink, .purple], startPoint: .bottom, endPoint: .top))
+                    .frame(width: 7, height: 14 + 46 * abs(sin(phase) * cos(phase * 0.43 + Double(i))))
+            }
+        }
+    }
+
+    /// A hub with nodes that pop out on lines and settle: a diagram being drawn.
+    private func network(_ t: Double) -> some View {
+        let colors: [Color] = [.blue, .orange, .green, .pink, .purple, .teal]
+        return ZStack {
+            ForEach(0..<6, id: \.self) { i in
+                let a = Double(i) / 6 * 2 * .pi + t * 0.25
+                let grow = 0.5 + 0.5 * sin(t * 1.6 + Double(i) * 1.1)             // 0…1, each node on its own beat
+                let r = 30 + 38 * grow
+                let x = cos(a) * r * 1.5, y = sin(a) * r * 0.9
+                Path { p in p.move(to: CGPoint(x: 110, y: 55)); p.addLine(to: CGPoint(x: 110 + x, y: 55 + y)) }
+                    .stroke(colors[i].opacity(0.45), style: StrokeStyle(lineWidth: 2, lineCap: .round, dash: [4, 4], dashPhase: -t * 16))
+                Circle().fill(colors[i]).frame(width: 10 + 12 * grow, height: 10 + 12 * grow).offset(x: x, y: y)
+            }
+            Circle().fill(.tint).frame(width: 30 + 4 * sin(t * 3), height: 30 + 4 * sin(t * 3))
+            Image(systemName: "chart.bar.doc.horizontal").font(.footnote).foregroundStyle(.white)
+        }
+    }
+
+    /// Text lines being typed out.
+    private func lines(_ t: Double) -> some View {
+        VStack(alignment: .leading, spacing: 9) {
+            ForEach(0..<5, id: \.self) { i in
+                let w = 40 + 150 * abs(sin(t * 0.9 + Double(i) * 0.8))
+                Capsule().fill(i == 0 ? Color.blue : Color.blue.opacity(0.35)).frame(width: i == 0 ? 90 : w, height: i == 0 ? 10 : 7)
+            }
+        }.frame(maxWidth: .infinity, alignment: .leading).padding(.leading, 14)
+    }
+
+    /// Question bubbles bouncing in turn.
+    private func bubbles(_ t: Double) -> some View {
+        HStack(spacing: 14) {
+            ForEach(0..<3, id: \.self) { i in
+                let hop = max(0, sin(t * 4 - Double(i) * 1.0))
+                Text(i == 2 ? "✓" : "?").font(.title.bold()).foregroundStyle(.white)
+                    .frame(width: 46, height: 46).background((i == 2 ? Color.green : Color.orange).gradient, in: Circle())
+                    .offset(y: -22 * hop).scaleEffect(1 + 0.15 * hop)
+            }
+        }
+    }
+
+    /// A pair of cards flipping over.
+    private func deck(_ t: Double) -> some View {
+        ZStack {
+            ForEach(0..<3, id: \.self) { i in
+                RoundedRectangle(cornerRadius: 12).fill([Color.green, .mint, .teal][i].gradient)
+                    .frame(width: 96, height: 64)
+                    .rotation3DEffect(.degrees(sin(t * 2 - Double(i) * 0.6) * 70), axis: (x: 0, y: 1, z: 0))
+                    .offset(x: CGFloat(i - 1) * 26, y: CGFloat(i) * -4)
+                    .opacity(1 - Double(i) * 0.2)
+            }
+        }
     }
 }
