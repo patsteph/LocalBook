@@ -29,7 +29,11 @@ enum StudioPull {
             let wanted = remote.filter { r in
                 if hidden.contains(r.id) || deleting.contains(r.id) { return false }
                 guard let have = local[r.id] else { return true }
-                return have.origin == "mac" && have.rev != r.rev
+                guard have.origin == "mac" else { return false }
+                if have.rev != r.rev { return true }
+                // Earlier versions kept the wrong date; refetch once so the real one lands.
+                if let real = r.created.flatMap(parseDate), abs(real.timeIntervalSince(have.created)) > 60 { return true }
+                return false
             }
             for start in stride(from: 0, to: wanted.count, by: 20) {
                 let batch = Array(wanted[start..<min(wanted.count, start + 20)])
@@ -47,8 +51,28 @@ enum StudioPull {
         } catch { return false }
     }
 
+    /// The Mac's timestamps come as "2026-10-20T12:34:56.123456" (no zone, microseconds) or with a zone; read all forms.
+    /// Zone-less times are UTC, as the Mac stores them.
+    static func parseDate(_ text: String) -> Date? {
+        var t = text.trimmingCharacters(in: .whitespaces).replacingOccurrences(of: " ", with: "T")
+        if let dot = t.firstIndex(of: ".") {
+            var end = t.index(after: dot)
+            while end < t.endIndex, t[end].isNumber { end = t.index(after: end) }
+            let frac = String(t[t.index(after: dot)..<end].prefix(3))
+            t = String(t[..<dot]) + "." + frac.padding(toLength: 3, withPad: "0", startingAt: 0) + t[end...]
+        }
+        let hasZone = t.hasSuffix("Z") || t.range(of: #"[+-]\d\d:?\d\d$"#, options: .regularExpression) != nil
+        if !hasZone { t += "Z" }
+        let f = ISO8601DateFormatter()
+        for options: ISO8601DateFormatter.Options in [[.withInternetDateTime, .withFractionalSeconds], [.withInternetDateTime]] {
+            f.formatOptions = options
+            if let d = f.date(from: t) { return d }
+        }
+        return nil
+    }
+
     private static func make(_ r: Remote, _ g: [String: Any]) -> StudioItem? {
-        let created = r.created.flatMap { ISO8601DateFormatter().date(from: $0) } ?? Date()
+        let created = r.created.flatMap(parseDate) ?? Date()
         var item = StudioItem(id: r.id, notebookId: r.notebook_id, kind: .doc, title: r.title, created: created, body: "")
         item.origin = "mac"; item.rev = r.rev
         let encoder = JSONEncoder()
