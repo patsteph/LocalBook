@@ -110,6 +110,8 @@ targets:
         UILaunchScreen: {}
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
         # Drop fixtures into the app from Finder (iPhone › Files) or the Files app.
         UIFileSharingEnabled: true
         LSSupportsOpeningDocumentsInPlace: true

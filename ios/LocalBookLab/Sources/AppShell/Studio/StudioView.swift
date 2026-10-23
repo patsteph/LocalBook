@@ -266,6 +266,8 @@ struct StudioItemView: View {
                 }
             }
             .navigationTitle(item.title).navigationBarTitleDisplayMode(.inline)
+            .onAppear { OrientationLock.allowRotation(true) }
+            .onDisappear { OrientationLock.allowRotation(false) }
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
         }
     }
