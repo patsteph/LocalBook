@@ -26,14 +26,15 @@ struct StudioView: View {
     @State private var making: StudioItem.Kind?
     @State private var opened: StudioItem?
     @State private var pendingOpen: StudioItem?
+    @State private var confirmClear = false
     @State private var sent: Set<String> = StudioSync.sentIds()
 
     private var notebook: LibraryNotebookInfo? { library.notebooks.first { $0.id == notebookId } }
 
     var body: some View {
         NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 24) {
+            List {
+                Section {
                     Menu {
                         Picker("Notebook", selection: $notebookId) {
                             ForEach(library.notebooks) { Text($0.title).tag(Optional($0.id)) }
@@ -52,6 +53,7 @@ struct StudioView: View {
                         .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 14))
                     }
                     .buttonStyle(.plain)
+                    .listRowSeparator(.hidden).listRowBackground(Color.clear)
                     LazyVGrid(columns: [GridItem(.flexible(), spacing: 12), GridItem(.flexible(), spacing: 12)], spacing: 12) {
                         ForEach(StudioItem.Kind.allCases) { kind in
                             Button { making = kind } label: {
@@ -69,33 +71,47 @@ struct StudioView: View {
                             .buttonStyle(.plain).disabled(notebook == nil)
                         }
                     }
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("Made from this notebook").font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
-                        if items.isEmpty {
-                            Text("Nothing yet. Pick a tile above.").font(.footnote).foregroundStyle(.tertiary).padding(.vertical, 8)
-                        }
-                        ForEach(items) { item in
-                            Button { opened = item } label: {
-                                HStack(spacing: 12) {
-                                    Image(systemName: item.kind.symbol).foregroundStyle(item.kind.tint).frame(width: 28)
-                                    VStack(alignment: .leading, spacing: 1) {
-                                        Text(item.title).foregroundStyle(.primary).lineLimit(1)
-                                        Text(item.created.formatted(date: .abbreviated, time: .shortened) + (sent.contains(item.id) ? " · on your Mac" : " · waiting to send"))
-                                            .font(.caption).foregroundStyle(.secondary)
-                                    }
-                                    Spacer()
-                                    Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
+                    .listRowSeparator(.hidden).listRowBackground(Color.clear)
+                }
+                .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
+                Section("Made from this notebook") {
+                    if items.isEmpty { Text("Nothing yet. Pick a tile above.").font(.footnote).foregroundStyle(.tertiary) }
+                    ForEach(items) { item in
+                        Button { opened = item } label: {
+                            HStack(spacing: 12) {
+                                Image(systemName: item.kind.symbol).foregroundStyle(item.kind.tint).frame(width: 28)
+                                VStack(alignment: .leading, spacing: 1) {
+                                    Text(item.title).foregroundStyle(.primary).lineLimit(1)
+                                    Text(item.created.formatted(date: .abbreviated, time: .shortened) + (sent.contains(item.id) ? " · on your Mac" : " · waiting to send"))
+                                        .font(.caption).foregroundStyle(.secondary)
                                 }
-                                .padding(.vertical, 10)
+                                Spacer()
                             }
-                            .buttonStyle(.plain)
-                            .contextMenu { Button("Delete", systemImage: "trash", role: .destructive) { StudioStore.delete(item); reload() } }
-                            Divider()
                         }
+                        .buttonStyle(.plain)
+                    }
+                    .onDelete { offsets in
+                        for i in offsets { StudioSync.delete(items[i]) }
+                        reload(); Task { await send() }
                     }
                 }
-                .padding()
             }
+            .listStyle(.insetGrouped)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) { if !items.isEmpty { EditButton() } }
+                ToolbarItem(placement: .topBarLeading) {
+                    if !items.isEmpty {
+                        Button(role: .destructive) { confirmClear = true } label: { Image(systemName: "trash") }
+                            .accessibilityLabel("Delete everything made from this notebook")
+                    }
+                }
+            }
+            .confirmationDialog("Delete all \(items.count) items made from this notebook?", isPresented: $confirmClear, titleVisibility: .visible) {
+                Button("Delete all", role: .destructive) {
+                    for item in items { StudioSync.delete(item) }
+                    reload(); Task { await send() }
+                }
+            } message: { Text("This also removes them from your Mac.") }
             .navigationTitle("Studio")
             .onAppear { if notebookId == nil || notebook == nil { notebookId = library.scopeToNotebook ?? library.notebooks.first?.id } }
             .onChange(of: library.scopeToNotebook) { _, id in if let id { notebookId = id } }

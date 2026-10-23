@@ -124,3 +124,25 @@ async def put_audio(b: Dict[str, Any]) -> Dict[str, Any]:
                 str(b.get("script", ""))[:MAX_TEXT], float(b.get("duration", 0) or 0), max(1, round(float(b.get("duration", 0) or 0) / 60)))
         except ValueError as e:
             raise HTTPException(409, str(e))
+
+
+def _delete_sync(item_id: str) -> Dict[str, Any]:
+    from services.sync import blobs
+    c = _conn()
+    removed = 0
+    for table, col in (("content_generations", "content_id"), ("quiz_generations", "quiz_id"), ("audio_generations", "audio_id")):
+        removed += c.execute(f"DELETE FROM {table} WHERE {col} = ?", (item_id,)).rowcount
+    c.commit()
+    try:
+        blobs.safe_path(f"audio/{item_id}.m4a").unlink(missing_ok=True)
+    except (blobs.BlobPathError, OSError):
+        pass
+    return {"ok": True, "removed": removed}
+
+
+async def delete(item_id: str) -> Dict[str, Any]:
+    """Remove an item the phone made (and deleted there). Unknown ids are fine: deleting twice does nothing."""
+    if not _ID.match(item_id or ""):
+        raise HTTPException(400, "bad item id")
+    async with _lock:
+        return await asyncio.to_thread(_delete_sync, item_id)

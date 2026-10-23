@@ -69,3 +69,18 @@ def test_audio_arrives_in_chunks_and_is_recorded_when_whole(db, tmp_path):
     row = db.execute("SELECT * FROM audio_generations").fetchone()
     assert row["status"] == "completed" and row["duration_minutes"] == 2
     assert (tmp_path / "audio" / "aud-00000001.m4a").read_bytes() == data
+
+
+def test_delete_removes_the_item_and_its_audio_and_is_repeatable(db, tmp_path):
+    asyncio.run(phone_studio.put("doc", "doc-00000001", "nb", "T", "", "", "text"))
+    data = b"abc" * 100
+    asyncio.run(phone_studio.put_audio({"id": "aud-00000001", "notebook_id": "nb", "total": len(data), "offset": 0,
+                                        "sha256": hashlib.sha256(data).hexdigest(), "data": base64.b64encode(data).decode()}))
+    assert (tmp_path / "audio" / "aud-00000001.m4a").exists()
+    assert asyncio.run(phone_studio.delete("doc-00000001"))["removed"] == 1
+    assert asyncio.run(phone_studio.delete("aud-00000001"))["removed"] == 1
+    assert not (tmp_path / "audio" / "aud-00000001.m4a").exists()
+    assert asyncio.run(phone_studio.delete("aud-00000001"))["removed"] == 0
+    assert db.execute("SELECT COUNT(*) FROM content_generations").fetchone()[0] == 0
+    with pytest.raises(HTTPException):
+        asyncio.run(phone_studio.delete("../x"))

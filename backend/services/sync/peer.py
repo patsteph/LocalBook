@@ -665,6 +665,15 @@ async def phone_library_studio_audio(request: Request):
     return await phone_studio.put_audio(v["body"])
 
 
+@phone_sync_app.post("/phone/library/studio/delete")
+async def phone_library_studio_delete(request: Request):
+    """The phone deleted an item it had made; remove it here too (the other Macs follow through normal sync)."""
+    _check_enabled()
+    v = await _verified_phone(request)
+    from services.sync import phone_studio
+    return await phone_studio.delete(str(v["body"].get("id", "")))
+
+
 _phone_ask_lock = asyncio.Lock()           # one phone question at a time: it uses the Mac's models
 PHONE_ASK_TIMEOUT = 240
 

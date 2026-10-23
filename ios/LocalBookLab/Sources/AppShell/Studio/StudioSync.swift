@@ -7,6 +7,27 @@ import Foundation
 enum StudioSync {
     private static var ledgerURL: URL { StudioStore.folder.appendingPathComponent("sent-to-mac.json") }
 
+    private static var deleteURL: URL { StudioStore.folder.appendingPathComponent("delete-on-mac.json") }
+
+    private static func read(_ url: URL) -> Set<String> {
+        guard let data = try? Data(contentsOf: url), let ids = try? JSONDecoder().decode([String].self, from: data) else { return [] }
+        return Set(ids)
+    }
+
+    private static func write(_ ids: Set<String>, to url: URL) {
+        if let data = try? JSONEncoder().encode(Array(ids)) { try? data.write(to: url, options: .atomic) }
+    }
+
+    /// Deletes an item here, and queues the delete for the Mac if the Mac ever received it.
+    static func delete(_ item: StudioItem) {
+        var sent = sentIds()
+        if sent.remove(item.id) != nil {
+            write(sent, to: ledgerURL)
+            var pending = read(deleteURL); pending.insert(item.id); write(pending, to: deleteURL)
+        }
+        StudioStore.delete(item)
+    }
+
     static func sentIds() -> Set<String> {
         guard let data = try? Data(contentsOf: ledgerURL), let ids = try? JSONDecoder().decode([String].self, from: data) else { return [] }
         return Set(ids)
@@ -21,6 +42,13 @@ enum StudioSync {
     @discardableResult
     static func flush() async -> Int {
         guard let mac = MacLink.paired else { return 0 }
+        var pendingDeletes = read(deleteURL)
+        for id in pendingDeletes {
+            do {
+                _ = try await MacLink.signedCall(mac, path: "/phone/library/studio/delete", json: ["id": id], timeout: 30)
+                pendingDeletes.remove(id); write(pendingDeletes, to: deleteURL)
+            } catch { break }                                 // out of reach: the delete waits
+        }
         let sent = sentIds()
         let waiting = StudioStore.all(notebook: nil).filter { !sent.contains($0.id) }
         var left = waiting.count
