@@ -8,6 +8,7 @@ struct AskView: View {
     @State private var waited = 0
     @State private var queued: String?
     @State private var writingNote = false
+    @State private var recordingMeeting = false
     @State private var atBottom = true
     @State private var openSource: SourceRef?
     @State private var length = AnswerLength.current.rawValue
@@ -129,12 +130,16 @@ struct AskView: View {
                     .accessibilityLabel("Notebook: \(currentTitle). Tap to change.")
                 }
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button { writingNote = true } label: { Image(systemName: "square.and.pencil") }
+                    Menu {
+                        Button { writingNote = true } label: { Label("New note", systemImage: "square.and.pencil") }
+                        Button { recordingMeeting = true } label: { Label("Record a meeting", systemImage: "person.2.wave.2") }
+                    } label: { Image(systemName: "square.and.pencil") }
                         .disabled(library.scopeToNotebook == nil || !ready || library.answering)
                         .accessibilityLabel("New note in \(currentTitle)")
                 }
             }
             .sheet(isPresented: $picking) { NotebookPicker(library: library) }
+            .sheet(isPresented: $recordingMeeting) { if let id = library.scopeToNotebook { MeetingView(library: library, notebookId: id) } }
             .sheet(isPresented: $writingNote) { if let id = library.scopeToNotebook { NoteEditor(library: library, notebookId: id) } }
             .sheet(item: $openSource) { ref in
                 SourceSheet(number: ref.number, hit: ref.hits[ref.number - 1])
