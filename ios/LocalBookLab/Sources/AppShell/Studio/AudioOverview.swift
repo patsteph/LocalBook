@@ -22,17 +22,24 @@ final class AudioOverviewPlayer {
         stop()
         self.script = script; self.title = title
         guard let p = try? AVAudioPlayer(contentsOf: StudioStore.audioURL(script.file)) else { return }
-        p.prepareToPlay()
         player = p; duration = p.duration; time = 0; current = 0
     }
 
     func toggle() { playing ? pause() : play() }
 
     func play() {
-        guard let player else { return }
-        let session = AVAudioSession.sharedInstance()
-        try? session.setCategory(.playback, mode: .spokenAudio)
-        try? session.setActive(true)
+        guard player != nil else { return }
+        playing = true                                   // the button flips at once; the session starts without blocking the UI
+        Task {
+            let session = AVAudioSession.sharedInstance()
+            try? session.setCategory(.playback, mode: .spokenAudio)
+            _ = try? await session.activate(options: [])
+            begin()
+        }
+    }
+
+    private func begin() {
+        guard let player, playing else { return }
         installCommands()
         if time >= duration - 0.2 { player.currentTime = 0 }
         player.play(); playing = true
@@ -61,7 +68,7 @@ final class AudioOverviewPlayer {
         for (command, token) in tokens { command.removeTarget(token) }
         tokens = []
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
-        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        Task { _ = try? await AVAudioSession.sharedInstance().deactivate(options: .notifyOthersOnDeactivation) }
     }
 
     private func tick() {
