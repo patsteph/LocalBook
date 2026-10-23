@@ -1,3 +1,5 @@
+import AVFoundation
+import FluidAudio
 import Foundation
 import MLXLMCommon
 import Observation
@@ -12,14 +14,20 @@ final class StudioEngine {
     private(set) var status = ""
     private(set) var preview = ""
     private(set) var error: String?
+    /// 0…1 of the way through making the item, for the progress visual.
+    private(set) var progress = 0.0
+    /// The latest line the model has written, shown live while making.
+    private(set) var caption = ""
+    fileprivate var stopped = false
     private var task: Task<Void, any Error>?
 
-    func stop() { task?.cancel() }
+    func stop() { stopped = true; task?.cancel() }
 
     /// Returns the saved item, or nil (with `error` set) when it could not be made.
     func make(_ kind: StudioItem.Kind, in notebook: LibraryNotebookInfo, topic: String, count: Int, notebookOnly: Bool, library: LibraryModel) async -> StudioItem? {
         guard !working else { return nil }
-        working = true; error = nil; preview = ""
+        working = true; error = nil; preview = ""; progress = 0; caption = ""; stopped = false
+        if kind == .audio { working = false; return await makeAudio(in: notebook, topic: topic, segments: count, notebookOnly: notebookOnly, library: library) }
         defer { working = false; status = "" }
         guard let gemma = library.gemma else { error = "The answer model is still getting ready. Try again in a moment."; return nil }
         guard GPUGuard.canStart else { error = "Open the app and try again: this can't run while the screen is off."; return nil }
@@ -53,7 +61,7 @@ final class StudioEngine {
             let session = ChatSession(gemma, instructions: instructions, generateParameters: GenerateParameters(maxTokens: tokens))
             let work = Task { @MainActor in
                 for try await item in session.streamDetails(to: prompt) {
-                    if case .chunk(let s) = item { self.preview += s }
+                    if case .chunk(let s) = item { self.preview += s; if kind == .doc { self.progress = min(0.95, Double(self.preview.count) / 2800) } }
                 }
             }
             task = work
@@ -76,6 +84,7 @@ final class StudioEngine {
             while made.count < count && misses < 2 && round < 12 {
                 let want = min(batch, count - made.count)
                 status = "Making the questions… \(made.count) of \(count)"
+                progress = Double(made.count) / Double(max(1, count))
                 let start = (round * window) % max(1, passages.count)
                 let slice = (0..<min(window, passages.count)).map { passages[(start + $0) % passages.count] }
                 let avoid = made.isEmpty ? "" : "\n\nQuestions already written (do not repeat them or their topics):\n" + made.map { "- " + $0 }.joined(separator: "\n")
@@ -125,7 +134,7 @@ final class StudioEngine {
             return (base + " You reply with JSON only.",
                     "Write exactly \(count) multiple-choice questions about \(about). Reply with ONLY a JSON array, no other text. Each item: {\"question\": string, \"choices\": [4 short strings], \"answer\": index 0-3 of the correct choice, \"why\": one sentence from the passages}.",
                     max(600, count * 230))
-        case .cards:
+        case .cards, .audio:
             return (base + " You reply with JSON only.",
                     "Write exactly \(count) flashcards about \(about). Reply with ONLY a JSON array, no other text. Each item: {\"front\": a short question or term, \"back\": a short answer from the passages}.",
                     max(500, count * 110))
@@ -161,7 +170,7 @@ final class StudioEngine {
             }
             guard !cs.isEmpty, let out = try? encoder.encode(cs) else { return nil }
             return String(decoding: out, as: UTF8.self)
-        case .doc:
+        case .doc, .audio:
             return raw
         }
     }
@@ -193,5 +202,162 @@ final class StudioEngine {
             return String(line.dropFirst(2)).trimmingCharacters(in: .whitespaces)
         }
         return topic.isEmpty ? "\(kind.label): \(notebook)" : "\(kind.label): \(topic)"
+    }
+}
+
+// MARK: audio overview
+
+extension StudioEngine {
+    static let hostNames = ["Alex", "Sam"]
+    /// Voices for Alex and Sam. They download once on first use.
+    static let voices = ["af_heart", "am_michael"]
+    static let linesPerSegment = 8
+
+    /// A two-host spoken overview of one notebook, made entirely on the phone: the answer model writes the
+    /// conversation a segment at a time from different parts of the notebook, then Kokoro voices it in two voices
+    /// into one audio file.
+    func makeAudio(in notebook: LibraryNotebookInfo, topic: String, segments: Int, notebookOnly: Bool, library: LibraryModel) async -> StudioItem? {
+        guard !working else { return nil }
+        working = true; error = nil; preview = ""; progress = 0; caption = ""; stopped = false
+        defer { working = false; status = "" }
+        guard let gemma = library.gemma else { error = "The answer model is still getting ready. Try again in a moment."; return nil }
+        guard GPUGuard.canStart else { error = "Open the app and try again: this can't run while the screen is off."; return nil }
+        UIApplication.shared.isIdleTimerDisabled = true
+        defer { UIApplication.shared.isIdleTimerDisabled = false }
+
+        let topic = topic.trimmingCharacters(in: .whitespacesAndNewlines)
+        status = "Reading the notebook…"
+        let t = topic.isEmpty ? "" : topic + " "
+        var seeds = topic.isEmpty ? ["the main ideas and key points"] : [topic]
+        seeds += ["\(t)important facts, names, dates and numbers", "\(t)definitions and explanations", "\(t)examples, processes and steps",
+                  "\(t)conclusions, decisions and open questions", "\(t)people, organizations and relationships", "\(t)problems, risks and recommendations"]
+        var pool: [LibraryHit] = []
+        var seen = Set<String>()
+        for seed in seeds {
+            if let found = try? await library.retrieve(question: seed, notebook: notebook.id) {
+                for hit in found.hits where seen.insert(hit.id).inserted { pool.append(hit) }
+            }
+        }
+        pool = Array(pool.prefix(min(40, max(16, segments * 8))))
+        guard !pool.isEmpty else { error = "Nothing in this notebook matches that yet."; return nil }
+
+        // 1. The script, a segment at a time.
+        let about = topic.isEmpty ? "the notebook “\(notebook.title)”" : "“\(topic)” in the notebook “\(notebook.title)”"
+        let source = notebookOnly
+            ? "Use ONLY facts from the numbered passages from the user's own notes."
+            : "Use mainly the numbered passages from the user's own notes; you may add well-established general knowledge about the subject."
+        let instructions = "You write a lively, friendly two-person podcast conversation between two hosts, Alex (A) and Sam (B). \(source) Spoken language only: short sentences, no markdown, no citations or numbers in brackets, no stage directions, no sound effects. You reply with JSON only."
+        var lines: [(host: Int, text: String)] = []
+        for k in 0..<segments {
+            if stopped { error = "Stopped."; return nil }
+            status = "Alex and Sam are writing the script… part \(k + 1) of \(segments)"
+            let window = 8
+            let start = (k * window) % pool.count
+            let slice = (0..<min(window, pool.count)).map { pool[(start + $0) % pool.count] }
+            let numbered = slice.enumerated().map { i, h in "[\(i + 1)] (\(h.filename))\n\(String(h.text.prefix(900)))" }.joined(separator: "\n\n")
+            let place = k == 0 && segments == 1 ? "Open with a warm welcome, cover the points, and close with a short recap and goodbye."
+                : k == 0 ? "This is the opening: welcome listeners and introduce the topic, then begin."
+                : k == segments - 1 ? "This is the final part: finish the discussion, then give a short recap and a friendly goodbye."
+                : "This is the middle of the conversation: carry on naturally. Do not greet or say goodbye."
+            let before = lines.suffix(3).map { "\(Self.hostNames[$0.host]): \($0.text)" }.joined(separator: "\n")
+            let continuity = before.isEmpty ? "" : "\n\nThe conversation so far ended with:\n\(before)\nDo not repeat what was already said."
+            let prompt = """
+            Passages:
+
+            \(numbered)
+
+            Write part \(k + 1) of \(segments) of a podcast conversation about \(about). \(place) \
+            Reply with ONLY a JSON array of exactly \(Self.linesPerSegment) items, alternating hosts. Each item: {"host": "A" or "B", "text": one to three short spoken sentences}.\(continuity)
+            """
+            guard let out = await generate(gemma, instructions: instructions, prompt: prompt, tokens: 1_100) else { error = "Stopped."; return nil }
+            let got: [(host: Int, text: String)] = Self.jsonObjects(in: out).compactMap { o in
+                guard let text = (o["text"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else { return nil }
+                let h = (o["host"] as? String)?.uppercased() ?? ""
+                return (h.hasPrefix("B") || h.hasPrefix("SAM") ? 1 : 0, text)
+            }
+            lines += got
+            progress = 0.5 * Double(k + 1) / Double(segments)
+        }
+        guard lines.count >= 4 else { error = "The script didn't come out right. Try again."; return nil }
+
+        // 2. The voices.
+        status = "Warming up the microphones…"
+        caption = ""
+        let kokoro = KokoroAneManager(version: .legacy)
+        var voices = Self.voices
+        do { try await kokoro.initialize(preloadVoices: Set(voices)) }
+        catch {
+            // The second voice couldn't be fetched: fall back to one voice and shift its pace for the other host.
+            voices = [Self.voices[0], Self.voices[0]]
+            do { try await kokoro.initialize() } catch { self.error = "Couldn't start the voices: \(error.localizedDescription)"; return nil }
+        }
+        let id = UUID().uuidString
+        let file = id + ".m4a"
+        let url = StudioStore.audioURL(file)
+        let rate = Double(KokoroAneConstants.sampleRate)
+        guard let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: rate, channels: 1, interleaved: false),
+              var out = try? AVAudioFile(forWriting: url, settings: [AVFormatIDKey: kAudioFormatMPEG4AAC, AVSampleRateKey: rate,
+                                                                    AVNumberOfChannelsKey: 1, AVEncoderBitRateKey: 56_000],
+                                         commonFormat: .pcmFormatFloat32, interleaved: false) else {
+            error = "Couldn't create the audio file."; return nil
+        }
+        func write(_ samples: [Float]) {
+            guard !samples.isEmpty, let buf = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(samples.count)) else { return }
+            buf.frameLength = AVAudioFrameCount(samples.count)
+            samples.withUnsafeBufferPointer { buf.floatChannelData![0].update(from: $0.baseAddress!, count: samples.count) }
+            try? out.write(from: buf)
+        }
+        var written = 0
+        var script: [AudioScript.Line] = []
+        let gap = [Float](repeating: 0, count: Int(rate * 0.28))
+        do {
+            for (i, line) in lines.enumerated() {
+                if stopped { try? FileManager.default.removeItem(at: url); error = "Stopped."; return nil }
+                caption = line.text
+                status = "\(Self.hostNames[line.host]) is recording… \(i + 1) of \(lines.count)"
+                script.append(.init(host: line.host, text: line.text, start: Double(written) / rate))
+                for part in SpeechText.chunks(from: line.text) {
+                    let speed: Float = voices[0] == voices[1] && line.host == 1 ? 1.08 : 1.0
+                    let r = try await kokoro.synthesizeDetailed(text: part, voice: voices[line.host], speed: speed)
+                    write(r.samples); written += r.samples.count
+                }
+                write(gap); written += gap.count
+                progress = 0.5 + 0.5 * Double(i + 1) / Double(lines.count)
+            }
+        } catch {
+            try? FileManager.default.removeItem(at: url)
+            self.error = "Couldn't voice the script: \(error.localizedDescription)"; return nil
+        }
+        await kokoro.cleanup()
+        out = try! AVAudioFile(forReading: url)       // closes the writer so the file is complete
+        let body = AudioScript(file: file, duration: Double(written) / rate, lines: script)
+        guard let data = try? JSONEncoder().encode(body) else { return nil }
+        let title = topic.isEmpty ? "Audio overview: \(notebook.title)" : "Audio overview: \(topic)"
+        let item = StudioItem(id: id, notebookId: notebook.id, kind: .audio, title: title, created: Date(), body: String(decoding: data, as: UTF8.self))
+        StudioStore.save(item)
+        progress = 1
+        return item
+    }
+
+    /// Streams one request to the answer model; nil if it was stopped. Updates `caption` with the latest spoken line.
+    private func generate(_ gemma: ModelContainer, instructions: String, prompt: String, tokens: Int) async -> String? {
+        preview = ""
+        let session = ChatSession(gemma, instructions: instructions, generateParameters: GenerateParameters(maxTokens: tokens))
+        let work = Task { @MainActor in
+            for try await item in session.streamDetails(to: prompt) {
+                if case .chunk(let s) = item {
+                    self.preview += s
+                    if let m = self.preview.range(of: #""text"\s*:\s*"([^"]*)$"#, options: .regularExpression) {
+                        self.caption = String(self.preview[m]).replacingOccurrences(of: #"^"text"\s*:\s*""#, with: "", options: .regularExpression)
+                    }
+                }
+            }
+        }
+        task = work
+        let observer = GPUGuard.protect(work, label: "studio")
+        do { try await work.value } catch {}
+        NotificationCenter.default.removeObserver(observer)
+        task = nil
+        return work.isCancelled || stopped ? nil : preview.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }

@@ -4,16 +4,17 @@ import Foundation
 /// per item, so it is there offline and nothing about it leaves the phone.
 struct StudioItem: Codable, Identifiable, Sendable, Hashable {
     enum Kind: String, Codable, CaseIterable, Sendable {
-        case doc, quiz, cards
-        var label: String { switch self { case .doc: "Briefing"; case .quiz: "Quiz"; case .cards: "Flashcards" } }
-        var symbol: String { switch self { case .doc: "doc.text"; case .quiz: "checklist"; case .cards: "rectangle.stack" } }
+        case doc, quiz, cards, audio
+        var label: String { switch self { case .doc: "Briefing"; case .quiz: "Quiz"; case .cards: "Flashcards"; case .audio: "Audio overview" } }
+        var short: String { self == .audio ? "Audio" : label }
+        var symbol: String { switch self { case .doc: "doc.text"; case .quiz: "checklist"; case .cards: "rectangle.stack"; case .audio: "waveform" } }
     }
     var id: String
     var notebookId: String
     var kind: Kind
     var title: String
     var created: Date
-    /// doc: the text (Markdown-light). quiz / cards: the JSON of [StudioQuestion] / [StudioCard].
+    /// audio: the JSON of an AudioScript. doc: the text (Markdown-light). quiz / cards: the JSON of [StudioQuestion] / [StudioCard].
     var body: String
 }
 
@@ -52,5 +53,20 @@ enum StudioStore {
         if let data = try? JSONEncoder().encode(item) { try? data.write(to: url(item.id), options: .atomic) }
     }
 
-    static func delete(_ item: StudioItem) { try? FileManager.default.removeItem(at: url(item.id)) }
+    static func delete(_ item: StudioItem) {
+        if item.kind == .audio, let script = try? JSONDecoder().decode(AudioScript.self, from: Data(item.body.utf8)) {
+            try? FileManager.default.removeItem(at: audioURL(script.file))
+        }
+        try? FileManager.default.removeItem(at: url(item.id))
+    }
+
+    static func audioURL(_ file: String) -> URL { folder.appendingPathComponent(file) }
+}
+
+/// A phone-made audio overview: the spoken lines (host 0 = Alex, 1 = Sam) with where each starts in the audio file.
+struct AudioScript: Codable, Sendable, Hashable {
+    struct Line: Codable, Sendable, Hashable { var host: Int; var text: String; var start: Double }
+    var file: String
+    var duration: Double
+    var lines: [Line]
 }

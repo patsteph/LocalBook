@@ -14,7 +14,8 @@ struct StudioView: View {
     @FocusState private var typing: Bool
 
     private var notebook: LibraryNotebookInfo? { library.notebooks.first { $0.id == notebookId } }
-    private var counts: [Int] { kind == .quiz ? [5, 10, 15, 20] : [10, 20, 30] }
+    private var counts: [Int] { kind == .quiz ? [5, 10, 15, 20] : (kind == .audio ? [2, 4, 7] : [10, 20, 30]) }
+    private func countLabel(_ n: Int) -> String { kind == .audio ? "About \(n == 2 ? 3 : (n == 4 ? 5 : 9)) minutes" : "\(n)" }
 
     var body: some View {
         NavigationStack {
@@ -26,12 +27,12 @@ struct StudioView: View {
                 }
                 Section {
                     Picker("Make", selection: $kind) {
-                        ForEach(StudioItem.Kind.allCases, id: \.self) { Text($0.label).tag($0) }
+                        ForEach(StudioItem.Kind.allCases, id: \.self) { Text($0.short).tag($0) }
                     }.pickerStyle(.segmented)
                     TextField("Subject (optional)", text: $topic).focused($typing).submitLabel(.done).onSubmit { typing = false }
                     if kind != .doc {
-                        Picker(kind == .quiz ? "Questions" : "Cards", selection: $count) {
-                            ForEach(counts, id: \.self) { Text("\($0)").tag($0) }
+                        Picker(kind == .quiz ? "Questions" : (kind == .audio ? "Length" : "Cards"), selection: $count) {
+                            ForEach(counts, id: \.self) { Text(countLabel($0)).tag($0) }
                         }
                     }
                     Toggle("Only from this notebook", isOn: $notebookOnly)
@@ -45,9 +46,8 @@ struct StudioView: View {
                 }
                 if engine.working {
                     Section {
-                        HStack { ProgressView(); Text(engine.status).font(.footnote); Spacer(); Button("Stop") { engine.stop() }.font(.footnote) }
-                        if !engine.preview.isEmpty { Text(String(engine.preview.suffix(400))).font(.caption).foregroundStyle(.secondary) }
-                    } footer: { Text("Keep the app open while it works.") }
+                        MakingView(kind: kind, status: engine.status, progress: engine.progress, caption: engine.caption) { engine.stop() }
+                    }
                 }
                 if let why = engine.error { Section { Text(why).font(.footnote).foregroundStyle(.orange) } }
                 Section("Saved") {
@@ -69,7 +69,7 @@ struct StudioView: View {
             .onAppear { if notebookId == nil || notebook == nil { notebookId = library.scopeToNotebook ?? library.notebooks.first?.id } }
             .onChange(of: library.scopeToNotebook) { _, id in if let id { notebookId = id } }
             .onChange(of: notebookId) { _, _ in reload() }
-            .onChange(of: kind) { _, _ in count = kind == .quiz ? 5 : 10 }
+            .onChange(of: kind) { _, _ in count = kind == .quiz ? 5 : (kind == .audio ? 4 : 10) }
             .task { reload() }
             .sheet(item: $opened, onDismiss: { typing = false }) { StudioItemView(item: $0) }
         }
@@ -137,6 +137,7 @@ struct StudioItemView: View {
                 switch item.kind {
                 case .doc: ScrollView { MarkdownText(text: item.body).padding() }
                 case .quiz: QuizRun(questions: (try? JSONDecoder().decode([StudioQuestion].self, from: Data(item.body.utf8))) ?? [], subject: item.title.replacingOccurrences(of: "Quiz: ", with: ""))
+                case .audio: if let script = try? JSONDecoder().decode(AudioScript.self, from: Data(item.body.utf8)) { AudioOverviewView(script: script, title: item.title) } else { Text("This audio can't be opened.") }
                 case .cards: CardRun(cards: (try? JSONDecoder().decode([StudioCard].self, from: Data(item.body.utf8))) ?? [])
                 }
             }
