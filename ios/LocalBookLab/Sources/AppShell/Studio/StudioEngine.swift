@@ -130,7 +130,7 @@ final class StudioEngine {
 
     // MARK: prompts and parsing
 
-    static func prompt(_ kind: StudioItem.Kind, notebookTitle: String, topic: String, count: Int, notebookOnly: Bool, layout: VisualSpec.Layout = .mindmap) -> (String, String, Int) {
+    nonisolated static func prompt(_ kind: StudioItem.Kind, notebookTitle: String, topic: String, count: Int, notebookOnly: Bool, layout: VisualSpec.Layout = .mindmap) -> (String, String, Int) {
         let about = topic.isEmpty ? "the notebook “\(notebookTitle)”" : "“\(topic)” in the notebook “\(notebookTitle)”"
         let base = (notebookOnly
             ? "You write ONLY from the numbered passages from the user's own notes. Never add facts that are not in them."
@@ -155,7 +155,7 @@ final class StudioEngine {
 
     /// The text to keep: the piece itself, or the cleaned JSON for quiz and cards. nil if it cannot be read.
     /// Reads each {...} object on its own, so one broken or cut-off item doesn't lose the rest.
-    static func body(for kind: StudioItem.Kind, from raw: String) -> String? {
+    nonisolated static func body(for kind: StudioItem.Kind, from raw: String) -> String? {
         if kind == .doc { return raw.isEmpty ? nil : raw }
         let objects = jsonObjects(in: raw)
         let encoder = JSONEncoder()
@@ -190,7 +190,7 @@ final class StudioEngine {
     }
 
     /// Every complete top-level {...} object in the text (string-aware), parsed.
-    static func jsonObjects(in raw: String) -> [[String: Any]] {
+    nonisolated static func jsonObjects(in raw: String) -> [[String: Any]] {
         var out: [[String: Any]] = []
         var depth = 0, inString = false, escaped = false
         var start: String.Index?
@@ -211,7 +211,7 @@ final class StudioEngine {
         return out
     }
 
-    static func title(_ kind: StudioItem.Kind, notebook: String, topic: String, body: String) -> String {
+    nonisolated static func title(_ kind: StudioItem.Kind, notebook: String, topic: String, body: String) -> String {
         if kind == .doc, let line = body.split(separator: "\n").first(where: { $0.hasPrefix("# ") }) {
             return String(line.dropFirst(2)).trimmingCharacters(in: .whitespaces)
         }
@@ -222,13 +222,13 @@ final class StudioEngine {
 // MARK: audio overview
 
 extension StudioEngine {
-    static let hostNames = ["Alex", "Sam"]
+    nonisolated static let hostNames = ["Alex", "Sam"]
     /// Voices for Alex and Sam. They download once on first use.
-    static let voices = ["af_heart", "am_michael"]
-    static let linesPerSegment = 8
+    nonisolated static let voices = ["af_heart", "am_michael"]
+    nonisolated static let linesPerSegment = 8
 
     /// How fast a line is spoken for the feeling it carries.
-    static func pace(for mood: String) -> Float {
+    nonisolated static func pace(for mood: String) -> Float {
         switch mood {
         case "excited": 1.12
         case "amused", "surprised": 1.07
