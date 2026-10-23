@@ -84,3 +84,39 @@ def test_delete_removes_the_item_and_its_audio_and_is_repeatable(db, tmp_path):
     assert db.execute("SELECT COUNT(*) FROM content_generations").fetchone()[0] == 0
     with pytest.raises(HTTPException):
         asyncio.run(phone_studio.delete("../x"))
+
+
+def test_mac_items_are_listed_for_visible_notebooks_only_and_fetched_on_request(db, tmp_path, monkeypatch):
+    db.executescript("""
+    CREATE TABLE visual_generations (visual_id TEXT PRIMARY KEY, notebook_id TEXT, topic TEXT, title TEXT, svg_markup TEXT,
+        mermaid_code TEXT, template_id TEXT, v2_path TEXT, critic_overall REAL, prompt TEXT, created_at TEXT, updated_at TEXT);
+    CREATE TABLE video_generations (video_id TEXT PRIMARY KEY, notebook_id TEXT, topic TEXT, duration_minutes INTEGER,
+        visual_style TEXT, voice TEXT, format_type TEXT, video_file_path TEXT, duration_seconds REAL, storyboard TEXT,
+        narration_script TEXT, slide_count INTEGER, status TEXT, error_message TEXT, created_at TEXT, updated_at TEXT);
+    """)
+    monkeypatch.setattr(phone_library, "notebook_titles", lambda: {"nb": "NB", "hid": "Hidden"})
+    monkeypatch.setattr(phone_library, "excluded", lambda: ["hid"])
+    (tmp_path / "audio").mkdir()
+    (tmp_path / "audio" / "a1.wav").write_bytes(b"RIFF" * 10)
+    db.execute("INSERT INTO content_generations VALUES ('d1','nb','study','Study guide','text','Topic',0,'t0','t1')")
+    db.execute("INSERT INTO content_generations VALUES ('d2','hid','study','Study guide','secret','X',0,'t0','t1')")
+    qs = [{"question": "Q", "answer": "b", "options": ["a", "b"], "question_type": "multiple_choice", "explanation": "e"},
+          {"question": "TF", "answer": "True", "options": None, "question_type": "true_false"},
+          {"question": "typed", "answer": "x", "options": None, "question_type": "short_answer"}]
+    db.execute("INSERT INTO quiz_generations VALUES ('q1','nb','T','medium',3,?,NULL,0,'t0','t1')", (json.dumps(qs),))
+    db.execute("INSERT INTO audio_generations VALUES ('a1','nb','Alex: hi','T',1,'m','f','us',NULL,?,12.5,'completed',NULL,'t0','t1')",
+               (str(tmp_path / "audio" / "a1.wav"),))
+    db.execute("INSERT INTO audio_generations VALUES ('a2','nb','','T',1,'m','f','us',NULL,NULL,0,'pending',NULL,'t0','t1')")
+    db.execute("INSERT INTO visual_generations VALUES ('v1','nb','T','A map','<svg/>',NULL,NULL,NULL,NULL,NULL,'t0','t1')")
+    db.commit()
+    items = {i["id"]: i for i in phone_studio.listing()}
+    assert set(items) == {"d1", "q1", "a1", "v1"}                        # hidden notebook and unfinished audio are absent
+    assert items["a1"]["bytes"] == 40 and items["d1"]["title"] == "Study guide: Topic"
+    got = {g["id"]: g for g in phone_studio.get_items([{"kind": "doc", "id": "d1"}, {"kind": "doc", "id": "d2"},
+                                                        {"kind": "quiz", "id": "q1"}, {"kind": "visual", "id": "v1"}])}
+    assert set(got) == {"d1", "q1", "v1"} and got["d1"]["content"] == "text" and got["v1"]["svg"] == "<svg/>"
+    assert [q["answer"] for q in got["q1"]["questions"]] == [1, 0] and got["q1"]["questions"][1]["choices"] == ["True", "False"]
+    chunk = phone_studio.file_chunk("audio", "a1", 0)
+    assert chunk["total"] == 40 and base64.b64decode(chunk["data"]) == b"RIFF" * 10
+    with pytest.raises(HTTPException):
+        phone_studio.file_chunk("audio", "a2", 0)

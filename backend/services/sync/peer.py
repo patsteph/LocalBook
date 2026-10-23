@@ -674,6 +674,33 @@ async def phone_library_studio_delete(request: Request):
     return await phone_studio.delete(str(v["body"].get("id", "")))
 
 
+@phone_sync_app.post("/phone/library/studio/list")
+async def phone_library_studio_list(request: Request):
+    """What this Mac has made in Studio, compact: the phone fetches only what it lacks."""
+    _check_enabled()
+    await _verified_phone(request)
+    from services.sync import phone_studio
+    return {"items": await asyncio.to_thread(phone_studio.listing)}
+
+
+@phone_sync_app.post("/phone/library/studio/get")
+async def phone_library_studio_get(request: Request):
+    _check_enabled()
+    v = await _verified_phone(request)
+    from services.sync import phone_studio
+    return {"items": await asyncio.to_thread(phone_studio.get_items, list(v["body"].get("items") or []))}
+
+
+@phone_sync_app.post("/phone/library/studio/file")
+async def phone_library_studio_file(request: Request):
+    """A piece of an audio or video file made here, on request."""
+    _check_enabled()
+    v = await _verified_phone(request)
+    from services.sync import phone_studio
+    b = v["body"]
+    return await asyncio.to_thread(phone_studio.file_chunk, str(b.get("kind", "")), str(b.get("id", "")), int(b.get("offset", 0)))
+
+
 _phone_ask_lock = asyncio.Lock()           # one phone question at a time: it uses the Mac's models
 PHONE_ASK_TIMEOUT = 240
 

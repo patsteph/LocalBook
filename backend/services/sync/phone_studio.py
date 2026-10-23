@@ -146,3 +146,137 @@ async def delete(item_id: str) -> Dict[str, Any]:
         raise HTTPException(400, "bad item id")
     async with _lock:
         return await asyncio.to_thread(_delete_sync, item_id)
+
+
+# ── what this Mac has made, for the phone's Studio shelf ─────────────────────
+#
+# Diff-only: `listing` is small (id, kind, title, notebook, revision); the phone asks for the full text of only the
+# items it doesn't have or whose revision changed, and for audio/video files one item at a time, on request.
+
+_MAC_KINDS = ("doc", "quiz", "audio", "visual", "video")
+
+
+def _visible_notebooks() -> Dict[str, str]:
+    from services.sync import phone_library
+    titles = phone_library.notebook_titles()
+    hidden = set(phone_library.excluded())
+    return {k: v for k, v in titles.items() if k not in hidden}
+
+
+def _file_rel(path: Any) -> Any:
+    from services.sync import blobs
+    rel = blobs._rel(path)
+    if not rel:
+        return None
+    try:
+        return rel if blobs.safe_path(rel).exists() else None
+    except blobs.BlobPathError:
+        return None
+
+
+def _size(rel: str) -> int:
+    from services.sync import blobs
+    return blobs.safe_path(rel).stat().st_size
+
+
+def _doc_title(skill: str, topic: str) -> str:
+    return f"{skill}: {topic}" if topic and topic.lower() != skill.lower() else (skill or "Document")
+
+
+def listing() -> List[Dict[str, Any]]:
+    nbs = _visible_notebooks()
+    c = _conn()
+    out: List[Dict[str, Any]] = []
+    for r in c.execute("SELECT content_id, notebook_id, skill_name, topic, created_at, updated_at FROM content_generations"):
+        if r["notebook_id"] in nbs:
+            out.append({"kind": "doc", "id": r["content_id"], "notebook_id": r["notebook_id"],
+                        "title": _doc_title(r["skill_name"] or "", r["topic"] or ""), "created": r["created_at"], "rev": r["updated_at"]})
+    for r in c.execute("SELECT quiz_id, notebook_id, topic, created_at, updated_at FROM quiz_generations"):
+        if r["notebook_id"] in nbs:
+            out.append({"kind": "quiz", "id": r["quiz_id"], "notebook_id": r["notebook_id"],
+                        "title": f"Quiz: {r['topic']}" if r["topic"] else "Quiz", "created": r["created_at"], "rev": r["updated_at"]})
+    for r in c.execute("SELECT audio_id, notebook_id, topic, audio_file_path, created_at, updated_at FROM audio_generations WHERE status = 'completed'"):
+        rel = _file_rel(r["audio_file_path"]) if r["notebook_id"] in nbs else None
+        if rel:
+            out.append({"kind": "audio", "id": r["audio_id"], "notebook_id": r["notebook_id"],
+                        "title": f"Audio overview: {r['topic']}" if r["topic"] else "Audio overview", "created": r["created_at"],
+                        "rev": r["updated_at"], "bytes": _size(rel)})
+    for r in c.execute("SELECT visual_id, notebook_id, title, topic, svg_markup, created_at, updated_at FROM visual_generations"):
+        if r["notebook_id"] in nbs and (r["svg_markup"] or "").strip():
+            out.append({"kind": "visual", "id": r["visual_id"], "notebook_id": r["notebook_id"],
+                        "title": r["title"] or (f"Visual: {r['topic']}" if r["topic"] else "Visual"), "created": r["created_at"], "rev": r["updated_at"]})
+    for r in c.execute("SELECT video_id, notebook_id, topic, video_file_path, created_at, updated_at FROM video_generations WHERE status = 'completed'"):
+        rel = _file_rel(r["video_file_path"]) if r["notebook_id"] in nbs else None
+        if rel:
+            out.append({"kind": "video", "id": r["video_id"], "notebook_id": r["notebook_id"],
+                        "title": f"Video: {r['topic']}" if r["topic"] else "Video", "created": r["created_at"],
+                        "rev": r["updated_at"], "bytes": _size(rel)})
+    return out
+
+
+def _quiz_for_phone(questions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Multiple-choice and true/false questions, in the phone's shape. Other kinds need typed answers: skipped."""
+    out = []
+    for q in questions:
+        options = [str(o) for o in (q.get("options") or [])]
+        if not options and str(q.get("question_type", "")).lower() in ("true_false", "true/false", "boolean"):
+            options = ["True", "False"]
+        ans = str(q.get("answer", "")).strip()
+        if len(options) < 2:
+            continue
+        idx = next((i for i, o in enumerate(options) if o.strip().lower() == ans.lower()), -1)
+        if idx < 0:
+            continue
+        out.append({"question": str(q.get("question", "")), "choices": options, "answer": idx,
+                    "why": str(q.get("explanation") or "") or None})
+    return out
+
+
+def get_items(wanted: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    nbs = _visible_notebooks()
+    c = _conn()
+    out: List[Dict[str, Any]] = []
+    for w in wanted[:25]:
+        kind, item_id = str(w.get("kind", "")), str(w.get("id", ""))
+        if kind == "doc":
+            r = c.execute("SELECT * FROM content_generations WHERE content_id = ?", (item_id,)).fetchone()
+            if r and r["notebook_id"] in nbs:
+                out.append({"kind": kind, "id": item_id, "content": r["content"]})
+        elif kind == "quiz":
+            r = c.execute("SELECT * FROM quiz_generations WHERE quiz_id = ?", (item_id,)).fetchone()
+            if r and r["notebook_id"] in nbs:
+                try:
+                    qs = _quiz_for_phone(json.loads(r["questions_json"] or "[]"))
+                except ValueError:
+                    qs = []
+                out.append({"kind": kind, "id": item_id, "questions": qs})
+        elif kind == "audio":
+            r = c.execute("SELECT * FROM audio_generations WHERE audio_id = ?", (item_id,)).fetchone()
+            rel = _file_rel(r["audio_file_path"]) if r and r["notebook_id"] in nbs else None
+            if rel:
+                out.append({"kind": kind, "id": item_id, "script": r["script"] or "", "duration": r["duration_seconds"] or 0,
+                            "path": rel, "bytes": _size(rel)})
+        elif kind == "visual":
+            r = c.execute("SELECT * FROM visual_generations WHERE visual_id = ?", (item_id,)).fetchone()
+            if r and r["notebook_id"] in nbs:
+                out.append({"kind": kind, "id": item_id, "svg": r["svg_markup"] or ""})
+        elif kind == "video":
+            r = c.execute("SELECT * FROM video_generations WHERE video_id = ?", (item_id,)).fetchone()
+            rel = _file_rel(r["video_file_path"]) if r and r["notebook_id"] in nbs else None
+            if rel:
+                out.append({"kind": kind, "id": item_id, "duration": r["duration_seconds"] or 0, "path": rel, "bytes": _size(rel)})
+    return out
+
+
+def file_chunk(kind: str, item_id: str, offset: int) -> Dict[str, Any]:
+    """One piece of an audio or video file this Mac made. The path comes from the database, never from the phone."""
+    from services.sync import blobs
+    table, col, idcol = (("audio_generations", "audio_file_path", "audio_id") if kind == "audio"
+                         else ("video_generations", "video_file_path", "video_id"))
+    if kind not in ("audio", "video"):
+        raise HTTPException(400, "unknown kind")
+    r = _conn().execute(f"SELECT notebook_id, {col} AS p FROM {table} WHERE {idcol} = ?", (item_id,)).fetchone()
+    rel = _file_rel(r["p"]) if r and r["notebook_id"] in _visible_notebooks() else None
+    if not rel:
+        raise HTTPException(404, "no such file")
+    return blobs.read_chunk(rel, offset)
