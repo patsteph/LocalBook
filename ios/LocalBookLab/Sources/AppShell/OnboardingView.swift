@@ -188,8 +188,17 @@ struct OnboardingView: View {
 
     private func firstSync() async {
         await library.open()
-        await library.sync()
-        if case .failed = library.syncState { step = .failed("Syncing didn't finish. Details: \(syncError)"); return }
+        // Ask opens as soon as the first notebook has copied; the rest keeps copying in the background.
+        let copying = Task { await library.sync() }
+        while !copying.isCancelled {
+            if !library.notebooks.isEmpty { break }
+            if case .failed = library.syncState { break }
+            if case .idle = library.syncState, library.lastSummary != nil { break }
+            try? await Task.sleep(for: .milliseconds(300))
+        }
+        if case .failed = library.syncState, library.notebooks.isEmpty {
+            step = .failed("Syncing didn't finish. Details: \(syncError)"); return
+        }
         await library.prepareSearch()
         onDone()
     }

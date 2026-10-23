@@ -350,7 +350,13 @@ actor LibraryStore {
                 let s = try statement("INSERT OR REPLACE INTO sources(notebook_id, source_id, hash) VALUES (?,?,?)")
                 bind(s, 1, notebook); bind(s, 2, sid); bind(s, 3, h); sqlite3_step(s); sqlite3_finalize(s)
             }
-            let s = try statement("INSERT OR REPLACE INTO notebooks(id, title, digest) VALUES (?,?,?)")
+            // "partial" marks a notebook whose copy is not finished: a notebook that already has a digest keeps it
+            // (it is still usable), a new one stays hidden until its last batch writes the real digest.
+            let s = try statement("""
+                INSERT INTO notebooks(id, title, digest) VALUES (?,?,?)
+                ON CONFLICT(id) DO UPDATE SET title=excluded.title,
+                  digest=CASE WHEN excluded.digest='partial' THEN notebooks.digest ELSE excluded.digest END
+                """)
             bind(s, 1, notebook); bind(s, 2, title); bind(s, 3, digest); sqlite3_step(s); sqlite3_finalize(s)
             try exec("COMMIT")
         } catch {

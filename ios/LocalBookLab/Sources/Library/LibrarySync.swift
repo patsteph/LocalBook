@@ -55,7 +55,8 @@ enum LibrarySync {
     }
 
     /// Bring the phone's copy in line with the Mac. `progress` gets short human-readable lines.
-    static func run(store: LibraryStore, progress: @escaping @Sendable (String) -> Void) async throws -> Summary {
+    static func run(store: LibraryStore, onNotebook: @escaping @Sendable () -> Void = {},
+                    progress: @escaping @Sendable (String) -> Void) async throws -> Summary {
         guard let mac = MacLink.paired else { throw LibraryError.notPaired }
         let started = Date()
         var sum = Summary()
@@ -138,6 +139,9 @@ enum LibrarySync {
             }
             sum.sourcesFetched += resend.count
             sum.chunksFetched += received
+            // This notebook is complete: let the app use it now, in the desktop's order, while the rest still copy.
+            try await store.setLayout(manifest.notebooks.enumerated().map { (id: $1.id, position: $0, section: $1.section, color: $1.color, collapsed: $1.collapsed ?? false) })
+            onNotebook()
         }
         // The desktop's order and sections (the manifest lists notebooks in the order the desktop shows them).
         try await store.setLayout(manifest.notebooks.enumerated().map { (id: $1.id, position: $0, section: $1.section, color: $1.color, collapsed: $1.collapsed ?? false) })

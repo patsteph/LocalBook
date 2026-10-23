@@ -94,7 +94,7 @@ final class LibraryModel {
     func refresh() async {
         personalCache.removeAll()
         guard let store else { return }
-        notebooks = await store.notebooks()
+        notebooks = await store.notebooks().filter { $0.digest != "partial" }     // not finished copying: hidden
         chunkCount = await store.chunkCount()
         if let t = await store.meta("last_sync") { lastSyncLine = "Last synced \(t)" }
         if let q = await store.meta("query_template") { queryTemplate = q }
@@ -120,7 +120,9 @@ final class LibraryModel {
         guard let store else { return }
         syncState = .syncing("Starting…")
         do {
-            let summary = try await LibrarySync.run(store: store) { line in
+            let summary = try await LibrarySync.run(store: store, onNotebook: {
+                Task { @MainActor in await self.refresh() }          // a finished notebook is usable while the rest copy
+            }) { line in
                 Task { @MainActor in if case .syncing = self.syncState { self.syncState = .syncing(line) } }
             }
             lastSummary = summary
