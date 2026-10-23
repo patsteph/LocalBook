@@ -26,6 +26,7 @@ struct StudioView: View {
     @State private var making: StudioItem.Kind?
     @State private var opened: StudioItem?
     @State private var pendingOpen: StudioItem?
+    @State private var sent: Set<String> = StudioSync.sentIds()
 
     private var notebook: LibraryNotebookInfo? { library.notebooks.first { $0.id == notebookId } }
 
@@ -61,7 +62,8 @@ struct StudioView: View {
                                     Image(systemName: item.kind.symbol).foregroundStyle(item.kind.tint).frame(width: 28)
                                     VStack(alignment: .leading, spacing: 1) {
                                         Text(item.title).foregroundStyle(.primary).lineLimit(1)
-                                        Text(item.created.formatted(date: .abbreviated, time: .shortened)).font(.caption).foregroundStyle(.secondary)
+                                        Text(item.created.formatted(date: .abbreviated, time: .shortened) + (sent.contains(item.id) ? " · on your Mac" : " · waiting to send"))
+                                            .font(.caption).foregroundStyle(.secondary)
                                     }
                                     Spacer()
                                     Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
@@ -92,11 +94,12 @@ struct StudioView: View {
             .onAppear { if notebookId == nil || notebook == nil { notebookId = library.scopeToNotebook ?? library.notebooks.first?.id } }
             .onChange(of: library.scopeToNotebook) { _, id in if let id { notebookId = id } }
             .onChange(of: notebookId) { _, _ in reload() }
-            .task { reload() }
+            .task { reload(); await send() }
             .sheet(item: $making, onDismiss: { if let p = pendingOpen { pendingOpen = nil; opened = p } }) { kind in
                 if let notebook {
                     MakeSheet(kind: kind, notebook: notebook, library: library, engine: engine) { made in
                         reload(); pendingOpen = made
+                        Task { await send() }
                     }
                 }
             }
@@ -105,6 +108,11 @@ struct StudioView: View {
     }
 
     private func reload() { items = StudioStore.all(notebook: notebookId) }
+
+    private func send() async {
+        await StudioSync.flush()
+        sent = StudioSync.sentIds()
+    }
 }
 
 /// The setup sheet for one kind: only the options that matter, then Make. While making, it shows the animated screen.

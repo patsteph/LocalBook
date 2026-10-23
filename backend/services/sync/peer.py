@@ -645,6 +645,26 @@ async def phone_library_note(request: Request):
                                       str(b.get("photo", "")))
 
 
+@phone_sync_app.post("/phone/library/studio/put")
+async def phone_library_studio_put(request: Request):
+    """A briefing, flashcards or quiz made on the phone, stored with the Studio items made here."""
+    _check_enabled()
+    v = await _verified_phone(request)
+    from services.sync import phone_studio
+    b = v["body"]
+    return await phone_studio.put(str(b.get("kind", "")), str(b.get("id", "")), str(b.get("notebook_id", "")),
+                                  str(b.get("title", "")), str(b.get("topic", "")), str(b.get("created", "")), b.get("body"))
+
+
+@phone_sync_app.post("/phone/library/studio/audio")
+async def phone_library_studio_audio(request: Request):
+    """One chunk of an audio overview made on the phone; the Studio row appears when the last chunk verifies."""
+    _check_enabled()
+    v = await _verified_phone(request)
+    from services.sync import phone_studio
+    return await phone_studio.put_audio(v["body"])
+
+
 _phone_ask_lock = asyncio.Lock()           # one phone question at a time: it uses the Mac's models
 PHONE_ASK_TIMEOUT = 240
 
