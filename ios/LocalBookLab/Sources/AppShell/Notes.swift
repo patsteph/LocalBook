@@ -134,6 +134,11 @@ struct NoteEditor: View {
     @State private var saving = false
     @State private var fromPhoto = false
     @State private var photo: (image: CGImage, jpeg: Data, thumb: UIImage)?
+    @State private var memo = VoiceMemo()
+    @State private var transcriber = MediaTranscriber.shared
+    @State private var pickVideo = false
+    @State private var pickedVideo: PhotosPickerItem?
+    @State private var pickFile = false
     @State private var error: String?
 
     private var notebookTitle: String { library.notebooks.first { $0.id == notebookId }?.title ?? "Notebook" }
@@ -165,7 +170,27 @@ struct NoteEditor: View {
                     }
                 }
                 if reading { Section { HStack { ProgressView(); Text("Reading the photo…").font(.footnote) } } }
-                if let msg = error ?? dictation.failure { Section { Text(msg).font(.footnote).foregroundStyle(.orange) } }
+                if memo.recording {
+                    Section {
+                        HStack {
+                            Image(systemName: "record.circle.fill").foregroundStyle(.red)
+                            Text("Recording " + String(format: "%d:%02d", Int(memo.elapsed) / 60, Int(memo.elapsed) % 60)).monospacedDigit()
+                            Spacer()
+                            Button("Stop") { finishMemo() }.buttonStyle(.borderedProminent)
+                        }
+                    }
+                }
+                if transcriber.busy {
+                    Section {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text(transcriber.status).font(.footnote)
+                            ProgressView(value: min(1, max(0.02, transcriber.progress)))
+                            Text("Keep LocalBook open on screen while this runs.").font(.caption).foregroundStyle(.secondary)
+                            Button("Stop", role: .cancel) { transcriber.cancel() }.font(.footnote)
+                        }
+                    }
+                }
+                if let msg = error ?? dictation.failure ?? memo.failure { Section { Text(msg).font(.footnote).foregroundStyle(.orange) } }
             }
             .navigationTitle("New note").navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -181,7 +206,31 @@ struct NoteEditor: View {
                     } label: { Label(dictation.listening ? "Stop dictating" : "Dictate", systemImage: dictation.listening ? "stop.circle.fill" : "mic.fill") }
                     Spacer()
                     Button { dictation.stop(); camera = true } label: { Label("Photo", systemImage: "camera.fill") }
+                    Spacer()
+                    Menu {
+                        Button { dictation.stop(); Task { await memo.start() } } label: { Label("Record a voice memo", systemImage: "waveform") }
+                        Button { pickVideo = true } label: { Label("Video from Photos", systemImage: "video") }
+                        Button { pickFile = true } label: { Label("Audio or video file", systemImage: "doc") }
+                    } label: { Label("Audio", systemImage: "waveform.badge.mic") }
+                    .disabled(memo.recording || transcriber.busy)
                 }
+            }
+            .photosPicker(isPresented: $pickVideo, selection: $pickedVideo, matching: .videos)
+            .onChange(of: pickedVideo) { _, item in
+                guard let item else { return }
+                pickedVideo = nil
+                Task {
+                    guard let movie = try? await item.loadTransferable(type: PickedMovie.self) else { error = "Couldn't open that video."; return }
+                    await transcribe(movie.url, label: "Video", delete: true)
+                }
+            }
+            .fileImporter(isPresented: $pickFile, allowedContentTypes: [.audio, .movie]) { result in
+                guard case .success(let picked) = result else { return }
+                let scoped = picked.startAccessingSecurityScopedResource()
+                defer { if scoped { picked.stopAccessingSecurityScopedResource() } }
+                let dest = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + "." + picked.pathExtension)
+                guard (try? FileManager.default.copyItem(at: picked, to: dest)) != nil else { error = "Couldn't open that file."; return }
+                Task { await transcribe(dest, label: picked.deletingPathExtension().lastPathComponent, delete: true) }
             }
             .fullScreenCover(isPresented: $camera) {
                 CameraPicker { image in
@@ -201,8 +250,27 @@ struct NoteEditor: View {
         }
     }
 
+    private func finishMemo() {
+        guard let url = memo.stop() else { return }
+        Task { await transcribe(url, label: "Voice memo", delete: true) }
+    }
+
+    /// Adds what is spoken in the file to the note. The audio itself is not kept.
+    private func transcribe(_ url: URL, label: String, delete: Bool) async {
+        defer { if delete { try? FileManager.default.removeItem(at: url) } }
+        error = nil
+        do {
+            let words = try await transcriber.transcribe(url)
+            guard !words.isEmpty else { error = "No speech was found in that."; return }
+            text = text.isEmpty ? words : text + "\n\n" + words
+            if title.trimmingCharacters(in: .whitespaces).isEmpty {
+                title = label + " " + Date().formatted(date: .abbreviated, time: .shortened)
+            }
+        } catch { self.error = error.localizedDescription }
+    }
+
     private func save() async {
-        dictation.stop(); saving = true; defer { saving = false }
+        dictation.stop(); _ = memo.stop(); saving = true; defer { saving = false }
         do {
             try await library.addNote(notebook: notebookId, title: title, text: text, kind: fromPhoto ? "image" : "note",
                                       photo: photo.map { ($0.image, $0.jpeg) })
