@@ -25,7 +25,7 @@ final class MeetingSession {
     private var recorder: AVAudioRecorder?
     private var ticker: Task<Void, Never>?
     private var file: URL?
-    private var observer: (any NSObjectProtocol)?
+    private var observers: [any NSObjectProtocol] = []
 
     static var folder: URL {
         let url = URL.applicationSupportDirectory.appending(path: "LocalBookLab/Meetings")
@@ -82,24 +82,25 @@ final class MeetingSession {
 
     /// A phone call or alarm pauses the recording; it carries on when that ends.
     private func watchInterruptions() {
-        observer = NotificationCenter.default.addObserver(forName: AVAudioSession.interruptionNotification, object: nil, queue: .main) { [weak self] note in
-            let raw = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt
-            let options = note.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt ?? 0
+        let center = NotificationCenter.default
+        let stopped = center.addObserver(forName: AVAudioSession.didBecomeInactiveNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.interrupted = true }
+        }
+        let resumable = center.addObserver(forName: AVAudioSession.resumptionRecommendationNotification, object: nil, queue: .main) { [weak self] note in
+            let advice = (note.userInfo?[AVAudioSession.resumptionContextKey] as? AVAudioSession.ResumptionContext)?.recommendation
             MainActor.assumeIsolated {
-                guard let self, let raw, let type = AVAudioSession.InterruptionType(rawValue: raw) else { return }
-                if type == .began { self.interrupted = true }
-                else {
-                    self.interrupted = false
-                    if AVAudioSession.InterruptionOptions(rawValue: options).contains(.shouldResume) { self.recorder?.record() }
-                }
+                guard let self, advice == .shouldResume else { return }
+                self.interrupted = false
+                self.recorder?.record()
             }
         }
+        observers = [stopped, resumable]
     }
 
     func stopRecording() async {
         ticker?.cancel(); ticker = nil
         recorder?.stop(); recorder = nil
-        if let observer { NotificationCenter.default.removeObserver(observer); self.observer = nil }
+        for o in observers { NotificationCenter.default.removeObserver(o) }; observers = []
         guard let file else { return }
         pending = file
         await process(file)
@@ -117,9 +118,7 @@ final class MeetingSession {
         defer { UIApplication.shared.isIdleTimerDisabled = false }
         do {
             step = "Finding who is speaking… (the first time this downloads a small model)"
-            var config = OfflineDiarizerConfig()
-            config.segmentation.batchSize = 8                     // less memory at once; the answer is the same
-            let manager = OfflineDiarizerManager(config: config)
+            let manager = OfflineDiarizerManager(config: OfflineDiarizerConfig())
             try await manager.prepareModels()
             let spoken = try await manager.process(url)
             let who = spoken.segments.map { (id: "\($0.speakerId)", start: Double($0.startTimeSeconds), end: Double($0.endTimeSeconds)) }
