@@ -1,88 +1,180 @@
 import SwiftUI
 
-/// Studio: briefings, quizzes and flashcards made on this phone from one notebook.
+extension StudioItem.Kind: Identifiable {
+    var id: String { rawValue }
+    var blurb: String {
+        switch self {
+        case .doc: "A written summary"
+        case .quiz: "Test yourself"
+        case .cards: "Flip and learn"
+        case .audio: "Two hosts talk it through"
+        }
+    }
+    var tint: Color {
+        switch self { case .doc: .blue; case .quiz: .orange; case .cards: .green; case .audio: .pink }
+    }
+}
+
+/// Studio: briefings, quizzes, flashcards and audio overviews made on this phone from one notebook.
+/// The home is four tiles and a shelf; each tile opens a short sheet with only that kind's options.
 struct StudioView: View {
     let library: LibraryModel
     @State private var engine = StudioEngine()
     @State private var items: [StudioItem] = []
     @State private var notebookId: String?
-    @State private var kind: StudioItem.Kind = .doc
-    @State private var topic = ""
-    @State private var count = 5
-    @State private var notebookOnly = true
-    @State private var style: AudioStyle = .casual
+    @State private var making: StudioItem.Kind?
     @State private var opened: StudioItem?
-    @FocusState private var typing: Bool
+    @State private var pendingOpen: StudioItem?
 
     private var notebook: LibraryNotebookInfo? { library.notebooks.first { $0.id == notebookId } }
-    private var counts: [Int] { kind == .quiz ? [5, 10, 15, 20] : (kind == .audio ? [2, 4, 7] : [10, 20, 30]) }
-    private func countLabel(_ n: Int) -> String { kind == .audio ? "About \(n == 2 ? 3 : (n == 4 ? 5 : 9)) minutes" : "\(n)" }
 
     var body: some View {
         NavigationStack {
-            List {
-                Section("Notebook") {
-                    Picker("Notebook", selection: $notebookId) {
-                        ForEach(library.notebooks) { Text($0.title).tag(Optional($0.id)) }
-                    }
-                }
-                Section {
-                    Picker("Make", selection: $kind) {
-                        ForEach(StudioItem.Kind.allCases, id: \.self) { Text($0.short).tag($0) }
-                    }.pickerStyle(.segmented)
-                    TextField("Subject (optional)", text: $topic).focused($typing).submitLabel(.done).onSubmit { typing = false }
-                    if kind != .doc {
-                        Picker(kind == .quiz ? "Questions" : (kind == .audio ? "Length" : "Cards"), selection: $count) {
-                            ForEach(counts, id: \.self) { Text(countLabel($0)).tag($0) }
-                        }
-                    }
-                    if kind == .audio {
-                        Picker("Style", selection: $style) { ForEach(AudioStyle.allCases) { Text($0.label).tag($0) } }
-                    }
-                    Toggle("Only from this notebook", isOn: $notebookOnly)
-                    Button { typing = false; if let notebook { Task { await make(notebook) } } } label: {
-                        Label("Make \(kind.label.lowercased())", systemImage: kind.symbol).frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(engine.working || notebook == nil)
-                } footer: {
-                    Text(notebookOnly ? "Written from this notebook's notes only." : "Starts from this notebook's notes and may add general knowledge about the subject.")
-                }
-                if engine.working {
-                    Section {
-                        MakingView(kind: kind, status: engine.status, progress: engine.progress, caption: engine.caption) { engine.stop() }
-                    }
-                }
-                if let why = engine.error { Section { Text(why).font(.footnote).foregroundStyle(.orange) } }
-                Section("Saved") {
-                    if items.isEmpty { Text("Nothing yet.").foregroundStyle(.secondary) }
-                    ForEach(items) { item in
-                        Button { typing = false; opened = item } label: {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Label(item.title, systemImage: item.kind.symbol).foregroundStyle(.primary)
-                                Text(item.created.formatted(date: .abbreviated, time: .shortened)).font(.caption).foregroundStyle(.secondary)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 24) {
+                    LazyVGrid(columns: [GridItem(.flexible(), spacing: 12), GridItem(.flexible(), spacing: 12)], spacing: 12) {
+                        ForEach(StudioItem.Kind.allCases) { kind in
+                            Button { making = kind } label: {
+                                VStack(alignment: .leading, spacing: 10) {
+                                    Image(systemName: kind.symbol).font(.title2).foregroundStyle(kind.tint)
+                                        .frame(width: 44, height: 44).background(kind.tint.opacity(0.15), in: Circle())
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(kind.label).font(.headline).foregroundStyle(.primary)
+                                        Text(kind.blurb).font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.leading)
+                                    }
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading).padding(14)
+                                .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 18))
                             }
+                            .buttonStyle(.plain).disabled(notebook == nil)
                         }
-                        .swipeActions { Button("Delete", role: .destructive) { StudioStore.delete(item); reload() } }
+                    }
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Made from this notebook").font(.subheadline.weight(.semibold)).foregroundStyle(.secondary)
+                        if items.isEmpty {
+                            Text("Nothing yet. Pick a tile above.").font(.footnote).foregroundStyle(.tertiary).padding(.vertical, 8)
+                        }
+                        ForEach(items) { item in
+                            Button { opened = item } label: {
+                                HStack(spacing: 12) {
+                                    Image(systemName: item.kind.symbol).foregroundStyle(item.kind.tint).frame(width: 28)
+                                    VStack(alignment: .leading, spacing: 1) {
+                                        Text(item.title).foregroundStyle(.primary).lineLimit(1)
+                                        Text(item.created.formatted(date: .abbreviated, time: .shortened)).font(.caption).foregroundStyle(.secondary)
+                                    }
+                                    Spacer()
+                                    Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
+                                }
+                                .padding(.vertical, 10)
+                            }
+                            .buttonStyle(.plain)
+                            .contextMenu { Button("Delete", systemImage: "trash", role: .destructive) { StudioStore.delete(item); reload() } }
+                            Divider()
+                        }
+                    }
+                }
+                .padding()
+            }
+            .navigationTitle("Studio")
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Menu {
+                        Picker("Notebook", selection: $notebookId) {
+                            ForEach(library.notebooks) { Text($0.title).tag(Optional($0.id)) }
+                        }
+                    } label: {
+                        Label(notebook?.title ?? "Pick a notebook", systemImage: "chevron.up.chevron.down").labelStyle(.titleAndIcon)
+                            .font(.subheadline).lineLimit(1)
                     }
                 }
             }
-            .navigationTitle("Studio")
-            .scrollDismissesKeyboard(.interactively)
-            .toolbar { ToolbarItemGroup(placement: .keyboard) { Spacer(); Button("Done") { typing = false } } }
             .onAppear { if notebookId == nil || notebook == nil { notebookId = library.scopeToNotebook ?? library.notebooks.first?.id } }
             .onChange(of: library.scopeToNotebook) { _, id in if let id { notebookId = id } }
             .onChange(of: notebookId) { _, _ in reload() }
-            .onChange(of: kind) { _, _ in count = kind == .quiz ? 5 : (kind == .audio ? 4 : 10) }
             .task { reload() }
-            .sheet(item: $opened, onDismiss: { typing = false }) { StudioItemView(item: $0) }
+            .sheet(item: $making, onDismiss: { if let p = pendingOpen { pendingOpen = nil; opened = p } }) { kind in
+                if let notebook {
+                    MakeSheet(kind: kind, notebook: notebook, library: library, engine: engine) { made in
+                        reload(); pendingOpen = made
+                    }
+                }
+            }
+            .sheet(item: $opened) { StudioItemView(item: $0) }
         }
     }
 
     private func reload() { items = StudioStore.all(notebook: notebookId) }
+}
 
-    private func make(_ notebook: LibraryNotebookInfo) async {
-        if let made = await engine.make(kind, in: notebook, topic: topic, count: count, notebookOnly: notebookOnly, style: style, library: library) { reload(); opened = made }
+/// The setup sheet for one kind: only the options that matter, then Make. While making, it shows the animated screen.
+private struct MakeSheet: View {
+    let kind: StudioItem.Kind
+    let notebook: LibraryNotebookInfo
+    let library: LibraryModel
+    let engine: StudioEngine
+    let onMade: (StudioItem) -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var topic = ""
+    @State private var count: Int
+    @State private var style: AudioStyle = .casual
+    @State private var notebookOnly = true
+    @FocusState private var typing: Bool
+
+    init(kind: StudioItem.Kind, notebook: LibraryNotebookInfo, library: LibraryModel, engine: StudioEngine, onMade: @escaping (StudioItem) -> Void) {
+        self.kind = kind; self.notebook = notebook; self.library = library; self.engine = engine; self.onMade = onMade
+        _count = State(initialValue: kind == .quiz ? 5 : (kind == .audio ? 4 : 10))
+    }
+
+    private var counts: [Int] { kind == .quiz ? [5, 10, 15, 20] : (kind == .audio ? [2, 4, 7] : [10, 20, 30]) }
+    private func countLabel(_ n: Int) -> String { kind == .audio ? "\(n == 2 ? 3 : (n == 4 ? 5 : 9)) min" : "\(n)" }
+
+    var body: some View {
+        NavigationStack {
+            Group {
+                if engine.working {
+                    ScrollView { MakingView(kind: kind, status: engine.status, progress: engine.progress, caption: engine.caption) { engine.stop() }.padding() }
+                } else {
+                    Form {
+                        Section {
+                            TextField("Subject (optional)", text: $topic).focused($typing).submitLabel(.done).onSubmit { typing = false }
+                        } footer: { Text("Leave empty to cover the whole notebook, or name what to focus on.") }
+                        if kind != .doc {
+                            Section(kind == .quiz ? "Questions" : (kind == .audio ? "Length" : "Cards")) {
+                                Picker("", selection: $count) { ForEach(counts, id: \.self) { Text(countLabel($0)).tag($0) } }.pickerStyle(.segmented)
+                            }
+                        }
+                        if kind == .audio {
+                            Section("Style") {
+                                Picker("Style", selection: $style) { ForEach(AudioStyle.allCases) { Text($0.label).tag($0) } }.pickerStyle(.menu)
+                            }
+                        }
+                        Section {
+                            Toggle("Only from this notebook", isOn: $notebookOnly)
+                        } footer: {
+                            Text(notebookOnly ? "Written from your notes only." : "Starts from your notes and may add general knowledge about the subject.")
+                        }
+                        if let why = engine.error { Section { Text(why).font(.footnote).foregroundStyle(.orange) } }
+                    }
+                    .scrollDismissesKeyboard(.interactively)
+                    .safeAreaInset(edge: .bottom) {
+                        Button { typing = false; Task { await make() } } label: {
+                            Label("Make \(kind.label.lowercased())", systemImage: kind.symbol).frame(maxWidth: .infinity).padding(.vertical, 6)
+                        }
+                        .buttonStyle(.borderedProminent).controlSize(.large).padding().background(.bar)
+                    }
+                }
+            }
+            .navigationTitle(kind.label).navigationBarTitleDisplayMode(.inline)
+            .toolbar { if !engine.working { ToolbarItem(placement: .cancellationAction) { Button("Close") { dismiss() } } } }
+        }
+        .presentationDetents([.large])
+        .interactiveDismissDisabled(engine.working)
+    }
+
+    private func make() async {
+        if let made = await engine.make(kind, in: notebook, topic: topic, count: count, notebookOnly: notebookOnly, style: style, library: library) {
+            onMade(made); dismiss()
+        }
     }
 }
 
