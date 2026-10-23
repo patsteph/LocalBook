@@ -135,7 +135,6 @@ struct NoteEditor: View {
     @State private var saving = false
     @State private var fromPhoto = false
     @State private var photo: (image: CGImage, jpeg: Data, thumb: UIImage)?
-    @State private var memo = VoiceMemo()
     @State private var transcriber = MediaTranscriber.shared
     @State private var pickVideo = false
     @State private var pickedVideo: PhotosPickerItem?
@@ -171,16 +170,6 @@ struct NoteEditor: View {
                     }
                 }
                 if reading { Section { HStack { ProgressView(); Text("Reading the photo…").font(.footnote) } } }
-                if memo.recording {
-                    Section {
-                        HStack {
-                            Image(systemName: "record.circle.fill").foregroundStyle(.red)
-                            Text("Recording " + String(format: "%d:%02d", Int(memo.elapsed) / 60, Int(memo.elapsed) % 60)).monospacedDigit()
-                            Spacer()
-                            Button("Stop") { finishMemo() }.buttonStyle(.borderedProminent)
-                        }
-                    }
-                }
                 if transcriber.busy {
                     Section {
                         VStack(alignment: .leading, spacing: 8) {
@@ -191,7 +180,7 @@ struct NoteEditor: View {
                         }
                     }
                 }
-                if let msg = error ?? dictation.failure ?? memo.failure { Section { Text(msg).font(.footnote).foregroundStyle(.orange) } }
+                if let msg = error ?? dictation.failure { Section { Text(msg).font(.footnote).foregroundStyle(.orange) } }
             }
             .navigationTitle("New note").navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -209,11 +198,10 @@ struct NoteEditor: View {
                     Button { dictation.stop(); camera = true } label: { Label("Photo", systemImage: "camera.fill") }
                     Spacer()
                     Menu {
-                        Button { dictation.stop(); Task { await memo.start() } } label: { Label("Record a voice memo", systemImage: "waveform") }
                         Button { pickVideo = true } label: { Label("Video from Photos", systemImage: "video") }
                         Button { pickFile = true } label: { Label("Audio or video file", systemImage: "doc") }
-                    } label: { Label("Audio", systemImage: "waveform.badge.mic") }
-                    .disabled(memo.recording || transcriber.busy)
+                    } label: { Label("Import", systemImage: "square.and.arrow.down") }
+                    .disabled(transcriber.busy)
                 }
             }
             .photosPicker(isPresented: $pickVideo, selection: $pickedVideo, matching: .videos)
@@ -251,11 +239,6 @@ struct NoteEditor: View {
         }
     }
 
-    private func finishMemo() {
-        guard let url = memo.stop() else { return }
-        Task { await transcribe(url, label: "Voice memo", delete: true) }
-    }
-
     /// Adds what is spoken in the file to the note. The audio itself is not kept.
     private func transcribe(_ url: URL, label: String, delete: Bool) async {
         defer { if delete { try? FileManager.default.removeItem(at: url) } }
@@ -271,7 +254,7 @@ struct NoteEditor: View {
     }
 
     private func save() async {
-        dictation.stop(); _ = memo.stop(); saving = true; defer { saving = false }
+        dictation.stop(); saving = true; defer { saving = false }
         do {
             try await library.addNote(notebook: notebookId, title: title, text: text, kind: fromPhoto ? "image" : "note",
                                       photo: photo.map { ($0.image, $0.jpeg) })

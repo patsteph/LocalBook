@@ -188,7 +188,7 @@ targets:
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
         NSLocalNetworkUsageDescription: LocalBook finds and syncs with your Mac on this network.
-        NSMicrophoneUsageDescription: LocalBook listens when you dictate a note or record a voice memo.
+        NSMicrophoneUsageDescription: LocalBook listens when you dictate a note.
         NSSpeechRecognitionUsageDescription: LocalBook turns your dictation into text, on this phone where possible.
         NSCameraUsageDescription: LocalBook photographs pages and whiteboards so the text can be added to a notebook.
         NSBonjourServices:
