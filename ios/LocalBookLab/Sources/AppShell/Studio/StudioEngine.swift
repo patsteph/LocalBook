@@ -284,12 +284,16 @@ extension StudioEngine {
         status = "Warming up the microphones…"
         caption = ""
         let kokoro = KokoroAneManager(version: .legacy)
-        var voices = Self.voices
-        do { try await kokoro.initialize(preloadVoices: Set(voices)) }
+        do { try await kokoro.initialize(preloadVoices: Set(Self.voices)) }
         catch {
-            // The second voice couldn't be fetched: fall back to one voice and shift its pace for the other host.
-            voices = [Self.voices[0], Self.voices[0]]
             do { try await kokoro.initialize() } catch { self.error = "Couldn't start the voices: \(error.localizedDescription)"; return nil }
+        }
+        // Check each host's voice with a short phrase; one that fails falls back to the default voice (nil).
+        status = "Checking the voices…"
+        var voiceFor: [String?] = [Self.voices[0], Self.voices[1]]
+        for i in 0..<2 {
+            do { _ = try await kokoro.synthesizeDetailed(text: "Hello there.", voice: voiceFor[i]) }
+            catch { voiceFor[i] = nil }
         }
         let id = UUID().uuidString
         let file = id + ".m4a"
@@ -317,8 +321,10 @@ extension StudioEngine {
                 status = "\(Self.hostNames[line.host]) is recording… \(i + 1) of \(lines.count)"
                 script.append(.init(host: line.host, text: line.text, start: Double(written) / rate))
                 for part in SpeechText.chunks(from: line.text) {
-                    let speed: Float = voices[0] == voices[1] && line.host == 1 ? 1.08 : 1.0
-                    let r = try await kokoro.synthesizeDetailed(text: part, voice: voices[line.host], speed: speed)
+                    let speed: Float = voiceFor[0] == voiceFor[1] && line.host == 1 ? 1.08 : 1.0
+                    let r: KokoroAneSynthesisResult
+                    do { r = try await kokoro.synthesizeDetailed(text: part, voice: voiceFor[line.host], speed: speed) }
+                    catch { r = try await kokoro.synthesizeDetailed(text: part, voice: nil, speed: speed) }     // one retry on the default voice
                     write(r.samples); written += r.samples.count
                 }
                 write(gap); written += gap.count
