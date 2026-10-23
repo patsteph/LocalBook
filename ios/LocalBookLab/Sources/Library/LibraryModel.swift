@@ -37,6 +37,10 @@ final class LibraryModel {
     private(set) var answerStatus = ""
     private(set) var shownQuestion = ""
     private(set) var followUps: [String] = []
+    /// The conversation so far (until the app closes): finished turns, oldest first. The turn being written is the
+    /// live `shownQuestion` / `answerText` below them. Each turn remembers its notebook.
+    private(set) var history: [AskTurn] = []
+    private(set) var liveNotebookId: String?
     private(set) var sourceScoreIsConfidence = false
     private(set) var sourceScoreIsRelevance = false
     var askMode: AskMode = .mac
@@ -59,9 +63,10 @@ final class LibraryModel {
     var query = ""
     var scopeToNotebook: String? {
         didSet {
-            // An answer belongs to the notebook it was asked in: show none of it in another one.
+            // A turn belongs to the notebook it was asked in: it moves up into the conversation, tagged with that
+            // notebook, so the new notebook starts with a clean answer area.
             guard oldValue != scopeToNotebook, !answering else { return }
-            answerText = ""; answerSources = []; answerStatus = ""; followUps = []; hits = []; shownQuestion = ""
+            archiveLiveTurn()
         }
     }
 
@@ -382,7 +387,18 @@ final class LibraryModel {
         try? await store?.setMeta("recipe", "")
         try? await store?.setMeta("last_sync", "")
         await refresh()
-        answerText = ""; answerSources = []; answerStatus = ""; followUps = []; hits = []
+        answerText = ""; answerSources = []; answerStatus = ""; followUps = []; hits = []; shownQuestion = ""
+        history = []; liveNotebookId = nil
+    }
+
+    /// Moves the question and answer on screen into the conversation and clears the live area.
+    func archiveLiveTurn() {
+        if !shownQuestion.isEmpty, let nb = liveNotebookId {
+            history.append(AskTurn(notebookId: nb, notebookTitle: notebooks.first { $0.id == nb }?.title ?? "Notebook",
+                                   question: shownQuestion, answer: answerText, sources: answerSources, status: answerStatus))
+            if history.count > 500 { history.removeFirst(history.count - 500) }
+        }
+        answerText = ""; answerSources = []; answerStatus = ""; followUps = []; hits = []; shownQuestion = ""; liveNotebookId = nil
     }
 
     // MARK: UI-free building blocks (also used by the answer-parity test)
@@ -552,9 +568,10 @@ final class LibraryModel {
         guard store != nil, engine != nil, tokenizer != nil, !answering,
               !query.trimmingCharacters(in: .whitespaces).isEmpty, let scope = scopeToNotebook else { return }
         answering = true
-        answerText = ""; answerSources = []
+        archiveLiveTurn()                                 // the last question and answer stay above, in the conversation
         let question = query.trimmingCharacters(in: .whitespaces)
         shownQuestion = question
+        liveNotebookId = scope
         query = ""                                        // the field is empty again once the question is on its way
         defer { answering = false }
         do {
@@ -675,4 +692,16 @@ enum AnswerLength: String, CaseIterable, Identifiable {
     var words: Int { switch self { case .short: 200; case .standard: 350; case .detailed: 500 } }
     var maxTokens: Int { Int(Double(words) * 1.9) + 60 }
     static var current: AnswerLength { AnswerLength(rawValue: UserDefaults.standard.string(forKey: "answerLength") ?? "") ?? .standard }
+}
+
+
+/// One finished question and answer in the running conversation on the Ask screen.
+struct AskTurn: Identifiable {
+    let id = UUID()
+    let notebookId: String
+    let notebookTitle: String
+    let question: String
+    let answer: String
+    let sources: [LibraryHit]
+    let status: String
 }

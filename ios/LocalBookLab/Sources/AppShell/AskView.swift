@@ -39,12 +39,18 @@ struct AskView: View {
                             }
                             .font(.footnote).padding(12).background(.quaternary, in: RoundedRectangle(cornerRadius: 12))
                         }
+                        ForEach(Array(library.history.enumerated()), id: \.element.id) { i, turn in
+                            pastTurn(turn, previous: i > 0 ? library.history[i - 1].notebookId : nil)
+                        }
+                        if !library.shownQuestion.isEmpty, let nb = library.liveNotebookId, nb != (library.history.last?.notebookId ?? nb) {
+                            notebookTag(library.notebooks.first { $0.id == nb }?.title ?? "Notebook")
+                        }
                         if library.answering || !library.answerText.isEmpty || !library.answerStatus.isEmpty, !library.shownQuestion.isEmpty {
                             Text(library.shownQuestion).font(.subheadline.weight(.medium))
                                 .padding(.horizontal, 12).padding(.vertical, 8)
                                 .background(.tint.opacity(0.15), in: RoundedRectangle(cornerRadius: 14))
                                 .frame(maxWidth: .infinity, alignment: .trailing)
-                        } else if queued == nil {
+                        } else if queued == nil && library.history.isEmpty {
                             intro
                         }
                         if library.answering && library.answerText.isEmpty {
@@ -68,7 +74,7 @@ struct AskView: View {
                                 .animation(reduceMotion ? nil : .easeOut(duration: 0.25), value: library.answerText)
                                 .environment(\.openURL, OpenURLAction { url in
                                     if url.scheme == "lb-source", let n = Int(url.host ?? ""), n >= 1, n <= library.answerSources.count {
-                                        openSource = SourceRef(number: n); return .handled
+                                        openSource = SourceRef(number: n, hits: library.answerSources); return .handled
                                     }
                                     return .systemAction
                                 })
@@ -93,6 +99,9 @@ struct AskView: View {
             } action: { _, now in atBottom = now }
             .onChange(of: library.answerText) { _, _ in
                 if atBottom && library.answering { proxy.scrollTo("bottom", anchor: .bottom) }
+            }
+            .onChange(of: library.shownQuestion) { _, q in
+                if !q.isEmpty { withAnimation(reduceMotion ? nil : .easeOut) { proxy.scrollTo("bottom", anchor: .bottom) } }     // a new turn starts at the bottom
             }
             .overlay(alignment: .bottom) {
                 if library.answering && !atBottom {
@@ -128,7 +137,7 @@ struct AskView: View {
             .sheet(isPresented: $picking) { NotebookPicker(library: library) }
             .sheet(isPresented: $writingNote) { if let id = library.scopeToNotebook { NoteEditor(library: library, notebookId: id) } }
             .sheet(item: $openSource) { ref in
-                SourceSheet(number: ref.number, hit: library.answerSources[ref.number - 1])
+                SourceSheet(number: ref.number, hit: ref.hits[ref.number - 1])
                     .presentationDetents([.medium, .large])
             }
             .sensoryFeedback(.impact(weight: .light), trigger: sendTick)
@@ -145,6 +154,47 @@ struct AskView: View {
                 Task { await library.ask() }
             }
         }
+    }
+
+    /// The notebook a run of turns was asked in, shown where the conversation moves to another notebook.
+    private func notebookTag(_ title: String) -> some View {
+        Label(title, systemImage: "book.closed").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+            .padding(.top, 6).frame(maxWidth: .infinity, alignment: .center)
+    }
+
+    /// A finished turn higher up in the conversation.
+    @ViewBuilder private func pastTurn(_ turn: AskTurn, previous: String?) -> some View {
+        if turn.notebookId != previous { notebookTag(turn.notebookTitle) }
+        Text(turn.question).font(.subheadline.weight(.medium))
+            .padding(.horizontal, 12).padding(.vertical, 8)
+            .background(.tint.opacity(0.15), in: RoundedRectangle(cornerRadius: 14))
+            .frame(maxWidth: .infinity, alignment: .trailing)
+        if turn.answer.isEmpty {
+            if !turn.status.isEmpty { Text(turn.status).font(.footnote).foregroundStyle(.orange) }
+        } else {
+            Text(AnswerText.render(turn.answer)).textSelection(.enabled)
+                .environment(\.openURL, OpenURLAction { url in
+                    if url.scheme == "lb-source", let n = Int(url.host ?? ""), n >= 1, n <= turn.sources.count {
+                        openSource = SourceRef(number: n, hits: turn.sources); return .handled
+                    }
+                    return .systemAction
+                })
+            HStack(spacing: 16) {
+                Button { reader.toggle(turn.answer) } label: { Label("Listen", systemImage: "speaker.wave.2.fill") }
+                Button { UIPasteboard.general.string = turn.answer } label: { Label("Copy", systemImage: "doc.on.doc") }
+                Spacer()
+                if !turn.sources.isEmpty {
+                    ForEach(Array(turn.sources.enumerated()), id: \.element.id) { i, _ in
+                        Button { openSource = SourceRef(number: i + 1, hits: turn.sources) } label: {
+                            Text("\(i + 1)").font(.caption.weight(.semibold)).frame(minWidth: 28, minHeight: 28)
+                                .background(.tint.opacity(0.15), in: Circle())
+                        }.buttonStyle(.plain)
+                    }
+                }
+            }
+            .font(.footnote).buttonStyle(.borderless)
+        }
+        Divider().padding(.vertical, 4)
     }
 
     private var ready: Bool { library.searchState == .ready && library.answerModelState == .ready }
@@ -195,7 +245,7 @@ struct AskView: View {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 8) {
                         ForEach(Array(library.answerSources.enumerated()), id: \.element.id) { i, h in
-                            Button { openSource = SourceRef(number: i + 1) } label: {
+                            Button { openSource = SourceRef(number: i + 1, hits: library.answerSources) } label: {
                                 Text("\(i + 1)").font(.subheadline.weight(.semibold)).frame(minWidth: hit, minHeight: hit)
                                     .background(.tint.opacity(0.15), in: Circle())
                             }
@@ -293,7 +343,7 @@ enum AnswerText {
     }
 }
 
-struct SourceRef: Identifiable { let number: Int; var id: Int { number } }
+struct SourceRef: Identifiable { let id = UUID(); let number: Int; let hits: [LibraryHit] }
 
 struct SourceSheet: View {
     let number: Int
