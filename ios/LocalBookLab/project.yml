@@ -110,8 +110,6 @@ targets:
         UILaunchScreen: {}
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
-          - UIInterfaceOrientationLandscapeLeft
-          - UIInterfaceOrientationLandscapeRight
         # Drop fixtures into the app from Finder (iPhone › Files) or the Files app.
         UIFileSharingEnabled: true
         LSSupportsOpeningDocumentsInPlace: true
@@ -187,6 +185,8 @@ targets:
         UILaunchScreen: {}
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
         NSLocalNetworkUsageDescription: LocalBook finds and syncs with your Mac on this network.
         NSMicrophoneUsageDescription: LocalBook listens when you dictate a note.
         NSSpeechRecognitionUsageDescription: LocalBook turns your dictation into text, on this phone where possible.
