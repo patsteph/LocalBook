@@ -64,24 +64,19 @@ enum VideoMaker {
         let input = AVAssetWriterInput(mediaType: .video, outputSettings: [
             AVVideoCodecKey: AVVideoCodecType.h264, AVVideoWidthKey: Int(size.width), AVVideoHeightKey: Int(size.height),
         ])
-        let adaptor = AVAssetWriterInputPixelBufferAdaptor(assetWriterInput: input, sourcePixelBufferAttributes: [
-            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
-            kCVPixelBufferWidthKey as String: Int(size.width), kCVPixelBufferHeightKey as String: Int(size.height),
-        ])
-        guard writer.canAdd(input) else { throw Failure(text: "Couldn't set up the video.") }
-        writer.add(input)
-        guard writer.startWriting() else { throw Failure(text: writer.error?.localizedDescription ?? "Couldn't start the video.") }
+        // Attaching the input returns the receiver the frames are written through (the iOS 26+ replacement for the adaptor).
+        // The frames are made here rather than drawn from the receiver's pool, so no pool attributes are asked for.
+        let receiver = writer.inputPixelBufferReceiver(for: input, pixelBufferAttributes: nil)
+        do { try writer.start() } catch { throw Failure(text: error.localizedDescription) }
         writer.startSession(atSourceTime: .zero)
 
         func append(_ image: CGImage, at seconds: Double) async throws {
-            while !input.isReadyForMoreMediaData { try await Task.sleep(for: .milliseconds(15)) }
-            guard let buffer = pixelBuffer(image), adaptor.append(buffer, withPresentationTime: CMTime(seconds: seconds, preferredTimescale: 600)) else {
-                throw Failure(text: writer.error?.localizedDescription ?? "Couldn't write a slide.")
-            }
+            guard let buffer = pixelBuffer(image) else { throw Failure(text: "Couldn't draw a slide.") }
+            try await receiver.append(CVReadOnlyPixelBuffer(unsafeBuffer: buffer), with: CMTime(seconds: seconds, preferredTimescale: 600))
         }
         for frame in frames { try await append(frame.image, at: frame.start) }
         if let last = frames.last, duration - last.start > 0.5 { try await append(last.image, at: duration - 0.1) }
-        input.markAsFinished()
+        receiver.finish()
         writer.endSession(atSourceTime: CMTime(seconds: duration, preferredTimescale: 600))
         await writer.finishWriting()
         guard writer.status == .completed else { throw Failure(text: writer.error?.localizedDescription ?? "Couldn't finish the video.") }
