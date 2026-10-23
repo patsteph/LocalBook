@@ -236,23 +236,53 @@ struct VisualCanvas: View {
     }
 }
 
-/// The visual screen: the drawing, with save-as-image sharing.
+private struct CanvasSize: PreferenceKey {
+    static var defaultValue = CGSize.zero
+    static func reduce(value: inout CGSize, nextValue: () -> CGSize) { value = nextValue() }
+}
+
+/// The visual screen: the drawing with pinch to zoom, drag to move and double-tap to zoom in or fit, plus
+/// save-as-image sharing.
 struct VisualItemView: View {
     let spec: VisualSpec
     let title: String
     @State private var picture: UIImage?
+    @State private var scale: CGFloat = 1
+    @State private var committed: CGFloat = 1
+    @State private var natural = CGSize.zero
 
     var body: some View {
-        ScrollView { VisualCanvas(spec: spec) }
-            .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    if let picture { ShareLink(item: Image(uiImage: picture), preview: SharePreview(title, image: Image(uiImage: picture))) }
+        GeometryReader { geo in
+            ScrollView([.horizontal, .vertical]) {
+                VisualCanvas(spec: spec)
+                    .frame(width: geo.size.width)
+                    .background(GeometryReader { g in Color.clear.preference(key: CanvasSize.self, value: g.size) })
+                    .scaleEffect(scale, anchor: .topLeading)
+                    .frame(width: geo.size.width * scale, height: max(1, natural.height) * scale, alignment: .topLeading)
+            }
+            .onPreferenceChange(CanvasSize.self) { natural = $0 }
+            .simultaneousGesture(
+                MagnifyGesture()
+                    .onChanged { scale = min(4, max(1, committed * $0.magnification)) }
+                    .onEnded { _ in committed = scale }
+            )
+            .onTapGesture(count: 2) { withAnimation(.snappy) { scale = scale > 1.01 ? 1 : 2; committed = scale } }
+        }
+        .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                if let picture { ShareLink(item: Image(uiImage: picture), preview: SharePreview(title, image: Image(uiImage: picture))) }
+            }
+            ToolbarItem(placement: .topBarLeading) {
+                if scale > 1.01 {
+                    Button { withAnimation(.snappy) { scale = 1; committed = 1 } } label: { Image(systemName: "arrow.down.right.and.arrow.up.left") }
+                        .accessibilityLabel("Fit to screen")
                 }
             }
-            .task {
-                let renderer = ImageRenderer(content: VisualCanvas(spec: spec).frame(width: 390).environment(\.colorScheme, .light))
-                renderer.scale = 3
-                picture = renderer.uiImage
-            }
+        }
+        .task {
+            let renderer = ImageRenderer(content: VisualCanvas(spec: spec).frame(width: 390).environment(\.colorScheme, .light))
+            renderer.scale = 3
+            picture = renderer.uiImage
+        }
     }
 }
