@@ -55,19 +55,37 @@ struct VisualSpec: Codable, Hashable, Sendable {
         return usable ? spec : nil
     }
 
+    /// How much each visual carries. Standard is the default; Deep is for when a summary isn't enough.
+    enum Detail: String, CaseIterable, Identifiable, Sendable {
+        case overview, standard, deep
+        var id: String { rawValue }
+        var label: String { switch self { case .overview: "Overview"; case .standard: "Standard"; case .deep: "Deep" } }
+        /// Reply budget for the model.
+        var tokens: Int { switch self { case .overview: 800; case .standard: 1_300; case .deep: 2_400 } }
+        /// How many notebook passages to read.
+        var passages: Int { switch self { case .overview: 8; case .standard: 14; case .deep: 24 } }
+        fileprivate func pick(_ a: String, _ b: String, _ c: String) -> String { switch self { case .overview: a; case .standard: b; case .deep: c } }
+    }
+
     /// The JSON shape each layout is asked for.
-    static func request(_ layout: Layout, about: String) -> String {
+    static func request(_ layout: Layout, about: String, detail: Detail = .standard) -> String {
+        let d = detail
         switch layout {
         case .mindmap:
-            return "Make a mind map of \(about). Reply with ONLY a JSON object: {\"title\": the central topic in at most 6 words, \"branches\": [5 or 6 items {\"title\": 1 to 4 words, \"children\": [2 to 4 short phrases of at most 8 words]}]}."
+            let n = d.pick("4 or 5", "5 or 6", "7 or 8"), k = d.pick("1 or 2", "2 to 4", "4 to 6"), w = d.pick("6", "8", "12")
+            return "Make a mind map of \(about). Reply with ONLY a JSON object: {\"title\": the central topic in at most 6 words, \"branches\": [\(n) items {\"title\": 1 to 4 words, \"children\": [\(k) short phrases of at most \(w) words]}]}."
         case .flowchart:
-            return "Make a flowchart of the main process or sequence in \(about). Reply with ONLY a JSON object: {\"title\": at most 6 words, \"steps\": [5 to 8 items {\"title\": at most 6 words, \"detail\": one short sentence}]}."
+            let n = d.pick("4 or 5", "5 to 8", "8 to 12"), s = d.pick("a few words", "one short sentence", "one or two sentences")
+            return "Make a flowchart of the main process or sequence in \(about). Reply with ONLY a JSON object: {\"title\": at most 6 words, \"steps\": [\(n) items {\"title\": at most 6 words, \"detail\": \(s)}]}."
         case .comparison:
-            return "Make a comparison table for \(about). Reply with ONLY a JSON object: {\"title\": at most 6 words, \"columns\": [2 or 3 names of the things compared], \"rows\": [4 to 6 items {\"label\": the aspect compared, \"cells\": [one short phrase per column, in column order]}]}."
+            let n = d.pick("3 or 4", "4 to 6", "7 to 10")
+            return "Make a comparison table for \(about). Reply with ONLY a JSON object: {\"title\": at most 6 words, \"columns\": [2 or 3 names of the things compared], \"rows\": [\(n) items {\"label\": the aspect compared, \"cells\": [one short phrase per column, in column order]}]}."
         case .timeline:
-            return "Make a timeline for \(about). Reply with ONLY a JSON object: {\"title\": at most 6 words, \"events\": [5 to 8 items in order {\"when\": the date or stage, \"title\": at most 6 words, \"detail\": one short sentence}]}."
+            let n = d.pick("4 or 5", "5 to 8", "8 to 12"), s = d.pick("a few words", "one short sentence", "one or two sentences")
+            return "Make a timeline for \(about). Reply with ONLY a JSON object: {\"title\": at most 6 words, \"events\": [\(n) items in order {\"when\": the date or stage, \"title\": at most 6 words, \"detail\": \(s)}]}."
         case .infographic:
-            return "Make an infographic for \(about). Reply with ONLY a JSON object: {\"title\": a punchy headline of at most 8 words, \"stats\": [3 or 4 items {\"value\": a figure, number or short fact taken from the passages, \"label\": at most 5 words}], \"points\": [3 to 5 items {\"title\": at most 5 words, \"detail\": one short sentence}]}."
+            let st = d.pick("3", "3 or 4", "4 to 6"), p = d.pick("2 or 3", "3 to 5", "5 to 8"), s = d.pick("a few words", "one short sentence", "one or two sentences")
+            return "Make an infographic for \(about). Reply with ONLY a JSON object: {\"title\": a punchy headline of at most 8 words, \"stats\": [\(st) items {\"value\": a figure, number or short fact taken from the passages, \"label\": at most 5 words}], \"points\": [\(p) items {\"title\": at most 5 words, \"detail\": \(s)}]}."
         }
     }
 }

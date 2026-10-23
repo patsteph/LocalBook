@@ -24,7 +24,7 @@ final class StudioEngine {
     func stop() { stopped = true; task?.cancel() }
 
     /// Returns the saved item, or nil (with `error` set) when it could not be made.
-    func make(_ kind: StudioItem.Kind, in notebook: LibraryNotebookInfo, topic: String, count: Int, notebookOnly: Bool, style: AudioStyle = .casual, layout: VisualSpec.Layout = .mindmap, library: LibraryModel) async -> StudioItem? {
+    func make(_ kind: StudioItem.Kind, in notebook: LibraryNotebookInfo, topic: String, count: Int, notebookOnly: Bool, style: AudioStyle = .casual, layout: VisualSpec.Layout = .mindmap, detail: VisualSpec.Detail = .standard, library: LibraryModel) async -> StudioItem? {
         guard !working else { return nil }
         working = true; error = nil; preview = ""; progress = 0; caption = ""; stopped = false
         if kind == .audio { working = false; return await makeAudio(in: notebook, topic: topic, segments: count, notebookOnly: notebookOnly, style: style, library: library) }
@@ -47,13 +47,13 @@ final class StudioEngine {
                 for hit in found.hits where seen.insert(hit.id).inserted { passages.append(hit) }
             }
         }
-        passages = Array(passages.prefix(kind == .doc ? 12 : (kind == .quiz ? min(40, max(16, count * 2)) : min(24, max(10, count + 4)))))
+        passages = Array(passages.prefix(kind == .doc ? 12 : (kind == .visual ? detail.passages : (kind == .quiz ? min(40, max(16, count * 2)) : min(24, max(10, count + 4))))))
         guard !passages.isEmpty else { error = "Nothing in this notebook matches that yet."; return nil }
 
         func numbered(_ list: [LibraryHit]) -> String {
             list.enumerated().map { i, h in "[\(i + 1)] (\(h.filename))\n\(String(h.text.prefix(900)))" }.joined(separator: "\n\n")
         }
-        let (instructions, request, tokens) = Self.prompt(kind, notebookTitle: notebook.title, topic: topic, count: count, notebookOnly: notebookOnly, layout: layout)
+        let (instructions, request, tokens) = Self.prompt(kind, notebookTitle: notebook.title, topic: topic, count: count, notebookOnly: notebookOnly, layout: layout, detail: detail)
 
         /// Streams one request to the model; returns its text, or nil if it was stopped.
         func run(_ prompt: String, tokens: Int) async -> String? {
@@ -130,7 +130,7 @@ final class StudioEngine {
 
     // MARK: prompts and parsing
 
-    nonisolated static func prompt(_ kind: StudioItem.Kind, notebookTitle: String, topic: String, count: Int, notebookOnly: Bool, layout: VisualSpec.Layout = .mindmap) -> (String, String, Int) {
+    nonisolated static func prompt(_ kind: StudioItem.Kind, notebookTitle: String, topic: String, count: Int, notebookOnly: Bool, layout: VisualSpec.Layout = .mindmap, detail: VisualSpec.Detail = .standard) -> (String, String, Int) {
         let about = topic.isEmpty ? "the notebook “\(notebookTitle)”" : "“\(topic)” in the notebook “\(notebookTitle)”"
         let base = (notebookOnly
             ? "You write ONLY from the numbered passages from the user's own notes. Never add facts that are not in them."
@@ -145,7 +145,7 @@ final class StudioEngine {
                     "Write exactly \(count) multiple-choice questions about \(about). Reply with ONLY a JSON array, no other text. Each item: {\"question\": string, \"choices\": [4 short strings], \"answer\": index 0-3 of the correct choice, \"why\": one sentence from the passages}.",
                     max(600, count * 230))
         case .visual:
-            return (base + " Keep every label short. You reply with JSON only.", VisualSpec.request(layout, about: about), 1_300)
+            return (base + " Keep every label short. You reply with JSON only.", VisualSpec.request(layout, about: about, detail: detail), detail.tokens)
         case .cards, .audio:
             return (base + " You reply with JSON only.",
                     "Write exactly \(count) flashcards about \(about). Reply with ONLY a JSON array, no other text. Each item: {\"front\": a short question or term, \"back\": a short answer from the passages}.",

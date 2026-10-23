@@ -128,6 +128,7 @@ private struct MakeSheet: View {
     @State private var style: AudioStyle = .casual
     @State private var notebookOnly = true
     @State private var layout: VisualSpec.Layout = .mindmap
+    @State private var detail: VisualSpec.Detail = .standard
     @FocusState private var typing: Bool
 
     init(kind: StudioItem.Kind, notebook: LibraryNotebookInfo, library: LibraryModel, engine: StudioEngine, onMade: @escaping (StudioItem) -> Void) {
@@ -151,6 +152,11 @@ private struct MakeSheet: View {
                         if kind == .visual {
                             Section("Layout") {
                                 Picker("Layout", selection: $layout) { ForEach(VisualSpec.Layout.allCases) { Label($0.label, systemImage: $0.symbol).tag($0) } }.pickerStyle(.menu)
+                            }
+                            Section {
+                                Picker("Detail", selection: $detail) { ForEach(VisualSpec.Detail.allCases) { Text($0.label).tag($0) } }.pickerStyle(.segmented)
+                            } header: { Text("Detail") } footer: {
+                                Text(detail == .deep ? "More branches and facts. Pinch to zoom in." : (detail == .overview ? "The big picture only." : "A clear, balanced picture."))
                             }
                         }
                         if kind != .doc && kind != .visual {
@@ -187,7 +193,7 @@ private struct MakeSheet: View {
     }
 
     private func make() async {
-        if let made = await engine.make(kind, in: notebook, topic: topic, count: count, notebookOnly: notebookOnly, style: style, layout: layout, library: library) {
+        if let made = await engine.make(kind, in: notebook, topic: topic, count: count, notebookOnly: notebookOnly, style: style, layout: layout, detail: detail, library: library) {
             onMade(made); dismiss()
         }
     }
