@@ -103,6 +103,8 @@ enum VideoMaker {
         }
         try? FileManager.default.removeItem(at: output)
         try await export.export(to: output, as: .mp4)
+        let made = AVURLAsset(url: output)
+        if try await made.loadTracks(withMediaType: .audio).isEmpty { throw Failure(text: "The narration didn't make it into the video.") }
     }
 
     private static func pixelBuffer(_ image: CGImage) -> CVPixelBuffer? {

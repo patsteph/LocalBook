@@ -66,10 +66,10 @@ struct StudioView: View {
                                         .frame(width: 44, height: 44).background(kind.tint.opacity(0.15), in: Circle())
                                     VStack(alignment: .leading, spacing: 2) {
                                         Text(kind.label).font(.headline).foregroundStyle(.primary)
-                                        Text(kind.blurb).font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.leading)
+                                        Text(kind.blurb).font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.leading).lineLimit(2)
                                     }
                                 }
-                                .frame(maxWidth: .infinity, alignment: .leading).padding(14)
+                                .padding(14).frame(maxWidth: .infinity, minHeight: 128, maxHeight: 128, alignment: .topLeading)
                                 .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 18))
                             }
                             .buttonStyle(.plain).disabled(notebook == nil)

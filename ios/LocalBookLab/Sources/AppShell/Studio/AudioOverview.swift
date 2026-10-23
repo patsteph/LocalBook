@@ -30,7 +30,7 @@ final class AudioOverviewPlayer {
     }
 
     /// Category and activation happen off the main thread (Apple flags them there as a hang risk).
-    @concurrent private static func prepareSession() async {
+    @concurrent static func prepareSession() async {
         let session = AVAudioSession.sharedInstance()
         try? session.setCategory(.playback, mode: .spokenAudio)
         _ = try? await session.activate(options: [])

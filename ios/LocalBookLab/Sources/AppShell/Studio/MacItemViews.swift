@@ -53,7 +53,10 @@ struct VideoItemView: View {
         Group {
             if let player { VideoPlayer(player: player) } else { ProgressView() }
         }
-        .onAppear { player = AVPlayer(url: StudioStore.audioURL(info.file)) }
+        .task {
+            await AudioOverviewPlayer.prepareSession()      // playback category, so sound plays even with the silent switch on
+            player = AVPlayer(url: StudioStore.audioURL(info.file))
+        }
         .onDisappear { player?.pause(); player = nil }
     }
 }
