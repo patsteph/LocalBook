@@ -91,7 +91,7 @@ struct VisualSpec: Codable, Hashable, Sendable {
 }
 
 private struct MindBounds: PreferenceKey {
-    static var defaultValue: [String: Anchor<CGRect>] = [:]
+    nonisolated(unsafe) static var defaultValue: [String: Anchor<CGRect>] = [:]
     static func reduce(value: inout [String: Anchor<CGRect>], nextValue: () -> [String: Anchor<CGRect>]) { value.merge(nextValue()) { $1 } }
 }
 
@@ -255,7 +255,7 @@ struct VisualCanvas: View {
 }
 
 private struct CanvasSize: PreferenceKey {
-    static var defaultValue = CGSize.zero
+    nonisolated(unsafe) static var defaultValue = CGSize.zero
     static func reduce(value: inout CGSize, nextValue: () -> CGSize) { value = nextValue() }
 }
 
