@@ -641,7 +641,8 @@ async def phone_library_note(request: Request):
     from services.sync import phone_notes
     b = v["body"]
     return await phone_notes.add_note(str(b.get("notebook_id", "")), str(b.get("client_id", "")),
-                                      str(b.get("title", "")), str(b.get("text", "")), str(b.get("kind", "note")))
+                                      str(b.get("title", "")), str(b.get("text", "")), str(b.get("kind", "note")),
+                                      str(b.get("photo", "")))
 
 
 _phone_ask_lock = asyncio.Lock()           # one phone question at a time: it uses the Mac's models

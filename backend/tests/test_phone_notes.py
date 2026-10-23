@@ -101,3 +101,57 @@ def test_the_phone_is_answered_before_indexing_finishes(tmp_path, monkeypatch):
         return out
 
     assert asyncio.run(scenario()) == {"source_id": "src1", "duplicate": False}
+
+
+def test_a_photo_is_added_once_as_a_picture_source_next_to_its_note(tmp_path, monkeypatch):
+    import base64
+    import services.document_processor as dp
+    import services.post_ingest as pi
+    import storage.source_store as ss
+    monkeypatch.setattr(runtime, "data_dir", lambda: tmp_path)
+    monkeypatch.setattr(phone_library, "is_visible", lambda n: True)
+    import api.sources as sources
+    seen = []
+
+    async def make(nb, req, bg, on_created=None, enable_hyde=True):
+        await on_created("note1")
+        return {"source_id": "note1"}
+
+    class FakeProcessor:
+        async def process(self, content, filename, notebook_id):
+            seen.append((filename, content[:2]))
+            return {"source_id": "pic1"}
+
+    class FakeStore:
+        async def get(self, sid):
+            return {"content": "text in the picture"}
+
+    async def fake_finalize(*a, **k):
+        seen.append(("finalized", a[1], k.get("origin")))
+        return {}
+
+    monkeypatch.setattr(sources, "make_note", make)
+    monkeypatch.setattr(dp, "document_processor", FakeProcessor())
+    monkeypatch.setattr(ss, "source_store", FakeStore())
+    monkeypatch.setattr(pi, "finalize_source", fake_finalize)
+    jpeg = b"\xff\xd8" + b"x" * 100
+
+    async def scenario():
+        out = await phone_notes.add_note("nb", "c1", "Whiteboard", "hello", "image", base64.b64encode(jpeg).decode())
+        await asyncio.sleep(0.2)
+        again = await phone_notes.add_note("nb", "c1", "Whiteboard", "hello", "image", base64.b64encode(jpeg).decode())
+        await asyncio.sleep(0.1)
+        return out, again
+
+    out, again = asyncio.run(scenario())
+    assert out["source_id"] == "note1" and again["duplicate"] is True
+    assert seen == [("Whiteboard.jpg", b"\xff\xd8"), ("finalized", "pic1", "phone")]
+
+
+def test_a_photo_that_is_not_a_jpeg_is_refused(tmp_path, monkeypatch):
+    import base64
+    monkeypatch.setattr(runtime, "data_dir", lambda: tmp_path)
+    monkeypatch.setattr(phone_library, "is_visible", lambda n: True)
+    with pytest.raises(HTTPException) as e:
+        asyncio.run(phone_notes.add_note("nb", "c1", "T", "hello", "image", base64.b64encode(b"not a jpeg").decode()))
+    assert e.value.status_code == 400

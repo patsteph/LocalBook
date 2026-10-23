@@ -6,6 +6,7 @@ creates itself, and the phone receives it back through the normal library sync."
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 from typing import Any, Dict
@@ -15,6 +16,7 @@ from fastapi import BackgroundTasks, HTTPException
 logger = logging.getLogger(__name__)
 
 MAX_CHARS = 200_000
+MAX_PHOTO_BYTES = 6_000_000
 _lock = asyncio.Lock()
 
 
@@ -41,8 +43,35 @@ _inflight: Dict[str, tuple] = {}      # notes being created right now, by ledger
 _after: set = set()                                 # follow-up work (timeline) kept alive until it finishes
 
 
+async def _attach_photo(notebook_id: str, key: str, title: str, jpeg: bytes) -> None:
+    """Add the photo itself as a picture source, next to the note made from its text. Once per photo; never fatal:
+    the note is already safe by the time this runs."""
+    async with _lock:
+        if f"{key}#photo" in _load():
+            return
+    try:
+        from services.document_processor import document_processor
+        from services.post_ingest import finalize_source
+        from storage.source_store import source_store
+        name = (title.strip()[:80] or "Phone photo") + ".jpg"
+        result = await document_processor.process(content=jpeg, filename=name, notebook_id=notebook_id)
+        sid = result.get("source_id")
+        if not sid:
+            return
+        source = await source_store.get(sid)
+        await finalize_source(notebook_id, sid, name, (source or {}).get("content") or "",
+                              raw_bytes=jpeg, origin="phone", notify=False)
+        async with _lock:
+            ledger = _load()
+            ledger[f"{key}#photo"] = sid
+            await asyncio.to_thread(_save, ledger)
+        logger.warning("[phone-notes] %s: photo added as source %s", key, sid)
+    except Exception as exc:
+        logger.warning("[phone-notes] %s: photo not added: %s", key, exc)
+
+
 async def _create(notebook_id: str, client_id: str, key: str, title: str, text: str,
-                  started: "asyncio.Future[str]") -> str:
+                  started: "asyncio.Future[str]", jpeg: bytes = b"") -> str:
     """Create and index the note and return its source id; `started` gets the id as soon as the source exists.
 
     Runs as its own task: indexing a note (embedding, generated questions, tagging) can take longer than the
@@ -81,13 +110,16 @@ async def _create(notebook_id: str, client_id: str, key: str, title: str, text: 
             logger.warning("[phone-notes] timeline extraction failed: %s", exc)
 
     logger.warning("[phone-notes] %s: indexed", key)
+    if jpeg:
+        await _attach_photo(notebook_id, key, title, jpeg)
     task = asyncio.create_task(_timeline())
     _after.add(task)
     task.add_done_callback(_after.discard)
     return made["source_id"]
 
 
-async def add_note(notebook_id: str, client_id: str, title: str, text: str, kind: str = "note") -> Dict[str, Any]:
+async def add_note(notebook_id: str, client_id: str, title: str, text: str, kind: str = "note",
+                   photo_b64: str = "") -> Dict[str, Any]:
     from services.sync import phone_library
     text = (text or "").strip()
     if not client_id or len(client_id) > 100:
@@ -96,6 +128,14 @@ async def add_note(notebook_id: str, client_id: str, title: str, text: str, kind
         raise HTTPException(400, f"note text of 1 to {MAX_CHARS} characters is required")
     if not await asyncio.to_thread(phone_library.is_visible, notebook_id):
         raise HTTPException(404, "no such notebook")
+    jpeg = b""
+    if photo_b64:
+        try:
+            jpeg = base64.b64decode(photo_b64, validate=True)
+        except ValueError:
+            raise HTTPException(400, "the photo is not valid base64")
+        if len(jpeg) > MAX_PHOTO_BYTES or not jpeg.startswith(b"\xff\xd8"):
+            raise HTTPException(400, "the photo must be a JPEG of at most 6 MB")
     key = f"{notebook_id}:{client_id}"
     logger.warning("[phone-notes] %s: note received (%d characters)", key, len(text))
     async with _lock:
@@ -105,7 +145,7 @@ async def add_note(notebook_id: str, client_id: str, title: str, text: str, kind
         task = _inflight.get(key)
         if task is None:        # a retry that arrives while the first try is still indexing waits for that one
             started = asyncio.get_running_loop().create_future()
-            task = asyncio.create_task(_create(notebook_id, client_id, key, title or "", text, started))
+            task = asyncio.create_task(_create(notebook_id, client_id, key, title or "", text, started, jpeg))
             task.add_done_callback(lambda t, k=key: (_inflight.pop(k, None), t.cancelled() or t.exception()))
             _inflight[key] = (task, started)
         else:

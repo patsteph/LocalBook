@@ -141,9 +141,13 @@ extension LibraryModel {
                 var attempt = 0
                 while sid == nil {
                     do {
-                        let data = try await MacLink.signedCall(mac, path: "/phone/library/note", json: [
+                        var payload: [String: Any] = [
                             "notebook_id": note.notebookId, "client_id": note.id, "title": note.title, "text": note.text, "kind": note.kind,
-                        ], timeout: 60)
+                        ]
+                        if note.hasPicture, let jpeg = try? Data(contentsOf: Self.photoURL(note.id)) {
+                            payload["photo"] = jpeg.base64EncodedString()           // the Mac keeps the picture itself too
+                        }
+                        let data = try await MacLink.signedCall(mac, path: "/phone/library/note", json: payload, timeout: 120)
                         sid = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["source_id"] as? String
                         if sid?.isEmpty != false { noteSendProblem = "The Mac's reply wasn't understood."; await refresh(); return }
                     } catch {
