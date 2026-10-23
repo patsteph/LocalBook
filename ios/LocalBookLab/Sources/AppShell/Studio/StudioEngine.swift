@@ -24,10 +24,10 @@ final class StudioEngine {
     func stop() { stopped = true; task?.cancel() }
 
     /// Returns the saved item, or nil (with `error` set) when it could not be made.
-    func make(_ kind: StudioItem.Kind, in notebook: LibraryNotebookInfo, topic: String, count: Int, notebookOnly: Bool, library: LibraryModel) async -> StudioItem? {
+    func make(_ kind: StudioItem.Kind, in notebook: LibraryNotebookInfo, topic: String, count: Int, notebookOnly: Bool, style: AudioStyle = .casual, library: LibraryModel) async -> StudioItem? {
         guard !working else { return nil }
         working = true; error = nil; preview = ""; progress = 0; caption = ""; stopped = false
-        if kind == .audio { working = false; return await makeAudio(in: notebook, topic: topic, segments: count, notebookOnly: notebookOnly, library: library) }
+        if kind == .audio { working = false; return await makeAudio(in: notebook, topic: topic, segments: count, notebookOnly: notebookOnly, style: style, library: library) }
         defer { working = false; status = "" }
         guard let gemma = library.gemma else { error = "The answer model is still getting ready. Try again in a moment."; return nil }
         guard GPUGuard.canStart else { error = "Open the app and try again: this can't run while the screen is off."; return nil }
@@ -213,10 +213,22 @@ extension StudioEngine {
     static let voices = ["af_heart", "am_michael"]
     static let linesPerSegment = 8
 
+    /// How fast a line is spoken for the feeling it carries.
+    static func pace(for mood: String) -> Float {
+        switch mood {
+        case "excited": 1.12
+        case "amused", "surprised": 1.07
+        case "curious": 1.02
+        case "thoughtful": 0.92
+        case "serious": 0.95
+        default: 1.0
+        }
+    }
+
     /// A two-host spoken overview of one notebook, made entirely on the phone: the answer model writes the
     /// conversation a segment at a time from different parts of the notebook, then Kokoro voices it in two voices
     /// into one audio file.
-    func makeAudio(in notebook: LibraryNotebookInfo, topic: String, segments: Int, notebookOnly: Bool, library: LibraryModel) async -> StudioItem? {
+    func makeAudio(in notebook: LibraryNotebookInfo, topic: String, segments: Int, notebookOnly: Bool, style: AudioStyle, library: LibraryModel) async -> StudioItem? {
         guard !working else { return nil }
         working = true; error = nil; preview = ""; progress = 0; caption = ""; stopped = false
         defer { working = false; status = "" }
@@ -246,8 +258,18 @@ extension StudioEngine {
         let source = notebookOnly
             ? "Use ONLY facts from the numbered passages from the user's own notes."
             : "Use mainly the numbered passages from the user's own notes; you may add well-established general knowledge about the subject."
-        let instructions = "You write a lively, friendly two-person podcast conversation between two hosts, Alex (A) and Sam (B). \(source) Spoken language only: short sentences, no markdown, no citations or numbers in brackets, no stage directions, no sound effects. You reply with JSON only."
-        var lines: [(host: Int, text: String)] = []
+        let instructions = """
+        You write the script of a podcast between two real, distinct people, Alex (A) and Sam (B). \(source) \
+        \(style.direction) \
+        Alex is curious and enthusiastic, asks the questions a smart listener would, and loves a good analogy. \
+        Sam knows the material well, is warm and grounded, and has a dry sense of humor. \
+        Make it sound spoken, never read: contractions, natural reactions ("Wait, really?", "Huh.", "Okay, that's wild."), \
+        interruptions and quick back-and-forth, questions, the occasional laugh ("ha"), and varied sentence length. \
+        Use punctuation to carry feeling: ! for energy, ? for curiosity, … for a thinking pause, a dash for a sudden turn. \
+        Never sound like a newsreader: no "welcome to today's episode" formula, no lists, no summary voice, no markdown, \
+        no citations or bracketed numbers, no stage directions or sound effects. Each line says one thing. You reply with JSON only.
+        """
+        var lines: [(host: Int, text: String, mood: String)] = []
         for k in 0..<segments {
             if stopped { error = "Stopped."; return nil }
             status = "Alex and Sam are writing the script… part \(k + 1) of \(segments)"
@@ -267,13 +289,13 @@ extension StudioEngine {
             \(numbered)
 
             Write part \(k + 1) of \(segments) of a podcast conversation about \(about). \(place) \
-            Reply with ONLY a JSON array of exactly \(Self.linesPerSegment) items, alternating hosts. Each item: {"host": "A" or "B", "text": one to three short spoken sentences}.\(continuity)
+            Reply with ONLY a JSON array of exactly \(Self.linesPerSegment) items, alternating hosts. Each item: {"host": "A" or "B", "mood": one of "excited", "amused", "curious", "surprised", "thoughtful", "serious", "warm", "text": one to three short spoken sentences, or just a quick reaction}.\(continuity)
             """
             guard let out = await generate(gemma, instructions: instructions, prompt: prompt, tokens: 1_100) else { error = "Stopped."; return nil }
-            let got: [(host: Int, text: String)] = Self.jsonObjects(in: out).compactMap { o in
+            let got: [(host: Int, text: String, mood: String)] = Self.jsonObjects(in: out).compactMap { o in
                 guard let text = (o["text"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else { return nil }
                 let h = (o["host"] as? String)?.uppercased() ?? ""
-                return (h.hasPrefix("B") || h.hasPrefix("SAM") ? 1 : 0, text)
+                return (h.hasPrefix("B") || h.hasPrefix("SAM") ? 1 : 0, text, (o["mood"] as? String)?.lowercased() ?? "warm")
             }
             lines += got
             progress = 0.5 * Double(k + 1) / Double(segments)
@@ -331,7 +353,8 @@ extension StudioEngine {
         }
         var written = 0
         var script: [AudioScript.Line] = []
-        let gap = [Float](repeating: 0, count: Int(rate * 0.28))
+        let gap = [Float](repeating: 0, count: Int(rate * 0.30))
+        let shortGap = [Float](repeating: 0, count: Int(rate * 0.08))
         do {
             for (i, line) in lines.enumerated() {
                 if stopped { try? FileManager.default.removeItem(at: url); error = "Stopped."; return nil }
@@ -339,7 +362,8 @@ extension StudioEngine {
                 status = "\(Self.hostNames[line.host]) is recording… \(i + 1) of \(lines.count)"
                 script.append(.init(host: line.host, text: line.text, start: Double(written) / rate))
                 for part in SpeechText.chunks(from: line.text) {
-                    let speed: Float = voiceFor[0] == voiceFor[1] && line.host == 1 ? 1.08 : 1.0
+                    let base: Float = voiceFor[0] == voiceFor[1] && line.host == 1 ? 1.06 : 1.0
+                    let speed = base * Self.pace(for: line.mood)
                     let r: KokoroAneSynthesisResult
                     do { r = try await kokoro.synthesizeDetailed(text: part, voice: voiceFor[line.host], speed: speed) }
                     catch {
@@ -348,7 +372,8 @@ extension StudioEngine {
                     }
                     write(r.samples); written += r.samples.count
                 }
-                write(gap); written += gap.count
+                let pause = line.text.count < 28 ? shortGap : gap          // quick reactions come in right away
+                write(pause); written += pause.count
                 progress = 0.5 + 0.5 * Double(i + 1) / Double(lines.count)
             }
         } catch {
@@ -386,5 +411,22 @@ extension StudioEngine {
         NotificationCenter.default.removeObserver(observer)
         task = nil
         return work.isCancelled || stopped ? nil : preview.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}
+
+/// How the two hosts present: each style changes who leads, the energy, and how they relate.
+enum AudioStyle: String, CaseIterable, Identifiable, Sendable {
+    case casual, debate, interview, storyteller
+    var id: String { rawValue }
+    var label: String {
+        switch self { case .casual: "Casual chat"; case .debate: "Friendly debate"; case .interview: "Interview"; case .storyteller: "Storyteller" }
+    }
+    var direction: String {
+        switch self {
+        case .casual: "Style: two friends who find this fascinating, chatting over coffee. Relaxed, funny, quick to react to each other."
+        case .debate: "Style: a spirited but friendly debate. Alex takes the optimistic or favorable reading, Sam the skeptical or cautious one, both strictly based on what the material supports. They push back, concede points, and land somewhere real."
+        case .interview: "Style: Alex interviews Sam, who is the expert on this material. Alex asks sharp, curious follow-ups and reacts honestly; Sam answers with stories, examples and clear explanations."
+        case .storyteller: "Style: Alex tells the story of this material as a gripping narrative with scenes, stakes and a through-line; Sam reacts, asks what happened next, and adds the telling detail."
+        }
     }
 }

@@ -10,6 +10,7 @@ struct StudioView: View {
     @State private var topic = ""
     @State private var count = 5
     @State private var notebookOnly = true
+    @State private var style: AudioStyle = .casual
     @State private var opened: StudioItem?
     @FocusState private var typing: Bool
 
@@ -34,6 +35,9 @@ struct StudioView: View {
                         Picker(kind == .quiz ? "Questions" : (kind == .audio ? "Length" : "Cards"), selection: $count) {
                             ForEach(counts, id: \.self) { Text(countLabel($0)).tag($0) }
                         }
+                    }
+                    if kind == .audio {
+                        Picker("Style", selection: $style) { ForEach(AudioStyle.allCases) { Text($0.label).tag($0) } }
                     }
                     Toggle("Only from this notebook", isOn: $notebookOnly)
                     Button { typing = false; if let notebook { Task { await make(notebook) } } } label: {
@@ -78,7 +82,7 @@ struct StudioView: View {
     private func reload() { items = StudioStore.all(notebook: notebookId) }
 
     private func make(_ notebook: LibraryNotebookInfo) async {
-        if let made = await engine.make(kind, in: notebook, topic: topic, count: count, notebookOnly: notebookOnly, library: library) { reload(); opened = made }
+        if let made = await engine.make(kind, in: notebook, topic: topic, count: count, notebookOnly: notebookOnly, style: style, library: library) { reload(); opened = made }
     }
 }
 
