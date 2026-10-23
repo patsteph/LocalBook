@@ -11,6 +11,8 @@ struct AskView: View {
     @State private var atBottom = true
     @State private var openSource: SourceRef?
     @State private var length = AnswerLength.current.rawValue
+    @State private var dictation = Dictation()
+    @State private var dictationBase = ""
     @State private var finishTick = 0
     @State private var failTick = 0
     @State private var sendTick = 0
@@ -207,6 +209,14 @@ struct AskView: View {
     }
 
     private var composer: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            if let why = dictation.failure { Text(why).font(.caption).foregroundStyle(.orange) }
+            composerRow
+        }
+        .padding(.horizontal).padding(.vertical, 8).background(.bar)
+    }
+
+    private var composerRow: some View {
         @Bindable var model = library
         // At the largest text sizes a row of three controls leaves the field a sliver: stack them instead.
         let layout = typeSize.isAccessibilitySize ? AnyLayout(VStackLayout(alignment: .trailing, spacing: 8))
@@ -223,6 +233,15 @@ struct AskView: View {
                 .lineLimit(1...4).focused($focused)
                 .padding(10).background(.quaternary, in: RoundedRectangle(cornerRadius: 18))
                 .submitLabel(.send).onSubmit(send)
+            Button {
+                dictationBase = library.query.isEmpty ? "" : library.query + " "
+                dictation.toggle { spoken in library.query = dictationBase + spoken }
+            } label: {
+                Image(systemName: dictation.listening ? "mic.fill" : "mic").font(.title3)
+                    .foregroundStyle(dictation.listening ? Color.red : Color.accentColor).frame(width: hit, height: hit)
+            }
+            .disabled(library.answering)
+            .accessibilityLabel(dictation.listening ? "Stop dictating" : "Dictate your question")
             if library.answering {
                 Button { library.stopAnswer() } label: { Image(systemName: "stop.circle.fill").font(.title).frame(width: hit, height: hit) }
                     .accessibilityLabel("Stop")
@@ -232,13 +251,13 @@ struct AskView: View {
                     .accessibilityLabel("Send")
             }
         }
-        .padding(.horizontal).padding(.vertical, 8).background(.bar)
     }
 
     private func send() {
         let q = library.query.trimmingCharacters(in: .whitespaces)
         guard !q.isEmpty, !library.answering else { return }
         reader.stop()
+        dictation.stop()
         focused = false
         sendTick += 1
         if !ready { queued = q; library.query = ""; return }
