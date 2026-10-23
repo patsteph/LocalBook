@@ -233,6 +233,12 @@ struct AskView: View {
                 .lineLimit(1...4).focused($focused)
                 .padding(10).background(.quaternary, in: RoundedRectangle(cornerRadius: 18))
                 .submitLabel(.send).onSubmit(send)
+                // A multi-line field turns Return into a new line; make Return send, like the arrow button.
+                .onChange(of: library.query) { _, v in
+                    guard v.hasSuffix("\n") else { return }
+                    library.query = v.trimmingCharacters(in: .whitespacesAndNewlines)
+                    send()
+                }
             Button {
                 dictationBase = library.query.isEmpty ? "" : library.query + " "
                 dictation.toggle { spoken in library.query = dictationBase + spoken }

@@ -317,17 +317,17 @@ extension StudioEngine {
         let file = id + ".m4a"
         let url = StudioStore.audioURL(file)
         let rate = Double(KokoroAneConstants.sampleRate)
-        guard let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: rate, channels: 1, interleaved: false),
-              var out = try? AVAudioFile(forWriting: url, settings: [AVFormatIDKey: kAudioFormatMPEG4AAC, AVSampleRateKey: rate,
+        var out: AVAudioFile? = try? AVAudioFile(forWriting: url, settings: [AVFormatIDKey: kAudioFormatMPEG4AAC, AVSampleRateKey: rate,
                                                                     AVNumberOfChannelsKey: 1, AVEncoderBitRateKey: 56_000],
-                                         commonFormat: .pcmFormatFloat32, interleaved: false) else {
+                                         commonFormat: .pcmFormatFloat32, interleaved: false)
+        guard out != nil, let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: rate, channels: 1, interleaved: false) else {
             error = "Couldn't create the audio file."; return nil
         }
         func write(_ samples: [Float]) {
             guard !samples.isEmpty, let buf = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(samples.count)) else { return }
             buf.frameLength = AVAudioFrameCount(samples.count)
             samples.withUnsafeBufferPointer { buf.floatChannelData![0].update(from: $0.baseAddress!, count: samples.count) }
-            try? out.write(from: buf)
+            try? out?.write(from: buf)
         }
         var written = 0
         var script: [AudioScript.Line] = []
@@ -356,7 +356,7 @@ extension StudioEngine {
             self.error = "Couldn't voice the script: \(error.localizedDescription)"; return nil
         }
         await kokoro.cleanup()
-        out = try! AVAudioFile(forReading: url)       // closes the writer so the file is complete
+        out = nil                                    // closing the writer is what completes the file
         let body = AudioScript(file: file, duration: Double(written) / rate, lines: script)
         guard let data = try? JSONEncoder().encode(body) else { return nil }
         let title = topic.isEmpty ? "Audio overview: \(notebook.title)" : "Audio overview: \(topic)"
