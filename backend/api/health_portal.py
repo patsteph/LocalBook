@@ -33,6 +33,7 @@ from services.startup_checks import (
     check_models_present,
     check_rag_embedding_dimensions, check_knowledge_graph_dimensions
 )
+from utils.lancedb_tables import list_tables
 
 router = APIRouter(prefix="/health", tags=["Health Portal"])
 
@@ -131,7 +132,7 @@ async def quick_health_check():
     # Quick DB check
     try:
         db = lancedb.connect(str(settings.db_path))
-        _ = db.table_names()
+        _ = list_tables(db)
     except:
         issues += 1
         status = "critical"
@@ -253,7 +254,7 @@ async def full_health_check():
     total_db_chunks = 0
     try:
         db = lancedb.connect(str(settings.db_path))
-        tables = db.table_names()
+        tables = list_tables(db)
         db_notebooks = [t for t in tables if t.startswith("notebook_")]
         for nb in db_notebooks:
             try:

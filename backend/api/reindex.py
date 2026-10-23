@@ -7,6 +7,7 @@ from config import settings
 from storage.source_store import source_store
 from storage.notebook_store import notebook_store
 from services.rag_engine import rag_engine
+from utils.lancedb_tables import list_tables
 
 router = APIRouter()
 
@@ -308,7 +309,7 @@ async def check_data_integrity():
     total_orphaned = 0
     
     # Check each notebook table
-    for table_name in db.table_names():
+    for table_name in list_tables(db):
         if not table_name.startswith("notebook_"):
             continue
         
@@ -379,7 +380,7 @@ async def cleanup_orphaned_data():
     cleaned_by_notebook: Dict[str, int] = {}
     total_cleaned = 0
     
-    for table_name in db.table_names():
+    for table_name in list_tables(db):
         if not table_name.startswith("notebook_"):
             continue
         
@@ -431,7 +432,7 @@ async def repair_zero_vectors():
     total_fixed = 0
     results_by_notebook = {}
     
-    for table_name in db.table_names():
+    for table_name in list_tables(db):
         if not table_name.startswith("notebook_"):
             continue
         

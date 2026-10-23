@@ -18,6 +18,7 @@ from storage.memory_store import MemoryStore, AgentNamespace
 from models.memory import (
     ArchivalMemoryEntry, MemoryImportance, MemorySourceType
 )
+from utils.lancedb_tables import has_table
 
 logger = logging.getLogger(__name__)
 
@@ -495,7 +496,7 @@ class MemoryManager:
         """
         pruned = 0
         try:
-            if "archival_memories" not in self.memory_store.archival_db.table_names():
+            if not has_table(self.memory_store.archival_db, "archival_memories"):
                 return 0
             table = self.memory_store.archival_db.open_table("archival_memories")
             

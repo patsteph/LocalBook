@@ -17,6 +17,7 @@ import pyarrow as pa
 from typing import List, Tuple, Dict, Any
 from config import settings
 import logging
+from utils.lancedb_tables import has_table, list_tables
 logger = logging.getLogger(__name__)
 
 # Required models — derived ENTIRELY from the configured roles, never a hardcoded set.
@@ -222,7 +223,7 @@ def check_rag_embedding_dimensions() -> bool:
         
         db = lancedb.connect(str(db_path))
         
-        for table_name in db.table_names():
+        for table_name in list_tables(db):
             if table_name.startswith("notebook_"):
                 table = db.open_table(table_name)
                 if table.count_rows() == 0:
@@ -264,7 +265,7 @@ def check_knowledge_graph_dimensions() -> bool:
         
         db = lancedb.connect(str(kg_path))
         
-        if "concepts" not in db.table_names():
+        if not has_table(db, "concepts"):
             return False
         
         table = db.open_table("concepts")
@@ -293,7 +294,7 @@ async def reset_knowledge_graph_tables():
         
         # Drop tables if they exist
         for table_name in ["concepts", "links", "clusters", "contradictions"]:
-            if table_name in db.table_names():
+            if has_table(db, table_name):
                 db.drop_table(table_name)
                 print(f"[Startup] Dropped KG table: {table_name}")
         

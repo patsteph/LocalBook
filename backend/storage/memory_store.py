@@ -57,6 +57,7 @@ from utils.json_io import atomic_write_json
 # hitting SQLite's expression-depth limit.
 _FTS_MAX_TERMS = 32
 import logging
+from utils.lancedb_tables import has_table
 logger = logging.getLogger(__name__)
 
 
@@ -811,7 +812,7 @@ class MemoryStore:
             pa.field("vector", pa.list_(pa.float32(), dim)),
         ])
         
-        if "archival_memories" not in self.archival_db.table_names():
+        if not has_table(self.archival_db, "archival_memories"):
             self.archival_db.create_table("archival_memories", schema=required_schema)
         else:
             # Migrate existing table if schema is outdated (e.g. missing 'namespace' column)

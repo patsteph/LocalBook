@@ -13,6 +13,7 @@ import lancedb
 
 from config import settings
 from storage.source_store import source_store
+from utils.lancedb_tables import has_table
 
 
 # Configuration
@@ -207,7 +208,7 @@ class StuckSourceRecovery:
             db = lancedb.connect(str(self._data_dir / "lancedb"))
             table_name = f"notebook_{notebook_id}"
             
-            if table_name not in db.table_names():
+            if not has_table(db, table_name):
                 return 0
             
             table = db.open_table(table_name)

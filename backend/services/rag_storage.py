@@ -29,6 +29,7 @@ from services.entity_extractor import entity_extractor
 from services.entity_graph import entity_graph
 from services.progress_reporter import ProgressReporter, get_noop_reporter
 import logging
+from utils.lancedb_tables import list_tables
 logger = logging.getLogger(__name__)
 
 _concept_extraction_semaphore = asyncio.Semaphore(int(os.getenv("LOCALBOOK_KG_CONCURRENCY", "4")))
@@ -871,7 +872,7 @@ def check_embedding_dimension_mismatch() -> List[str]:
     current_dim = rag_embeddings.get_current_embedding_dim()
     mismatched_notebooks = []
 
-    for table_name in db.table_names():
+    for table_name in list_tables(db):
         if table_name.startswith("notebook_"):
             try:
                 table = db.open_table(table_name)
