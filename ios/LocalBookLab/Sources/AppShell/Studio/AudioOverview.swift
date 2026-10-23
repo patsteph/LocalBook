@@ -170,6 +170,7 @@ struct MakingView: View {
         case .quiz: ["Sharpening pencils…", "Hiding the answers…", "Thinking up tricky ones…", "Checking it twice…"]
         case .cards: ["Shuffling the deck…", "Writing both sides…", "Trimming the corners…"]
         case .visual: ["Sketching the layout…", "Picking colors…", "Connecting the dots…", "Tidying the lines…"]
+        case .video: ["Setting up the lights…", "Drawing the slides…", "Recording the narration…", "Editing it together…"]
         case .doc: ["Gathering the best bits…", "Finding the right words…", "Adding the headings…", "Polishing…"]
         }
     }
@@ -205,7 +206,7 @@ struct MakingGlyph: View {
             let t = ctx.date.timeIntervalSinceReferenceDate
             ZStack {
                 switch kind {
-                case .audio: waves(t)
+                case .audio, .video: waves(t)
                 case .visual: network(t)
                 case .doc: lines(t)
                 case .quiz: bubbles(t)

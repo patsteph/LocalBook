@@ -7,19 +7,24 @@ import Foundation
 enum StudioSync {
     private static var ledgerURL: URL { StudioStore.folder.appendingPathComponent("sent-to-mac.json") }
 
+    static var hiddenURL: URL { StudioStore.folder.appendingPathComponent("hidden-mac-items.json") }
     private static var deleteURL: URL { StudioStore.folder.appendingPathComponent("delete-on-mac.json") }
 
-    private static func read(_ url: URL) -> Set<String> {
+    static func read(_ url: URL) -> Set<String> {
         guard let data = try? Data(contentsOf: url), let ids = try? JSONDecoder().decode([String].self, from: data) else { return [] }
         return Set(ids)
     }
 
-    private static func write(_ ids: Set<String>, to url: URL) {
+    static func write(_ ids: Set<String>, to url: URL) {
         if let data = try? JSONEncoder().encode(Array(ids)) { try? data.write(to: url, options: .atomic) }
     }
 
     /// Deletes an item here, and queues the delete for the Mac if the Mac ever received it.
     static func delete(_ item: StudioItem) {
+        if item.origin == "mac" {                                  // the Mac keeps its own; only hide it on this phone
+            var hidden = read(hiddenURL); hidden.insert(item.id); write(hidden, to: hiddenURL)
+            StudioStore.delete(item); return
+        }
         var sent = sentIds()
         if sent.remove(item.id) != nil {
             write(sent, to: ledgerURL)
@@ -50,7 +55,7 @@ enum StudioSync {
             } catch { break }                                 // out of reach: the delete waits
         }
         let sent = sentIds()
-        let waiting = StudioStore.all(notebook: nil).filter { !sent.contains($0.id) }
+        let waiting = StudioStore.all(notebook: nil).filter { !sent.contains($0.id) && $0.origin != "mac" }
         var left = waiting.count
         for item in waiting {
             do {
@@ -62,6 +67,8 @@ enum StudioSync {
         }
         return left
     }
+
+    static var deleteQueueURL: URL { deleteURL }
 
     private enum SendError: Error { case unknownNotebook }
 
@@ -78,7 +85,7 @@ enum StudioSync {
         case .cards: try await put("cards", try JSONSerialization.jsonObject(with: Data(item.body.utf8)))
         case .quiz: try await put("quiz", try JSONSerialization.jsonObject(with: Data(item.body.utf8)))
         case .audio: try await sendAudio(item, to: mac, created: created)
-        case .visual: break                                    // sent once the Mac and phone share a visual format
+        case .visual, .video: break                            // sent once the Mac and phone share the format
         }
     }
 

@@ -4,10 +4,10 @@ import Foundation
 /// per item, so it is there offline and nothing about it leaves the phone.
 struct StudioItem: Codable, Identifiable, Sendable, Hashable {
     enum Kind: String, Codable, CaseIterable, Sendable {
-        case doc, quiz, cards, audio, visual
-        var label: String { switch self { case .doc: "Briefing"; case .quiz: "Quiz"; case .cards: "Flashcards"; case .audio: "Audio overview"; case .visual: "Visual" } }
+        case doc, quiz, cards, audio, visual, video
+        var label: String { switch self { case .doc: "Briefing"; case .quiz: "Quiz"; case .cards: "Flashcards"; case .audio: "Audio overview"; case .visual: "Visual"; case .video: "Video" } }
         var short: String { self == .audio ? "Audio" : label }
-        var symbol: String { switch self { case .doc: "doc.text"; case .quiz: "checklist"; case .cards: "rectangle.stack"; case .audio: "waveform"; case .visual: "chart.bar.doc.horizontal" } }
+        var symbol: String { switch self { case .doc: "doc.text"; case .quiz: "checklist"; case .cards: "rectangle.stack"; case .audio: "waveform"; case .visual: "chart.bar.doc.horizontal"; case .video: "film" } }
     }
     var id: String
     var notebookId: String
@@ -16,6 +16,20 @@ struct StudioItem: Codable, Identifiable, Sendable, Hashable {
     var created: Date
     /// visual: the JSON of a VisualSpec. audio: the JSON of an AudioScript. doc: the text (Markdown-light). quiz / cards: the JSON of [StudioQuestion] / [StudioCard].
     var body: String
+    /// Items brought over from a Mac: "mac". Phone-made items leave this empty.
+    var origin: String? = nil
+    /// The Mac's revision stamp for a Mac item, so only changed ones are fetched again.
+    var rev: String? = nil
+    /// Audio or video file kept next to the item (Mac items download on request), and its size on the Mac.
+    var mediaFile: String? = nil
+    var mediaBytes: Int? = nil
+}
+
+/// A video: the file, how long it is, and the narration lines it speaks.
+struct VideoInfo: Codable, Sendable, Hashable {
+    var file: String
+    var duration: Double
+    var lines: [String] = []
 }
 
 struct StudioQuestion: Codable, Sendable, Identifiable, Hashable {
@@ -54,6 +68,10 @@ enum StudioStore {
     }
 
     static func delete(_ item: StudioItem) {
+        if let media = item.mediaFile { try? FileManager.default.removeItem(at: audioURL(media)) }
+        if item.kind == .video, let info = try? JSONDecoder().decode(VideoInfo.self, from: Data(item.body.utf8)) {
+            try? FileManager.default.removeItem(at: audioURL(info.file))
+        }
         if item.kind == .audio, let script = try? JSONDecoder().decode(AudioScript.self, from: Data(item.body.utf8)) {
             try? FileManager.default.removeItem(at: audioURL(script.file))
         }

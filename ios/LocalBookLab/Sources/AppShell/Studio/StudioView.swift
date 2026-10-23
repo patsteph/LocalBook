@@ -9,10 +9,11 @@ extension StudioItem.Kind: Identifiable {
         case .cards: "Flip and learn"
         case .audio: "Two hosts talk it through"
         case .visual: "Maps, flows and infographics"
+        case .video: "A narrated explainer"
         }
     }
     var tint: Color {
-        switch self { case .doc: .blue; case .quiz: .orange; case .cards: .green; case .audio: .pink; case .visual: .purple }
+        switch self { case .doc: .blue; case .quiz: .orange; case .cards: .green; case .audio: .pink; case .visual: .purple; case .video: .indigo }
     }
 }
 
@@ -55,7 +56,7 @@ struct StudioView: View {
                     .buttonStyle(.plain)
                     .listRowSeparator(.hidden).listRowBackground(Color.clear)
                     LazyVGrid(columns: [GridItem(.flexible(), spacing: 12), GridItem(.flexible(), spacing: 12)], spacing: 12) {
-                        ForEach(StudioItem.Kind.allCases) { kind in
+                        ForEach(StudioItem.Kind.allCases.filter { $0 != .video }) { kind in
                             Button { making = kind } label: {
                                 VStack(alignment: .leading, spacing: 10) {
                                     Image(systemName: kind.symbol).font(.title2).foregroundStyle(kind.tint)
@@ -82,7 +83,7 @@ struct StudioView: View {
                                 Image(systemName: item.kind.symbol).foregroundStyle(item.kind.tint).frame(width: 28)
                                 VStack(alignment: .leading, spacing: 1) {
                                     Text(item.title).foregroundStyle(.primary).lineLimit(1)
-                                    Text(item.created.formatted(date: .abbreviated, time: .shortened) + (sent.contains(item.id) ? " · on your Mac" : " · waiting to send"))
+                                    Text(item.created.formatted(date: .abbreviated, time: .shortened) + shelfNote(item))
                                         .font(.caption).foregroundStyle(.secondary)
                                 }
                                 Spacer()
@@ -116,7 +117,8 @@ struct StudioView: View {
             .onAppear { if notebookId == nil || notebook == nil { notebookId = library.scopeToNotebook ?? library.notebooks.first?.id } }
             .onChange(of: library.scopeToNotebook) { _, id in if let id { notebookId = id } }
             .onChange(of: notebookId) { _, _ in reload() }
-            .task { reload(); await send() }
+            .task { reload(); await send(); await StudioPull.pull(); reload() }
+            .refreshable { await send(); await StudioPull.pull(); reload() }
             .sheet(item: $making, onDismiss: { if let p = pendingOpen { pendingOpen = nil; opened = p } }) { kind in
                 if let notebook {
                     MakeSheet(kind: kind, notebook: notebook, library: library, engine: engine) { made in
@@ -127,6 +129,16 @@ struct StudioView: View {
             }
             .sheet(item: $opened) { StudioItemView(item: $0) }
         }
+    }
+
+    private func shelfNote(_ item: StudioItem) -> String {
+        if item.origin == "mac" {
+            guard let media = item.mediaFile else { return " · from your Mac" }
+            if FileManager.default.fileExists(atPath: StudioStore.audioURL(media).path) { return " · from your Mac" }
+            let size = item.mediaBytes.map { " (" + ByteCountFormatter.string(fromByteCount: Int64($0), countStyle: .file) + ")" } ?? ""
+            return " · from your Mac, tap to download" + size
+        }
+        return sent.contains(item.id) ? " · on your Mac" : " · waiting to send"
     }
 
     private func reload() { items = StudioStore.all(notebook: notebookId) }
@@ -280,8 +292,11 @@ struct StudioItemView: View {
                 switch item.kind {
                 case .doc: ScrollView { MarkdownText(text: item.body).padding() }
                 case .quiz: QuizRun(questions: (try? JSONDecoder().decode([StudioQuestion].self, from: Data(item.body.utf8))) ?? [], subject: item.title.replacingOccurrences(of: "Quiz: ", with: ""))
-                case .audio: if let script = try? JSONDecoder().decode(AudioScript.self, from: Data(item.body.utf8)) { AudioOverviewView(script: script, title: item.title) } else { Text("This audio can't be opened.") }
-                case .visual: if let spec = try? JSONDecoder().decode(VisualSpec.self, from: Data(item.body.utf8)) { VisualItemView(spec: spec, title: item.title) } else { Text("This visual can't be opened.") }
+                case .audio: if let script = try? JSONDecoder().decode(AudioScript.self, from: Data(item.body.utf8)) { MediaGate(item: item) { AudioOverviewView(script: script, title: item.title) } } else { Text("This audio can't be opened.") }
+                case .video: if let info = try? JSONDecoder().decode(VideoInfo.self, from: Data(item.body.utf8)) { MediaGate(item: item) { VideoItemView(info: info) } } else { Text("This video can't be opened.") }
+                case .visual:
+                    if item.body.contains("<svg") { SVGItemView(svg: item.body) }
+                    else if let spec = try? JSONDecoder().decode(VisualSpec.self, from: Data(item.body.utf8)) { VisualItemView(spec: spec, title: item.title) } else { Text("This visual can't be opened.") }
                 case .cards: CardRun(cards: (try? JSONDecoder().decode([StudioCard].self, from: Data(item.body.utf8))) ?? [])
                 }
             }

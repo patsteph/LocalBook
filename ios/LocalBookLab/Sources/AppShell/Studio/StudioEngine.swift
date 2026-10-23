@@ -154,7 +154,7 @@ final class StudioEngine {
                     max(600, count * 230))
         case .visual:
             return (base + " Keep every label short. You reply with JSON only.", VisualSpec.request(layout, about: about, detail: detail), detail.tokens)
-        case .cards, .audio:
+        case .cards, .audio, .video:
             return (base + " You reply with JSON only.",
                     "Write exactly \(count) flashcards about \(about). Reply with ONLY a JSON array, no other text. Each item: {\"front\": a short question or term, \"back\": a short answer from the passages}.",
                     max(500, count * 110))
@@ -190,7 +190,7 @@ final class StudioEngine {
             }
             guard !cs.isEmpty, let out = try? encoder.encode(cs) else { return nil }
             return String(decoding: out, as: UTF8.self)
-        case .doc, .audio:
+        case .doc, .audio, .video:
             return raw
         case .visual:
             return nil     // handled by the caller, which knows the layout
