@@ -28,6 +28,9 @@ struct StudioView: View {
     @State private var opened: StudioItem?
     @State private var pendingOpen: StudioItem?
     @State private var confirmClear = false
+    @State private var renaming: StudioItem?
+    @State private var newName = ""
+    @State private var prefill = ""
     @State private var sent: Set<String> = StudioSync.sentIds()
 
     private var notebook: LibraryNotebookInfo? { library.notebooks.first { $0.id == notebookId } }
@@ -90,6 +93,14 @@ struct StudioView: View {
                             }
                         }
                         .buttonStyle(.plain)
+                        .contextMenu {
+                            StudioShareButton(item: item)
+                            Button { newName = item.title; renaming = item } label: { Label("Rename", systemImage: "pencil") }
+                            if item.kind != .video {
+                                Button { prefill = Self.subject(of: item); making = item.kind } label: { Label("Make another version", systemImage: "arrow.triangle.2.circlepath") }
+                            }
+                            Button(role: .destructive) { StudioSync.delete(item); reload(); Task { await send() } } label: { Label("Delete", systemImage: "trash") }
+                        }
                     }
                     .onDelete { offsets in
                         for i in offsets { StudioSync.delete(items[i]) }
@@ -119,9 +130,18 @@ struct StudioView: View {
             .onChange(of: notebookId) { _, _ in reload() }
             .task { reload(); await send(); await StudioPull.pull(); reload() }
             .refreshable { await send(); await StudioPull.pull(); reload() }
-            .sheet(item: $making, onDismiss: { if let p = pendingOpen { pendingOpen = nil; opened = p } }) { kind in
+            .alert("Rename", isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })) {
+                TextField("Title", text: $newName)
+                Button("Save") {
+                    let name = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if var item = renaming, !name.isEmpty { item.title = name; StudioStore.save(item); reload() }
+                    renaming = nil
+                }
+                Button("Cancel", role: .cancel) { renaming = nil }
+            } message: { Text("Renaming changes the title on this phone only.") }
+            .sheet(item: $making, onDismiss: { prefill = ""; if let p = pendingOpen { pendingOpen = nil; opened = p } }) { kind in
                 if let notebook {
-                    MakeSheet(kind: kind, notebook: notebook, library: library, engine: engine) { made in
+                    MakeSheet(kind: kind, notebook: notebook, library: library, engine: engine, topic: prefill) { made in
                         reload(); pendingOpen = made
                         Task { await send() }
                     }
@@ -129,6 +149,12 @@ struct StudioView: View {
             }
             .sheet(item: $opened) { StudioItemView(item: $0) }
         }
+    }
+
+    /// The subject an item was made about: its title without the kind prefix.
+    private static func subject(of item: StudioItem) -> String {
+        for prefix in ["Quiz: ", "Flashcards: ", "Audio overview: ", "Video: ", "Visual: "] where item.title.hasPrefix(prefix) { return String(item.title.dropFirst(prefix.count)) }
+        return item.title
     }
 
     private func shelfNote(_ item: StudioItem) -> String {
@@ -166,7 +192,8 @@ private struct MakeSheet: View {
     @State private var detail: VisualSpec.Detail = .standard
     @FocusState private var typing: Bool
 
-    init(kind: StudioItem.Kind, notebook: LibraryNotebookInfo, library: LibraryModel, engine: StudioEngine, onMade: @escaping (StudioItem) -> Void) {
+    init(kind: StudioItem.Kind, notebook: LibraryNotebookInfo, library: LibraryModel, engine: StudioEngine, topic: String = "", onMade: @escaping (StudioItem) -> Void) {
+        _topic = State(initialValue: topic)
         self.kind = kind; self.notebook = notebook; self.library = library; self.engine = engine; self.onMade = onMade
         _count = State(initialValue: kind == .quiz ? 5 : (kind == .audio ? 4 : 10))
     }
@@ -303,7 +330,10 @@ struct StudioItemView: View {
             .navigationTitle(item.title).navigationBarTitleDisplayMode(.inline)
             .onAppear { OrientationLock.allowRotation(true) }
             .onDisappear { OrientationLock.allowRotation(false) }
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { StudioShareButton(item: item) }
+                ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
+            }
         }
     }
 }
