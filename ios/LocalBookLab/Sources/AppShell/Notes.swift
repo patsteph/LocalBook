@@ -1,5 +1,6 @@
 import SwiftUI
 import AVFoundation
+import PhotosUI
 import Speech
 @preconcurrency import Vision
 import UIKit
