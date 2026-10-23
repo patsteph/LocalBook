@@ -28,6 +28,10 @@ final class StudioEngine {
         status = "Reading the notebook…"
         var seeds = ["the main ideas and key points", "important facts, names, dates and numbers", "conclusions, decisions and open questions"]
         if !topic.isEmpty { seeds = [topic, "\(topic) key facts and details", "\(topic) background and context"] }
+        if kind == .quiz {
+            let t = topic.isEmpty ? "" : topic + " "
+            seeds += ["\(t)definitions and explanations", "\(t)examples, processes and steps", "\(t)people, organizations and relationships", "\(t)problems, risks and recommendations"]
+        }
         var passages: [LibraryHit] = []
         var seen = Set<String>()
         for seed in seeds {
@@ -35,33 +39,69 @@ final class StudioEngine {
                 for hit in found.hits where seen.insert(hit.id).inserted { passages.append(hit) }
             }
         }
-        passages = Array(passages.prefix(kind == .doc ? 12 : min(24, max(10, count + 4))))
+        passages = Array(passages.prefix(kind == .doc ? 12 : (kind == .quiz ? min(40, max(16, count * 2)) : min(24, max(10, count + 4)))))
         guard !passages.isEmpty else { error = "Nothing in this notebook matches that yet."; return nil }
 
-        let numbered = passages.enumerated().map { i, h in "[\(i + 1)] (\(h.filename))\n\(String(h.text.prefix(900)))" }.joined(separator: "\n\n")
-        let (instructions, request, tokens) = Self.prompt(kind, notebookTitle: notebook.title, topic: topic, count: count, notebookOnly: notebookOnly)
-        let prompt = "Passages:\n\n\(numbered)\n\n\(request)"
-
-        status = kind == .doc ? "Writing…" : "Making the \(kind == .quiz ? "questions" : "cards")…"
-        let session = ChatSession(gemma, instructions: instructions, generateParameters: GenerateParameters(maxTokens: tokens))
-        let work = Task { @MainActor in
-            for try await item in session.streamDetails(to: prompt) {
-                if case .chunk(let s) = item { self.preview += s }
-            }
+        func numbered(_ list: [LibraryHit]) -> String {
+            list.enumerated().map { i, h in "[\(i + 1)] (\(h.filename))\n\(String(h.text.prefix(900)))" }.joined(separator: "\n\n")
         }
-        task = work
-        let observer = GPUGuard.protect(work, label: "studio")
+        let (instructions, request, tokens) = Self.prompt(kind, notebookTitle: notebook.title, topic: topic, count: count, notebookOnly: notebookOnly)
+
+        /// Streams one request to the model; returns its text, or nil if it was stopped.
+        func run(_ prompt: String, tokens: Int) async -> String? {
+            preview = ""
+            let session = ChatSession(gemma, instructions: instructions, generateParameters: GenerateParameters(maxTokens: tokens))
+            let work = Task { @MainActor in
+                for try await item in session.streamDetails(to: prompt) {
+                    if case .chunk(let s) = item { self.preview += s }
+                }
+            }
+            task = work
+            let observer = GPUGuard.protect(work, label: "studio")
+            do { try await work.value } catch {}
+            NotificationCenter.default.removeObserver(observer)
+            task = nil
+            return work.isCancelled ? nil : preview.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+
         UIApplication.shared.isIdleTimerDisabled = true
         defer { UIApplication.shared.isIdleTimerDisabled = false }
-        do { try await work.value } catch {}
-        NotificationCenter.default.removeObserver(observer)
-        task = nil
-        if work.isCancelled { error = "Stopped."; return nil }
 
-        let raw = preview.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let body = Self.body(for: kind, from: raw) else {
+        var raw = ""
+        if kind == .quiz {
+            // Built in small batches, each from a different part of the notebook, until there are enough questions.
+            let batch = 5, window = 8
+            var made: [String] = []
+            var misses = 0, round = 0
+            while made.count < count && misses < 2 && round < 12 {
+                let want = min(batch, count - made.count)
+                status = "Making the questions… \(made.count) of \(count)"
+                let start = (round * window) % max(1, passages.count)
+                let slice = (0..<min(window, passages.count)).map { passages[(start + $0) % passages.count] }
+                let avoid = made.isEmpty ? "" : "\n\nQuestions already written (do not repeat them or their topics):\n" + made.map { "- " + $0 }.joined(separator: "\n")
+                let (_, req, toks) = Self.prompt(.quiz, notebookTitle: notebook.title, topic: topic, count: want, notebookOnly: notebookOnly)
+                guard let out = await run("Passages:\n\n\(numbered(slice))\n\n\(req)\(avoid)", tokens: toks) else { error = "Stopped."; return nil }
+                let fresh = Self.jsonObjects(in: out).compactMap { $0["question"] as? String }.filter { q in !made.contains { $0.lowercased() == q.lowercased() } }
+                if fresh.isEmpty { misses += 1 } else { misses = 0 }
+                made += fresh
+                raw += out + "\n"
+                round += 1
+            }
+        } else {
+            status = kind == .doc ? "Writing…" : "Making the cards…"
+            guard let out = await run("Passages:\n\n\(numbered(passages))\n\n\(request)", tokens: tokens) else { error = "Stopped."; return nil }
+            raw = out
+        }
+
+        guard var body = Self.body(for: kind, from: raw) else {
             error = "The model's answer couldn't be read as \(kind == .quiz ? "a quiz" : "flashcards"). Try again."
             return nil
+        }
+        if kind == .quiz, let data = body.data(using: .utf8), var qs = try? JSONDecoder().decode([StudioQuestion].self, from: data) {
+            var seen = Set<String>()
+            qs = qs.filter { seen.insert($0.question.lowercased()).inserted }
+            if qs.count > count { qs = Array(qs.prefix(count)) }
+            if let out = try? JSONEncoder().encode(qs) { body = String(decoding: out, as: UTF8.self) }
         }
         let title = Self.title(kind, notebook: notebook.title, topic: topic, body: body)
         let item = StudioItem(id: UUID().uuidString, notebookId: notebook.id, kind: kind, title: title, created: Date(), body: body)
