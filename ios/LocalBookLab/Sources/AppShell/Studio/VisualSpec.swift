@@ -90,6 +90,8 @@ struct VisualSpec: Codable, Hashable, Sendable {
     }
 }
 
+private struct BranchRef: Identifiable { let id: Int; let item: VisualSpec.Item }
+
 private struct MindBounds: PreferenceKey {
     nonisolated(unsafe) static var defaultValue: [String: Anchor<CGRect>] = [:]
     static func reduce(value: inout [String: Anchor<CGRect>], nextValue: () -> [String: Anchor<CGRect>]) { value.merge(nextValue()) { $1 } }
@@ -100,6 +102,7 @@ private let palette: [Color] = [.blue, .orange, .green, .pink, .purple, .teal]
 /// Draws a VisualSpec at phone width.
 struct VisualCanvas: View {
     let spec: VisualSpec
+    @State private var reading: BranchRef?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -114,8 +117,20 @@ struct VisualCanvas: View {
             case .infographic: infographic
             }
         }
+        .fixedSize(horizontal: false, vertical: true)      // text wraps; it is never squeezed to fit a height
         .padding(20)
         .background(Color(.systemBackground))
+        .sheet(item: $reading) { ref in
+            NavigationStack {
+                List {
+                    ForEach(Array(ref.item.children.enumerated()), id: \.offset) { _, child in Text(child).font(.body) }
+                    if !ref.item.detail.isEmpty { Text(ref.item.detail) }
+                }
+                .navigationTitle(ref.item.title).navigationBarTitleDisplayMode(.inline)
+                .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { reading = nil } } }
+            }
+            .presentationDetents([.medium, .large])
+        }
     }
 
     /// A classic mind map: the topic in the middle, branches fanning out to both sides on curved lines.
@@ -125,10 +140,10 @@ struct VisualCanvas: View {
         return HStack(alignment: .center, spacing: 0) {
             VStack(spacing: 14) { ForEach(left, id: \.offset) { branch($0.offset, $0.element, leading: false) } }.frame(maxWidth: .infinity)
             Text(spec.title).font(.subheadline.bold()).multilineTextAlignment(.center).foregroundStyle(.white)
-                .padding(10).frame(width: 92, height: 92)
+                .padding(8).frame(width: 84, height: 84)
                 .background(Circle().fill(LinearGradient(colors: [.indigo, .purple], startPoint: .topLeading, endPoint: .bottomTrailing)))
                 .anchorPreference(key: MindBounds.self, value: .bounds) { ["center": $0] }
-                .padding(.horizontal, 22)
+                .padding(.horizontal, 14)
             VStack(spacing: 14) { ForEach(right, id: \.offset) { branch($0.offset, $0.element, leading: true) } }.frame(maxWidth: .infinity)
         }
         .overlayPreferenceValue(MindBounds.self) { anchors in
@@ -154,15 +169,23 @@ struct VisualCanvas: View {
 
     private func branch(_ i: Int, _ item: VisualSpec.Item, leading: Bool) -> some View {
         let c = palette[i % palette.count]
-        return VStack(alignment: leading ? .leading : .trailing, spacing: 5) {
-            Text(item.title).font(.footnote.bold()).foregroundStyle(.white)
-                .padding(.horizontal, 10).padding(.vertical, 6).background(c, in: Capsule())
+        return Button { reading = BranchRef(id: i, item: item) } label: {
+            VStack(alignment: leading ? .leading : .trailing, spacing: 5) {
+                HStack(spacing: 4) {
+                    Text(item.title).font(.footnote.bold()).multilineTextAlignment(leading ? .leading : .trailing)
+                    if !item.children.isEmpty { Image(systemName: "text.magnifyingglass").font(.caption2) }
+                }
+                .foregroundStyle(.white).padding(.horizontal, 10).padding(.vertical, 6).background(c, in: Capsule())
                 .anchorPreference(key: MindBounds.self, value: .bounds) { ["b\(i)": $0] }
-            ForEach(item.children, id: \.self) { child in
-                Text(child).font(.caption2).foregroundStyle(.secondary).multilineTextAlignment(leading ? .leading : .trailing)
+                ForEach(Array(item.children.prefix(3).enumerated()), id: \.offset) { _, child in
+                    Text(child).font(.caption2).foregroundStyle(.secondary).lineLimit(2)
+                        .multilineTextAlignment(leading ? .leading : .trailing)
+                }
+                if item.children.count > 3 { Text("+\(item.children.count - 3) more").font(.caption2).foregroundStyle(c) }
             }
+            .frame(maxWidth: .infinity, alignment: leading ? .leading : .trailing)
         }
-        .frame(maxWidth: .infinity, alignment: leading ? .leading : .trailing)
+        .buttonStyle(.plain)
     }
 
     private var flowchart: some View {

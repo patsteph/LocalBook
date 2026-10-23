@@ -27,6 +27,8 @@ final class StudioEngine {
     func make(_ kind: StudioItem.Kind, in notebook: LibraryNotebookInfo, topic: String, count: Int, notebookOnly: Bool, style: AudioStyle = .casual, layout: VisualSpec.Layout = .mindmap, detail: VisualSpec.Detail = .standard, library: LibraryModel) async -> StudioItem? {
         guard !working else { return nil }
         working = true; error = nil; preview = ""; progress = 0; caption = ""; stopped = false
+        try? await Task.sleep(for: .milliseconds(200))              // let the making screen appear before the heavy work starts
+        let began = Date()
         if kind == .audio { working = false; return await makeAudio(in: notebook, topic: topic, segments: count, notebookOnly: notebookOnly, style: style, library: library) }
         defer { working = false; status = "" }
         guard let gemma = library.gemma else { error = "The answer model is still getting ready. Try again in a moment."; return nil }
@@ -48,6 +50,7 @@ final class StudioEngine {
             }
         }
         passages = Array(passages.prefix(kind == .doc ? 12 : (kind == .visual ? detail.passages : (kind == .quiz ? min(40, max(16, count * 2)) : min(24, max(10, count + 4))))))
+        SoakTrace.log("studio \(kind.rawValue): read \(passages.count) passages in \(String(format: "%.1f", Date().timeIntervalSince(began))) s")
         guard !passages.isEmpty else { error = "Nothing in this notebook matches that yet."; return nil }
 
         func numbered(_ list: [LibraryHit]) -> String {
@@ -61,7 +64,10 @@ final class StudioEngine {
             let session = ChatSession(gemma, instructions: instructions, generateParameters: GenerateParameters(maxTokens: tokens))
             let work = Task { @MainActor in
                 for try await item in session.streamDetails(to: prompt) {
-                    if case .chunk(let s) = item { self.preview += s; if kind == .doc { self.progress = min(0.95, Double(self.preview.count) / 2800) } }
+                    if case .chunk(let s) = item {
+                        self.preview += s
+                        if kind == .doc || kind == .visual || kind == .cards { self.progress = min(0.95, Double(self.preview.count) / (Double(tokens) * 2.6)) }
+                    }
                 }
             }
             task = work

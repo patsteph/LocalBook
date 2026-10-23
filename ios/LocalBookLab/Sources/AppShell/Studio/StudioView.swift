@@ -34,6 +34,24 @@ struct StudioView: View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 24) {
+                    Menu {
+                        Picker("Notebook", selection: $notebookId) {
+                            ForEach(library.notebooks) { Text($0.title).tag(Optional($0.id)) }
+                        }
+                    } label: {
+                        HStack(spacing: 8) {
+                            Image(systemName: "book.closed")
+                            VStack(alignment: .leading, spacing: 0) {
+                                Text("Notebook").font(.caption2).foregroundStyle(.secondary)
+                                Text(notebook?.title ?? "Choose a notebook").font(.subheadline.weight(.semibold)).lineLimit(1)
+                            }
+                            Spacer()
+                            Image(systemName: "chevron.up.chevron.down").font(.caption).foregroundStyle(.secondary)
+                        }
+                        .padding(12).frame(maxWidth: .infinity)
+                        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 14))
+                    }
+                    .buttonStyle(.plain)
                     LazyVGrid(columns: [GridItem(.flexible(), spacing: 12), GridItem(.flexible(), spacing: 12)], spacing: 12) {
                         ForEach(StudioItem.Kind.allCases) { kind in
                             Button { making = kind } label: {
@@ -79,18 +97,6 @@ struct StudioView: View {
                 .padding()
             }
             .navigationTitle("Studio")
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Menu {
-                        Picker("Notebook", selection: $notebookId) {
-                            ForEach(library.notebooks) { Text($0.title).tag(Optional($0.id)) }
-                        }
-                    } label: {
-                        Label(notebook?.title ?? "Pick a notebook", systemImage: "chevron.up.chevron.down").labelStyle(.titleAndIcon)
-                            .font(.subheadline).lineLimit(1)
-                    }
-                }
-            }
             .onAppear { if notebookId == nil || notebook == nil { notebookId = library.scopeToNotebook ?? library.notebooks.first?.id } }
             .onChange(of: library.scopeToNotebook) { _, id in if let id { notebookId = id } }
             .onChange(of: notebookId) { _, _ in reload() }
