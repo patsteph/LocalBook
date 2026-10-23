@@ -15,6 +15,8 @@ struct AskView: View {
     @State private var failTick = 0
     @State private var sendTick = 0
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.dynamicTypeSize) private var typeSize
+    @ScaledMetric(relativeTo: .body) private var hit: CGFloat = 44          // tap targets grow with the text size
 
     var body: some View {
         @Bindable var model = library
@@ -60,6 +62,8 @@ struct AskView: View {
                         }
                         if !library.answerText.isEmpty {
                             Text(AnswerText.render(library.answerText)).textSelection(.enabled)
+                                .contentTransition(.opacity)                          // new words ease in instead of popping
+                                .animation(reduceMotion ? nil : .easeOut(duration: 0.25), value: library.answerText)
                                 .environment(\.openURL, OpenURLAction { url in
                                     if url.scheme == "lb-source", let n = Int(url.host ?? ""), n >= 1, n <= library.answerSources.count {
                                         openSource = SourceRef(number: n); return .handled
@@ -190,7 +194,7 @@ struct AskView: View {
                     HStack(spacing: 8) {
                         ForEach(Array(library.answerSources.enumerated()), id: \.element.id) { i, h in
                             Button { openSource = SourceRef(number: i + 1) } label: {
-                                Text("\(i + 1)").font(.subheadline.weight(.semibold)).frame(minWidth: 44, minHeight: 44)
+                                Text("\(i + 1)").font(.subheadline.weight(.semibold)).frame(minWidth: hit, minHeight: hit)
                                     .background(.tint.opacity(0.15), in: Circle())
                             }
                             .buttonStyle(.plain)
@@ -204,12 +208,15 @@ struct AskView: View {
 
     private var composer: some View {
         @Bindable var model = library
-        return HStack(alignment: .bottom, spacing: 8) {
+        // At the largest text sizes a row of three controls leaves the field a sliver: stack them instead.
+        let layout = typeSize.isAccessibilitySize ? AnyLayout(VStackLayout(alignment: .trailing, spacing: 8))
+                                                  : AnyLayout(HStackLayout(alignment: .bottom, spacing: 8))
+        return layout {
             Menu {
                 Picker("Answer length", selection: $length) {
                     ForEach(AnswerLength.allCases) { Text($0.label).tag($0.rawValue) }
                 }
-            } label: { Image(systemName: "text.alignleft").font(.title3).frame(width: 44, height: 44) }
+            } label: { Image(systemName: "text.alignleft").font(.title3).frame(width: hit, height: hit) }
             .accessibilityLabel("Answer length")
             .onChange(of: length) { _, v in UserDefaults.standard.set(v, forKey: "answerLength") }
             TextField(ready ? "Ask your notebook" : "Ask now, answers when ready", text: $model.query, axis: .vertical)
@@ -217,10 +224,10 @@ struct AskView: View {
                 .padding(10).background(.quaternary, in: RoundedRectangle(cornerRadius: 18))
                 .submitLabel(.send).onSubmit(send)
             if library.answering {
-                Button { library.stopAnswer() } label: { Image(systemName: "stop.circle.fill").font(.title).frame(width: 44, height: 44) }
+                Button { library.stopAnswer() } label: { Image(systemName: "stop.circle.fill").font(.title).frame(width: hit, height: hit) }
                     .accessibilityLabel("Stop")
             } else {
-                Button(action: send) { Image(systemName: "arrow.up.circle.fill").font(.title).frame(width: 44, height: 44) }
+                Button(action: send) { Image(systemName: "arrow.up.circle.fill").font(.title).frame(width: hit, height: hit) }
                     .disabled(library.query.trimmingCharacters(in: .whitespaces).isEmpty)
                     .accessibilityLabel("Send")
             }
