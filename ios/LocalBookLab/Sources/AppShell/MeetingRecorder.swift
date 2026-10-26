@@ -117,21 +117,27 @@ final class MeetingSession {
         UIApplication.shared.isIdleTimerDisabled = true
         defer { UIApplication.shared.isIdleTimerDisabled = false }
         do {
+            let began = Date()
+            func lap(_ what: String) { SoakTrace.log("meeting: \(what) after \(String(format: "%.1f", Date().timeIntervalSince(began))) s") }
+            lap("start (recording \(Int(elapsed)) s)")
             step = "Finding who is speaking… (the first time this downloads a small model)"
             let manager = OfflineDiarizerManager(config: OfflineDiarizerConfig())
             try await manager.prepareModels()
+            lap("speaker models ready")
             let spoken = try await manager.process(url)
             let who = spoken.segments.map { (id: "\($0.speakerId)", start: Double($0.startTimeSeconds), end: Double($0.endTimeSeconds)) }
+            lap("speakers found: \(Set(who.map(\.id)).count) voices, \(who.count) segments")
             progress = 0.3
 
             step = "Writing down the words…"
             let words = try await Self.recognize(url) { fraction in
                 Task { @MainActor in self.progress = 0.3 + 0.7 * fraction }
             }
+            lap("words written: \(words.count)")
             guard !words.isEmpty else { phase = .failed("No speech was found in the recording."); return }
             build(words: words, who: who)
             phase = .review
-        } catch { phase = .failed(error.localizedDescription) }
+        } catch { SoakTrace.log("meeting: failed: \(error)"); phase = .failed(error.localizedDescription) }
     }
 
     /// Gives each word to whoever was speaking at its midpoint, and joins neighbouring words by the same person into turns.
