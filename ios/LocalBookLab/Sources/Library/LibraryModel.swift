@@ -454,7 +454,8 @@ final class LibraryModel {
         guard let gemma else { throw LibraryError.badResponse("answer model not loaded") }
         SoakTrace.log("decode begins (\(result.hits.count) passages)")
         defer { SoakTrace.log("decode ends") }
-        let setup = generationSetup(question: question, hits: result.hits, personal: personal, withEntityContext: withEntityContext)
+        let passages = await withMeetingContext(result.hits)
+        let setup = generationSetup(question: question, hits: passages, personal: personal, withEntityContext: withEntityContext)
         let session = ChatSession(gemma, instructions: setup.instructions, generateParameters: setup.params)
         var answer = "", first: Double?, info: GenerateCompletionInfo?
         let started = Date()
@@ -551,6 +552,42 @@ final class LibraryModel {
         }
         generation = Task { await task.value }
         await task.value
+    }
+
+    // MARK: meeting context
+
+    /// A meeting transcript is a conversation: a matched line means little without what came before and after it,
+    /// and who said it. For passages from a meeting, the answer model is given the piece before and after as well.
+    /// (The citation still shows only the matched passage.)
+    func withMeetingContext(_ hits: [LibraryHit]) async -> [LibraryHit] {
+        guard let store else { return hits }
+        var meetings: [String: Bool] = [:]
+        var out: [LibraryHit] = []
+        for h in hits {
+            let key = h.notebookId + "/" + h.sourceId
+            if meetings[key] == nil {
+                let head = await store.chunkText(notebook: h.notebookId, sourceId: h.sourceId, index: 0) ?? ""
+                meetings[key] = Self.looksLikeMeeting(head)
+            }
+            guard meetings[key] == true else { out.append(h); continue }
+            let before = await store.chunkText(notebook: h.notebookId, sourceId: h.sourceId, index: h.chunkIndex - 1)
+            let after = await store.chunkText(notebook: h.notebookId, sourceId: h.sourceId, index: h.chunkIndex + 1)
+            let text = [before, h.text, after].compactMap { $0 }.joined(separator: "\n\n")
+            out.append(LibraryHit(notebookId: h.notebookId, notebookTitle: h.notebookTitle, sourceId: h.sourceId, chunkIndex: h.chunkIndex,
+                                  filename: h.filename, text: text, score: h.score, rrf: h.rrf, sourceType: h.sourceType))
+        }
+        return out
+    }
+
+    /// Meeting notes open with a header, or are paragraphs that begin with a speaker's name and a colon.
+    nonisolated static func looksLikeMeeting(_ text: String) -> Bool {
+        if text.hasPrefix(MeetingSession.header) { return true }
+        let turns = text.components(separatedBy: "\n\n").filter { p in
+            guard let colon = p.firstIndex(of: ":") else { return false }
+            let name = p[p.startIndex..<colon]
+            return name.count >= 1 && name.count <= 40 && !name.contains(".") && !name.contains("\n") && name.first?.isUppercase == true
+        }
+        return turns.count >= 3
     }
 
     // MARK: staging models around heavy jobs

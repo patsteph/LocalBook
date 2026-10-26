@@ -59,8 +59,43 @@ final class MeetingSession {
         return "Spoke \(mine.count) time\(mine.count == 1 ? "" : "s"), first at \(String(format: "%d:%02d", Int(first.start) / 60, Int(first.start) % 60)): “\(opening)…”"
     }
 
-    /// The transcript as it will be saved: one paragraph per turn, led by the speaker's name.
-    var transcript: String { turns.map { "\(displayName($0.speaker)): \($0.text)" }.joined(separator: "\n\n") }
+    /// Opens every saved meeting, so search (and the answer model) can tell a conversation from a document.
+    nonisolated static let header = "Meeting transcript"
+
+    /// The transcript as it will be saved: a short header, then one paragraph per turn, led by the speaker's name.
+    var transcript: String {
+        let who = speakers.map { displayName($0) }.joined(separator: ", ")
+        let top = "\(Self.header), \(Date().formatted(date: .complete, time: .shortened)). Speakers: \(who)."
+        return ([top] + turns.map { "\(displayName($0.speaker)): \($0.text)" }).joined(separator: "\n\n")
+    }
+
+    // MARK: remembered names
+
+    private static let namesKey = "meetingNames"
+    static var knownNames: [String] { UserDefaults.standard.stringArray(forKey: namesKey) ?? [] }
+
+    /// Names from earlier meetings that start like what is being typed (after two letters), not already used in this one.
+    func suggestions(for id: String) -> [String] {
+        let typed = (names[id] ?? "").trimmingCharacters(in: .whitespaces)
+        guard typed.count >= 2 else { return [] }
+        let taken = Set(names.filter { $0.key != id }.map { $0.value.lowercased() })
+        return Self.knownNames.filter { name in
+            let n = name.lowercased(), t = typed.lowercased()
+            return n != t && !taken.contains(n) && (n.hasPrefix(t) || n.split(separator: " ").contains { $0.hasPrefix(t) })
+        }.prefix(4).map { $0 }
+    }
+
+    /// Remembers the names given in this meeting, most recent first.
+    func rememberNames() {
+        var known = Self.knownNames
+        for id in speakers {
+            let n = (names[id] ?? "").trimmingCharacters(in: .whitespaces)
+            guard !n.isEmpty else { continue }
+            known.removeAll { $0.lowercased() == n.lowercased() }
+            known.insert(n, at: 0)
+        }
+        UserDefaults.standard.set(Array(known.prefix(300)), forKey: Self.namesKey)
+    }
 
     // MARK: recording
 
@@ -232,7 +267,9 @@ struct MeetingView: View {
             .navigationTitle("Meeting").navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    if session.phase != .recording && session.phase != .working { Button("Close") { dismiss() } }
+                    if session.phase == .review {
+                        Button("Save") { Task { await save() } }.fontWeight(.semibold).disabled(saving)       // where the person is, however long the transcript
+                    } else if session.phase != .recording && session.phase != .working { Button("Close") { dismiss() } }
                 }
             }
         }
@@ -313,6 +350,17 @@ struct MeetingView: View {
                 ForEach(session.speakers, id: \.self) { id in
                     VStack(alignment: .leading, spacing: 2) {
                         TextField(session.displayName(id), text: Binding(get: { session.names[id] ?? "" }, set: { session.names[id] = $0 }))
+                        let picks = session.suggestions(for: id)
+                        if !picks.isEmpty {
+                            ScrollView(.horizontal, showsIndicators: false) {
+                                HStack(spacing: 8) {
+                                    ForEach(picks, id: \.self) { name in
+                                        Button(name) { session.names[id] = name }
+                                            .font(.footnote.weight(.medium)).buttonStyle(.bordered).controlSize(.small)
+                                    }
+                                }
+                            }
+                        }
                         Text(session.glance(id)).font(.caption).foregroundStyle(.secondary).lineLimit(2)
                     }
                 }
@@ -342,6 +390,7 @@ struct MeetingView: View {
         do {
             await library.waitForSearch()                       // the search model is coming back; the note is embedded with it
             try await library.addNote(notebook: notebookId, title: name, text: session.transcript)
+            session.rememberNames()
             session.discard()
             dismiss()
         } catch { saveError = "Couldn't save: \(error.localizedDescription)" }

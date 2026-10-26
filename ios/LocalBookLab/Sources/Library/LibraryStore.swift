@@ -318,6 +318,15 @@ actor LibraryStore {
         } catch { try? exec("ROLLBACK"); throw error }
     }
 
+    /// One piece of a source (nil when there is none at that index).
+    func chunkText(notebook: String, sourceId: String, index: Int) -> String? {
+        guard index >= 0, index < Self.pictureIndex,
+              let s = try? statement("SELECT text FROM chunks WHERE notebook_id=? AND source_id=? AND chunk_index=? AND summary=0") else { return nil }
+        defer { sqlite3_finalize(s) }
+        bind(s, 1, notebook); bind(s, 2, sourceId); sqlite3_bind_int64(s, 3, Int64(index))
+        return sqlite3_step(s) == SQLITE_ROW ? String(cString: sqlite3_column_text(s, 0)) : nil
+    }
+
     /// A source's text, its pieces in order.
     func sourceText(notebook: String, sourceId: String) -> String {
         guard let s = try? statement("SELECT text FROM chunks WHERE notebook_id=? AND source_id=? AND summary=0 AND chunk_index < \(Self.pictureIndex) ORDER BY chunk_index") else { return "" }
