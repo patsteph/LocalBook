@@ -40,7 +40,7 @@ extension LibraryModel {
 
     /// Add a note to a notebook on this phone. It is searched and cited like any source, straight away.
     /// With a picture, the picture is kept and, if picture search is installed, embedded so a typed question can find it.
-    func addNote(notebook: String, title: String, text: String, kind: String = "note", photo: (image: CGImage, jpeg: Data)? = nil, replacing: String? = nil) async throws {
+    func addNote(notebook: String, title: String, text: String, kind: String = "note", photo: (image: CGImage, jpeg: Data)? = nil, replacing: String? = nil, progress: (@MainActor (Double) -> Void)? = nil) async throws {
         let body = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let store, !body.isEmpty || photo != nil else { return }
         let cleanTitle = title.trimmingCharacters(in: .whitespaces)
@@ -49,7 +49,9 @@ extension LibraryModel {
         let id = replacing ?? (LocalNotes.prefix + UUID().uuidString.lowercased())
         if replacing != nil { try await store.removeLocalNoteText(notebook: notebook, sourceId: id) }
         var chunks: [LibraryChunk] = []
-        for (i, piece) in LocalNotes.split(body).enumerated() {
+        let pieces = LocalNotes.split(body)
+        for (i, piece) in pieces.enumerated() {
+            progress?(Double(i) / Double(max(1, pieces.count)))
             let v = try await documentVector(piece)
             let half = v.map { Float16($0) }
             chunks.append(.init(notebookId: notebook, sourceId: id, chunkIndex: i, text: piece, summary: false,

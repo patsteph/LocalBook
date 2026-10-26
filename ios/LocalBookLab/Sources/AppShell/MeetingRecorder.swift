@@ -16,6 +16,12 @@ final class MeetingSession {
     private(set) var interrupted = false
     private(set) var step = ""
     private(set) var progress = 0.0
+    /// 0 finding voices, 1 writing words, 2 putting it in order; with what each step found.
+    private(set) var stage = 0
+    private(set) var voicesFound = 0
+    private(set) var wordsHeard = 0
+    private(set) var meetingLength = 0.0
+    private(set) var workStarted = Date()
     private(set) var turns: [Turn] = []
     /// Speaker ids in the order they first spoke, and the name the person gave each.
     private(set) var speakers: [String] = []
@@ -177,6 +183,8 @@ final class MeetingSession {
         library?.pauseModels()
         defer { Task { await library?.resumeModels() } }          // back while the person names the speakers
         phase = .working; progress = 0; step = "Getting ready…"
+        stage = 0; voicesFound = 0; wordsHeard = 0; workStarted = Date()
+        meetingLength = (try? await AVURLAsset(url: url).load(.duration).seconds) ?? 0
         UIApplication.shared.isIdleTimerDisabled = true
         let stop = LongTranscriber.Stopper(); stopper = stop
         defer { UIApplication.shared.isIdleTimerDisabled = false; stopper = nil }
@@ -191,7 +199,7 @@ final class MeetingSession {
             let spoken = try await manager.process(url)
             let who = spoken.segments.map { (id: "\($0.speakerId)", start: Double($0.startTimeSeconds), end: Double($0.endTimeSeconds)) }
             lap("speakers found: \(Set(who.map(\.id)).count) voices, \(who.count) segments")
-            progress = 0.3
+            progress = 0.3; stage = 1; voicesFound = Set(who.map(\.id)).count
             if stop.isStopped { throw LongTranscriber.Failure(text: "Stopped. The recording is still on your phone.") }
 
             step = "Writing down the words…"
@@ -201,6 +209,7 @@ final class MeetingSession {
                 progress: { fraction in Task { @MainActor in self.progress = 0.3 + 0.7 * fraction } })
             lap("words written: \(words.count)")
             guard !words.isEmpty else { phase = .failed("No speech was found in the recording."); return }
+            stage = 2; wordsHeard = words.count; step = "Putting it in order…"
             build(words: words, who: who)
             phase = .review
         } catch {
@@ -247,6 +256,7 @@ struct MeetingView: View {
     @State private var session = MeetingSession()
     @State private var title = ""
     @State private var saving = false
+    @State private var saveProgress = 0.0
     @State private var saveError: String?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -273,6 +283,7 @@ struct MeetingView: View {
                 }
             }
         }
+        .overlay { if saving { savingCover } }
         .task { session.library = library }
         .onDisappear { Task { await library.resumeModels() } }
         .interactiveDismissDisabled(session.phase == .recording || session.phase == .working || saving)
@@ -318,15 +329,57 @@ struct MeetingView: View {
     }
 
     private var working: some View {
-        VStack(spacing: 14) {
+        VStack(spacing: 18) {
             Spacer()
+            Image(systemName: "text.badge.checkmark").font(.system(size: 44)).foregroundStyle(.tint)
+                .symbolEffect(.pulse, isActive: !reduceMotion)
+            Text("Writing up your meeting").font(.title3.bold())
+            Text("\(clock(session.meetingLength)) recorded · safe on your phone").font(.footnote).foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 12) {
+                stageRow(0, "Finding who is speaking", done: session.stage > 0 ? "\(session.voicesFound) voice\(session.voicesFound == 1 ? "" : "s") found" : nil)
+                stageRow(1, "Writing down the words", done: session.stage > 1 ? "\(session.wordsHeard.formatted()) words" : nil)
+                stageRow(2, "Putting it in order", done: nil)
+            }.padding(.horizontal, 40).frame(maxWidth: 360, alignment: .leading)
             ProgressView(value: min(1, max(0.03, session.progress))).padding(.horizontal, 40)
-            Text(session.step).font(.footnote).multilineTextAlignment(.center).padding(.horizontal, 32)
-            Label("Keep LocalBook open on screen while this runs. The recording is safe on your phone.", systemImage: "iphone.gen3")
+            TimelineView(.periodic(from: session.workStarted, by: 1)) { ctx in
+                Text("Working for \(clock(ctx.date.timeIntervalSince(session.workStarted)))").font(.caption).monospacedDigit().foregroundStyle(.secondary)
+            }
+            Text(session.step).font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center).padding(.horizontal, 32)
+            Label("Keep LocalBook open on screen while this runs. It all happens on this phone.", systemImage: "iphone.gen3")
                 .font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center).padding(.horizontal, 32)
-            Button("Stop", role: .cancel) { session.stopWorking() }.buttonStyle(.bordered).padding(.top, 8)
+            Button("Stop", role: .cancel) { session.stopWorking() }.buttonStyle(.bordered).padding(.top, 4)
             Spacer()
         }.frame(maxWidth: .infinity)
+    }
+
+    private func stageRow(_ n: Int, _ title: String, done: String?) -> some View {
+        let state = session.stage > n ? 2 : (session.stage == n ? 1 : 0)
+        return HStack(spacing: 10) {
+            Group {
+                if state == 2 { Image(systemName: "checkmark.circle.fill").foregroundStyle(.green) }
+                else if state == 1 { ProgressView() }
+                else { Image(systemName: "circle").foregroundStyle(.tertiary) }
+            }.frame(width: 24)
+            VStack(alignment: .leading, spacing: 0) {
+                Text(title).font(.subheadline).foregroundStyle(state == 0 ? .secondary : .primary)
+                if let done { Text(done).font(.caption).foregroundStyle(.secondary) }
+            }
+        }.accessibilityElement(children: .combine)
+    }
+
+    private var savingCover: some View {
+        ZStack {
+            Color.black.opacity(0.35).ignoresSafeArea()
+            VStack(spacing: 14) {
+                ProgressView().controlSize(.large)
+                Text("Saving to “\(notebookTitle)”").font(.headline)
+                Text(saveProgress > 0 ? "Making it searchable… \(Int(saveProgress * 100))%" : "Getting ready…").font(.footnote).foregroundStyle(.secondary).monospacedDigit()
+                ProgressView(value: max(0.03, saveProgress)).frame(width: 200)
+            }
+            .padding(28).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 20))
+        }
+        .transition(.opacity)
+        .accessibilityElement(children: .combine)
     }
 
     private func failed(_ why: String) -> some View {
@@ -385,11 +438,11 @@ struct MeetingView: View {
     }
 
     private func save() async {
-        saving = true; saveError = nil; defer { saving = false }
+        saving = true; saveError = nil; saveProgress = 0; defer { saving = false }
         let name = title.trimmingCharacters(in: .whitespaces).isEmpty ? "Meeting " + Date().formatted(date: .abbreviated, time: .shortened) : title
         do {
             await library.waitForSearch()                       // the search model is coming back; the note is embedded with it
-            try await library.addNote(notebook: notebookId, title: name, text: session.transcript)
+            try await library.addNote(notebook: notebookId, title: name, text: session.transcript, progress: { saveProgress = $0 })
             session.rememberNames()
             session.discard()
             dismiss()
