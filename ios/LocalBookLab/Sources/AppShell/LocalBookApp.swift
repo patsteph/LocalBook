@@ -22,7 +22,7 @@ struct LocalBookApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @State private var library = LibraryModel()
 
-    init() { SoakTrace.startSession("LocalBook") }
+    init() { SoakTrace.startSession("LocalBook"); PhoneIdentity.migrateIfNeeded() }
 
     var body: some Scene {
         WindowGroup {

@@ -7,8 +7,32 @@ import Security
 /// OpenSSL accepts the pinned certificate as its own trust anchor). iOS TLS cannot use Ed25519,
 /// which is why the Mac keeps a second, P-256 identity for phones.
 enum PhoneIdentity {
-    private static let tag = Data("com.patsteph.localbook.lab.phone-identity".utf8)
+    private static let oldTag = Data("com.patsteph.localbook.lab.phone-identity".utf8)        // the software key of earlier builds
+    private static let oldLabel = "LocalBook Lab phone identity"
+    private static let tag = Data("com.patsteph.localbook.phone-identity.se".utf8)
+    private static let certLabel = "LocalBook phone identity"
     private static let idKey = "lab.phone.deviceId"
+    private static let migratedKey = "phone.identity.secureEnclave"
+
+    /// Moves a phone paired with the old software key onto a Secure Enclave key: the old key and certificate are
+    /// deleted and the pairing is dropped (the Mac knows the old key), so the person pairs once more. The library
+    /// on the phone stays. Call once at launch, before anything reads the pairing. A fresh install does nothing.
+    static func migrateIfNeeded() {
+        guard !UserDefaults.standard.bool(forKey: migratedKey) else { return }
+        defer { UserDefaults.standard.set(true, forKey: migratedKey) }
+        guard UserDefaults.standard.string(forKey: idKey) != nil else { return }      // never paired with the old key
+        for (cls, extra) in [(kSecClassKey, [kSecAttrApplicationTag as String: oldTag]),
+                             (kSecClassCertificate, [kSecAttrLabel as String: oldLabel])] as [(CFString, [String: Any])] {
+            var q: [String: Any] = [kSecClass as String: cls]
+            q.merge(extra) { $1 }
+            SecItemDelete(q as CFDictionary)
+        }
+        UserDefaults.standard.removeObject(forKey: idKey)            // a new device id, so the Mac treats this as a new phone
+        MacLink.paired = nil
+    }
+
+    /// True when the key lives in the Secure Enclave (every real iPhone; not the Simulator).
+    static var keyIsHardware: Bool { SecureEnclave.isAvailable }
 
     static var deviceId: String {
         if let id = UserDefaults.standard.string(forKey: idKey) { return id }
@@ -19,7 +43,7 @@ enum PhoneIdentity {
 
     static let deviceName = "iPhone"
 
-    /// The private key, created on first use. Not Secure Enclave: this is a Lab test.
+    /// The private key, created on first use. In the Secure Enclave on a phone: it can sign but never be copied out.
     static func privateKey() throws -> SecKey {
         let query: [String: Any] = [kSecClass as String: kSecClassKey,
                                     kSecAttrApplicationTag as String: tag,
@@ -33,13 +57,18 @@ enum PhoneIdentity {
         if SecItemCopyMatching(query as CFDictionary, &found) == errSecSuccess, let k = found {
             return k as! SecKey
         }
-        let attrs: [String: Any] = [kSecAttrKeyType as String: kSecAttrKeyTypeECSECPrimeRandom,
-                                    kSecAttrKeySizeInBits as String: 256,
-                                    kSecPrivateKeyAttrs as String: [
-                                        kSecAttrIsPermanent as String: true,
-                                        kSecAttrApplicationTag as String: tag,
-                                        kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
-                                    ] as [String: Any]]
+        var priv: [String: Any] = [kSecAttrIsPermanent as String: true, kSecAttrApplicationTag as String: tag]
+        var attrs: [String: Any] = [kSecAttrKeyType as String: kSecAttrKeyTypeECSECPrimeRandom, kSecAttrKeySizeInBits as String: 256]
+        if keyIsHardware {
+            var acErr: Unmanaged<CFError>?
+            guard let access = SecAccessControlCreateWithFlags(nil, kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
+                                                               .privateKeyUsage, &acErr) else { throw acErr!.takeRetainedValue() }
+            priv[kSecAttrAccessControl as String] = access
+            attrs[kSecAttrTokenID as String] = kSecAttrTokenIDSecureEnclave
+        } else {
+            priv[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly      // the Simulator has no Secure Enclave
+        }
+        attrs[kSecPrivateKeyAttrs as String] = priv
         var err: Unmanaged<CFError>?
         guard let key = SecKeyCreateRandomKey(attrs as CFDictionary, &err) else { throw err!.takeRetainedValue() }
         return key
@@ -47,7 +76,7 @@ enum PhoneIdentity {
 
     /// The self-signed certificate (DER), built once and kept in the Keychain beside the key.
     static func certificate() throws -> SecCertificate {
-        let label = "LocalBook Lab phone identity"
+        let label = certLabel
         let q: [String: Any] = [kSecClass as String: kSecClassCertificate, kSecAttrLabel as String: label,
                                 kSecReturnRef as String: true]
         var found: CFTypeRef?

@@ -5,6 +5,7 @@ struct LocalBookLabApp: App {
     init() {
         // Start watching foreground/background before any test runs.
         _ = AppStateTracker.shared
+        PhoneIdentity.migrateIfNeeded()
     }
 
     var body: some Scene {

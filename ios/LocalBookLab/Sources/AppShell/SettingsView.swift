@@ -62,6 +62,7 @@ struct SettingsView: View {
                     if FileManager.default.fileExists(atPath: SoakTrace.url.path) {
                         ShareLink("Share diagnostics (startup and event log)", item: SoakTrace.url)
                     }
+                    LabeledContent("Pairing key", value: PhoneIdentity.keyIsHardware ? "Secure Enclave" : "Software (Simulator)")
                     LabeledContent("Version", value: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "—")
                 }
             }
