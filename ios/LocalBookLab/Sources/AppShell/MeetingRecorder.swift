@@ -211,6 +211,7 @@ struct MeetingView: View {
     @State private var title = ""
     @State private var saving = false
     @State private var saveError: String?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var notebookTitle: String { library.notebooks.first { $0.id == notebookId }?.title ?? "Notebook" }
     private func clock(_ t: Double) -> String { String(format: "%d:%02d", Int(t) / 60, Int(t) % 60) }
@@ -263,8 +264,9 @@ struct MeetingView: View {
         VStack(spacing: 18) {
             Spacer()
             Image(systemName: session.interrupted ? "pause.circle.fill" : "waveform").font(.system(size: 54)).foregroundStyle(.red)
-                .symbolEffect(.variableColor.iterative, isActive: !session.interrupted)
+                .symbolEffect(.variableColor.iterative, isActive: !session.interrupted && !reduceMotion)
             Text(clock(session.elapsed)).font(.system(size: 44, weight: .semibold, design: .rounded)).monospacedDigit()
+                .accessibilityLabel("Recording time \(Int(session.elapsed) / 60) minutes \(Int(session.elapsed) % 60) seconds")
             Text(session.interrupted ? "Paused by a call or alert. It carries on by itself." : "Recording. You can lock the screen.")
                 .font(.footnote).foregroundStyle(.secondary)
             Button { Task { await session.stopRecording() } } label: {

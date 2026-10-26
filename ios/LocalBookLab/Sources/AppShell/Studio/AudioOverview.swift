@@ -135,6 +135,7 @@ struct AudioOverviewView: View {
                             .opacity(i == player.current ? 1 : 0.5)
                             .id(i)
                             .onTapGesture { player.seek(to: line.start); if !player.playing { player.play() } }
+                            .accessibilityElement(children: .combine).accessibilityAddTraits(.isButton).accessibilityHint("Plays from here")
                         }
                     }.padding()
                 }
@@ -144,9 +145,9 @@ struct AudioOverviewView: View {
                 Slider(value: Binding(get: { player.time }, set: { player.seek(to: $0) }), in: 0...max(1, player.duration))
                 HStack { Text(clock(player.time)); Spacer(); Text(clock(player.duration)) }.font(.caption).monospacedDigit().foregroundStyle(.secondary)
                 HStack(spacing: 36) {
-                    Button { player.skip(-15) } label: { Image(systemName: "gobackward.15").font(.title2) }
-                    Button { player.toggle() } label: { Image(systemName: player.playing ? "pause.circle.fill" : "play.circle.fill").font(.system(size: 56)) }
-                    Button { player.skip(15) } label: { Image(systemName: "goforward.15").font(.title2) }
+                    Button { player.skip(-15) } label: { Image(systemName: "gobackward.15").font(.title2) }.accessibilityLabel("Back 15 seconds")
+                    Button { player.toggle() } label: { Image(systemName: player.playing ? "pause.circle.fill" : "play.circle.fill").font(.system(size: 56)) }.accessibilityLabel(player.playing ? "Pause" : "Play")
+                    Button { player.skip(15) } label: { Image(systemName: "goforward.15").font(.title2) }.accessibilityLabel("Forward 15 seconds")
                 }
             }
             .padding().background(.bar)
@@ -200,9 +201,10 @@ struct MakingView: View {
 /// The animation shown while an item is made: each kind has its own, so it matches what is being built.
 struct MakingGlyph: View {
     let kind: StudioItem.Kind
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        TimelineView(.animation) { ctx in
+        TimelineView(.animation(paused: reduceMotion)) { ctx in
             let t = ctx.date.timeIntervalSinceReferenceDate
             ZStack {
                 switch kind {
@@ -214,6 +216,7 @@ struct MakingGlyph: View {
                 }
             }
             .frame(width: 220, height: 110)
+            .accessibilityHidden(true)
         }
     }
 

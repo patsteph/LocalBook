@@ -28,6 +28,7 @@ struct StudioView: View {
     @State private var opened: StudioItem?
     @State private var pendingOpen: StudioItem?
     @State private var confirmClear = false
+    @ScaledMetric(relativeTo: .headline) private var tileHeight = 128.0
     @State private var renaming: StudioItem?
     @State private var newName = ""
     @State private var prefill = ""
@@ -69,7 +70,7 @@ struct StudioView: View {
                                         Text(kind.blurb).font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.leading).lineLimit(2)
                                     }
                                 }
-                                .padding(14).frame(maxWidth: .infinity, minHeight: 128, maxHeight: 128, alignment: .topLeading)
+                                .padding(14).frame(maxWidth: .infinity, minHeight: tileHeight, maxHeight: tileHeight, alignment: .topLeading)
                                 .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 18))
                             }
                             .buttonStyle(.plain).disabled(notebook == nil)
@@ -398,6 +399,7 @@ private struct QuizResult: View {
     let subject: String
     let again: () -> Void
     @State private var shown = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var fraction: Double { total == 0 ? 0 : Double(score) / Double(total) }
     private var tier: (title: String, line: String, symbol: String, color: Color) {
@@ -424,7 +426,8 @@ private struct QuizResult: View {
                     }
                 }
                 .frame(width: 190, height: 190).padding(.top, 24)
-                .overlay { if fraction >= 0.8 && shown { Confetti() } }
+                .accessibilityElement(children: .ignore).accessibilityLabel("Score: \(score) of \(total)")
+                .overlay { if fraction >= 0.8 && shown && !reduceMotion { Confetti() } }
 
                 Text(tier.title).font(.largeTitle.bold())
                 Text(tier.line).foregroundStyle(.secondary).multilineTextAlignment(.center)
@@ -449,7 +452,7 @@ private struct QuizResult: View {
             }
             .padding()
         }
-        .onAppear { withAnimation(.easeOut(duration: 1.0)) { shown = true } }
+        .onAppear { withAnimation(reduceMotion ? nil : .easeOut(duration: 1.0)) { shown = true } }
     }
 }
 
