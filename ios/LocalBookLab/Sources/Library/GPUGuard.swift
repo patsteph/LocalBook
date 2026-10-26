@@ -28,9 +28,9 @@ enum GPUGuard {
     static func drain(timeout: TimeInterval) -> Bool {
         let done = DispatchSemaphore(value: 0)
         DispatchQueue.global(qos: .userInitiated).async {
-            Stream().synchronize()
+            Stream.gpu.synchronize()                        // the GPU's own stream, whatever the default device is
             Thread.sleep(forTimeInterval: 0.04)             // a step queued while the loop was being cancelled…
-            Stream().synchronize()                          // …is drained too
+            Stream.gpu.synchronize()                        // …is drained too
             done.signal()
         }
         return done.wait(timeout: .now() + timeout) == .success
