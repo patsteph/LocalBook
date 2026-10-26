@@ -134,7 +134,9 @@ private struct SourceDetail: View {
     private func load() async {
         text = await library.sourceText(notebook: source.notebookId, sourceId: source.id)
         // Only notes still waiting on this phone can be changed here; once the Mac has them they live there.
-        canEdit = source.isLocal && (await library.noteSentSourceId(source.id)) == nil
+        var unsent = false
+        if source.isLocal { unsent = await library.noteSentSourceId(source.id) == nil }
+        canEdit = unsent
     }
 }
 
