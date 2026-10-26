@@ -155,7 +155,11 @@ final class MeetingSession {
             guard !words.isEmpty else { phase = .failed("No speech was found in the recording."); return }
             build(words: words, who: who)
             phase = .review
-        } catch { SoakTrace.log("meeting: failed: \(error)"); phase = .failed(error.localizedDescription) }
+        } catch {
+            SoakTrace.log("meeting: failed: \(error)")
+            let none = (error as NSError).code == 1110      // "No speech detected"
+            phase = .failed(none ? "No speech was heard in this recording. Check that the microphone isn't covered, then try recording again." : error.localizedDescription)
+        }
     }
 
     /// Gives each word to whoever was speaking at its midpoint, and joins neighbouring words by the same person into turns.
@@ -187,10 +191,11 @@ final class MeetingSession {
         }
         SoakTrace.log("meeting: recognizer \(Locale.current.identifier), on-device \(recognizer.supportsOnDeviceRecognition)")
         let total = max(1, try await AVURLAsset(url: url).load(.duration).seconds)
-        let request = SFSpeechURLRecognitionRequest(url: url)
+        let request = SFSpeechAudioBufferRecognitionRequest()
         request.shouldReportPartialResults = true
         request.requiresOnDeviceRecognition = recognizer.supportsOnDeviceRecognition
         return try await withCheckedThrowingContinuation { (cont: CheckedContinuation<[Word], Error>) in
+            SpeechFeed.start(url, into: request)
             // The task must be kept alive until it reports: a dropped task never calls back, and the wait would never end.
             latest.task = recognizer.recognitionTask(with: request) { result, error in
                 latest.beat()

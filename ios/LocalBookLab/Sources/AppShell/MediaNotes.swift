@@ -48,11 +48,12 @@ final class MediaTranscriber {
         }
 
         status = "Transcribing…"
-        let request = SFSpeechURLRecognitionRequest(url: audioURL)
+        let request = SFSpeechAudioBufferRecognitionRequest()
         request.shouldReportPartialResults = true
         request.requiresOnDeviceRecognition = recognizer.supportsOnDeviceRecognition      // stays on the phone when it can
         let once = Once()
         return try await withCheckedThrowingContinuation { (cont: CheckedContinuation<String, Error>) in
+            SpeechFeed.start(audioURL, into: request)
             task = recognizer.recognitionTask(with: request) { result, error in
                 if let result {
                     let heard = result.bestTranscription
@@ -85,6 +86,30 @@ struct PickedMovie: Transferable {
             let dest = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + "." + ext)
             try FileManager.default.copyItem(at: received.file, to: dest)
             return PickedMovie(url: dest)
+        }
+    }
+}
+
+/// Feeds a recorded file to a speech request the way live audio arrives (the path Dictate uses and is known to work),
+/// instead of handing the recognizer a file URL.
+enum SpeechFeed {
+    private struct Box: @unchecked Sendable { let request: SFSpeechAudioBufferRecognitionRequest }
+
+    static func start(_ url: URL, into request: SFSpeechAudioBufferRecognitionRequest) {
+        let box = Box(request: request)
+        Task.detached(priority: .userInitiated) {
+            do {
+                let file = try AVAudioFile(forReading: url)
+                let format = file.processingFormat
+                SoakTrace.log("speech: feeding \(file.length) frames at \(Int(format.sampleRate)) Hz, \(format.channelCount) ch")
+                while file.framePosition < file.length {
+                    guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 16_384) else { break }
+                    try file.read(into: buffer)
+                    if buffer.frameLength == 0 { break }
+                    box.request.append(buffer)
+                }
+            } catch { SoakTrace.log("speech: couldn't read the file: \(error)") }
+            box.request.endAudio()
         }
     }
 }
