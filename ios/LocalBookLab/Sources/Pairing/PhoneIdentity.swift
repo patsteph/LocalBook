@@ -71,6 +71,7 @@ enum PhoneIdentity {
         attrs[kSecPrivateKeyAttrs as String] = priv
         var err: Unmanaged<CFError>?
         guard let key = SecKeyCreateRandomKey(attrs as CFDictionary, &err) else { throw err!.takeRetainedValue() }
+        SoakTrace.log("pairing: new \(keyIsHardware ? "Secure Enclave" : "software") key")
         return key
     }
 
