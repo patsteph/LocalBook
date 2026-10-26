@@ -142,6 +142,7 @@ targets:
           - Generation/GemmaTestView.swift
           - Pairing/FindMacsView.swift
       - path: AppIcons/LocalBook
+      - path: Privacy/LocalBook/PrivacyInfo.xcprivacy
       - path: tools/cache/RerankerL12.mlpackage
         optional: true
       - path: Models/RerankerTokenizer
@@ -183,6 +184,7 @@ targets:
     info:
       path: Resources/LocalBookInfo.plist
       properties:
+        ITSAppUsesNonExemptEncryption: false
         CFBundleDisplayName: LocalBook
         UILaunchScreen: {}
         UISupportedInterfaceOrientations:
