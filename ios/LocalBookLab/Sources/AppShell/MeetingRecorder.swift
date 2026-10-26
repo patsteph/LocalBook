@@ -59,14 +59,24 @@ final class MeetingSession {
         _ = try? await session.activate(options: [])
     }
 
+    /// AVAudioRecorder isn't Sendable; it is handed straight back and only used from the main actor afterwards.
+    private struct RecorderBox: @unchecked Sendable { let recorder: AVAudioRecorder }
+
+    @concurrent private static func startRecorder(_ url: URL) async throws -> AVAudioRecorder? {
+        let r = try AVAudioRecorder(url: url, settings: [AVFormatIDKey: kAudioFormatMPEG4AAC, AVSampleRateKey: 16_000,
+                                                         AVNumberOfChannelsKey: 1, AVEncoderBitRateKey: 48_000])
+        return r.record() ? r : nil
+    }
+
+    @concurrent private static func stopRecorder(_ box: RecorderBox) async { box.recorder.stop() }
+
     func start() async {
         guard await AVAudioApplication.requestRecordPermission() else { phase = .failed("Allow the microphone for LocalBook in Settings to record."); return }
         await Self.prepareSession()
         let url = Self.folder.appendingPathComponent(UUID().uuidString + ".m4a")
         do {
-            let r = try AVAudioRecorder(url: url, settings: [AVFormatIDKey: kAudioFormatMPEG4AAC, AVSampleRateKey: 16_000,
-                                                             AVNumberOfChannelsKey: 1, AVEncoderBitRateKey: 48_000])
-            guard r.record() else { phase = .failed("Couldn't start recording."); return }
+            // Creating and starting the recorder touches the audio session, so it is done off the main thread.
+            guard let r = try await Self.startRecorder(url) else { phase = .failed("Couldn't start recording."); return }
             recorder = r; file = url; elapsed = 0; interrupted = false; phase = .recording
             UIApplication.shared.isIdleTimerDisabled = false
             watchInterruptions()
@@ -99,7 +109,8 @@ final class MeetingSession {
 
     func stopRecording() async {
         ticker?.cancel(); ticker = nil
-        recorder?.stop(); recorder = nil
+        if let r = recorder { await Self.stopRecorder(RecorderBox(recorder: r)) }
+        recorder = nil
         for o in observers { NotificationCenter.default.removeObserver(o) }; observers = []
         guard let file else { return }
         pending = file
@@ -173,7 +184,9 @@ final class MeetingSession {
         request.requiresOnDeviceRecognition = recognizer.supportsOnDeviceRecognition
         let latest = Latest()
         return try await withCheckedThrowingContinuation { (cont: CheckedContinuation<[Word], Error>) in
-            _ = recognizer.recognitionTask(with: request) { result, error in
+            // The task must be kept alive until it reports: a dropped task never calls back, and the wait would never end.
+            latest.task = recognizer.recognitionTask(with: request) { result, error in
+                latest.beat()
                 if let result {
                     let words = result.bestTranscription.segments.map { Word(start: $0.timestamp, end: $0.timestamp + $0.duration, text: $0.substring) }
                     latest.set(words)
@@ -185,6 +198,18 @@ final class MeetingSession {
                     if heard.count > 20 { cont.resume(returning: heard) } else { cont.resume(throwing: error) }
                 }
             }
+            // If the recognizer goes quiet for 2 minutes, stop waiting: use what was heard, or say so.
+            Task.detached {
+                while !latest.isDone {
+                    try? await Task.sleep(for: .seconds(5))
+                    if !latest.isDone, latest.secondsSinceBeat > 120, latest.finish() {
+                        latest.task?.cancel()
+                        let heard = latest.words
+                        if heard.count > 20 { cont.resume(returning: heard) }
+                        else { cont.resume(throwing: MediaTranscriber.Failure(text: "Transcription stopped responding. The recording is still on your phone; try again.")) }
+                    }
+                }
+            }
         }
     }
 
@@ -192,6 +217,11 @@ final class MeetingSession {
         private let lock = NSLock()
         private var stored: [Word] = []
         private var done = false
+        private var last = Date()
+        var task: SFSpeechRecognitionTask?
+        func beat() { lock.lock(); last = Date(); lock.unlock() }
+        var secondsSinceBeat: Double { lock.lock(); defer { lock.unlock() }; return Date().timeIntervalSince(last) }
+        var isDone: Bool { lock.lock(); defer { lock.unlock() }; return done }
         func set(_ w: [Word]) { lock.lock(); stored = w; lock.unlock() }
         var words: [Word] { lock.lock(); defer { lock.unlock() }; return stored }
         func finish() -> Bool { lock.lock(); defer { lock.unlock() }; if done { return false }; done = true; return true }
