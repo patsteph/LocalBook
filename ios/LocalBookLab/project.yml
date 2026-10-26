@@ -63,7 +63,6 @@ targets:
           - AppShell/**                 # the product app (target LocalBook)
       # The reranker: a Core ML conversion of the Mac's own model (tools/convert_reranker.py writes it).
       # Not committed (64 MB); the build still works without it and the phone then skips reranking.
-      - path: AppIcons/LocalBook
       - path: tools/cache/RerankerL12.mlpackage
         optional: true
       - path: Models/RerankerTokenizer
@@ -142,6 +141,7 @@ targets:
           - Library/LibraryView.swift
           - Generation/GemmaTestView.swift
           - Pairing/FindMacsView.swift
+      - path: AppIcons/LocalBook
       - path: tools/cache/RerankerL12.mlpackage
         optional: true
       - path: Models/RerankerTokenizer
