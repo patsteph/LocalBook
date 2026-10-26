@@ -120,11 +120,21 @@ actor LibraryStore {
         // build kept beside the chunks is not used any more, so drop it and its space.
         try? exec("DROP TABLE IF EXISTS chunks_fts")
         // The desktop's order and sections for notebooks (older stores lack the columns).
-        try? exec("ALTER TABLE notebooks ADD COLUMN position INTEGER NOT NULL DEFAULT 0")
-        try? exec("ALTER TABLE notebooks ADD COLUMN section TEXT")
-        try? exec("ALTER TABLE notebooks ADD COLUMN color TEXT")
-        try? exec("ALTER TABLE notebooks ADD COLUMN collapsed INTEGER NOT NULL DEFAULT 0")
-        try? exec("ALTER TABLE sources ADD COLUMN created TEXT")          // when the source was added on the Mac (newest-first lists)
+        try addColumn("notebooks", "position", "INTEGER NOT NULL DEFAULT 0")
+        try addColumn("notebooks", "section", "TEXT")
+        try addColumn("notebooks", "color", "TEXT")
+        try addColumn("notebooks", "collapsed", "INTEGER NOT NULL DEFAULT 0")
+        try addColumn("sources", "created", "TEXT")          // when the source was added on the Mac (newest-first lists)
+    }
+
+    /// Adds a column to an older store; does nothing (and logs nothing) when it is already there.
+    private func addColumn(_ table: String, _ column: String, _ definition: String) throws {
+        let s = try statement("PRAGMA table_info(\(table))")
+        defer { sqlite3_finalize(s) }
+        while sqlite3_step(s) == SQLITE_ROW {
+            if let name = sqlite3_column_text(s, 1), String(cString: name) == column { return }
+        }
+        try exec("ALTER TABLE \(table) ADD COLUMN \(column) \(definition)")
     }
 
     // No deinit: the store lives as long as the app, and SQLite closes the file with the process.

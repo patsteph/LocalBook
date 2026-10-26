@@ -27,20 +27,18 @@ enum GPUGate {
 
     nonisolated(unsafe) private static var installed = false
 
-    /// Call once at start-up. When the app leaves the foreground, any MLX work that is still being set up (a cancelled
-    /// answer keeps reading its prompt for a while, with nothing watching it) is moved to the CPU, because the GPU
-    /// refuses work from the background and MLX turns that refusal into a crash. Back in front, the GPU is used again.
+    /// Call once at start-up. When the app leaves the foreground the gate closes (prompt reading stops between its small
+    /// steps) and the GPU is given a moment to finish what it has, because the GPU refuses work from the background and
+    /// MLX turns that refusal into a crash. It opens again when the app is back in front.
     @MainActor static func installReopenOnActive() {
         guard !installed else { return }
         installed = true
         NotificationCenter.default.addObserver(forName: UIApplication.willResignActiveNotification, object: nil, queue: nil) { _ in
             close()
             _ = GPUGuard.drain(timeout: 1.0)                // finish what the GPU already has, while it is still allowed
-            Device.setDefault(device: .cpu)                 // anything built from now on does not touch the GPU
-            SoakTrace.log("GPUGate: closed, new MLX work goes to the CPU")
+            SoakTrace.log("GPUGate: closed")
         }
         NotificationCenter.default.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: nil) { _ in
-            Device.setDefault(device: .gpu)
             open()
             SoakTrace.log("GPUGate: open")
         }

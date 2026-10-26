@@ -191,6 +191,7 @@ targets:
           - UIInterfaceOrientationPortrait
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
+        UIRequiresFullScreen: true            # phone app: no iPad split view, so not every orientation needs supporting
         NSLocalNetworkUsageDescription: LocalBook finds and syncs with your Mac on this network.
         NSMicrophoneUsageDescription: LocalBook listens when you dictate a note or record a meeting.
         NSSpeechRecognitionUsageDescription: LocalBook turns your dictation into text, on this phone where possible.

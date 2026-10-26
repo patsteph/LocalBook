@@ -355,7 +355,9 @@ final class LibraryModel {
     /// A tiny real generation: proves the model works and warms the GPU kernels so the first question is quick.
     private static func producesAnAnswer(_ container: ModelContainer) async -> Bool {
         let result = AnswerCheck()
+        if GPUGate.isClosed { return true }                 // the screen is locking: don't start GPU work just to check
         Task.detached {
+            if GPUGate.isClosed { result.finish(true); return }
             let session = ChatSession(container, generateParameters: GenerateParameters(maxTokens: 6, temperature: 0))
             let reply = (try? await session.respond(to: "Reply with the single word OK.")) ?? ""
             result.finish(!reply.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
