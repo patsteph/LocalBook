@@ -66,7 +66,7 @@ final class StoppableLM: Module, LanguageModel, @unchecked Sendable {
         withPreparedCache(cache, lengths: y.sequenceLengths) {
             var state: LMOutput.State?
             while y.tokens.size > step {
-                if GPUGate.isClosed { stopped = true; break }
+                if GPUGate.isClosed || Task.isCancelled { stopped = true; break }       // cancelled answers stop here even after the screen is back
                 let chunk = y[.newAxis, ..<step]
                 let output = inner(chunk, cache: cache.isEmpty ? nil : cache, state: state)
                 state = output.state
@@ -74,7 +74,7 @@ final class StoppableLM: Module, LanguageModel, @unchecked Sendable {
                 y = y[step...]
             }
             if !stopped {
-                if GPUGate.isClosed { stopped = true } else { eval(cache) }
+                if GPUGate.isClosed || Task.isCancelled { stopped = true } else { eval(cache) }
             }
         }
         if stopped {
