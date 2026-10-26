@@ -20,10 +20,10 @@ final class LibraryModel {
     private(set) var searchState: SearchState = .notReady
     enum ModelState: Equatable { case idle, loading, ready, failed(String) }
     private(set) var answerModelState: ModelState = .idle
-    /// Experimental: read prompts in small chunks that stop when the screen locks (StoppableLM). OFF by default — the first
+    /// Experimental: read prompts in small chunks that stop when the screen locks (StoppableLM). was OFF by default — the first
     /// phone test of it ended in a hot, unstable phone, so it stays out until it has been proven in a controlled test.
     var useStoppablePrefill: Bool {
-        get { UserDefaults.standard.bool(forKey: "stoppablePrefill") }
+        get { UserDefaults.standard.object(forKey: "stoppablePrefill") as? Bool ?? true }          // on unless the person turned it off
         set { UserDefaults.standard.set(newValue, forKey: "stoppablePrefill") }
     }
     private(set) var notebooks: [LibraryNotebookInfo] = []

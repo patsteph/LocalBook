@@ -8,7 +8,7 @@ struct SettingsView: View {
     @State private var unsent = 0
     @State private var length = AnswerLength.current.rawValue
     @State private var searchUnits = UserDefaults.standard.string(forKey: "searchUnits") ?? "ane"
-    @State private var stoppable = UserDefaults.standard.bool(forKey: "stoppablePrefill")
+    @State private var stoppable = UserDefaults.standard.object(forKey: "stoppablePrefill") as? Bool ?? true
 
     var body: some View {
         NavigationStack {
@@ -53,7 +53,7 @@ struct SettingsView: View {
                     .onChange(of: searchUnits) { _, v in UserDefaults.standard.set(v, forKey: "searchUnits") }
                     Text("Takes effect the next time the app opens. Neural Engine is the proven setting; GPU is being timed.")
                         .font(.footnote).foregroundStyle(.secondary)
-                    Text("Experimental. Off is the proven setting. On reads each question in small steps so a lock can stop it cleanly; it is still being tested, and changing it reloads the answer model.")
+                    Text("On (recommended) reads each question in small steps so locking the screen stops an answer cleanly. Changing it reloads the answer model.")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
                 Section("About") {
