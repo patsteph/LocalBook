@@ -16,6 +16,7 @@ struct NotebooksView: View {
     let library: LibraryModel
     let onAsk: () -> Void
     @State private var search = ""
+    @State private var sourcesOf: LibraryNotebookInfo?
     @State private var toggled: Set<String> = []        // sections the user flipped on this phone, relative to the Mac's state
 
     var body: some View {
@@ -65,6 +66,7 @@ struct NotebooksView: View {
             .searchable(text: $search, prompt: "Search notebooks")
             .refreshable { await library.sync() }
             .navigationTitle("Notebooks")
+            .sheet(item: $sourcesOf) { SourcesView(library: library, notebook: $0) }
         }
     }
 
@@ -90,20 +92,26 @@ struct NotebooksView: View {
 
     @ViewBuilder private func rows(_ items: [LibraryNotebookInfo]) -> some View {
         ForEach(items) { n in
-            Button {
-                library.scopeToNotebook = n.id
-                UserDefaults.standard.set(n.id, forKey: "lastNotebook")
-                onAsk()
-            } label: {
-                HStack(spacing: 10) {
-                    Circle().fill(Color(hex: n.color) ?? .accentColor).frame(width: 10, height: 10)
-                    Text(n.title).foregroundStyle(.primary)
-                    Spacer()
-                    if n.id == library.scopeToNotebook { Image(systemName: "checkmark").foregroundStyle(.tint) }
-                    Text("\(n.chunks)").font(.footnote).foregroundStyle(.secondary)
+            HStack(spacing: 10) {
+                Button {
+                    library.scopeToNotebook = n.id
+                    UserDefaults.standard.set(n.id, forKey: "lastNotebook")
+                    onAsk()
+                } label: {
+                    HStack(spacing: 10) {
+                        Circle().fill(Color(hex: n.color) ?? .accentColor).frame(width: 10, height: 10)
+                        Text(n.title).foregroundStyle(.primary)
+                        Spacer()
+                        if n.id == library.scopeToNotebook { Image(systemName: "checkmark").foregroundStyle(.tint) }
+                        Text("\(n.chunks)").font(.footnote).foregroundStyle(.secondary)
+                    }
                 }
+                .buttonStyle(.borderless)
+                Button { sourcesOf = n } label: { Image(systemName: "doc.text.magnifyingglass").foregroundStyle(.tint) }
+                    .buttonStyle(.borderless).accessibilityLabel("Sources in \(n.title)")
             }
             .accessibilityHint("Ask in this notebook")
+            .contextMenu { Button { sourcesOf = n } label: { Label("See sources", systemImage: "doc.text.magnifyingglass") } }
         }
     }
 }

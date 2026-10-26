@@ -280,6 +280,36 @@ actor LibraryStore {
         }
     }
 
+    // MARK: browsing a notebook's sources
+
+    struct SourceInfo: Sendable, Identifiable { let id: String; let notebookId: String; let name: String; let type: String; let pieces: Int; let characters: Int; var isLocal: Bool { id.hasPrefix("local:") } }
+
+    func sources(notebook: String) -> [SourceInfo] {
+        guard let s = try? statement("""
+            SELECT source_id, MIN(filename), MIN(source_type), COUNT(*), SUM(LENGTH(text))
+            FROM chunks WHERE notebook_id=? AND summary=0 AND chunk_index < \(Self.pictureIndex)
+            GROUP BY source_id ORDER BY MIN(filename) COLLATE NOCASE
+            """) else { return [] }
+        defer { sqlite3_finalize(s) }
+        bind(s, 1, notebook)
+        var out: [SourceInfo] = []
+        while sqlite3_step(s) == SQLITE_ROW {
+            out.append(.init(id: String(cString: sqlite3_column_text(s, 0)), notebookId: notebook, name: String(cString: sqlite3_column_text(s, 1)),
+                             type: String(cString: sqlite3_column_text(s, 2)), pieces: Int(sqlite3_column_int64(s, 3)), characters: Int(sqlite3_column_int64(s, 4))))
+        }
+        return out
+    }
+
+    /// A source's text, its pieces in order.
+    func sourceText(notebook: String, sourceId: String) -> String {
+        guard let s = try? statement("SELECT text FROM chunks WHERE notebook_id=? AND source_id=? AND summary=0 AND chunk_index < \(Self.pictureIndex) ORDER BY chunk_index") else { return "" }
+        defer { sqlite3_finalize(s) }
+        bind(s, 1, notebook); bind(s, 2, sourceId)
+        var parts: [String] = []
+        while sqlite3_step(s) == SQLITE_ROW { parts.append(String(cString: sqlite3_column_text(s, 0))) }
+        return parts.joined(separator: "\n\n")
+    }
+
     func chunkCount() -> Int {
         guard let s = try? statement("SELECT COUNT(*) FROM chunks") else { return 0 }
         defer { sqlite3_finalize(s) }

@@ -40,13 +40,14 @@ extension LibraryModel {
 
     /// Add a note to a notebook on this phone. It is searched and cited like any source, straight away.
     /// With a picture, the picture is kept and, if picture search is installed, embedded so a typed question can find it.
-    func addNote(notebook: String, title: String, text: String, kind: String = "note", photo: (image: CGImage, jpeg: Data)? = nil) async throws {
+    func addNote(notebook: String, title: String, text: String, kind: String = "note", photo: (image: CGImage, jpeg: Data)? = nil, replacing: String? = nil) async throws {
         let body = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let store, !body.isEmpty || photo != nil else { return }
         let cleanTitle = title.trimmingCharacters(in: .whitespaces)
         let name = !cleanTitle.isEmpty ? cleanTitle
             : (body.isEmpty ? "Photo" : String(body.prefix(40)).replacingOccurrences(of: "\n", with: " "))
-        let id = LocalNotes.prefix + UUID().uuidString.lowercased()
+        let id = replacing ?? (LocalNotes.prefix + UUID().uuidString.lowercased())
+        if replacing != nil { try await store.removeLocalNoteText(notebook: notebook, sourceId: id) }
         var chunks: [LibraryChunk] = []
         for (i, piece) in LocalNotes.split(body).enumerated() {
             let v = try await documentVector(piece)
@@ -101,6 +102,9 @@ extension LibraryModel {
     }
 
     func localNotes() async -> [LibraryStore.LocalNote] { await store?.localNotes() ?? [] }
+
+    func sources(in notebook: String) async -> [LibraryStore.SourceInfo] { await store?.sources(notebook: notebook) ?? [] }
+    func sourceText(notebook: String, sourceId: String) async -> String { await store?.sourceText(notebook: notebook, sourceId: sourceId) ?? "" }
 
     func removeNote(_ note: LibraryStore.LocalNote) async {
         try? await store?.removeLocalNote(notebook: note.notebookId, sourceId: note.id)
