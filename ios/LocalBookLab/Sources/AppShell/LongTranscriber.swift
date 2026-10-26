@@ -1,4 +1,5 @@
 import AVFoundation
+import FluidAudio
 import Foundation
 import Speech
 
@@ -83,5 +84,25 @@ enum LongTranscriber {
         guard let l = a.last, let f = b.first else { return a + b }
         if l.isWhitespace || f.isWhitespace || ",.;:!?)’'".contains(f) { return a + b }
         return a + " " + b
+    }
+}
+
+/// Fetches the two small models meetings need, once, quietly after the app has started, so the first meeting doesn't wait.
+/// (Apple's speech model is a system download and can't be packed into the app; the speaker model is fetched with it.)
+enum MeetingModels {
+    static func prepare() async {
+        if let locale = await SpeechTranscriber.supportedLocale(equivalentTo: Locale.current) {
+            let transcriber = SpeechTranscriber(locale: locale, transcriptionOptions: [], reportingOptions: [], attributeOptions: [.audioTimeRange])
+            do {
+                if let install = try await AssetInventory.assetInstallationRequest(supporting: [transcriber]) {
+                    SoakTrace.log("startup: downloading speech model")
+                    try await install.downloadAndInstall()
+                }
+            } catch { SoakTrace.log("startup: speech model not fetched: \(error.localizedDescription)") }
+        }
+        do {
+            try await OfflineDiarizerManager(config: OfflineDiarizerConfig()).prepareModels()
+            SoakTrace.log("startup: speaker model ready")
+        } catch { SoakTrace.log("startup: speaker model not fetched: \(error.localizedDescription)") }
     }
 }

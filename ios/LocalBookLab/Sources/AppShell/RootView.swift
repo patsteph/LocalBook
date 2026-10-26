@@ -31,6 +31,7 @@ struct RootView: View {
                     SoakTrace.log("startup: answer model ready after \(String(format: "%.1f", Date().timeIntervalSince(t0))) s")
                 }()
                 _ = await (search, answers)
+                await MeetingModels.prepare()          // after the search and answer models, so launch is not slowed
             }
         } else {
             OnboardingView(library: library, onDone: { paired = true })
