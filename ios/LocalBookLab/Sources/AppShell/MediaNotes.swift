@@ -28,9 +28,7 @@ final class MediaTranscriber {
         UIApplication.shared.isIdleTimerDisabled = true
         defer { busy = false; status = ""; task = nil; UIApplication.shared.isIdleTimerDisabled = false }
 
-        let allowed = await withCheckedContinuation { (c: CheckedContinuation<Bool, Never>) in
-            SFSpeechRecognizer.requestAuthorization { c.resume(returning: $0 == .authorized) }
-        }
+        let allowed = await SpeechPermission.granted()
         guard allowed else { throw Failure(text: "Allow Speech Recognition for LocalBook in Settings to transcribe.") }
         guard let recognizer = SFSpeechRecognizer(locale: Locale.current), recognizer.isAvailable else { throw Failure(text: "Transcription isn't available right now.") }
 

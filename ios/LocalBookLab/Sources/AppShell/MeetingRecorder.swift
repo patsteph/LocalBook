@@ -178,10 +178,8 @@ final class MeetingSession {
 
     /// Words with their times, from Apple's on-device recognizer (the same one Dictate uses).
     private static func recognize(_ url: URL, latest: Latest, progress: @escaping @Sendable (Double) -> Void) async throws -> [Word] {
-        let allowed = await withCheckedContinuation { (c: CheckedContinuation<Bool, Never>) in
-            SFSpeechRecognizer.requestAuthorization { c.resume(returning: $0 == .authorized) }
-        }
-        SoakTrace.log("meeting: speech permission \(allowed ? "granted" : "denied")")
+        let allowed = await SpeechPermission.granted()
+        SoakTrace.log("meeting: speech permission \(allowed ? "granted" : "not granted")")
         guard allowed else { throw MediaTranscriber.Failure(text: "Allow Speech Recognition for LocalBook in Settings to transcribe.") }
         guard let recognizer = SFSpeechRecognizer(locale: Locale.current), recognizer.isAvailable else {
             SoakTrace.log("meeting: recognizer unavailable for \(Locale.current.identifier)")
@@ -391,5 +389,31 @@ struct MeetingView: View {
             session.discard()
             dismiss()
         } catch { saveError = "Couldn't save: \(error.localizedDescription)" }
+    }
+}
+
+/// Asks for Speech Recognition only when the answer isn't already known, and never waits forever for the system's reply.
+enum SpeechPermission {
+    private final class Once: @unchecked Sendable {
+        private let lock = NSLock()
+        private var done = false
+        func first() -> Bool { lock.lock(); defer { lock.unlock() }; if done { return false }; done = true; return true }
+    }
+
+    static func granted() async -> Bool {
+        let status = SFSpeechRecognizer.authorizationStatus()
+        SoakTrace.log("meeting: speech permission status \(status.rawValue)")
+        if status == .authorized { return true }
+        guard status == .notDetermined else { return false }
+        return await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
+            let once = Once()
+            SFSpeechRecognizer.requestAuthorization { new in
+                if once.first() { cont.resume(returning: new == .authorized) }
+            }
+            Task.detached {
+                try? await Task.sleep(for: .seconds(20))
+                if once.first() { SoakTrace.log("meeting: speech permission request got no answer in 20 s"); cont.resume(returning: false) }
+            }
+        }
     }
 }
