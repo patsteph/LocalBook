@@ -27,6 +27,8 @@ final class MeetingSession {
     private var file: URL?
     private var observers: [any NSObjectProtocol] = []
     private var stopper: LongTranscriber.Stopper?
+    /// The big search/answer models are put away while a meeting is recorded and written up, and brought back after.
+    var library: LibraryModel?
 
     static var folder: URL {
         let url = URL.applicationSupportDirectory.appending(path: "LocalBookLab/Meetings")
@@ -81,11 +83,12 @@ final class MeetingSession {
 
     func start() async {
         guard await AVAudioApplication.requestRecordPermission() else { phase = .failed("Allow the microphone for LocalBook in Settings to record."); return }
+        library?.pauseModels()
         await Self.prepareSession()
         let url = Self.folder.appendingPathComponent(UUID().uuidString + ".m4a")
         do {
             // Creating and starting the recorder touches the audio session, so it is done off the main thread.
-            guard let r = try await Self.startRecorder(url) else { phase = .failed("Couldn't start recording."); return }
+            guard let r = try await Self.startRecorder(url) else { phase = .failed("Couldn't start recording."); Task { await library?.resumeModels() }; return }
             recorder = r; file = url; elapsed = 0; interrupted = false; phase = .recording
             UIApplication.shared.isIdleTimerDisabled = false
             watchInterruptions()
@@ -96,7 +99,7 @@ final class MeetingSession {
                     self.elapsed = r.currentTime
                 }
             }
-        } catch { phase = .failed("Couldn't start recording: \(error.localizedDescription)") }
+        } catch { phase = .failed("Couldn't start recording: \(error.localizedDescription)"); Task { await library?.resumeModels() } }
     }
 
     /// A phone call or alarm pauses the recording; it carries on when that ends.
@@ -136,6 +139,8 @@ final class MeetingSession {
     private typealias Word = LongTranscriber.Word
 
     func process(_ url: URL) async {
+        library?.pauseModels()
+        defer { Task { await library?.resumeModels() } }          // back while the person names the speakers
         phase = .working; progress = 0; step = "Getting ready…"
         UIApplication.shared.isIdleTimerDisabled = true
         let stop = LongTranscriber.Stopper(); stopper = stop
@@ -231,6 +236,8 @@ struct MeetingView: View {
                 }
             }
         }
+        .task { session.library = library }
+        .onDisappear { Task { await library.resumeModels() } }
         .interactiveDismissDisabled(session.phase == .recording || session.phase == .working || saving)
     }
 
@@ -333,6 +340,7 @@ struct MeetingView: View {
         saving = true; saveError = nil; defer { saving = false }
         let name = title.trimmingCharacters(in: .whitespaces).isEmpty ? "Meeting " + Date().formatted(date: .abbreviated, time: .shortened) : title
         do {
+            await library.waitForSearch()                       // the search model is coming back; the note is embedded with it
             try await library.addNote(notebook: notebookId, title: name, text: session.transcript)
             session.discard()
             dismiss()

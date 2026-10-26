@@ -553,6 +553,43 @@ final class LibraryModel {
         await task.value
     }
 
+    // MARK: staging models around heavy jobs
+
+    private var modelsPaused = false
+
+    /// Frees the answer, search and re-rank models (about 4 GB) for a long job that doesn't use them, such as recording
+    /// and writing up a meeting. A phone that holds less is far less likely to be shut down by iOS, especially while locked.
+    func pauseModels() {
+        guard !modelsPaused else { return }
+        modelsPaused = true
+        generation?.cancel()
+        gemma = nil; answerModelState = .idle
+        engine = nil; tokenizer = nil; reranker = nil; vision = nil
+        searchState = .notReady
+        rerankerLine = "Reranker: not loaded"
+        Memory.clearCache()
+        SoakTrace.log("models paused for a long job")
+    }
+
+    /// Loads them again (search and answers in parallel, as at launch).
+    func resumeModels() async {
+        guard modelsPaused else { return }
+        modelsPaused = false
+        let t0 = Date()
+        async let search: Void = { await self.prepareSearch(); await self.loadVisionIfInstalled() }()
+        async let answers: Void = self.prepareAnswerModel()
+        _ = await (search, answers)
+        SoakTrace.log("models resumed after \(String(format: "%.1f", Date().timeIntervalSince(t0))) s")
+    }
+
+    /// Waits (up to two minutes) until search is ready, for work that needs it straight after a pause.
+    func waitForSearch() async {
+        for _ in 0..<240 {
+            if case .ready = searchState { return }
+            try? await Task.sleep(for: .milliseconds(500))
+        }
+    }
+
     /// Free the answer model's memory (4+ GB) when the screen goes away.
     func unloadAnswerModel() {
         generation?.cancel()
