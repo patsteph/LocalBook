@@ -26,6 +26,7 @@ final class MeetingSession {
     private var ticker: Task<Void, Never>?
     private var file: URL?
     private var observers: [any NSObjectProtocol] = []
+    private var listening: Latest?
 
     static var folder: URL {
         let url = URL.applicationSupportDirectory.appending(path: "LocalBookLab/Meetings")
@@ -117,6 +118,9 @@ final class MeetingSession {
         await process(file)
     }
 
+    /// Lets the person leave the working screen: ends the wait for words (the recording stays).
+    func stopWorking() { listening?.requestStop() }
+
     func processPending() async { if let pending { file = pending; await process(pending) } }
 
     // MARK: who said what
@@ -141,7 +145,10 @@ final class MeetingSession {
             progress = 0.3
 
             step = "Writing down the words…"
-            let words = try await Self.recognize(url) { fraction in
+            let latest = Latest(); listening = latest
+            defer { listening = nil }
+            SoakTrace.log("meeting: starting speech recognition")
+            let words = try await Self.recognize(url, latest: latest) { fraction in
                 Task { @MainActor in self.progress = 0.3 + 0.7 * fraction }
             }
             lap("words written: \(words.count)")
@@ -170,29 +177,33 @@ final class MeetingSession {
     }
 
     /// Words with their times, from Apple's on-device recognizer (the same one Dictate uses).
-    private static func recognize(_ url: URL, progress: @escaping @Sendable (Double) -> Void) async throws -> [Word] {
+    private static func recognize(_ url: URL, latest: Latest, progress: @escaping @Sendable (Double) -> Void) async throws -> [Word] {
         let allowed = await withCheckedContinuation { (c: CheckedContinuation<Bool, Never>) in
             SFSpeechRecognizer.requestAuthorization { c.resume(returning: $0 == .authorized) }
         }
+        SoakTrace.log("meeting: speech permission \(allowed ? "granted" : "denied")")
         guard allowed else { throw MediaTranscriber.Failure(text: "Allow Speech Recognition for LocalBook in Settings to transcribe.") }
         guard let recognizer = SFSpeechRecognizer(locale: Locale.current), recognizer.isAvailable else {
+            SoakTrace.log("meeting: recognizer unavailable for \(Locale.current.identifier)")
             throw MediaTranscriber.Failure(text: "Transcription isn't available right now.")
         }
+        SoakTrace.log("meeting: recognizer \(Locale.current.identifier), on-device \(recognizer.supportsOnDeviceRecognition)")
         let total = max(1, try await AVURLAsset(url: url).load(.duration).seconds)
         let request = SFSpeechURLRecognitionRequest(url: url)
         request.shouldReportPartialResults = true
         request.requiresOnDeviceRecognition = recognizer.supportsOnDeviceRecognition
-        let latest = Latest()
         return try await withCheckedThrowingContinuation { (cont: CheckedContinuation<[Word], Error>) in
             // The task must be kept alive until it reports: a dropped task never calls back, and the wait would never end.
             latest.task = recognizer.recognitionTask(with: request) { result, error in
                 latest.beat()
+                if latest.firstCallback() { SoakTrace.log("meeting: speech first callback (result \(result != nil), error \(error?.localizedDescription ?? "none"))") }
                 if let result {
                     let words = result.bestTranscription.segments.map { Word(start: $0.timestamp, end: $0.timestamp + $0.duration, text: $0.substring) }
                     latest.set(words)
                     progress(min(1, (words.last?.end ?? 0) / total))
-                    if result.isFinal, latest.finish() { cont.resume(returning: words) }
+                    if result.isFinal, latest.finish() { SoakTrace.log("meeting: speech final, \(words.count) words"); cont.resume(returning: words) }
                 } else if let error, latest.finish() {
+                    SoakTrace.log("meeting: speech error: \(error.localizedDescription)")
                     // A long recording can end with an error after most of it was heard: keep what was heard.
                     let heard = latest.words
                     if heard.count > 20 { cont.resume(returning: heard) } else { cont.resume(throwing: error) }
@@ -201,12 +212,14 @@ final class MeetingSession {
             // If the recognizer goes quiet for 2 minutes, stop waiting: use what was heard, or say so.
             Task.detached {
                 while !latest.isDone {
-                    try? await Task.sleep(for: .seconds(5))
-                    if !latest.isDone, latest.secondsSinceBeat > 120, latest.finish() {
+                    try? await Task.sleep(for: .seconds(1))
+                    let stopped = latest.stopRequested
+                    if !latest.isDone, stopped || latest.secondsSinceBeat > 120, latest.finish() {
+                        SoakTrace.log("meeting: speech wait ended (\(stopped ? "stopped by you" : "no response for 2 minutes"))")
                         latest.task?.cancel()
                         let heard = latest.words
-                        if heard.count > 20 { cont.resume(returning: heard) }
-                        else { cont.resume(throwing: MediaTranscriber.Failure(text: "Transcription stopped responding. The recording is still on your phone; try again.")) }
+                        if heard.count > 20, !stopped { cont.resume(returning: heard) }
+                        else { cont.resume(throwing: MediaTranscriber.Failure(text: stopped ? "Stopped. The recording is still on your phone." : "Transcription stopped responding. The recording is still on your phone; try again.")) }
                     }
                 }
             }
@@ -218,7 +231,12 @@ final class MeetingSession {
         private var stored: [Word] = []
         private var done = false
         private var last = Date()
+        private var stop = false
+        private var first = true
         var task: SFSpeechRecognitionTask?
+        func requestStop() { lock.lock(); stop = true; lock.unlock() }
+        var stopRequested: Bool { lock.lock(); defer { lock.unlock() }; return stop }
+        func firstCallback() -> Bool { lock.lock(); defer { lock.unlock() }; let f = first; first = false; return f }
         func beat() { lock.lock(); last = Date(); lock.unlock() }
         var secondsSinceBeat: Double { lock.lock(); defer { lock.unlock() }; return Date().timeIntervalSince(last) }
         var isDone: Bool { lock.lock(); defer { lock.unlock() }; return done }
@@ -319,6 +337,7 @@ struct MeetingView: View {
             Text(session.step).font(.footnote).multilineTextAlignment(.center).padding(.horizontal, 32)
             Label("Keep LocalBook open on screen while this runs. The recording is safe on your phone.", systemImage: "iphone.gen3")
                 .font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center).padding(.horizontal, 32)
+            Button("Stop", role: .cancel) { session.stopWorking() }.buttonStyle(.bordered).padding(.top, 8)
             Spacer()
         }.frame(maxWidth: .infinity)
     }
