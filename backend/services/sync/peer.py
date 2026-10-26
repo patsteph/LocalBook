@@ -612,9 +612,18 @@ async def phone_library_sources(request: Request):
     _check_enabled()
     v = await _verified_phone(request)
     from services.sync import phone_library
-    out = await asyncio.to_thread(phone_library.sources, str(v["body"].get("notebook_id", "")))
+    notebook_id = str(v["body"].get("notebook_id", ""))
+    out = await asyncio.to_thread(phone_library.sources, notebook_id)
     if out is None:
         raise HTTPException(404, "no such notebook")
+    # When each source was added here, so the phone can list newest first. Not part of the hash: it never causes a re-send.
+    try:
+        from storage.source_store import source_store
+        added = {str(r.get("id")): str(r.get("created_at") or "") for r in await source_store.list(notebook_id)}
+        for src in out["sources"]:
+            src["created"] = added.get(src["source_id"], "")
+    except Exception as exc:
+        logger.warning("[phone-sync] source dates not added: %s", exc)
     return out
 
 

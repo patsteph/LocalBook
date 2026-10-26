@@ -124,6 +124,7 @@ actor LibraryStore {
         try? exec("ALTER TABLE notebooks ADD COLUMN section TEXT")
         try? exec("ALTER TABLE notebooks ADD COLUMN color TEXT")
         try? exec("ALTER TABLE notebooks ADD COLUMN collapsed INTEGER NOT NULL DEFAULT 0")
+        try? exec("ALTER TABLE sources ADD COLUMN created TEXT")          // when the source was added on the Mac (newest-first lists)
     }
 
     // No deinit: the store lives as long as the app, and SQLite closes the file with the process.
@@ -238,8 +239,8 @@ actor LibraryStore {
                 _ = c.vector.withUnsafeBytes { sqlite3_bind_blob(insert, 8, $0.baseAddress, Int32($0.count), Self.transient) }
                 guard sqlite3_step(insert) == SQLITE_DONE else { throw LibraryError.sqlite(String(cString: sqlite3_errmsg(db))) }
             }
-            let s = try statement("INSERT OR REPLACE INTO sources(notebook_id, source_id, hash) VALUES (?,?,?)")
-            bind(s, 1, notebook); bind(s, 2, sourceId); bind(s, 3, hash); sqlite3_step(s); sqlite3_finalize(s)
+            let s = try statement("INSERT INTO sources(notebook_id, source_id, hash, created) VALUES (?,?,?,?) ON CONFLICT(notebook_id, source_id) DO UPDATE SET hash=excluded.hash")
+            bind(s, 1, notebook); bind(s, 2, sourceId); bind(s, 3, hash); bind(s, 4, ISO8601DateFormatter().string(from: Date())); sqlite3_step(s); sqlite3_finalize(s)
             try exec("COMMIT")
         } catch { try? exec("ROLLBACK"); throw error }
     }
@@ -282,22 +283,39 @@ actor LibraryStore {
 
     // MARK: browsing a notebook's sources
 
-    struct SourceInfo: Sendable, Identifiable { let id: String; let notebookId: String; let name: String; let type: String; let pieces: Int; let characters: Int; var isLocal: Bool { id.hasPrefix("local:") } }
+    struct SourceInfo: Sendable, Identifiable { let id: String; let notebookId: String; let name: String; let type: String; let pieces: Int; let characters: Int; let created: String; var isLocal: Bool { id.hasPrefix("local:") } }
 
     func sources(notebook: String) -> [SourceInfo] {
         guard let s = try? statement("""
-            SELECT source_id, MIN(filename), MIN(source_type), COUNT(*), SUM(LENGTH(text))
-            FROM chunks WHERE notebook_id=? AND summary=0 AND chunk_index < \(Self.pictureIndex)
-            GROUP BY source_id ORDER BY MIN(filename) COLLATE NOCASE
+            SELECT c.source_id, MIN(c.filename), MIN(c.source_type), COUNT(*), SUM(LENGTH(c.text)), COALESCE(MAX(r.created), '')
+            FROM chunks c LEFT JOIN sources r ON r.notebook_id = c.notebook_id AND r.source_id = c.source_id
+            WHERE c.notebook_id=? AND c.summary=0 AND c.chunk_index < \(Self.pictureIndex)
+            GROUP BY c.source_id ORDER BY COALESCE(MAX(r.created), '') DESC, MIN(c.filename) COLLATE NOCASE
             """) else { return [] }
         defer { sqlite3_finalize(s) }
         bind(s, 1, notebook)
         var out: [SourceInfo] = []
         while sqlite3_step(s) == SQLITE_ROW {
             out.append(.init(id: String(cString: sqlite3_column_text(s, 0)), notebookId: notebook, name: String(cString: sqlite3_column_text(s, 1)),
-                             type: String(cString: sqlite3_column_text(s, 2)), pieces: Int(sqlite3_column_int64(s, 3)), characters: Int(sqlite3_column_int64(s, 4))))
+                             type: String(cString: sqlite3_column_text(s, 2)), pieces: Int(sqlite3_column_int64(s, 3)), characters: Int(sqlite3_column_int64(s, 4)),
+                             created: String(cString: sqlite3_column_text(s, 5))))
         }
         return out
+    }
+
+    /// Records when the Mac added each source (does not touch the chunks or the hash).
+    func setCreated(notebook: String, dates: [String: String]) throws {
+        try exec("BEGIN IMMEDIATE")
+        do {
+            let s = try statement("UPDATE sources SET created=? WHERE notebook_id=? AND source_id=?")
+            defer { sqlite3_finalize(s) }
+            for (sid, d) in dates where !d.isEmpty {
+                sqlite3_reset(s)
+                bind(s, 1, d); bind(s, 2, notebook); bind(s, 3, sid)
+                sqlite3_step(s)
+            }
+            try exec("COMMIT")
+        } catch { try? exec("ROLLBACK"); throw error }
     }
 
     /// A source's text, its pieces in order.

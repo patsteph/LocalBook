@@ -17,7 +17,7 @@ enum LibrarySync {
         let embedder: Embedder
         let notebooks: [Notebook]
     }
-    struct Sources: Decodable { struct Source: Decodable { let sourceId: String; let hash: String }; let sources: [Source] }
+    struct Sources: Decodable { struct Source: Decodable { let sourceId: String; let hash: String; let created: String? }; let sources: [Source] }
     struct ChunkPage: Decodable {
         struct Row: Decodable {
             let sourceId: String; let chunkIndex: Int; let text: String; let summary: Bool
@@ -97,7 +97,8 @@ enum LibrarySync {
         }
         let local = Dictionary(uniqueKeysWithValues: await store.notebooks().map { ($0.id, $0.digest) })
         for (i, nb) in manifest.notebooks.enumerated() {
-            if local[nb.id] == nb.digest { progress("\(nb.title): up to date"); continue }
+            let datesKnown = await store.meta("created:\(nb.id)") == "1"                      // older copies learn their dates once, from the (small) source list
+            if local[nb.id] == nb.digest && datesKnown { progress("\(nb.title): up to date"); continue }
             sum.notebooksChanged += 1
             progress("\(nb.title): comparing (\(i + 1) of \(manifest.notebooks.count))…")
             let remote = try await call(mac, "/phone/library/sources", ["notebook_id": nb.id], as: Sources.self, bytes: &sum.bytes)
@@ -137,6 +138,8 @@ enum LibrarySync {
                 try await store.apply(notebook: nb.id, title: nb.title, digest: nb.digest, removed: removed, resent: [],
                                       chunks: [], hashes: [:])
             }
+            try await store.setCreated(notebook: nb.id, dates: Dictionary(remote.sources.compactMap { s in s.created.map { (s.sourceId, $0) } }, uniquingKeysWith: { a, _ in a }))
+            try await store.setMeta("created:\(nb.id)", "1")
             sum.sourcesFetched += resend.count
             sum.chunksFetched += received
             // This notebook is complete: let the app use it now, in the desktop's order, while the rest still copy.

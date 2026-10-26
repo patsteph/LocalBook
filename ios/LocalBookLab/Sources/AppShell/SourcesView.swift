@@ -10,6 +10,7 @@ struct SourcesView: View {
     @State private var loaded = false
     @State private var search = ""
     @State private var kind: String?
+    @State private var newestFirst = true
 
     private static func label(_ type: String) -> String {
         switch type.lowercased() {
@@ -42,10 +43,12 @@ struct SourcesView: View {
     }
 
     private var shown: [LibraryStore.SourceInfo] {
-        sources.filter { s in
+        let kept = sources.filter { s in
             (kind == nil || Self.label(s.type) == kind)
                 && (search.isEmpty || s.name.localizedCaseInsensitiveContains(search))
         }
+        // The store already lists newest first; A–Z is the other order.
+        return newestFirst ? kept : kept.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
 
     var body: some View {
@@ -82,7 +85,17 @@ struct SourcesView: View {
             }
             .searchable(text: $search, prompt: "Search sources")
             .navigationTitle(notebook.title).navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } } }
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } }
+                ToolbarItem(placement: .primaryAction) {
+                    Menu {
+                        Picker("Order", selection: $newestFirst) {
+                            Text("Newest first").tag(true)
+                            Text("A to Z").tag(false)
+                        }
+                    } label: { Image(systemName: "arrow.up.arrow.down") }.accessibilityLabel("Order")
+                }
+            }
             .task { await reload() }
             .refreshable { await reload() }
         }
@@ -91,7 +104,11 @@ struct SourcesView: View {
     private func detail(_ s: LibraryStore.SourceInfo) -> String {
         let words = s.characters / 6
         let size = words >= 1000 ? "\(words / 1000)k words" : "\(max(1, words)) words"
-        return Self.label(s.type) + " · " + size + (s.isLocal ? " · made on this phone" : "")
+        var parts = [Self.label(s.type)]
+        if let d = StudioPull.parseDate(s.created) { parts.append(d.formatted(date: .abbreviated, time: .omitted)) }
+        parts.append(size)
+        if s.isLocal { parts.append("made on this phone") }
+        return parts.joined(separator: " · ")
     }
 
     private func chip(_ title: String, count: Int, on: Bool, action: @escaping () -> Void) -> some View {
