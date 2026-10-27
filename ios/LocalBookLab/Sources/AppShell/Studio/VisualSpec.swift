@@ -102,7 +102,17 @@ private let palette: [Color] = [.blue, .orange, .green, .pink, .purple, .teal]
 /// Draws a VisualSpec at phone width.
 struct VisualCanvas: View {
     let spec: VisualSpec
+    /// True when drawn on the 16:9 slide: steps, events and figures run across the page instead of down it.
+    var slide = false
     @State private var reading: BranchRef?
+
+    /// Indices 0..<count in rows of at most `per`, as even as possible.
+    private func rowsOf(_ count: Int, maxPerRow: Int) -> [[Int]] {
+        guard count > 0 else { return [] }
+        let rowCount = Int((Double(count) / Double(maxPerRow)).rounded(.up))
+        let per = Int((Double(count) / Double(rowCount)).rounded(.up))
+        return stride(from: 0, to: count, by: per).map { Array($0..<min($0 + per, count)) }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -118,7 +128,7 @@ struct VisualCanvas: View {
             }
         }
         .fixedSize(horizontal: false, vertical: true)      // text wraps; it is never squeezed to fit a height
-        .padding(20)
+        .padding(slide ? 28 : 20)
         .background(Color(.systemBackground))
         .sheet(item: $reading) { ref in
             NavigationStack {
@@ -188,7 +198,34 @@ struct VisualCanvas: View {
         .buttonStyle(.plain)
     }
 
-    private var flowchart: some View {
+    @ViewBuilder private var flowchart: some View {
+        if slide { flowchartAcross } else { flowchartDown }
+    }
+
+    private var flowchartAcross: some View {
+        let rows = rowsOf(spec.items.count, maxPerRow: 4)
+        let per = rows.first?.count ?? 1
+        return VStack(spacing: 16) {
+            ForEach(rows.indices, id: \.self) { r in
+                HStack(alignment: .top, spacing: 6) {
+                    ForEach(rows[r], id: \.self) { i in
+                        let c = palette[i % palette.count]
+                        if i != rows[r].first { Image(systemName: "arrow.right").font(.callout.weight(.bold)).foregroundStyle(.secondary).padding(.top, 22) }
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("\(i + 1)").font(.headline).foregroundStyle(.white).frame(width: 30, height: 30).background(c, in: Circle())
+                            Text(spec.items[i].title).font(.headline)
+                            if !spec.items[i].detail.isEmpty { Text(spec.items[i].detail).font(.subheadline).foregroundStyle(.secondary) }
+                        }
+                        .padding(14).frame(maxWidth: .infinity, alignment: .topLeading)
+                        .background(c.opacity(0.1), in: RoundedRectangle(cornerRadius: 16))
+                    }
+                    ForEach(0..<max(0, per - rows[r].count), id: \.self) { _ in Color.clear.frame(maxWidth: .infinity) }
+                }
+            }
+        }
+    }
+
+    private var flowchartDown: some View {
         VStack(spacing: 0) {
             ForEach(spec.items.indices, id: \.self) { i in
                 let c = palette[i % palette.count]
@@ -228,7 +265,36 @@ struct VisualCanvas: View {
         }
     }
 
-    private var timeline: some View {
+    @ViewBuilder private var timeline: some View {
+        if slide { timelineAcross } else { timelineDown }
+    }
+
+    private var timelineAcross: some View {
+        let rows = rowsOf(spec.items.count, maxPerRow: 5)
+        let per = rows.first?.count ?? 1
+        return VStack(spacing: 22) {
+            ForEach(rows.indices, id: \.self) { r in
+                HStack(alignment: .top, spacing: 14) {
+                    ForEach(rows[r], id: \.self) { i in
+                        let c = palette[i % palette.count]
+                        VStack(alignment: .leading, spacing: 5) {
+                            ZStack(alignment: .leading) {
+                                Rectangle().fill(c.opacity(0.3)).frame(height: 2)
+                                Circle().fill(c).frame(width: 14, height: 14)
+                            }
+                            if !spec.items[i].value.isEmpty { Text(spec.items[i].value).font(.caption.bold()).foregroundStyle(c) }
+                            Text(spec.items[i].title).font(.headline)
+                            if !spec.items[i].detail.isEmpty { Text(spec.items[i].detail).font(.subheadline).foregroundStyle(.secondary) }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .topLeading)
+                    }
+                    ForEach(0..<max(0, per - rows[r].count), id: \.self) { _ in Color.clear.frame(maxWidth: .infinity) }
+                }
+            }
+        }
+    }
+
+    private var timelineDown: some View {
         VStack(alignment: .leading, spacing: 0) {
             ForEach(spec.items.indices, id: \.self) { i in
                 let c = palette[i % palette.count]
@@ -251,7 +317,7 @@ struct VisualCanvas: View {
     private var infographic: some View {
         VStack(alignment: .leading, spacing: 18) {
             if !spec.stats.isEmpty {
-                LazyVGrid(columns: [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)], spacing: 10) {
+                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: slide ? min(4, max(2, spec.stats.count)) : 2), spacing: 10) {
                     ForEach(spec.stats.indices, id: \.self) { i in
                         let c = palette[i % palette.count]
                         VStack(alignment: .leading, spacing: 4) {
@@ -263,13 +329,15 @@ struct VisualCanvas: View {
                     }
                 }
             }
-            ForEach(spec.items.indices, id: \.self) { i in
-                let c = palette[(i + 2) % palette.count]
-                HStack(alignment: .top, spacing: 12) {
-                    Image(systemName: "sparkle").foregroundStyle(c).frame(width: 24)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(spec.items[i].title).font(.headline)
-                        if !spec.items[i].detail.isEmpty { Text(spec.items[i].detail).font(.subheadline).foregroundStyle(.secondary) }
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 16, alignment: .topLeading), count: slide ? 2 : 1), alignment: .leading, spacing: 12) {
+                ForEach(spec.items.indices, id: \.self) { i in
+                    let c = palette[(i + 2) % palette.count]
+                    HStack(alignment: .top, spacing: 12) {
+                        Image(systemName: "sparkle").foregroundStyle(c).frame(width: 24)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(spec.items[i].title).font(.headline)
+                            if !spec.items[i].detail.isEmpty { Text(spec.items[i].detail).font(.subheadline).foregroundStyle(.secondary) }
+                        }
                     }
                 }
             }
@@ -277,31 +345,66 @@ struct VisualCanvas: View {
     }
 }
 
-private struct CanvasSize: PreferenceKey {
-    nonisolated(unsafe) static var defaultValue = CGSize.zero
-    static func reduce(value: inout CGSize, nextValue: () -> CGSize) { value = nextValue() }
+/// Every visual is one 16:9 slide: drawn 800×450 and saved at 2560×1440 (2K). A visual with a lot on it is laid out wider
+/// and shrunk to fit, so the shape never changes. On the phone it is scaled to the screen and can be pinched to zoom.
+struct VisualSlide: View {
+    static let size = CGSize(width: 800, height: 450)
+    static let exportWidth: CGFloat = 2560
+    let spec: VisualSpec
+    var fit: CGFloat = 1
+
+    var body: some View {
+        VisualCanvas(spec: spec, slide: true)
+            .frame(width: Self.size.width / fit)
+            .scaleEffect(fit)
+            .frame(width: Self.size.width, height: Self.size.height)
+            .background(Color(.systemBackground))
+            .clipped()
+    }
+
+    /// How much to shrink the drawing so it fits the slide's height (1 when it already does).
+    @MainActor static func fit(for spec: VisualSpec) -> CGFloat {
+        func height(at width: CGFloat) -> CGFloat {
+            let r = ImageRenderer(content: VisualCanvas(spec: spec, slide: true).frame(width: width).environment(\.colorScheme, .light))
+            r.scale = 1
+            return r.uiImage?.size.height ?? size.height
+        }
+        var s: CGFloat = 1
+        for _ in 0..<3 {                                    // wider means fewer wrapped lines, so measure again after each shrink
+            let shown = height(at: size.width / s) * s
+            if shown <= size.height { break }
+            s = max(0.3, s * size.height / shown)
+        }
+        return s
+    }
+
+    @MainActor static func image(for spec: VisualSpec, fit: CGFloat) -> UIImage? {
+        let r = ImageRenderer(content: VisualSlide(spec: spec, fit: fit).environment(\.colorScheme, .light))
+        r.scale = exportWidth / size.width
+        return r.uiImage
+    }
 }
 
-/// The visual screen: the drawing with pinch to zoom, drag to move and double-tap to zoom in or fit, plus
-/// save-as-image sharing.
+/// The visual screen: the 16:9 slide fitted to the screen, with pinch to zoom, drag to move and double-tap to zoom in or
+/// fit, plus save-as-image sharing (2K).
 struct VisualItemView: View {
     let spec: VisualSpec
     let title: String
     @State private var picture: UIImage?
     @State private var scale: CGFloat = 1
     @State private var committed: CGFloat = 1
-    @State private var natural = CGSize.zero
+    @State private var fit: CGFloat = 1
 
     var body: some View {
         GeometryReader { geo in
+            let base = min(geo.size.width / VisualSlide.size.width, geo.size.height / VisualSlide.size.height)
+            let w = VisualSlide.size.width * base * scale, h = VisualSlide.size.height * base * scale
             ScrollView([.horizontal, .vertical]) {
-                VisualCanvas(spec: spec)
-                    .frame(width: geo.size.width)
-                    .background(GeometryReader { g in Color.clear.preference(key: CanvasSize.self, value: g.size) })
-                    .scaleEffect(scale, anchor: .topLeading)
-                    .frame(width: geo.size.width * scale, height: max(1, natural.height) * scale, alignment: .topLeading)
+                VisualSlide(spec: spec, fit: fit)
+                    .scaleEffect(base * scale, anchor: .topLeading)
+                    .frame(width: w, height: h, alignment: .topLeading)
+                    .frame(minWidth: geo.size.width, minHeight: geo.size.height)       // centred when smaller than the screen
             }
-            .onPreferenceChange(CanvasSize.self) { natural = $0 }
             .simultaneousGesture(
                 MagnifyGesture()
                     .onChanged { scale = min(4, max(1, committed * $0.magnification)) }
@@ -321,9 +424,8 @@ struct VisualItemView: View {
             }
         }
         .task {
-            let renderer = ImageRenderer(content: VisualCanvas(spec: spec).frame(width: 390).environment(\.colorScheme, .light))
-            renderer.scale = 3
-            picture = renderer.uiImage
+            fit = VisualSlide.fit(for: spec)
+            picture = VisualSlide.image(for: spec, fit: fit)
         }
     }
 }
