@@ -90,7 +90,6 @@ struct VisualSpec: Codable, Hashable, Sendable {
     }
 }
 
-private struct BranchRef: Identifiable { let id: Int; let item: VisualSpec.Item }
 
 private struct MindBounds: PreferenceKey {
     nonisolated(unsafe) static var defaultValue: [String: Anchor<CGRect>] = [:]
@@ -104,7 +103,8 @@ struct VisualCanvas: View {
     let spec: VisualSpec
     /// True when drawn on the 16:9 slide: steps, events and figures run across the page instead of down it.
     var slide = false
-    @State private var reading: BranchRef?
+    /// Mind-map branches opened in place (tap a branch to show all of it, tap again to fold it).
+    var expanded: Binding<Set<Int>> = .constant([])
 
     /// Indices 0..<count in rows of at most `per`, as even as possible.
     private func rowsOf(_ count: Int, maxPerRow: Int) -> [[Int]] {
@@ -130,17 +130,6 @@ struct VisualCanvas: View {
         .fixedSize(horizontal: false, vertical: true)      // text wraps; it is never squeezed to fit a height
         .padding(slide ? 28 : 20)
         .background(Color(.systemBackground))
-        .sheet(item: $reading) { ref in
-            NavigationStack {
-                List {
-                    ForEach(Array(ref.item.children.enumerated()), id: \.offset) { _, child in Text(child).font(.body) }
-                    if !ref.item.detail.isEmpty { Text(ref.item.detail) }
-                }
-                .navigationTitle(ref.item.title).navigationBarTitleDisplayMode(.inline)
-                .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { reading = nil } } }
-            }
-            .presentationDetents([.medium, .large])
-        }
     }
 
     /// A classic mind map: the topic in the middle, branches fanning out to both sides on curved lines.
@@ -179,23 +168,35 @@ struct VisualCanvas: View {
 
     private func branch(_ i: Int, _ item: VisualSpec.Item, leading: Bool) -> some View {
         let c = palette[i % palette.count]
-        return Button { reading = BranchRef(id: i, item: item) } label: {
+        let open = expanded.wrappedValue.contains(i)
+        let hidden = max(0, item.children.count - 3)
+        let canOpen = hidden > 0 || !item.detail.isEmpty || item.children.contains { $0.count > 60 }
+        return Button {
+            guard canOpen else { return }
+            withAnimation(.snappy) {
+                if open { expanded.wrappedValue.remove(i) } else { expanded.wrappedValue.insert(i) }
+            }
+        } label: {
             VStack(alignment: leading ? .leading : .trailing, spacing: 5) {
                 HStack(spacing: 4) {
                     Text(item.title).font(.footnote.bold()).multilineTextAlignment(leading ? .leading : .trailing)
-                    if !item.children.isEmpty { Image(systemName: "text.magnifyingglass").font(.caption2) }
+                    if canOpen { Image(systemName: open ? "chevron.up" : "chevron.down").font(.caption2.weight(.bold)) }
                 }
                 .foregroundStyle(.white).padding(.horizontal, 10).padding(.vertical, 6).background(c, in: Capsule())
                 .anchorPreference(key: MindBounds.self, value: .bounds) { ["b\(i)": $0] }
-                ForEach(Array(item.children.prefix(3).enumerated()), id: \.offset) { _, child in
-                    Text(child).font(.caption2).foregroundStyle(.secondary).lineLimit(2)
+                ForEach(Array((open ? item.children : Array(item.children.prefix(3))).enumerated()), id: \.offset) { _, child in
+                    Text(child).font(.caption2).foregroundStyle(open ? .primary : .secondary).lineLimit(open ? nil : 2)
                         .multilineTextAlignment(leading ? .leading : .trailing)
                 }
-                if item.children.count > 3 { Text("+\(item.children.count - 3) more").font(.caption2).foregroundStyle(c) }
+                if open, !item.detail.isEmpty {
+                    Text(item.detail).font(.caption2).foregroundStyle(.secondary).multilineTextAlignment(leading ? .leading : .trailing)
+                }
+                if !open, hidden > 0 { Text("+\(hidden) more").font(.caption2.weight(.semibold)).foregroundStyle(c) }
             }
             .frame(maxWidth: .infinity, alignment: leading ? .leading : .trailing)
         }
         .buttonStyle(.plain)
+        .accessibilityHint(canOpen ? (open ? "Shows less" : "Shows all of this branch") : "")
     }
 
     @ViewBuilder private var flowchart: some View {
@@ -352,9 +353,10 @@ struct VisualSlide: View {
     static let exportWidth: CGFloat = 2560
     let spec: VisualSpec
     var fit: CGFloat = 1
+    var expanded: Binding<Set<Int>> = .constant([])
 
     var body: some View {
-        VisualCanvas(spec: spec, slide: true)
+        VisualCanvas(spec: spec, slide: true, expanded: expanded)
             .frame(width: Self.size.width / fit)
             .scaleEffect(fit)
             .frame(width: Self.size.width, height: Self.size.height)
@@ -363,9 +365,9 @@ struct VisualSlide: View {
     }
 
     /// How much to shrink the drawing so it fits the slide's height (1 when it already does).
-    @MainActor static func fit(for spec: VisualSpec) -> CGFloat {
+    @MainActor static func fit(for spec: VisualSpec, expanded: Set<Int> = []) -> CGFloat {
         func height(at width: CGFloat) -> CGFloat {
-            let r = ImageRenderer(content: VisualCanvas(spec: spec, slide: true).frame(width: width).environment(\.colorScheme, .light))
+            let r = ImageRenderer(content: VisualCanvas(spec: spec, slide: true, expanded: .constant(expanded)).frame(width: width).environment(\.colorScheme, .light))
             r.scale = 1
             return r.uiImage?.size.height ?? size.height
         }
@@ -394,13 +396,14 @@ struct VisualItemView: View {
     @State private var scale: CGFloat = 1
     @State private var committed: CGFloat = 1
     @State private var fit: CGFloat = 1
+    @State private var expanded: Set<Int> = []
 
     var body: some View {
         GeometryReader { geo in
             let base = min(geo.size.width / VisualSlide.size.width, geo.size.height / VisualSlide.size.height)
             let w = VisualSlide.size.width * base * scale, h = VisualSlide.size.height * base * scale
             ScrollView([.horizontal, .vertical]) {
-                VisualSlide(spec: spec, fit: fit)
+                VisualSlide(spec: spec, fit: fit, expanded: $expanded)
                     .scaleEffect(base * scale, anchor: .topLeading)
                     .frame(width: w, height: h, alignment: .topLeading)
                     .frame(minWidth: geo.size.width, minHeight: geo.size.height)       // centred when smaller than the screen
@@ -426,6 +429,9 @@ struct VisualItemView: View {
         .task {
             fit = VisualSlide.fit(for: spec)
             picture = VisualSlide.image(for: spec, fit: fit)
+        }
+        .onChange(of: expanded) { _, now in                     // open branches make the slide fuller: shrink it to stay 16:9
+            withAnimation(.snappy) { fit = VisualSlide.fit(for: spec, expanded: now) }
         }
     }
 }
