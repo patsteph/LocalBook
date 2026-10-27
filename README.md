@@ -2,7 +2,7 @@
 
 **Your documents, your AI, your machine.** A private, offline alternative to cloud-based AI assistants.
 
-[![Version](https://img.shields.io/badge/version-2.5.0-blue.svg)](https://github.com/patsteph/LocalBook/releases)
+[![Version](https://img.shields.io/badge/version-2.5.5-blue.svg)](https://github.com/patsteph/LocalBook/releases)
 [![Platform](https://img.shields.io/badge/platform-macOS-lightgrey.svg)](https://github.com/patsteph/LocalBook)
 [![Python](https://img.shields.io/badge/python-3.13-green.svg)](https://www.python.org)
 [![License](https://img.shields.io/badge/license-MIT-yellow.svg)](LICENSE)
@@ -25,7 +25,50 @@ Chat with your documents using AI — completely offline and private. Upload PDF
 
 ---
 
-## 🎉 What's New in v2.5.0
+## 🎉 What's New in v2.5.5
+
+**Your notebooks, on your phone, answered on your phone.** The new iOS app pairs with your Mac,
+keeps notebooks you choose in sync (only what changed), and searches and answers questions with
+a model that runs entirely on the phone. Nothing goes to a server.
+
+### Added
+- **iPhone app (TestFlight).** Ask, Notebooks, Studio, Meetings and Sources. Search is one
+  notebook at a time and follows the Mac's retrieval recipe (hybrid search plus reranker); answers
+  come from an on-device model that loads at launch and stays loaded. Pairing uses mutual TLS with
+  a key in the phone's Secure Enclave.
+- **Studio on the phone.** Briefing, Quiz, Flashcards, Audio overview (four styles, British and
+  American voices) and Visuals (five layouts, 16:9 at 2K, pinch to zoom, mind-map branches open
+  in place). Everything is made on the phone; documents, quizzes, cards and audio reach the Mac.
+- **Meeting recorder.** Records 30 to 120 minutes, writes down the words on the phone, tells
+  speakers apart, remembers names you have used, and saves a searchable transcript. Searching
+  for something a person said brings the lines around it.
+- **Sources browser.** Search, filter by kind, newest first, read, share; edit notes made on the
+  phone that have not reached the Mac yet.
+- **Safe on lock.** Generation stops the instant the screen locks, so the app no longer crashes.
+
+### Fixed
+- Re-sync duplicated sources because the library listed only 10 tables (7b679ac).
+- Many sync, search and Mac-side fixes across the 200+ commits since v2.5.0; see git history.
+
+### Requirements
+- Mac: rebuild with `./build.sh --rebuild` (Python 3.13). Update every paired Mac.
+- iPhone: iOS 27 beta SDK, Xcode with `xcodegen`, or the TestFlight build. The phone and Mac must
+  be on the same network to pair and sync.
+- Pairing keys changed: **re-pair each phone once** after upgrading.
+- Turn Sync on for each notebook you want on the phone.
+- The first meeting downloads Apple's speech model and a speaker model once.
+
+### Cautions
+- Pre-release iOS app: expect rough edges. TestFlight builds expire after 90 days.
+- Sources that arrived from the Mac cannot be edited or deleted from the phone yet.
+- Visuals made on the phone stay on the phone; video generation is not on the phone yet.
+- Meetings over 2 hours are untested. Keep the app open while recording or making Studio items.
+- Memory is tight (about 6 GB): answer models pause during a meeting and resume afterward.
+- Never run the full backend test suite on a Mac holding your real library (Keychain prompts).
+
+---
+
+## What's New in v2.5.0
 **Pair your Macs and they keep one library between them — directly, encrypted, with nothing in
 the cloud.** The library can live in an encrypted volume that opens at login, companion agents can
 search and remember through LocalBook, and podcasts, videos and speech no longer need anything
@@ -437,7 +480,7 @@ To upgrade an existing install, append `-- --upgrade`.
 
 ### Option 2: Download Release
 
-1. Download `LocalBook-v2.5.0.zip` from [Releases](https://github.com/patsteph/LocalBook/releases)
+1. Download `LocalBook-v2.5.5.zip` from [Releases](https://github.com/patsteph/LocalBook/releases)
 2. Unzip and drag `LocalBook.app` to `/Applications`
 3. Launch LocalBook — it will download required AI models on first run
 
@@ -487,7 +530,7 @@ The **LocalBook Companion** extension lets you use LocalBook while browsing the 
 
 ### Installation
 
-1. Download `LocalBook-Extension-v2.5.0.zip` from [Releases](https://github.com/patsteph/LocalBook/releases)
+1. Download `LocalBook-Extension-v2.5.5.zip` from [Releases](https://github.com/patsteph/LocalBook/releases)
 2. Unzip to a folder (e.g., `~/LocalBook-Extension`)
 3. Open Chrome/Edge and go to `chrome://extensions`
 4. Enable **Developer mode** (toggle in top right)
