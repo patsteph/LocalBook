@@ -61,7 +61,7 @@ a model that runs entirely on the phone. Nothing goes to a server.
 ### Cautions
 - Pre-release iOS app: expect rough edges. TestFlight builds expire after 90 days.
 - Sources that arrived from the Mac cannot be edited or deleted from the phone yet.
-- Visuals made on the phone stay on the phone; video generation is not on the phone yet.
+- Visuals and videos made on the phone stay on the phone; they are not sent to the Mac yet.
 - Meetings over 2 hours are untested. Keep the app open while recording or making Studio items.
 - Memory is tight (about 6 GB): answer models pause during a meeting and resume afterward.
 - Never run the full backend test suite on a Mac holding your real library (Keychain prompts).
