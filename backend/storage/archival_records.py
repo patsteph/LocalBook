@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import logging
 from typing import Any, Dict, Iterable, List
+from utils.lancedb_tables import has_table
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +64,7 @@ def backfill(store) -> int:
     try:
         ensure(conn)
         have = {r[0] for r in conn.execute("SELECT id FROM archival_records")}
-        if "archival_memories" not in store.archival_db.table_names():
+        if not has_table(store.archival_db, "archival_memories"):
             return 0
         df = store.archival_db.open_table("archival_memories").to_pandas()
         n = 0

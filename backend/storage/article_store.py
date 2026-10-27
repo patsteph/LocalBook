@@ -19,6 +19,13 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 
+
+def _model_args():
+    """(legacy model for NULL tags, live model) for the COALESCE(embed_model, ?) = ? filters."""
+    from config import settings
+    from services.embedding_profile import LEGACY_EMBED_MODEL
+    return LEGACY_EMBED_MODEL, settings.embedding_model
+
 class ArticleStore:
     def _get_db(self):
         from storage.database import get_db
@@ -312,19 +319,40 @@ class ArticleStore:
             logger.debug(f"[article_store.update_summary] {e}")
             return False
 
-    async def update_embedding(self, article_id: str, embedding: bytes) -> bool:
-        """Persist a packed-float32 embedding blob for clustering use."""
+    async def update_embedding(self, article_id: str, embedding: bytes, model: Optional[str] = None) -> bool:
+        """Persist a packed-float32 embedding blob for clustering use, with the model that
+        made it (per Mac, never synced — another Mac may run another embedder)."""
         try:
+            if model is None:
+                from config import settings
+                model = settings.embedding_model
             conn = self._get_db()
             cur = conn.execute(
-                "UPDATE articles SET embedding = ? WHERE id = ?",
-                (embedding, article_id),
+                "UPDATE articles SET embedding = ?, embed_model = ? WHERE id = ?",
+                (embedding, model, article_id),
             )
             conn.commit()
             return cur.rowcount > 0
         except Exception as e:
             logger.debug(f"[article_store.update_embedding] {e}")
             return False
+
+    async def list_needing_embedding(self, since_iso: str, limit: int = 500) -> List[Dict[str, Any]]:
+        """Recent content articles with no vector from the LIVE embedder: synced in from another
+        Mac (vectors never sync), or embedded before a model switch."""
+        try:
+            rows = self._get_db().execute(
+                """SELECT id, title, summary, body_text FROM articles
+                   WHERE (embedding IS NULL OR COALESCE(embed_model, ?) != ?)
+                     AND created_at >= ?
+                     AND (kind IS NULL OR kind = 'content')
+                   ORDER BY created_at DESC LIMIT ?""",
+                (*_model_args(), since_iso, int(limit)),
+            ).fetchall()
+            return [dict(r) for r in rows]
+        except Exception as e:
+            logger.debug(f"[article_store.list_needing_embedding] {e}")
+            return []
 
     async def list_with_embeddings(self, since_iso: str, limit: int = 5000) -> List[Dict[str, Any]]:
         """Recent articles that have embeddings — used by the clusterer.
@@ -342,10 +370,11 @@ class ArticleStore:
                           sender, topic_tags, created_at, embedding
                    FROM articles
                    WHERE embedding IS NOT NULL
+                     AND COALESCE(embed_model, ?) = ?
                      AND created_at >= ?
                      AND (kind IS NULL OR kind = 'content')
                    ORDER BY created_at DESC LIMIT ?""",
-                (since_iso, int(limit)),
+                (*_model_args(), since_iso, int(limit)),
             ).fetchall()
             out = []
             for r in rows:

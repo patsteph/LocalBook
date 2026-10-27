@@ -188,7 +188,7 @@ h11==0.16.0
     #   uvicorn
 hdbscan==0.8.41
     # via bertopic
-hf-xet==1.5.1
+hf-xet==1.7.0
     # via huggingface-hub
 htmldate==1.9.4
     # via trafilatura
@@ -207,8 +207,9 @@ httpx==0.28.1
     #   openai
 httpx-sse==0.4.3
     # via mcp
-huggingface-hub==1.23.0
+huggingface-hub==1.33.0
     # via
+    #   -r requirements.in
     #   mlx-whisper
     #   sentence-transformers
     #   tokenizers
@@ -335,11 +336,11 @@ mdurl==0.1.2
     # via markdown-it-py
 misaki==0.7.4
     # via -r requirements.in
-mlx==0.32.0 ; sys_platform == "darwin"
+mlx==0.32.4 ; sys_platform == "darwin"
     # via
     #   -r requirements.in
     #   mlx-whisper
-mlx-metal==0.32.0
+mlx-metal==0.32.4
     # via mlx
 mlx-whisper==0.4.3 ; sys_platform == "darwin"
     # via -r requirements.in
@@ -786,7 +787,7 @@ tiktoken==0.12.0
     #   mlx-whisper
 tld==0.13.1
     # via courlan
-tokenizers==0.22.2
+tokenizers==0.23.3
     # via
     #   flashrank
     #   transformers
@@ -817,7 +818,7 @@ traitlets==5.14.3
     # via
     #   jupyter-core
     #   nbformat
-transformers==5.12.1
+transformers==5.19.0
     # via
     #   -r requirements.in
     #   sentence-transformers

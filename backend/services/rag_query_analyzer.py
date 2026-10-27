@@ -10,6 +10,26 @@ from typing import Dict, List, Optional, Tuple
 
 # ─── Query Classification ──────────────────────────────────────────────────────
 
+# Pattern lists behind classify_query, module-level so a paired phone can be given the SAME lists
+# (services/sync/phone_recipe.py) instead of keeping its own copy.
+COMPLEX_PATTERNS = [
+    'compare', 'contrast', 'analyze', 'explain why', 'explain how',
+    'what are the differences', 'what are the similarities',
+    'synthesize', 'evaluate', 'assess',
+    'pros and cons', 'advantages and disadvantages',
+    'step by step', 'walk me through', 'break down',
+    'relationship between', 'implications', 'consequences',
+    'argue', 'debate', 'critique', 'review'
+]
+
+FACTUAL_PATTERNS = [
+    'how many', 'how much', 'what is the', 'what was the',
+    'when did', 'when was', 'who is', 'who was', 'who did',
+    'what date', 'what time', 'what number', 'what percentage',
+    'list the', 'name the', 'count of', 'total of',
+    'did chris', 'did christopher',
+]
+
 def classify_query(question: str) -> str:
     """Classify query type for optimal prompt and model selection.
     
@@ -26,16 +46,7 @@ def classify_query(question: str) -> str:
         re.search(r'\band\b.{5,}\?', q_lower) is not None
     )
     
-    complex_patterns = [
-        'compare', 'contrast', 'analyze', 'explain why', 'explain how',
-        'what are the differences', 'what are the similarities',
-        'synthesize', 'evaluate', 'assess',
-        'pros and cons', 'advantages and disadvantages',
-        'step by step', 'walk me through', 'break down',
-        'relationship between', 'implications', 'consequences',
-        'argue', 'debate', 'critique', 'review'
-    ]
-    for pattern in complex_patterns:
+    for pattern in COMPLEX_PATTERNS:
         if pattern in q_lower:
             return 'complex'
     
@@ -46,18 +57,31 @@ def classify_query(question: str) -> str:
     if is_multi_part:
         return 'synthesis'
     
-    factual_patterns = [
-        'how many', 'how much', 'what is the', 'what was the',
-        'when did', 'when was', 'who is', 'who was', 'who did',
-        'what date', 'what time', 'what number', 'what percentage',
-        'list the', 'name the', 'count of', 'total of',
-        'did chris', 'did christopher',
-    ]
-    for pattern in factual_patterns:
+    for pattern in FACTUAL_PATTERNS:
         if pattern in q_lower:
             return 'factual'
     
     return 'synthesis'
+
+
+# Ordered (regex, instruction) rules; the first that matches the lower-cased question wins. Published to phones
+# in the answer recipe so they apply exactly the same hint.
+FORMAT_RULES = [
+    (r'\b(\d+|top|key|main|major|all)\s+(things?|items?|points?|reasons?|ways?|tips?|examples?|factors?|features?|benefits?|risks?|issues?|steps?|ideas?|recommendations?|priorities?|strengths?|weaknesses?|areas?|industries|sectors?|use\s*cases?|applications?|tools?|platforms?|technologies?|strategies?|challenges?|trends?|methods?|approaches?|techniques?|components?|types?|categories?|advantages?|disadvantages?|differences?)\b',
+     "\nFORMAT: Respond using a numbered or bulleted markdown list. Each item should be concise (1-2 sentences). Place citations INLINE at the end of each item like [1], NOT grouped at the top."),
+    (r'\blist\s+(the|all|every|my|our|their)\b',
+     "\nFORMAT: Respond using a numbered or bulleted markdown list. Each item should be concise (1-2 sentences). Place citations INLINE at the end of each item like [1], NOT grouped at the top."),
+    (r'\bwhat are (the |all )?(key|main|top|biggest|most)\b',
+     "\nFORMAT: Respond using a numbered or bulleted markdown list. Each item should be concise (1-2 sentences). Place citations INLINE at the end of each item like [1], NOT grouped at the top."),
+    (r'\b(write|show|give|create|generate)\s+(me\s+)?(the\s+)?(code|script|function|implementation|snippet|class|method|query|sql|regex)\b',
+     "\nFORMAT: Include code in fenced markdown code blocks (```language). Add brief explanations outside the code blocks."),
+    (r'\b(implement|code|program|script)\s+(a|an|the|this|that)\b',
+     "\nFORMAT: Include code in fenced markdown code blocks (```language). Add brief explanations outside the code blocks."),
+    (r'\b(table|comparison|matrix|grid)\b.*\b(of|for|showing|comparing)\b',
+     "\nFORMAT: Use a markdown table for structured comparison. Add a brief summary below the table."),
+    (r'\b(step.by.step|walk me through|how do i|how to|process for|guide to|instructions for)\b',
+     "\nFORMAT: Respond with numbered steps. Each step should have a clear action and brief explanation."),
+]
 
 
 def detect_response_format(question: str) -> str:
@@ -67,29 +91,9 @@ def detect_response_format(question: str) -> str:
     or empty string for default paragraph style.
     """
     q_lower = question.lower()
-
-    # LIST
-    if re.search(r'\b(\d+|top|key|main|major|all)\s+(things?|items?|points?|reasons?|ways?|tips?|examples?|factors?|features?|benefits?|risks?|issues?|steps?|ideas?|recommendations?|priorities?|strengths?|weaknesses?|areas?|industries|sectors?|use\s*cases?|applications?|tools?|platforms?|technologies?|strategies?|challenges?|trends?|methods?|approaches?|techniques?|components?|types?|categories?|advantages?|disadvantages?|differences?)\b', q_lower):
-        return "\nFORMAT: Respond using a numbered or bulleted markdown list. Each item should be concise (1-2 sentences). Place citations INLINE at the end of each item like [1], NOT grouped at the top."
-    if re.search(r'\blist\s+(the|all|every|my|our|their)\b', q_lower):
-        return "\nFORMAT: Respond using a numbered or bulleted markdown list. Each item should be concise (1-2 sentences). Place citations INLINE at the end of each item like [1], NOT grouped at the top."
-    if re.search(r'\bwhat are (the |all )?(key|main|top|biggest|most)\b', q_lower):
-        return "\nFORMAT: Respond using a numbered or bulleted markdown list. Each item should be concise (1-2 sentences). Place citations INLINE at the end of each item like [1], NOT grouped at the top."
-
-    # CODE
-    if re.search(r'\b(write|show|give|create|generate)\s+(me\s+)?(the\s+)?(code|script|function|implementation|snippet|class|method|query|sql|regex)\b', q_lower):
-        return "\nFORMAT: Include code in fenced markdown code blocks (```language). Add brief explanations outside the code blocks."
-    if re.search(r'\b(implement|code|program|script)\s+(a|an|the|this|that)\b', q_lower):
-        return "\nFORMAT: Include code in fenced markdown code blocks (```language). Add brief explanations outside the code blocks."
-
-    # TABLE
-    if re.search(r'\b(table|comparison|matrix|grid)\b.*\b(of|for|showing|comparing)\b', q_lower):
-        return "\nFORMAT: Use a markdown table for structured comparison. Add a brief summary below the table."
-
-    # STEPS
-    if re.search(r'\b(step.by.step|walk me through|how do i|how to|process for|guide to|instructions for)\b', q_lower):
-        return "\nFORMAT: Respond with numbered steps. Each step should have a clear action and brief explanation."
-
+    for pattern, hint in FORMAT_RULES:
+        if re.search(pattern, q_lower):
+            return hint
     return ""
 
 
@@ -284,55 +288,57 @@ def ensure_source_diversity(results: List[Dict], min_sources: int = 2) -> List[D
 
 # ─── Query Expansion ────────────────────────────────────────────────────────────
 
+# Rule-based expansion tables behind expand_query, module-level so a paired phone is given the SAME tables.
+EXPANSIONS = {
+    'demo': 'demo demonstration "record count"',
+    'demos': 'demos demonstrations "record count"',
+    'trial': 'trial pilot',
+    'trials': 'trials pilots',
+    'q1': 'q1 "q 1" "quarter 1" "first quarter" "Q 1 FY"',
+    'q2': 'q2 "q 2" "quarter 2" "second quarter" "Q 2 FY"',
+    'q3': 'q3 "q 3" "quarter 3" "third quarter" "Q 3 FY"',
+    'q4': 'q4 "q 4" "quarter 4" "fourth quarter" "Q 4 FY"',
+    'fy': 'fy "fiscal year"',
+    'fy2026': 'fy2026 "fy 2026" "FY 2026"',
+    'fy2025': 'fy2025 "fy 2025" "FY 2025"',
+    'revenue': 'revenue sales income',
+    'customer': 'customer client account',
+    'customers': 'customers clients accounts',
+    'meeting': 'meeting call conversation',
+    'meetings': 'meetings calls conversations',
+}
+
+NAME_EXPANSIONS = {
+    'chris': 'chris christopher',
+    'mike': 'mike michael',
+    'dan': 'dan daniel',
+    'bill': 'bill william',
+    'bob': 'bob robert',
+    'jim': 'jim james',
+    'tom': 'tom thomas',
+    'steve': 'steve stephen steven',
+    'pat': 'pat patrick patricia',
+    'jen': 'jen jennifer',
+    'liz': 'liz elizabeth',
+    'alex': 'alex alexander alexandra',
+    'matt': 'matt matthew',
+    'nick': 'nick nicholas',
+    'sam': 'sam samuel samantha',
+    'joe': 'joe joseph',
+    'will': 'will william',
+}
+
+
 def expand_query(question: str) -> str:
     """Query expansion with synonyms and related terms."""
-    expansions = {
-        'demo': 'demo demonstration "record count"',
-        'demos': 'demos demonstrations "record count"',
-        'trial': 'trial pilot',
-        'trials': 'trials pilots',
-        'q1': 'q1 "q 1" "quarter 1" "first quarter" "Q 1 FY"',
-        'q2': 'q2 "q 2" "quarter 2" "second quarter" "Q 2 FY"',
-        'q3': 'q3 "q 3" "quarter 3" "third quarter" "Q 3 FY"',
-        'q4': 'q4 "q 4" "quarter 4" "fourth quarter" "Q 4 FY"',
-        'fy': 'fy "fiscal year"',
-        'fy2026': 'fy2026 "fy 2026" "FY 2026"',
-        'fy2025': 'fy2025 "fy 2025" "FY 2025"',
-        'revenue': 'revenue sales income',
-        'customer': 'customer client account',
-        'customers': 'customers clients accounts',
-        'meeting': 'meeting call conversation',
-        'meetings': 'meetings calls conversations',
-    }
-    
-    name_expansions = {
-        'chris': 'chris christopher',
-        'mike': 'mike michael',
-        'dan': 'dan daniel',
-        'bill': 'bill william',
-        'bob': 'bob robert',
-        'jim': 'jim james',
-        'tom': 'tom thomas',
-        'steve': 'steve stephen steven',
-        'pat': 'pat patrick patricia',
-        'jen': 'jen jennifer',
-        'liz': 'liz elizabeth',
-        'alex': 'alex alexander alexandra',
-        'matt': 'matt matthew',
-        'nick': 'nick nicholas',
-        'sam': 'sam samuel samantha',
-        'joe': 'joe joseph',
-        'will': 'will william',
-    }
-    
     expanded = question
     q_lower = question.lower()
     
-    for term, expansion in expansions.items():
+    for term, expansion in EXPANSIONS.items():
         if term in q_lower and expansion not in q_lower:
             expanded = f"{expanded} {expansion}"
     
-    for nick, full in name_expansions.items():
+    for nick, full in NAME_EXPANSIONS.items():
         if nick in q_lower.split():
             expanded = f"{expanded} {full}"
     
@@ -388,35 +394,41 @@ def fallback_query_analysis(question: str) -> Dict:
     }
 
 
+VARIANT_EXPANSIONS = {
+    'q1': 'first quarter Q1',
+    'q2': 'second quarter Q2',
+    'q3': 'third quarter Q3',
+    'q4': 'fourth quarter Q4',
+    'fy': 'fiscal year FY',
+}
+VARIANT_COUNT_WORDS = ['how many', 'how much', 'total', 'count']
+VARIANT_COUNT_SUFFIX = " total count number"
+VARIANT_ENTITY_REGEX = r'\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\b'
+VARIANT_MAX = 3
+
+
 def generate_query_variants(question: str) -> List[str]:
     """Generate variant queries to improve retrieval on retry."""
     variants = [question]
     
     q_lower = question.lower()
     
-    expansions = {
-        'q1': 'first quarter Q1',
-        'q2': 'second quarter Q2',
-        'q3': 'third quarter Q3',
-        'q4': 'fourth quarter Q4',
-        'fy': 'fiscal year FY',
-    }
-    for abbrev, full in expansions.items():
+    for abbrev, full in VARIANT_EXPANSIONS.items():
         if abbrev in q_lower:
             expanded = re.sub(rf'\b{abbrev}\b', full, question, flags=re.IGNORECASE)
             if expanded != question:
                 variants.append(expanded)
                 break
     
-    if any(word in q_lower for word in ['how many', 'how much', 'total', 'count']):
-        variants.append(f"{question} total count number")
+    if any(word in q_lower for word in VARIANT_COUNT_WORDS):
+        variants.append(f"{question}{VARIANT_COUNT_SUFFIX}")
     
-    entities = re.findall(r'\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\b', question)
+    entities = re.findall(VARIANT_ENTITY_REGEX, question)
     if entities:
         entity_focused = f"{entities[0]} {question}"
         variants.append(entity_focused)
     
-    return variants[:3]
+    return variants[:VARIANT_MAX]
 
 
 # ─── Quality Verification ────────────────────────────────────────────────────────
@@ -478,18 +490,24 @@ def verify_retrieval_quality(results: List[Dict], analysis: Dict) -> Tuple[bool,
     return True, "Retrieval looks good"
 
 
+QUALITY_MIN_CHARS = 15
+QUALITY_FAILURE_PHRASES = [
+    "i cannot find", "not in the sources", "no information",
+    "unable to find", "don't have", "doesn't contain",
+    "not mentioned", "no data", "cannot determine"
+]
+QUALITY_PLACEHOLDER_REGEX = r'\bX\s+(number|demos?|seedings?|activities?|total)\b'
+QUALITY_PLACEHOLDER_TOKENS = ['[N]', '[Summary]']
+QUALITY_META_PHRASES = ["note to user", "replace 'x'"]
+
+
 def check_answer_quality(question: str, answer: str, query_type: str) -> Tuple[bool, str]:
     """Lightweight quality check for answers - no LLM call, just heuristics."""
-    if not answer or len(answer.strip()) < 15:
+    if not answer or len(answer.strip()) < QUALITY_MIN_CHARS:
         return False, "Answer too short"
     
-    failure_phrases = [
-        "i cannot find", "not in the sources", "no information",
-        "unable to find", "don't have", "doesn't contain",
-        "not mentioned", "no data", "cannot determine"
-    ]
     answer_lower = answer.lower()
-    for phrase in failure_phrases:
+    for phrase in QUALITY_FAILURE_PHRASES:
         if phrase in answer_lower:
             return False, f"Answer indicates failure: '{phrase}'"
     
@@ -497,13 +515,13 @@ def check_answer_quality(question: str, answer: str, query_type: str) -> Tuple[b
         has_number = bool(re.search(r'\d+', answer))
         if not has_number:
             return False, "Factual query but no number in answer"
-        if re.search(r'\bX\s+(number|demos?|seedings?|activities?|total)\b', answer, re.IGNORECASE):
+        if re.search(QUALITY_PLACEHOLDER_REGEX, answer, re.IGNORECASE):
             return False, "Answer contains 'X' placeholder instead of actual number"
     
-    if '[N]' in answer or '[Summary]' in answer:
+    if any(tok in answer for tok in QUALITY_PLACEHOLDER_TOKENS):
         return False, "Answer contains placeholder artifacts"
     
-    if "note to user" in answer_lower or "replace 'x'" in answer_lower:
+    if any(phrase in answer_lower for phrase in QUALITY_META_PHRASES):
         return False, "Answer contains meta-commentary instead of actual data"
     
     return True, "Answer looks good"

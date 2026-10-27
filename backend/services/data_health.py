@@ -315,6 +315,11 @@ def status(data_dir: Optional[Path] = None) -> Dict[str, object]:
 
     probe("keys", keys)
 
+    def embedder():
+        from services.sync import embedder_advice
+        return embedder_advice.advice()
+
+    probe("embedder", embedder)
     probe("codec", _codec)
     probe("volume", _volume)
     probe("dead_weight", lambda: find_dead_weight(root))
@@ -459,6 +464,10 @@ def _overall(parts: Dict[str, object]) -> Dict[str, object]:
             problems.append("Encryption is on but the encrypted volume is not mounted.")
         elif volume.get("free_bytes") is not None and 0 < int(volume["free_bytes"]) < VOLUME_LOW_FREE_BYTES:
             warnings.append("Less than 2 GB free inside the encrypted volume.")
+
+    emb = parts.get("embedder")
+    if isinstance(emb, dict) and emb.get("message") and not emb.get("error"):
+        warnings.append(emb["message"])
 
     codec = parts.get("codec") or {}
     if isinstance(codec, dict) and codec.get("ok") is False:

@@ -54,7 +54,8 @@ MAIN: List[Table] = [
     Table("visual_generations", ("visual_id",)),
     Table("infographic_generations", ("infographic_id",)),
     Table("article_sections", ("id",), exclude=("article_count",)),
-    Table("articles", ("id",)),
+    # Vectors are per Mac (each embeds with its own model), like the LanceDB index.
+    Table("articles", ("id",), exclude=("embedding", "embed_model")),
     Table("routing_rules", ("id",), exclude=("hit_count", "last_hit_at")),
     Table("sender_settings", ("sender_email",)),
     Table("sender_blocklist", ("sender_email",)),
@@ -63,7 +64,7 @@ MAIN: List[Table] = [
     Table("exploration_sources", ("notebook_id", "source_id"), exclude=("count",)),
     Table("canvas_nodes", ("id",)),
     Table("canvas_edges", ("id",)),
-    Table("canvas_topics", ("id",), exclude=("member_count",)),
+    Table("canvas_topics", ("id",), exclude=("member_count", "centroid_json", "centroid_model")),
     Table("canvas_recall", ("notebook_id", "node_id")),
     Table("contradiction_scans", ("notebook_id",)),
     Table("contradictions", ("id",)),

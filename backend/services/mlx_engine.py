@@ -655,23 +655,21 @@ def _embed_on_thread(engine, texts, model_id, batch_size, max_length):
     embed_sync() route here), so the resident-cache check/set needs no lock. Raises
     on any error → the caller's Ollama fallback.
 
-    Pools with the [CLS] token + L2-normalize — NOT the lib's default `text_embeds`,
-    which is MEAN-pooled. arctic-embed-l-v2.0 (XLM-RoBERTa) is trained with CLS
-    pooling, and CLS matches the Ollama `arctic-embed2` vectors EXACTLY (verified
-    cosine 1.0000 on identical text), which is what makes the MLX swap a
-    same-vector-space, ZERO-re-index change. Mean pooling drifts ~0.84 vs the stored
-    Ollama vectors and would silently degrade retrieval. If a future embedding model
-    is mean-pooled, gate the pooling on model_id — do not blindly switch to
-    text_embeds."""
-    import mlx.core as mx
+    Loader and pooling come from the model's embedding profile (services/embedding_profile,
+    run by services/mlx_embed_loaders): arctic stays CLS-pooled — it matches the stored
+    vectors exactly (cosine 1.0000), mean pooling would drift ~0.84 — and EmbeddingGemma
+    uses its own mean-pooled + projected `text_embeds`. A float16 checkpoint of a model
+    that must not run in float16 is refused."""
+    from services import embedding_profile, mlx_embed_loaders
+    profile = embedding_profile.for_model(model_id)
     pair = engine._embed_resident.get(model_id)
     if pair is None:
         engine._ensure_memory_limit()
-        from mlx_embeddings import load as _eload
-        logger.info(f"[mlx-engine] loading embedding model {model_id} …")
+        logger.info(f"[mlx-engine] loading embedding model {model_id} "
+                    f"({profile.loader}, {profile.pooling} pooling) …")
         _t0 = time.perf_counter()
         with offline_if_cached(model_id):
-            pair = _eload(model_id)
+            pair = mlx_embed_loaders.load(model_id, profile)
         engine._embed_resident[model_id] = pair
         engine._last_used[model_id] = time.monotonic()
         logger.info(f"[mlx-engine] loaded embedding model {model_id} in {time.perf_counter() - _t0:.1f}s")
@@ -706,18 +704,12 @@ def _embed_on_thread(engine, texts, model_id, batch_size, max_length):
         if not group:
             continue
         chunk = [texts[i] for i in group]
-        inputs = tokenizer.batch_encode_plus(
-            chunk, return_tensors="mlx", padding=True, truncation=True, max_length=max_length)
-        res = model(inputs["input_ids"], attention_mask=inputs.get("attention_mask"))
-        lhs = getattr(res, "last_hidden_state", None)
-        if lhs is None:
-            lhs = res[0]
-        embs = lhs[:, 0, :]  # CLS pooling (arctic / XLM-RoBERTa) — matches Ollama exactly
-        embs = embs / mx.linalg.norm(embs, axis=-1, keepdims=True)
-        mx.eval(embs)
-        for slot, row in zip(group, embs.tolist()):
-            out[slot] = [float(v) for v in row]
-        del inputs, res, lhs, embs
+        # Pooling + loader per model (mlx_embed_loaders): CLS for arctic, which matches the
+        # stored vectors exactly; the model's own pooled output for EmbeddingGemma.
+        rows = mlx_embed_loaders.forward(model, tokenizer, chunk, max_length, profile)
+        for slot, row in zip(group, rows):
+            out[slot] = row
+        del rows
         group = [] if idx is None else [idx]
         longest = 0 if idx is None else lens[idx]
     # Order is the caller's contract — every vector must land back on its own text.
@@ -749,9 +741,19 @@ def _embed_max_length(model_id: str) -> int:
         p = try_to_load_from_cache(model_id, "config.json")
         if isinstance(p, str):
             cfg = _json.load(open(p))
-            mp = cfg.get("max_position_embeddings")
+            mp = cfg.get("max_position_embeddings") or (cfg.get("text_config") or {}).get(
+                "max_position_embeddings")
             if isinstance(mp, int) and mp > 0:
                 val = mp
+    except Exception:
+        pass
+    # The shared cortex limit wins over the model's context: every device must cut at the
+    # same token so one text has one vector everywhere (embedding_profile.max_tokens).
+    try:
+        from services.embedding_profile import for_model
+        cap = for_model(model_id).max_tokens
+        if cap > 0:
+            val = min(val, cap)
     except Exception:
         pass
     _EMBED_MAXLEN_CACHE[model_id] = val

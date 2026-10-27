@@ -60,6 +60,29 @@ async def _try_fix_youtube_title(filename: str, source_id: str, source_data: Dic
     return filename
 
 
+def citation_confidence(rerank_score, rrf_score, distance=100.0) -> float:
+    """How sure the Mac is that a retrieved passage belongs in the answer (0-1).
+
+    Two signals: the reranker's score (FlashRank-style 0-1 scores are conservative, so they are scaled:
+    0.1 -> 0.24, 0.3 -> 0.52, 0.5 -> 0.80; a cross-encoder's -10..+10 scores are squashed) and the
+    hybrid-search RRF rank (0.5-0.9). The higher of the two wins. Before 2026-10 a reranker score above
+    0.01 REPLACED the RRF value, so a clearly better passage (rerank 0.027 -> 0.14) could fall below the
+    0.20 cut-off while weaker ones with a rerank score under 0.01 kept their 0.5-0.9 RRF value.
+    Holistic or typo-laden questions give every passage a tiny score, which is when that bit.
+    """
+    candidates = []
+    if rerank_score is not None and rerank_score > 0.01:
+        if rerank_score <= 1.0:
+            candidates.append(min(1.0, rerank_score * 1.4 + 0.1))
+        else:
+            candidates.append(max(0, min(1, (rerank_score + 5) / 10)))
+    if rrf_score and rrf_score > 0:
+        candidates.append(0.5 + rrf_score * 0.4)
+    if candidates:
+        return max(candidates)
+    return max(0, min(1, 1 - (distance / 400)))
+
+
 async def build_citations_and_context(
     results: List[Dict],
     log_prefix: str = "[RAG]",
@@ -112,45 +135,12 @@ async def build_citations_and_context(
     for i, result in enumerate(results):
         text = result.get("text", "")
         
-        # Use rerank_score if available AND meaningful, otherwise use vector distance
         rerank_score = result.get("rerank_score")
         distance = result.get("_distance", 100.0)
-        
-        # FlashRank returns very low scores (< 0.01) for holistic/thematic queries
-        # In those cases, fall back to vector distance which better captures semantic similarity
-        use_rerank = rerank_score is not None and rerank_score > 0.01
-        
-        if use_rerank:
-            # FlashRank returns scores 0-1 (0 = irrelevant, 1 = highly relevant)
-            # Cross-encoder returns scores roughly -10 to +10
-            if rerank_score <= 1.0:
-                # FlashRank: boost scores since it's conservative
-                # 0.1 → 0.24, 0.3 → 0.52, 0.5 → 0.80
-                confidence = min(1.0, rerank_score * 1.4 + 0.1)
-            else:
-                # Cross-encoder fallback: scores are -10 to +10
-                confidence = max(0, min(1, (rerank_score + 5) / 10))
-            
-            print(f"{log_prefix} Citation {i+1}: rerank_score={rerank_score:.3f} -> confidence={confidence:.0%}")
-        else:
-            # FlashRank returned low scores - use hybrid of vector distance and RRF score
-            # RRF score captures both semantic (vector) and keyword (BM25) relevance
-            rrf_score = result.get("_rrf_score", 0)
-            
-            if rrf_score > 0:
-                # Use RRF score (already normalized 0-1, higher is better)
-                # Scale to reasonable confidence range: top result ~85%, lower results differentiated
-                confidence = 0.5 + (rrf_score * 0.4)  # Range: 50-90%
-                print(f"{log_prefix} Citation {i+1}: rerank={rerank_score if rerank_score is not None else 'None'} low, using RRF={rrf_score:.2f} -> confidence={confidence:.0%}")
-            else:
-                # Pure vector distance fallback
-                # 0 dist = 100%, 50 dist = 88%, 100 dist = 75%, 200 dist = 50%, 400+ dist = 0%
-                confidence = max(0, min(1, 1 - (distance / 400)))
-                if rerank_score is not None:
-                    print(f"{log_prefix} Citation {i+1}: rerank={rerank_score:.4f} low, using distance={distance:.2f} -> confidence={confidence:.0%}")
-                else:
-                    print(f"{log_prefix} Citation {i+1}: distance={distance:.2f} -> confidence={confidence:.0%}")
-        
+        confidence = citation_confidence(rerank_score, result.get("_rrf_score", 0), distance)
+        print(f"{log_prefix} Citation {i+1}: rerank={rerank_score if rerank_score is None else round(rerank_score, 5)} "
+              f"rrf={result.get('_rrf_score', 0):.2f} -> confidence={confidence:.0%}")
+
         confidence_level = "high" if confidence >= 0.6 else "medium" if confidence >= 0.4 else "low"
         
         all_citations.append({

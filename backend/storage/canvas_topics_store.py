@@ -43,11 +43,22 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         """
     )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_canvas_topics_nb ON canvas_topics(notebook_id)")
+    # Which embedder made the centroid (NULL = the legacy one). Per Mac — never synced.
+    if "centroid_model" not in {r[1] for r in conn.execute("PRAGMA table_info(canvas_topics)")}:
+        conn.execute("ALTER TABLE canvas_topics ADD COLUMN centroid_model TEXT")
     conn.commit()
 
 
 def _now() -> str:
     return datetime.utcnow().isoformat()
+
+
+def _live_embed_model() -> Optional[str]:
+    try:
+        from config import settings
+        return settings.embedding_model
+    except Exception:
+        return None
 
 
 def _row_to_dict(row: sqlite3.Row) -> Dict[str, Any]:
@@ -61,6 +72,7 @@ def _row_to_dict(row: sqlite3.Row) -> Dict[str, Any]:
         "title": row["title"] or "",
         "synthesis": row["synthesis"] or "",
         "centroid": centroid,
+        "centroid_model": row["centroid_model"] if "centroid_model" in row.keys() else None,
         "member_count": row["member_count"] or 0,
         "x": row["x"] or 0.0,
         "y": row["y"] or 0.0,
@@ -86,11 +98,13 @@ def _upsert_topic(conn: sqlite3.Connection, notebook_id: str, topic: Dict[str, A
     tid = topic.get("id") or str(uuid.uuid4())
     exists = conn.execute("SELECT 1 FROM canvas_topics WHERE id = ?", (tid,)).fetchone()
     centroid_json = json.dumps([float(x) for x in (topic.get("centroid") or [])])
+    centroid_model = topic.get("centroid_model") or (_live_embed_model() if topic.get("centroid") else None)
     if exists:
         # Preserve geometry/collapsed unless explicitly provided (stability across Populates).
-        sets = ["title = ?", "synthesis = ?", "centroid_json = ?", "member_count = ?", "updated_at = ?"]
+        sets = ["title = ?", "synthesis = ?", "centroid_json = ?", "centroid_model = ?",
+                "member_count = ?", "updated_at = ?"]
         vals: List[Any] = [topic.get("title", ""), topic.get("synthesis", ""), centroid_json,
-                           int(topic.get("member_count", 0)), now]
+                           centroid_model, int(topic.get("member_count", 0)), now]
         for col in ("x", "y", "width", "height", "collapsed"):
             if col in topic and topic[col] is not None:
                 sets.append(f"{col} = ?")
@@ -99,11 +113,11 @@ def _upsert_topic(conn: sqlite3.Connection, notebook_id: str, topic: Dict[str, A
         conn.execute(f"UPDATE canvas_topics SET {', '.join(sets)} WHERE id = ?", vals)
     else:
         conn.execute(
-            "INSERT INTO canvas_topics (id, notebook_id, title, synthesis, centroid_json, "
+            "INSERT INTO canvas_topics (id, notebook_id, title, synthesis, centroid_json, centroid_model, "
             "member_count, x, y, width, height, collapsed, created_at, updated_at) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (tid, notebook_id, topic.get("title", ""), topic.get("synthesis", ""), centroid_json,
-             int(topic.get("member_count", 0)), float(topic.get("x", 0.0)), float(topic.get("y", 0.0)),
+             centroid_model, int(topic.get("member_count", 0)), float(topic.get("x", 0.0)), float(topic.get("y", 0.0)),
              (float(topic["width"]) if topic.get("width") is not None else None),
              (float(topic["height"]) if topic.get("height") is not None else None),
              int(topic.get("collapsed", 1)), now, now),

@@ -128,7 +128,7 @@ def mem(tmp_path, monkeypatch):
     migration_ledger.run_pending(_db.Database().get_connection(), tmp_path)
     monkeypatch.setattr(ms.MemoryStore, "_instance", None)
     store = ms.MemoryStore()
-    monkeypatch.setattr(store, "get_embedding", lambda text: _embed(text, settings.embedding_dim))
+    monkeypatch.setattr(store, "get_embedding", lambda text, **kw: _embed(text, settings.embedding_dim))
     monkeypatch.setattr(ms, "memory_store", store)
     from services.enrichment_worker import enrichment_worker
     monkeypatch.setattr(enrichment_worker, "enqueue", lambda job: None)

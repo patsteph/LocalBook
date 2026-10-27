@@ -411,3 +411,26 @@ def _m0002_sync_schema(ctx: MigrationContext) -> None:
         resolution TEXT,
         created_at TEXT,
         resolved_at TEXT)""")
+
+
+LOCAL_VECTORS_VERSION = "0.7.1"
+
+
+@register(3, "embedder-local-vectors", LOCAL_VECTORS_VERSION)
+def _m0003_local_vectors(ctx: MigrationContext) -> None:
+    """Vectors are per Mac and say which model made them (EmbeddingGemma 2 switch).
+
+    `articles.embedding` and `canvas_topics.centroid_json` used to SYNC. Two Macs on
+    different embedders would then each see the other's vectors as foreign, re-embed and
+    ship them back — forever. They are now excluded from sync (registry) like the LanceDB
+    index, and tagged: `articles.embed_model`, `canvas_topics.centroid_model`. NULL means
+    "made before tagging" = the legacy embedder (embedding_profile.LEGACY_EMBED_MODEL).
+    Bumping the ledger head is part of the point: sync's hello refuses peers on another
+    head, so a Mac without this change can never receive data it cannot interpret.
+    """
+    conn = ctx.conn
+    have = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    if "articles" in have:
+        _add_column(conn, "articles", "embed_model", "TEXT")
+    if "canvas_topics" in have:
+        _add_column(conn, "canvas_topics", "centroid_model", "TEXT")

@@ -7,6 +7,7 @@ from config import settings
 from storage.source_store import source_store
 from storage.notebook_store import notebook_store
 from services.rag_engine import rag_engine
+from utils.lancedb_tables import list_tables
 
 router = APIRouter()
 
@@ -112,6 +113,36 @@ async def reindex_notebook(notebook_id: str, force: bool = False):
 
 
 @router.post("/all")
+def _drop_unusable_tables(*, drop_all: bool) -> list:
+    """Drop notebook vector tables that cannot be reused. Enumerates the DIRECTORIES —
+    `table_names()` under-reports on this on-disk format (scripts/embedding_equivalence.py)."""
+    import os
+
+    import lancedb
+    from config import settings
+    from services.startup_checks import expected_embedding_dim
+
+    db_path = str(settings.db_path)
+    if not os.path.isdir(db_path):
+        return []
+    db = lancedb.connect(db_path)
+    live = expected_embedding_dim()
+    dropped = []
+    for d in sorted(os.listdir(db_path)):
+        if not (d.startswith("notebook_") and d.endswith(".lance")):
+            continue
+        name = d[: -len(".lance")]
+        try:
+            stored = getattr(db.open_table(name).schema.field("vector").type, "list_size", None)
+        except Exception:
+            stored = None
+        if drop_all or (stored and stored != live):
+            db.drop_table(name)
+            dropped.append(name)
+            print(f"Dropped table: {name}" + ("" if drop_all else f" ({stored}-dim, live model is {live})"))
+    return dropped
+
+
 async def reindex_all_notebooks(force: bool = True, drop_tables: bool = False):
     """Re-index all sources in all notebooks.
     
@@ -121,20 +152,15 @@ async def reindex_all_notebooks(force: bool = True, drop_tables: bool = False):
         force: If True (default), reindex all sources even if they already have chunks
         drop_tables: If True, drop existing LanceDB tables first (required when embedding dimensions change)
     """
-    # If drop_tables is True, clear all existing vector tables
-    if drop_tables:
-        try:
-            import lancedb
-            from config import settings
-            db = lancedb.connect(str(settings.db_path))
-            existing_tables = db.table_names()
-            for table_name in existing_tables:
-                if table_name.startswith("notebook_"):
-                    db.drop_table(table_name)
-                    print(f"Dropped table: {table_name}")
-        except Exception as e:
-            print(f"Error dropping tables: {e}")
-    
+    # Tables that cannot be kept are dropped up front: all of them with drop_tables, and in any
+    # case every table whose vectors are not the LIVE embedder's dimension (an embedder switch).
+    # Deleting a source's chunks and re-inserting would otherwise fail on the schema — and
+    # Health's "reindex all" repair (drop_tables=False) deleted the chunks first, then failed.
+    try:
+        _drop_unusable_tables(drop_all=drop_tables)
+    except Exception as e:
+        print(f"Error dropping tables: {e}")
+
     notebooks = await notebook_store.list()
     
     total_processed = 0
@@ -283,7 +309,7 @@ async def check_data_integrity():
     total_orphaned = 0
     
     # Check each notebook table
-    for table_name in db.table_names():
+    for table_name in list_tables(db):
         if not table_name.startswith("notebook_"):
             continue
         
@@ -354,7 +380,7 @@ async def cleanup_orphaned_data():
     cleaned_by_notebook: Dict[str, int] = {}
     total_cleaned = 0
     
-    for table_name in db.table_names():
+    for table_name in list_tables(db):
         if not table_name.startswith("notebook_"):
             continue
         
@@ -406,7 +432,7 @@ async def repair_zero_vectors():
     total_fixed = 0
     results_by_notebook = {}
     
-    for table_name in db.table_names():
+    for table_name in list_tables(db):
         if not table_name.startswith("notebook_"):
             continue
         

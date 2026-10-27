@@ -21,7 +21,7 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-_FALLBACK = "2.5.0"
+_FALLBACK = "2.5.5"
 
 
 def _from_bundle() -> Optional[str]:

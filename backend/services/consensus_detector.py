@@ -71,7 +71,7 @@ async def _embed(text: str) -> List[float]:
         return []
     try:
         from services.llm_runtime import llm_runtime
-        result = await llm_runtime.embed(text=text[:2000])
+        result = await llm_runtime.embed(text=text[:2000], task="clustering")
     except Exception as e:
         logger.debug(f"[consensus_detector] embed failed: {e}")
         return []
@@ -90,7 +90,7 @@ async def _embed_many(texts: List[str]) -> List[List[float]]:
     if not idx:
         return out
     try:
-        vecs = await llm_runtime.embed_batch([t for _, t in idx])
+        vecs = await llm_runtime.embed_batch([t for _, t in idx], task="clustering")
     except Exception as e:
         logger.debug(f"[consensus_detector] batch embed failed: {e}")
         return out
@@ -137,7 +137,7 @@ async def detect_consensus(
     *,
     since_days: int = 3,
     min_cluster_size: int = 3,
-    similarity_threshold: float = 0.72,
+    similarity_threshold: Optional[float] = None,
     max_events: int = 300,
 ) -> List[ConsensusCluster]:
     """Find consensus topics across recently-ingested sources.
@@ -152,6 +152,9 @@ async def detect_consensus(
         logger.debug(f"[consensus_detector] curator_brain import failed: {e}")
         return []
 
+    if similarity_threshold is None:
+        from services.embedding_profile import threshold as _thr
+        similarity_threshold = _thr("consensus", 0.72)
     since_iso = (datetime.now(timezone.utc) - timedelta(days=since_days)).isoformat()
     raw = curator_brain.recent_events(limit=max_events, since_iso=since_iso) or []
     # P14.C (2026-06-10) — also consume per-article ingest events. The

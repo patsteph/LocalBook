@@ -368,6 +368,11 @@ async def swap_model(payload: dict):
 
     if not target_model or not role:
         raise HTTPException(status_code=400, detail="Missing target_model or role")
+    if role in ("embeddings", "embedding_model"):
+        # A direct swap drops and rebuilds every index in place (search empty meanwhile).
+        # Embedders switch through the shadow build: POST /embeddings/migration/start.
+        raise HTTPException(status_code=409, detail="Switch embedding models with the "
+                            "search-model upgrade (it builds the new index first).")
 
     try:
         # Sanitize role strings from UI to what the locker expects

@@ -122,6 +122,12 @@ class ModelInfo:
     # Empty dict means: prefer JSON mode if supports_json_mode is True.
     structured_profile: dict = field(default_factory=dict)
 
+    # Embedding profile — read by services/embedding_profile.py. Keys: loader
+    # ("mlx_embeddings" | "mlx_vlm"), pooling ("cls" | "model"), query_template /
+    # document_template ("{text}", "{title}" slots), mrl_dims, min_dtype ("bfloat16" →
+    # a float16 checkpoint is refused). Empty: resolved from the checkpoint, then defaults.
+    embedding_profile: dict = field(default_factory=dict)
+
     # Historical field. Runs recorded before the v2.3.0 cutover hold "ollama" or
     # "llama_server"; everything now is "mlx". Kept so old runs still deserialize and the
     # Eval History view can label them honestly. Registry entries without this field are
@@ -141,6 +147,7 @@ class ModelInfo:
             "context_window": self.context_window,
             "supports_vision": self.supports_vision,
             "embedding_dim": self.embedding_dim,
+            "embedding_profile": self.embedding_profile,
             "disk_size_gb": self.disk_size_gb,
             "min_ram_gb": self.min_ram_gb,
             "policy_tags": self.policy_tags,

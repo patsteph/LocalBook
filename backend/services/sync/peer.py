@@ -109,6 +109,8 @@ def _note_models(d: Dict[str, Any], theirs: Optional[Dict[str, str]]) -> None:
     different embedder means the same question retrieves differently on each Mac."""
     diff = model_mismatch(theirs)
     store.put(f"model_mismatch:{d['device_id']}", diff)
+    from services.sync import embedder_advice
+    embedder_advice.record_peer_models(d["device_id"], theirs)
     if diff:
         logger.warning("[sync] %s runs different models: %s", d.get("name") or d["device_id"], diff)
 
@@ -436,6 +438,308 @@ def _recovery_pub() -> Optional[str]:
         return None
 
 
+# ── phones: the same shapes on a P-256 identity (see identity.phone_cert_pem) ─────────────
+# Ports follow the Mac pair: sync_port+2 = phone pairing (server-auth only, open with the
+# same window), sync_port+3 = phone sync (mutual TLS, trust = pinned phones). A phone finds
+# them from the `_localbook._tcp` advertisement's port by that convention.
+
+phone_pair_app = FastAPI(title="LocalBook phone pairing", docs_url=None, redoc_url=None, openapi_url=None)
+phone_sync_app = FastAPI(title="LocalBook phone sync", docs_url=None, redoc_url=None, openapi_url=None)
+
+
+@phone_sync_app.middleware("http")
+async def _log_phone_request(request: Request, call_next):
+    """One line per phone request (they are few): what arrived, how it ended, how long it took."""
+    started = time.monotonic()
+    logger.warning("[phone] %s arrived", request.url.path)
+    try:
+        response = await call_next(request)
+    except BaseException as exc:
+        logger.warning("[phone] %s failed after %.1fs: %s", request.url.path, time.monotonic() - started, type(exc).__name__)
+        raise
+    logger.warning("[phone] %s -> %s in %.1fs", request.url.path, response.status_code, time.monotonic() - started)
+    return response
+
+
+def phone_pair_port() -> int:
+    return sync_port() + 2
+
+
+def phone_sync_port() -> int:
+    return sync_port() + 3
+
+
+@phone_pair_app.post("/pair/hello")
+async def phone_pair_hello(request: Request):
+    if float(store.get("pairing_open_until", 0)) < time.time():
+        raise HTTPException(403, "pairing is not open on this Mac")
+    b = json.loads(await request.body() or b"{}")
+    if not b.get("device_id") or not identity.is_p256_cert(b.get("cert_pem", "")):
+        raise HTTPException(400, "a phone must present a P-256 certificate")
+    theirs = identity.fingerprint(b["cert_pem"])
+    mine_pem = identity.phone_cert_pem()
+    pid = uuid.uuid4().hex
+    store.add_pairing({
+        "id": pid, "direction": "incoming", "device_id": b["device_id"],
+        "name": f"{b.get('name') or 'iPhone'} (phone)", "cert_pem": b["cert_pem"], "fingerprint": theirs,
+        "sas": identity.sas(identity.fingerprint(mine_pem), theirs),
+        "host": request.client.host if request.client else None, "port": None,
+        "recovery_pub": None, "created_at": time.time(),
+    })
+    store.note_phone_pairing(pid)
+    return {"device_id": identity.device_id(), "name": identity.device_name(), "cert_pem": mine_pem,
+            "sync_port": phone_sync_port(), "proto": identity.PROTOCOL}
+
+
+class _FailureLimiter:
+    """Blocks a client address after too many failed authentications in a window. In memory: a
+    restart forgets it, which is fine (it only slows guessing, it does not guard a secret)."""
+
+    def __init__(self, max_failures: int = 6, window: float = 60.0, block: float = 120.0):
+        self.max_failures, self.window, self.block = max_failures, window, block
+        self._fails: Dict[str, list] = {}
+        self._blocked: Dict[str, float] = {}
+
+    def blocked(self, key: str, now: Optional[float] = None) -> bool:
+        now = now if now is not None else time.time()
+        until = self._blocked.get(key)
+        if until and until > now:
+            return True
+        self._blocked.pop(key, None)
+        return False
+
+    def failure(self, key: str, now: Optional[float] = None) -> None:
+        now = now if now is not None else time.time()
+        recent = [t for t in self._fails.get(key, []) if now - t < self.window] + [now]
+        self._fails[key] = recent
+        if len(recent) >= self.max_failures:
+            self._blocked[key] = now + self.block
+            self._fails.pop(key, None)
+        if len(self._fails) > 2000:                       # bounded: drop the oldest half
+            for k in sorted(self._fails, key=lambda k: self._fails[k][-1])[:1000]:
+                self._fails.pop(k, None)
+
+
+class _NonceCache:
+    """Remembers request nonces for longer than a signature stays valid, so a replay is refused."""
+
+    def __init__(self, ttl: float = 2 * identity.PHONE_MAX_SKEW + 30, max_items: int = 20000):
+        self.ttl, self.max_items = ttl, max_items
+        self._seen: Dict[str, float] = {}
+
+    def first_use(self, key: str, now: Optional[float] = None) -> bool:
+        now = now if now is not None else time.time()
+        if len(self._seen) >= self.max_items:
+            self._seen = {k: t for k, t in self._seen.items() if now - t < self.ttl}
+            if len(self._seen) >= self.max_items:
+                return False                              # flooded: refuse rather than forget
+        if key in self._seen and now - self._seen[key] < self.ttl:
+            return False
+        self._seen[key] = now
+        return True
+
+
+_phone_failures = _FailureLimiter()
+_phone_nonces = _NonceCache()
+
+
+async def _verified_phone(request: Request) -> Dict[str, Any]:
+    """The phone, if it is paired and the v2 signature (nonce, this Mac, fresh) holds."""
+    ip = request.client.host if request.client else "?"
+    if _phone_failures.blocked(ip):
+        logger.warning("[phone] %s %s refused: too many failed attempts from %s", request.method, request.url.path, ip)
+        raise HTTPException(429, "too many failed attempts; try again later")
+    body = await request.body()
+    dev_id = request.headers.get("X-LB-Device", "")
+    nonce = request.headers.get("X-LB-Nonce", "")
+    d = store.phone(dev_id)
+    ok = bool(d) and identity.verify_phone_signature(
+        d["cert_pem"], request.method, request.url.path, request.headers.get("X-LB-Time", "0"), nonce,
+        body, request.headers.get("X-LB-Sig", ""))
+    if not ok:
+        logger.warning("[phone] %s refused: not a paired phone, or a bad signature (device %s, from %s)",
+                       request.url.path, dev_id[:8], ip)
+        _phone_failures.failure(ip)
+        raise HTTPException(403, "not a paired phone, or a bad signature")
+    # Only a VALID signature may spend a nonce, so strangers cannot fill the cache.
+    if not _phone_nonces.first_use(f"{dev_id}:{nonce}"):
+        logger.warning("[phone] %s refused: request already used (device %s)", request.url.path, dev_id[:8])
+        _phone_failures.failure(ip)
+        raise HTTPException(403, "request already used")
+    store.touch_phone(dev_id)
+    return {"device": d, "body": json.loads(body or b"{}")}
+
+
+@phone_sync_app.post("/phone/hello")
+async def phone_hello(request: Request):
+    _check_enabled()
+    v = await _verified_phone(request)
+    return {"device_id": identity.device_id(), "name": identity.device_name(),
+            "proto": identity.PROTOCOL, "models": models(), "you": v["device"]["device_id"]}
+
+
+@phone_sync_app.post("/phone/library/manifest")
+async def phone_library_manifest(request: Request):
+    _check_enabled()
+    await _verified_phone(request)
+    from services.sync import phone_library
+    return await asyncio.to_thread(phone_library.manifest)
+
+
+@phone_sync_app.post("/phone/library/recipe")
+async def phone_library_recipe(request: Request):
+    """The Mac's answer recipe (prompts, classifier rules, settings, cleaning steps, conformance vectors)."""
+    _check_enabled()
+    await _verified_phone(request)
+    from services.sync import phone_recipe
+    return await asyncio.to_thread(phone_recipe.recipe)
+
+
+@phone_sync_app.post("/phone/library/personal")
+async def phone_library_personal(request: Request):
+    """The user's profile and core memory, and one notebook's entities and relationships."""
+    _check_enabled()
+    v = await _verified_phone(request)
+    from services.sync import phone_personal
+    out = await asyncio.to_thread(phone_personal.personal, str(v["body"].get("notebook_id", "")))
+    if out is None:
+        raise HTTPException(404, "no such notebook")
+    return out
+
+
+@phone_sync_app.post("/phone/library/sources")
+async def phone_library_sources(request: Request):
+    _check_enabled()
+    v = await _verified_phone(request)
+    from services.sync import phone_library
+    notebook_id = str(v["body"].get("notebook_id", ""))
+    out = await asyncio.to_thread(phone_library.sources, notebook_id)
+    if out is None:
+        raise HTTPException(404, "no such notebook")
+    # When each source was added here, so the phone can list newest first. Not part of the hash: it never causes a re-send.
+    try:
+        from storage.source_store import source_store
+        added = {str(r.get("id")): str(r.get("created_at") or "") for r in await source_store.list(notebook_id)}
+        for src in out["sources"]:
+            src["created"] = added.get(src["source_id"], "")
+    except Exception as exc:
+        logger.warning("[phone-sync] source dates not added: %s", exc)
+    return out
+
+
+@phone_sync_app.post("/phone/library/chunks")
+async def phone_library_chunks(request: Request):
+    _check_enabled()
+    v = await _verified_phone(request)
+    from services.sync import phone_library
+    b = v["body"]
+    out = await asyncio.to_thread(
+        lambda: phone_library.chunks(str(b.get("notebook_id", "")), source_ids=b.get("source_ids"),
+                                     after=b.get("after"), limit=int(b.get("limit", 200))))
+    if out is None:
+        raise HTTPException(404, "no such notebook")
+    return out
+
+
+@phone_sync_app.post("/phone/library/note")
+async def phone_library_note(request: Request):
+    """Add a note made on the phone to a notebook here (indexed like any note; comes back through sync)."""
+    logger.warning("[phone] note request arrived")
+    _check_enabled()
+    v = await _verified_phone(request)
+    from services.sync import phone_notes
+    b = v["body"]
+    return await phone_notes.add_note(str(b.get("notebook_id", "")), str(b.get("client_id", "")),
+                                      str(b.get("title", "")), str(b.get("text", "")), str(b.get("kind", "note")),
+                                      str(b.get("photo", "")))
+
+
+@phone_sync_app.post("/phone/library/studio/put")
+async def phone_library_studio_put(request: Request):
+    """A briefing, flashcards or quiz made on the phone, stored with the Studio items made here."""
+    _check_enabled()
+    v = await _verified_phone(request)
+    from services.sync import phone_studio
+    b = v["body"]
+    return await phone_studio.put(str(b.get("kind", "")), str(b.get("id", "")), str(b.get("notebook_id", "")),
+                                  str(b.get("title", "")), str(b.get("topic", "")), str(b.get("created", "")), b.get("body"))
+
+
+@phone_sync_app.post("/phone/library/studio/audio")
+async def phone_library_studio_audio(request: Request):
+    """One chunk of an audio overview made on the phone; the Studio row appears when the last chunk verifies."""
+    _check_enabled()
+    v = await _verified_phone(request)
+    from services.sync import phone_studio
+    return await phone_studio.put_audio(v["body"])
+
+
+@phone_sync_app.post("/phone/library/studio/delete")
+async def phone_library_studio_delete(request: Request):
+    """The phone deleted an item it had made; remove it here too (the other Macs follow through normal sync)."""
+    _check_enabled()
+    v = await _verified_phone(request)
+    from services.sync import phone_studio
+    return await phone_studio.delete(str(v["body"].get("id", "")))
+
+
+@phone_sync_app.post("/phone/library/studio/list")
+async def phone_library_studio_list(request: Request):
+    """What this Mac has made in Studio, compact: the phone fetches only what it lacks."""
+    _check_enabled()
+    await _verified_phone(request)
+    from services.sync import phone_studio
+    return {"items": await asyncio.to_thread(phone_studio.listing)}
+
+
+@phone_sync_app.post("/phone/library/studio/get")
+async def phone_library_studio_get(request: Request):
+    _check_enabled()
+    v = await _verified_phone(request)
+    from services.sync import phone_studio
+    return {"items": await asyncio.to_thread(phone_studio.get_items, list(v["body"].get("items") or []))}
+
+
+@phone_sync_app.post("/phone/library/studio/file")
+async def phone_library_studio_file(request: Request):
+    """A piece of an audio or video file made here, on request."""
+    _check_enabled()
+    v = await _verified_phone(request)
+    from services.sync import phone_studio
+    b = v["body"]
+    return await asyncio.to_thread(phone_studio.file_chunk, str(b.get("kind", "")), str(b.get("id", "")), int(b.get("offset", 0)))
+
+
+_phone_ask_lock = asyncio.Lock()           # one phone question at a time: it uses the Mac's models
+PHONE_ASK_TIMEOUT = 240
+
+
+@phone_sync_app.post("/phone/ask")
+async def phone_ask(request: Request):
+    """Ask the Mac's own pipeline (analysis, hybrid search, re-rank, answer) about one notebook.
+
+    The question stays private to the phone: nothing about it is recorded on this Mac (no metrics row, no
+    answer-cache entry, no memory extraction). Excluded notebooks are not askable."""
+    _check_enabled()
+    v = await _verified_phone(request)
+    from services.sync import phone_library
+    notebook_id = str(v["body"].get("notebook_id", ""))
+    question = str(v["body"].get("question", "")).strip()
+    if not question or len(question) > 2000:
+        raise HTTPException(400, "a question of 1 to 2000 characters is required")
+    if not await asyncio.to_thread(phone_library.is_visible, notebook_id):
+        raise HTTPException(404, "no such notebook")
+    if _phone_ask_lock.locked():
+        raise HTTPException(429, "the Mac is answering another question; try again in a moment")
+    async with _phone_ask_lock:
+        from services.rag_engine import rag_engine
+        try:
+            result = await asyncio.wait_for(rag_engine.query(notebook_id, question, top_k=4, phone_only=True), PHONE_ASK_TIMEOUT)
+        except asyncio.TimeoutError:
+            raise HTTPException(504, "the Mac took too long to answer")
+    return phone_library.shape_answer(result)
+
+
 # ── listeners ────────────────────────────────────────────────────────────────
 
 _servers: Dict[str, Any] = {}
@@ -477,6 +781,17 @@ async def start_sync_listener() -> None:
     pems = [d["cert_pem"] for d in store.devices()]
     ctx = await asyncio.to_thread(identity.server_context, pems, True)
     await _serve("sync", sync_app, sync_port(), ctx)
+    try:
+        await start_phone_listener()
+    except Exception as exc:        # a phone-link problem must never take Mac-to-Mac sync down
+        logger.error("[sync] phone listener could not start: %s", exc)
+
+
+async def start_phone_listener() -> None:
+    """The phone sync listener, trusting exactly the pinned phones. Restarted on pair/revoke."""
+    pems = [p["cert_pem"] for p in store.phones().values() if not p.get("revoked_at")]
+    ctx = await asyncio.to_thread(lambda: identity.server_context(pems, False, True, optional_client=True))
+    await _serve("phone_sync", phone_sync_app, phone_sync_port(), ctx)
 
 
 async def open_pairing_window() -> float:
@@ -484,11 +799,17 @@ async def open_pairing_window() -> float:
     store.put("pairing_open_until", until)
     ctx = await asyncio.to_thread(identity.server_context, [], False)
     await _serve("pair", pair_app, sync_port() + 1, ctx)
+    try:
+        pctx = await asyncio.to_thread(identity.server_context, [], False, True)
+        await _serve("phone_pair", phone_pair_app, phone_pair_port(), pctx)
+    except Exception as exc:
+        logger.error("[sync] phone pairing listener could not start: %s", exc)
 
     async def _close_later():
         await asyncio.sleep(PAIRING_WINDOW_S)
         if float(store.get("pairing_open_until", 0)) <= time.time():
             await stop("pair")
+            await stop("phone_pair")
 
     asyncio.create_task(_close_later())
     return until
