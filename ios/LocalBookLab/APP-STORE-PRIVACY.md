@@ -17,6 +17,6 @@ If Apple's upload check emails about another API, it comes from a library; tell 
 **Permission texts (shown by iOS, already in the app):** local network, microphone, speech recognition, camera. Photos and Files pickers need no permission.
 
 **You supply in App Store Connect:**
-1. A privacy policy URL (required even for apps that collect nothing; a one-page "nothing leaves your devices" statement is enough).
-2. A support email or URL.
+1. Privacy policy URL: https://www.patrickjstephens.com/projects/localbook/privacy (live).
+2. Support: https://www.patrickjstephens.com/projects/localbook/support and stephensuc@gmail.com.
 3. Review notes: the app needs a paired Mac running LocalBook to be useful. Offer Apple a short screen recording of pairing and asking a question, or a test Mac setup, since reviewers will not have your Mac.

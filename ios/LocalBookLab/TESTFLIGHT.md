@@ -37,7 +37,13 @@ After `git pull origin dev`, `xcodegen generate`, rebuild. On the Mac: `./build.
 5. **Internal testers** (up to 100 people on your App Store Connect team): add them under Users and Access, then TestFlight → Internal Testing. No Apple review.
 6. **External testers** (anyone, by email or link): needs Apple's Beta App Review, usually about a day. Needs the notes below.
 
-App Privacy answers: see `APP-STORE-PRIVACY.md`. Needed from you: a privacy policy URL and a support email.
+App Privacy answers: see `APP-STORE-PRIVACY.md`.
+
+Test Information to enter in App Store Connect:
+- Privacy policy URL: https://www.patrickjstephens.com/projects/localbook/privacy
+- Support URL: https://www.patrickjstephens.com/projects/localbook/support
+- Marketing/project page: https://www.patrickjstephens.com/projects/localbook
+- Feedback and contact email: stephensuc@gmail.com
 
 ## 3. Notes for Apple's reviewers (paste into "Beta App Review Information")
 
