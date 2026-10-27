@@ -186,6 +186,8 @@ targets:
       properties:
         ITSAppUsesNonExemptEncryption: false
         CFBundleDisplayName: LocalBook
+        CFBundleShortVersionString: $(MARKETING_VERSION)   # xcodegen's own plist default is a fixed 1.0
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         UILaunchScreen: {}
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
