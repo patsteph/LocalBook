@@ -57,7 +57,7 @@ Record the demo video (about 2 minutes) with iPhone screen recording and attach 
 
 ## 4. Known issues to tell testers
 
-- Locking the phone while an answer is being written may close the app (being worked on).
+- Locking the phone while an answer is being written stops the answer safely; ask again after unlocking.
 - Editing or deleting sources that came from the Mac is not on the phone yet.
 - Visuals and videos made on the phone stay on the phone.
 - A meeting longer than 2 hours has not been tested.
