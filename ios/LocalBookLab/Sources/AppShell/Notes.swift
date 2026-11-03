@@ -27,7 +27,6 @@ final class Dictation {
     /// Asks for speech and microphone permission. Written outside the main actor because the system calls these
     /// completions on its own queues; closures made inside a main-actor method would be main-actor and halt the app.
     private nonisolated static func askPermissions(_ done: @escaping @MainActor (String?) -> Void) {
-        nonisolated(unsafe) let done = done
         SFSpeechRecognizer.requestAuthorization { status in
             guard status == .authorized else {
                 Task { @MainActor in done("Allow Speech Recognition for LocalBook in Settings to dictate.") }
@@ -45,10 +44,25 @@ final class Dictation {
             failure = "Dictation needs on-device speech for your language. Turn on Dictation in Settings > General > Keyboard, then try again."
             return
         }
+        Task {
+            do { try await Self.activateSession() } catch { failure = "Couldn't start dictation: \(error.localizedDescription)"; return }
+            begin(onText, recognizer: recognizer)
+        }
+    }
+
+    /// Switching the audio session can take a moment, so it is done off the main thread.
+    @concurrent private static func activateSession() async throws {
+        let session = AVAudioSession.sharedInstance()
+        try session.setCategory(.playAndRecord, mode: .default, options: [.duckOthers, .defaultToSpeaker, .allowBluetoothHFP])
+        try session.setActive(true, options: .notifyOthersOnDeactivation)
+    }
+
+    @concurrent private static func deactivateSession() async {
+        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+    }
+
+    private func begin(_ onText: @escaping @MainActor (String) -> Void, recognizer: SFSpeechRecognizer) {
         do {
-            let session = AVAudioSession.sharedInstance()
-            try session.setCategory(.playAndRecord, mode: .default, options: [.duckOthers, .defaultToSpeaker, .allowBluetoothHFP])
-            try session.setActive(true, options: .notifyOthersOnDeactivation)
             let req = SFSpeechAudioBufferRecognitionRequest()
             req.shouldReportPartialResults = true
             req.requiresOnDeviceRecognition = true                                        // stays on the phone
@@ -72,7 +86,6 @@ final class Dictation {
     }
 
     private nonisolated static func resultHandler(_ owner: Dictation) -> @Sendable (SFSpeechRecognitionResult?, Error?) -> Void {
-        nonisolated(unsafe) let owner = owner
         return { result, error in
             let text = result?.bestTranscription.formattedString
             let final = result?.isFinal == true
@@ -97,7 +110,7 @@ final class Dictation {
         request?.endAudio()
         task?.cancel()
         request = nil; task = nil; onText = nil; listening = false
-        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        Task { await Self.deactivateSession() }
     }
 }
 
