@@ -97,6 +97,49 @@ struct MyRecordingsView: View {
         }
         .sheet(item: $writing, onDismiss: load) { w in MeetingView(library: library, notebookId: w.notebookId, open: w.url) }
         .onAppear(perform: load)
+        .task { await linkOlderRecordings(); load() }
+    }
+
+    private static func parse(_ s: String) -> Date? {
+        let a = ISO8601DateFormatter(); a.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let b = ISO8601DateFormatter()
+        if let d = a.date(from: s) ?? b.date(from: s) { return d }
+        let f = DateFormatter(); f.locale = Locale(identifier: "en_US_POSIX"); f.timeZone = .current
+        for fmt in ["yyyy-MM-dd'T'HH:mm:ss.SSSSSS", "yyyy-MM-dd'T'HH:mm:ss", "yyyy-MM-dd HH:mm:ss"] { f.dateFormat = fmt; if let d = f.date(from: s) { return d } }
+        return nil
+    }
+
+    /// Recordings saved before the phone kept track of where they went: match each one to the meeting note that was
+    /// saved from it (a note that opens with the meeting header, added soon after the recording ended). Done once, then remembered.
+    private func linkOlderRecordings() async {
+        let loose = items.filter { $0.saved == nil && !$0.writtenUp }
+        guard !loose.isEmpty else { return }
+        struct Pair { let rec: Recording; let nb: String; let nbTitle: String; let src: LibraryStore.SourceInfo; let delta: TimeInterval }
+        var pairs: [Pair] = []
+        for nb in library.notebooks {
+            for src in await library.sources(in: nb.id) where src.type != "image" {
+                guard let when = Self.parse(src.created) else { continue }
+                for r in loose where abs(when.timeIntervalSince(r.date)) <= 14 * 3600 {
+                    pairs.append(Pair(rec: r, nb: nb.id, nbTitle: nb.title, src: src, delta: abs(when.timeIntervalSince(r.date))))
+                }
+            }
+        }
+        var claimedRecordings = Set<String>(), claimedSources = Set<String>()
+        var isMeeting: [String: Bool] = [:]
+        for p in pairs.sorted(by: { $0.delta < $1.delta }) {
+            let key = p.nb + "/" + p.src.id
+            guard !claimedRecordings.contains(p.rec.id), !claimedSources.contains(key) else { continue }
+            if isMeeting[key] == nil {
+                let text = await library.sourceText(notebook: p.nb, sourceId: p.src.id)
+                isMeeting[key] = text.hasPrefix(MeetingSession.header)
+            }
+            guard isMeeting[key] == true else { continue }
+            claimedRecordings.insert(p.rec.id); claimedSources.insert(key)
+            let e = JSONEncoder(); e.dateEncodingStrategy = .iso8601
+            if let data = try? e.encode(MeetingSession.SavedMeta(title: p.src.name, notebookId: p.nb, notebookTitle: p.nbTitle, savedAt: p.rec.date)) {
+                try? data.write(to: MeetingSession.savedMetaURL(for: p.rec.url), options: .atomic)
+            }
+        }
     }
 }
 
