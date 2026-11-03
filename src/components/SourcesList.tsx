@@ -531,7 +531,7 @@ export const SourcesList: React.FC<SourcesListProps> = ({ notebookId, onSourcesC
                                   setMovingToId(null);
                                 }
                               }}
-                              className={`relative overflow-hidden text-left px-2.5 py-1.5 text-xs rounded-md transition-colors leading-snug ${
+                              className={`relative shrink-0 overflow-hidden text-left px-2.5 py-1.5 text-xs rounded-md transition-colors leading-snug ${
                                 isThisTarget
                                   ? 'bg-indigo-200 dark:bg-indigo-700/60 text-indigo-900 dark:text-indigo-100 ring-1 ring-indigo-400 dark:ring-indigo-500'
                                   : moving
