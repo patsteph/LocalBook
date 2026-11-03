@@ -49,34 +49,38 @@ final class Dictation {
             self.onText = onText
             let input = engine.inputNode
             input.removeTap(onBus: 0)
-            nonisolated(unsafe) let sink = req          // appended to only from the audio thread
-            try input.installAudioTap(onBus: 0, bufferSize: 4096, format: input.outputFormat(forBus: 0)) { ro, _ in
-                guard let buf = AVAudioPCMBuffer(pcmFormat: ro.format, frameCapacity: AVAudioFrameCount(ro.frameLength)) else { return }
-                buf.frameLength = AVAudioFrameCount(ro.frameLength)
-                ro.withUnsafeAudioBufferList { src in
-                    let from = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: src))
-                    let to = UnsafeMutableAudioBufferListPointer(buf.mutableAudioBufferList)
-                    for (a, b) in zip(from, to) where a.mData != nil && b.mData != nil {
-                        memcpy(b.mData, a.mData, Int(min(a.mDataByteSize, b.mDataByteSize)))
-                    }
-                }
-                sink.append(buf)
-            }
+            input.installTap(onBus: 0, bufferSize: 4096, format: input.outputFormat(forBus: 0), block: Self.tapBlock(req))
             engine.prepare()
             try engine.start()
             listening = true
-            task = recognizer.recognitionTask(with: req) { [weak self] result, error in
-                Task { @MainActor in
-                    guard let self else { return }
-                    if let result { self.onText?(result.bestTranscription.formattedString) }
-                    if let error, self.listening {
-                        let heard = result?.bestTranscription.formattedString.isEmpty == false
-                        if !heard { self.failure = "Dictation stopped: \(error.localizedDescription)" }
-                        self.stop()
-                    } else if result?.isFinal == true { self.stop() }
-                }
-            }
+            task = recognizer.recognitionTask(with: req, resultHandler: Self.resultHandler(self))
         } catch { failure = "Couldn't start dictation: \(error.localizedDescription)"; stop() }
+    }
+
+    // Built outside the main actor on purpose: these run on audio and speech queues, and a closure written inside a
+    // main-actor method would be main-actor too, which makes the system stop the app the moment it is called there.
+    private nonisolated static func tapBlock(_ req: SFSpeechAudioBufferRecognitionRequest) -> @Sendable (AVAudioPCMBuffer, AVAudioTime) -> Void {
+        nonisolated(unsafe) let sink = req
+        return { buffer, _ in sink.append(buffer) }
+    }
+
+    private nonisolated static func resultHandler(_ owner: Dictation) -> @Sendable (SFSpeechRecognitionResult?, Error?) -> Void {
+        nonisolated(unsafe) let owner = owner
+        return { result, error in
+            let text = result?.bestTranscription.formattedString
+            let final = result?.isFinal == true
+            let message = error?.localizedDescription
+            Task { @MainActor in owner.heard(text: text, final: final, error: message) }
+        }
+    }
+
+    private func heard(text: String?, final: Bool, error: String?) {
+        guard listening else { return }
+        if let text { onText?(text) }
+        if let error {
+            if text?.isEmpty != false { failure = "Dictation stopped: \(error)" }
+            stop()
+        } else if final { stop() }
     }
 
     func stop() {
