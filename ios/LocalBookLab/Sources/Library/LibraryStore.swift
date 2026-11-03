@@ -291,6 +291,12 @@ actor LibraryStore {
         }
     }
 
+    /// Changes the title shown for a source on this phone (every chunk carries the name).
+    func renameSource(notebook: String, sourceId: String, title: String) throws {
+        let s = try statement("UPDATE chunks SET filename=? WHERE notebook_id=? AND source_id=?")
+        bind(s, 1, title); bind(s, 2, notebook); bind(s, 3, sourceId); sqlite3_step(s); sqlite3_finalize(s)
+    }
+
     // MARK: browsing a notebook's sources
 
     struct SourceInfo: Sendable, Identifiable { let id: String; let notebookId: String; let name: String; let type: String; let pieces: Int; let characters: Int; let created: String; var isLocal: Bool { id.hasPrefix("local:") } }

@@ -19,56 +19,88 @@ final class Dictation {
     func toggle(onText: @escaping @MainActor (String) -> Void) {
         if listening { stop(); return }
         failure = nil
+        Self.askPermissions { [self] problem in
+            if let problem { failure = problem } else { start(onText) }
+        }
+    }
+
+    /// Asks for speech and microphone permission. Written outside the main actor because the system calls these
+    /// completions on its own queues; closures made inside a main-actor method would be main-actor and halt the app.
+    private nonisolated static func askPermissions(_ done: @escaping @MainActor (String?) -> Void) {
         SFSpeechRecognizer.requestAuthorization { status in
-            Task { @MainActor in
-                guard status == .authorized else { self.failure = "Allow Speech Recognition for LocalBook in Settings to dictate."; return }
-                AVAudioApplication.requestRecordPermission { ok in
-                    Task { @MainActor in
-                        guard ok else { self.failure = "Allow the microphone for LocalBook in Settings to dictate."; return }
-                        self.start(onText)
-                    }
-                }
+            guard status == .authorized else {
+                Task { @MainActor in done("Allow Speech Recognition for LocalBook in Settings to dictate.") }
+                return
+            }
+            AVAudioApplication.requestRecordPermission { ok in
+                Task { @MainActor in done(ok ? nil : "Allow the microphone for LocalBook in Settings to dictate.") }
             }
         }
     }
 
     private func start(_ onText: @escaping @MainActor (String) -> Void) {
         guard let recognizer, recognizer.isAvailable else { failure = "Dictation isn't available right now."; return }
+        guard recognizer.supportsOnDeviceRecognition else {
+            failure = "Dictation needs on-device speech for your language. Turn on Dictation in Settings > General > Keyboard, then try again."
+            return
+        }
+        Task {
+            do { try await Self.activateSession() } catch { failure = "Couldn't start dictation: \(error.localizedDescription)"; return }
+            begin(onText, recognizer: recognizer)
+        }
+    }
+
+    /// Switching the audio session can take a moment, so it is done off the main thread.
+    @concurrent private static func activateSession() async throws {
+        let session = AVAudioSession.sharedInstance()
+        try session.setCategory(.playAndRecord, mode: .default, options: [.duckOthers, .defaultToSpeaker, .allowBluetoothHFP])
+        try session.setActive(true, options: .notifyOthersOnDeactivation)
+    }
+
+    @concurrent private static func deactivateSession() async {
+        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+    }
+
+    private func begin(_ onText: @escaping @MainActor (String) -> Void, recognizer: SFSpeechRecognizer) {
         do {
-            let session = AVAudioSession.sharedInstance()
-            try session.setCategory(.record, mode: .measurement, options: .duckOthers)
-            try session.setActive(true, options: .notifyOthersOnDeactivation)
             let req = SFSpeechAudioBufferRecognitionRequest()
             req.shouldReportPartialResults = true
-            req.requiresOnDeviceRecognition = recognizer.supportsOnDeviceRecognition      // stays on the phone when it can
+            req.requiresOnDeviceRecognition = true                                        // stays on the phone
             request = req
             self.onText = onText
             let input = engine.inputNode
             input.removeTap(onBus: 0)
-            nonisolated(unsafe) let sink = req          // appended to only from the audio thread
-            try input.installAudioTap(onBus: 0, bufferSize: 4096, format: input.outputFormat(forBus: 0)) { ro, _ in
-                guard let buf = AVAudioPCMBuffer(pcmFormat: ro.format, frameCapacity: AVAudioFrameCount(ro.frameLength)) else { return }
-                buf.frameLength = AVAudioFrameCount(ro.frameLength)
-                ro.withUnsafeAudioBufferList { src in
-                    let from = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: src))
-                    let to = UnsafeMutableAudioBufferListPointer(buf.mutableAudioBufferList)
-                    for (a, b) in zip(from, to) where a.mData != nil && b.mData != nil {
-                        memcpy(b.mData, a.mData, Int(min(a.mDataByteSize, b.mDataByteSize)))
-                    }
-                }
-                sink.append(buf)
-            }
+            input.installTap(onBus: 0, bufferSize: 4096, format: input.outputFormat(forBus: 0), block: Self.tapBlock(req))
             engine.prepare()
             try engine.start()
             listening = true
-            task = recognizer.recognitionTask(with: req) { [weak self] result, error in
-                Task { @MainActor in
-                    guard let self else { return }
-                    if let result { self.onText?(result.bestTranscription.formattedString) }
-                    if error != nil || result?.isFinal == true { self.stop() }
-                }
-            }
+            task = recognizer.recognitionTask(with: req, resultHandler: Self.resultHandler(self))
         } catch { failure = "Couldn't start dictation: \(error.localizedDescription)"; stop() }
+    }
+
+    // Built outside the main actor on purpose: these run on audio and speech queues, and a closure written inside a
+    // main-actor method would be main-actor too, which makes the system stop the app the moment it is called there.
+    private nonisolated static func tapBlock(_ req: SFSpeechAudioBufferRecognitionRequest) -> @Sendable (AVAudioPCMBuffer, AVAudioTime) -> Void {
+        nonisolated(unsafe) let sink = req
+        return { buffer, _ in sink.append(buffer) }
+    }
+
+    private nonisolated static func resultHandler(_ owner: Dictation) -> @Sendable (SFSpeechRecognitionResult?, Error?) -> Void {
+        return { result, error in
+            let text = result?.bestTranscription.formattedString
+            let final = result?.isFinal == true
+            let message = error?.localizedDescription
+            Task { @MainActor in owner.heard(text: text, final: final, error: message) }
+        }
+    }
+
+    private func heard(text: String?, final: Bool, error: String?) {
+        guard listening else { return }
+        if let text { onText?(text) }
+        if let error {
+            if text?.isEmpty != false { failure = "Dictation stopped: \(error)" }
+            stop()
+        } else if final { stop() }
     }
 
     func stop() {
@@ -78,7 +110,7 @@ final class Dictation {
         request?.endAudio()
         task?.cancel()
         request = nil; task = nil; onText = nil; listening = false
-        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        Task { await Self.deactivateSession() }
     }
 }
 

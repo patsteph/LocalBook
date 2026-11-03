@@ -108,6 +108,26 @@ extension LibraryModel {
     func sources(in notebook: String) async -> [LibraryStore.SourceInfo] { await store?.sources(notebook: notebook) ?? [] }
     func sourceText(notebook: String, sourceId: String) async -> String { await store?.sourceText(notebook: notebook, sourceId: sourceId) ?? "" }
 
+    /// Renames a saved item. Items the Mac knows about are renamed there first so it stays the same everywhere.
+    /// Returns an error message, or nil when done.
+    func renameSource(_ source: LibraryStore.SourceInfo, to newTitle: String) async -> String? {
+        let title = newTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !title.isEmpty, let store else { return "Give it a name first." }
+        var macId: String? = source.isLocal ? await noteSentSourceId(source.id) : source.id
+        if source.isLocal, macId == nil { macId = nil }
+        if let macId, let mac = MacLink.paired {
+            do {
+                _ = try await MacLink.signedCall(mac, path: "/phone/library/source/rename",
+                                                 json: ["notebook_id": source.notebookId, "source_id": macId, "title": title], timeout: 60)
+            } catch { return "The Mac couldn't be reached, so the name wasn't changed. (\(error.localizedDescription))" }
+        } else if macId != nil {
+            return "Connect to the Mac to rename this item."
+        }
+        try? await store.renameSource(notebook: source.notebookId, sourceId: source.id, title: title)
+        await refresh()
+        return nil
+    }
+
     func removeNote(_ note: LibraryStore.LocalNote) async {
         try? await store?.removeLocalNote(notebook: note.notebookId, sourceId: note.id)
         try? FileManager.default.removeItem(at: Self.photoURL(note.id))

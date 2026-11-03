@@ -155,3 +155,33 @@ def test_a_photo_that_is_not_a_jpeg_is_refused(tmp_path, monkeypatch):
     with pytest.raises(HTTPException) as e:
         asyncio.run(phone_notes.add_note("nb", "c1", "T", "hello", "image", base64.b64encode(b"not a jpeg").decode()))
     assert e.value.status_code == 400
+
+
+def test_a_source_can_be_renamed_from_the_phone(tmp_path, monkeypatch):
+    monkeypatch.setattr(phone_library, "is_visible", lambda n: n == "nb")
+    from storage import source_store as ss
+    from services import rag_storage
+    updated, chunk_updates = [], []
+
+    async def fake_get(sid):
+        return {"id": sid, "notebook_id": "nb"} if sid == "src1" else None
+
+    async def fake_update(nb, sid, changes):
+        updated.append((nb, sid, changes))
+
+    class FakeTable:
+        def update(self, where, values):
+            chunk_updates.append((where, values))
+
+    monkeypatch.setattr(ss.source_store, "get", fake_get)
+    monkeypatch.setattr(ss.source_store, "update", fake_update)
+    monkeypatch.setattr(rag_storage, "get_table", lambda nb: FakeTable())
+
+    out = asyncio.run(phone_notes.rename("nb", "src1", "  Q3   2x2  "))
+    assert out == {"source_id": "src1", "filename": "Q3 2x2"}
+    assert updated == [("nb", "src1", {"filename": "Q3 2x2"})]
+    assert chunk_updates == [("source_id = 'src1'", {"filename": "Q3 2x2"})]
+    for bad, code in [(("other", "src1", "x"), 404), (("nb", "src1", "  "), 400), (("nb", "src1'; x", "T"), 400), (("nb", "nope", "T"), 404)]:
+        with pytest.raises(HTTPException) as e:
+            asyncio.run(phone_notes.rename(*bad))
+        assert e.value.status_code == code

@@ -139,6 +139,13 @@ struct AskView: View {
                 }
             }
             .sheet(isPresented: $picking) { NotebookPicker(library: library) }
+            .task {
+                // A meeting write-up was on screen when the app went away (a lock can end it): bring it back.
+                guard !recordingMeeting, let id = UserDefaults.standard.string(forKey: MeetingSession.openKey),
+                      library.notebooks.contains(where: { $0.id == id }) else { return }
+                library.scopeToNotebook = id
+                recordingMeeting = true
+            }
             .sheet(isPresented: $recordingMeeting) { if let id = library.scopeToNotebook { MeetingView(library: library, notebookId: id) } }
             .sheet(isPresented: $writingNote) { if let id = library.scopeToNotebook { NoteEditor(library: library, notebookId: id) } }
             .sheet(item: $openSource) { ref in

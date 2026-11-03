@@ -23,7 +23,7 @@ struct SettingsView: View {
                 Section("On this phone") {
                     LabeledContent("Notebooks", value: "\(library.notebooks.count)")
                     LabeledContent("Passages", value: "\(library.chunkCount)")
-                    NavigationLink("My notes") { MyNotesView(library: library) }
+                    NavigationLink("Local data") { LocalDataView(library: library) }
                     Text(library.lastSyncLine).font(.footnote).foregroundStyle(.secondary)
                 }
                 Section {
