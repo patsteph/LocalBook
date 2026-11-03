@@ -206,6 +206,12 @@ final class MeetingSession {
         } catch { phase = .failed("Couldn't start recording: \(error.localizedDescription)"); Task { await library?.resumeModels() } }
     }
 
+    /// Back on screen after a pause the system never said to resume (an alert, Siri): carry on rather than sit paused.
+    func resumeIfInterrupted() {
+        guard phase == .recording, interrupted, let r = recorder else { return }
+        if r.record() { interrupted = false }
+    }
+
     /// A phone call or alarm pauses the recording; it carries on when that ends.
     private func watchInterruptions() {
         let center = NotificationCenter.default
@@ -397,7 +403,7 @@ struct MeetingView: View {
         }
         .onChange(of: title) { _, v in session.title = v; session.persist() }
         .onChange(of: session.names) { _, _ in session.persist() }
-        .onChange(of: scenePhase) { _, p in if p != .active { session.persist() } }
+        .onChange(of: scenePhase) { _, p in if p != .active { session.persist() } else { session.resumeIfInterrupted() } }
         .onChange(of: session.phase) { _, p in
             if p == .review { title = session.title }
             // Remember that a write-up was on screen, so it comes back after a lock that ended the app.
