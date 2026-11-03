@@ -27,6 +27,7 @@ struct MyRecordingsView: View {
     @State private var confirmAll = false
     @State private var confirmSaved = false
     @State private var writing: WriteUp?
+    @State private var linking: Recording?
 
     private func load() {
         let keys: [URLResourceKey] = [.contentModificationDateKey, .fileSizeKey]
@@ -66,7 +67,10 @@ struct MyRecordingsView: View {
                         Spacer()
                         if r.saved == nil {
                             Menu(r.writtenUp ? "Continue" : "Write up") {
-                                ForEach(library.notebooks) { nb in Button(nb.title) { writing = WriteUp(url: r.url, notebookId: nb.id) } }
+                                Menu("Write up in…") {
+                                    ForEach(library.notebooks) { nb in Button(nb.title) { writing = WriteUp(url: r.url, notebookId: nb.id) } }
+                                }
+                                Button("It's already saved…", systemImage: "link") { linking = r }
                             }.font(.footnote.weight(.semibold))
                         } else { Image(systemName: "checkmark.circle.fill").foregroundStyle(.green) }
                     }
@@ -96,6 +100,7 @@ struct MyRecordingsView: View {
             Button("Delete everything", role: .destructive) { items.forEach(remove); load() }
         }
         .sheet(item: $writing, onDismiss: load) { w in MeetingView(library: library, notebookId: w.notebookId, open: w.url) }
+        .sheet(item: $linking, onDismiss: load) { r in LinkRecordingSheet(library: library, recording: r.url, date: r.date) }
         .onAppear(perform: load)
         .task { load(); await linkOlderRecordings(); load() }
     }
@@ -118,8 +123,8 @@ struct MyRecordingsView: View {
         var pairs: [Pair] = []
         for nb in library.notebooks {
             for src in await library.sources(in: nb.id) where src.type != "image" {
-                guard let when = Self.parse(src.created) else { continue }
-                for r in loose where abs(when.timeIntervalSince(r.date)) <= 14 * 3600 {
+                guard let when = StudioPull.parseDate(src.created) else { continue }
+                for r in loose where abs(when.timeIntervalSince(r.date)) <= 72 * 3600 {
                     pairs.append(Pair(rec: r, nb: nb.id, nbTitle: nb.title, src: src, delta: abs(when.timeIntervalSince(r.date))))
                 }
             }
@@ -131,7 +136,7 @@ struct MyRecordingsView: View {
             guard !claimedRecordings.contains(p.rec.id), !claimedSources.contains(key) else { continue }
             if isMeeting[key] == nil {
                 let text = await library.sourceText(notebook: p.nb, sourceId: p.src.id)
-                isMeeting[key] = text.hasPrefix(MeetingSession.header)
+                isMeeting[key] = LibraryModel.looksLikeMeeting(text)
             }
             guard isMeeting[key] == true else { continue }
             claimedRecordings.insert(p.rec.id); claimedSources.insert(key)
@@ -139,6 +144,54 @@ struct MyRecordingsView: View {
             if let data = try? e.encode(MeetingSession.SavedMeta(title: p.src.name, notebookId: p.nb, notebookTitle: p.nbTitle, savedAt: p.rec.date)) {
                 try? data.write(to: MeetingSession.savedMetaURL(for: p.rec.url), options: .atomic)
             }
+        }
+    }
+}
+
+/// Pick the note a recording was saved as, so the two are tied together and it isn't written up twice.
+struct LinkRecordingSheet: View {
+    let library: LibraryModel
+    let recording: URL
+    let date: Date
+    @Environment(\.dismiss) private var dismiss
+    @State private var notebookId = ""
+    @State private var sources: [LibraryStore.SourceInfo] = []
+
+    private func load() async {
+        let all = await library.sources(in: notebookId)
+        sources = all.sorted {
+            abs((StudioPull.parseDate($0.created) ?? .distantPast).timeIntervalSince(date)) < abs((StudioPull.parseDate($1.created) ?? .distantPast).timeIntervalSince(date))
+        }
+    }
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    Picker("Notebook", selection: $notebookId) { ForEach(library.notebooks) { Text($0.title).tag($0.id) } }
+                } footer: { Text("Closest in time to the recording first.") }
+                Section {
+                    ForEach(sources) { s in
+                        Button {
+                            let e = JSONEncoder(); e.dateEncodingStrategy = .iso8601
+                            let title = library.notebooks.first { $0.id == notebookId }?.title ?? ""
+                            if let data = try? e.encode(MeetingSession.SavedMeta(title: s.name, notebookId: notebookId, notebookTitle: title, savedAt: date)) {
+                                try? data.write(to: MeetingSession.savedMetaURL(for: recording), options: .atomic)
+                            }
+                            dismiss()
+                        } label: {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(s.name).foregroundStyle(.primary).lineLimit(2)
+                                if let d = StudioPull.parseDate(s.created) { Text(d.formatted(date: .abbreviated, time: .shortened)).font(.caption).foregroundStyle(.secondary) }
+                            }
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Which note is it?").navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } } }
+            .task { notebookId = library.notebooks.first?.id ?? ""; await load() }
+            .onChange(of: notebookId) { _, _ in Task { await load() } }
         }
     }
 }

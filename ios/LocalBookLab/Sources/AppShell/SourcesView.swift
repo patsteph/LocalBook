@@ -97,6 +97,7 @@ struct SourcesView: View {
                 }
             }
             .task { await reload() }
+            .onAppear { Task { await reload() } }
             .refreshable { await reload() }
         }
     }
@@ -136,9 +137,12 @@ private struct SourceDetail: View {
     @State private var newName = ""
     @State private var shownName: String?
     @State private var renameError: String?
+    @State private var renaming_busy = false
 
     var body: some View {
         ScrollView {
+            if renaming_busy { Label("Renaming…", systemImage: "pencil").font(.footnote).foregroundStyle(.secondary).padding(.top) }
+            if let renameError { Text(renameError).font(.footnote).foregroundStyle(.orange).padding([.horizontal, .top]) }
             Text(text.isEmpty ? "…" : text).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading).padding()
         }
         .navigationTitle(shownName ?? source.name).navigationBarTitleDisplayMode(.inline)
@@ -151,14 +155,13 @@ private struct SourceDetail: View {
         .alert("Rename", isPresented: $renaming) {
             TextField("Name", text: $newName)
             Button("Save") { Task {
+                renameError = nil; renaming_busy = true
                 renameError = await library.renameSource(source, to: newName)
+                renaming_busy = false
                 if renameError == nil { shownName = newName.trimmingCharacters(in: .whitespacesAndNewlines) }
             } }
             Button("Cancel", role: .cancel) {}
         }
-        .alert("Couldn't rename", isPresented: Binding(get: { renameError != nil }, set: { if !$0 { renameError = nil } })) {
-            Button("OK", role: .cancel) {}
-        } message: { Text(renameError ?? "") }
         .sheet(isPresented: $editing, onDismiss: { Task { await load() } }) {
             SourceEditor(library: library, source: source, text: text)
         }
