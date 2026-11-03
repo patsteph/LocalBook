@@ -57,6 +57,41 @@ final class MeetingSession {
         }
     }
 
+    /// Where a recording ended up once its note was saved. The recording itself is kept until the person clears it.
+    struct SavedMeta: Codable { var title: String; var notebookId: String; var notebookTitle: String; var savedAt: Date }
+    static let openKey = "meetingOpenNotebook"
+
+    static func savedMetaURL(for recording: URL) -> URL { recording.deletingPathExtension().appendingPathExtension("saved.json") }
+    static func savedMeta(for recording: URL) -> SavedMeta? {
+        guard let data = try? Data(contentsOf: savedMetaURL(for: recording)) else { return nil }
+        let d = JSONDecoder(); d.dateDecodingStrategy = .iso8601
+        return try? d.decode(SavedMeta.self, from: data)
+    }
+    static func hasReview(_ recording: URL) -> Bool { restore(for: recording) != nil }
+    static func removeFiles(for recording: URL) {
+        for u in [recording, sidecar(for: recording), savedMetaURL(for: recording)] { try? FileManager.default.removeItem(at: u) }
+    }
+
+    /// The note is saved: remember where it went, drop the working copy of the transcript, keep the recording.
+    func markSaved(title: String, notebookId: String, notebookTitle: String) {
+        if let url = file ?? pending {
+            let e = JSONEncoder(); e.dateEncodingStrategy = .iso8601
+            if let data = try? e.encode(SavedMeta(title: title, notebookId: notebookId, notebookTitle: notebookTitle, savedAt: Date())) {
+                try? data.write(to: Self.savedMetaURL(for: url), options: .atomic)
+            }
+            try? FileManager.default.removeItem(at: Self.sidecar(for: url))
+        }
+        UserDefaults.standard.removeObject(forKey: Self.openKey)
+        file = nil; turns = []; speakers = []; names = [:]; self.title = ""; phase = .idle
+        pending = Self.latestRecording()
+    }
+
+    /// Open a particular recording from the list (to write it up).
+    func select(_ url: URL) {
+        guard phase == .idle else { return }
+        pending = url
+    }
+
     private static func sidecar(for recording: URL) -> URL { recording.deletingPathExtension().appendingPathExtension("review.json") }
 
     private static func restore(for recording: URL) -> Saved? {
@@ -74,7 +109,7 @@ final class MeetingSession {
 
     private static func latestRecording() -> URL? {
         let files = (try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: [.contentModificationDateKey])) ?? []
-        return files.filter { $0.pathExtension == "m4a" }.max {
+        return files.filter { $0.pathExtension == "m4a" && savedMeta(for: $0) == nil }.max {
             ((try? $0.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast)
                 < ((try? $1.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast)
         }
@@ -309,10 +344,8 @@ final class MeetingSession {
 
     /// Call after the note is saved (or the recording is thrown away).
     func discard() {
-        for url in [file, pending].compactMap({ $0 }) {
-            try? FileManager.default.removeItem(at: url)
-            try? FileManager.default.removeItem(at: Self.sidecar(for: url))
-        }
+        for url in [file, pending].compactMap({ $0 }) { Self.removeFiles(for: url) }
+        UserDefaults.standard.removeObject(forKey: Self.openKey)
         file = nil; turns = []; speakers = []; names = [:]; title = ""; phase = .idle
         pending = Self.latestRecording()
     }
@@ -323,6 +356,8 @@ final class MeetingSession {
 struct MeetingView: View {
     let library: LibraryModel
     let notebookId: String
+    /// A recording picked from the list on the Local Data screen, to be written up.
+    var open: URL? = nil
     @Environment(\.dismiss) private var dismiss
     @State private var session = MeetingSession()
     @State private var title = ""
@@ -356,12 +391,22 @@ struct MeetingView: View {
             }
         }
         .overlay { if saving { savingCover } }
-        .task { session.library = library; title = session.title }
+        .task {
+            session.library = library; title = session.title
+            if let open, session.phase == .idle { session.select(open); await session.processPending() }
+        }
         .onChange(of: title) { _, v in session.title = v; session.persist() }
         .onChange(of: session.names) { _, _ in session.persist() }
         .onChange(of: scenePhase) { _, p in if p != .active { session.persist() } }
-        .onChange(of: session.phase) { _, p in if p == .review { title = session.title } }
-        .onDisappear { Task { await library.resumeModels() } }
+        .onChange(of: session.phase) { _, p in
+            if p == .review { title = session.title }
+            // Remember that a write-up was on screen, so it comes back after a lock that ended the app.
+            if p == .review || p == .working { UserDefaults.standard.set(notebookId, forKey: MeetingSession.openKey) }
+        }
+        .onDisappear {
+            if scenePhase == .active { UserDefaults.standard.removeObject(forKey: MeetingSession.openKey) }
+            Task { await library.resumeModels() }
+        }
         .interactiveDismissDisabled(session.phase == .recording || session.phase == .working || saving)
     }
 
@@ -508,7 +553,7 @@ struct MeetingView: View {
                     HStack { if saving { ProgressView() }; Text(saving ? "Saving…" : "Save as a note") }.frame(maxWidth: .infinity)
                 }.disabled(saving)
                 Button("Throw this recording away", role: .destructive) { session.discard() }.disabled(saving)
-            } footer: { Text("Saved in “\(notebookTitle)” and searchable straight away. The recording itself is deleted once the note is saved.") }
+            } footer: { Text("Saved in “\(notebookTitle)” and searchable straight away. The recording stays under Settings > Local data until you delete it.") }
         }
         .scrollDismissesKeyboard(.interactively)
     }
@@ -520,7 +565,7 @@ struct MeetingView: View {
             await library.waitForSearch()                       // the search model is coming back; the note is embedded with it
             try await library.addNote(notebook: notebookId, title: name, text: session.transcript, progress: { saveProgress = $0 })
             session.rememberNames()
-            session.discard()
+            session.markSaved(title: name, notebookId: notebookId, notebookTitle: notebookTitle)
             dismiss()
         } catch { saveError = "Couldn't save: \(error.localizedDescription)" }
     }

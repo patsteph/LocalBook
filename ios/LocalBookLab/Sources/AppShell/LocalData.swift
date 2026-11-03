@@ -6,7 +6,7 @@ struct LocalDataView: View {
     var body: some View {
         List {
             NavigationLink("My notes") { MyNotesView(library: library) }
-            NavigationLink("My audio recordings") { MyRecordingsView() }
+            NavigationLink("My audio recordings") { MyRecordingsView(library: library) }
             NavigationLink("My Studio files") { MyStudioFilesView(library: library) }
         }
         .navigationTitle("Local data")
@@ -16,46 +16,86 @@ struct LocalDataView: View {
 private func sizeText(_ bytes: Int) -> String { ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file) }
 
 struct MyRecordingsView: View {
-    struct Recording: Identifiable { let url: URL; let date: Date; let bytes: Int; let written: Bool; var id: String { url.lastPathComponent } }
+    let library: LibraryModel
+    struct Recording: Identifiable {
+        let url: URL; let date: Date; let bytes: Int
+        let saved: MeetingSession.SavedMeta?; let writtenUp: Bool
+        var id: String { url.lastPathComponent }
+    }
+    struct WriteUp: Identifiable { let url: URL; let notebookId: String; var id: String { url.lastPathComponent } }
     @State private var items: [Recording] = []
     @State private var confirmAll = false
+    @State private var confirmSaved = false
+    @State private var writing: WriteUp?
 
     private func load() {
         let keys: [URLResourceKey] = [.contentModificationDateKey, .fileSizeKey]
         let files = (try? FileManager.default.contentsOfDirectory(at: MeetingSession.folder, includingPropertiesForKeys: keys)) ?? []
         items = files.filter { $0.pathExtension == "m4a" }.map { u in
             let v = try? u.resourceValues(forKeys: Set(keys))
-            let sidecar = u.deletingPathExtension().appendingPathExtension("review.json")
             return Recording(url: u, date: v?.contentModificationDate ?? .distantPast, bytes: v?.fileSize ?? 0,
-                             written: FileManager.default.fileExists(atPath: sidecar.path))
+                             saved: MeetingSession.savedMeta(for: u), writtenUp: MeetingSession.hasReview(u))
         }.sorted { $0.date > $1.date }
     }
 
-    private func remove(_ r: Recording) {
-        try? FileManager.default.removeItem(at: r.url)
-        try? FileManager.default.removeItem(at: r.url.deletingPathExtension().appendingPathExtension("review.json"))
+    private func remove(_ r: Recording) { MeetingSession.removeFiles(for: r.url) }
+
+    private func name(_ r: Recording) -> String {
+        if let s = r.saved { return s.title }
+        return "Recording " + r.date.formatted(date: .abbreviated, time: .shortened)
     }
+
+    private func detail(_ r: Recording) -> String {
+        let when = r.date.formatted(date: .abbreviated, time: .shortened)
+        if let s = r.saved { return "Saved in \(s.notebookTitle) · \(when) · \(sizeText(r.bytes))" }
+        return (r.writtenUp ? "Written up, not saved yet" : "Not written up yet") + " · \(when) · \(sizeText(r.bytes))"
+    }
+
+    private var savedItems: [Recording] { items.filter { $0.saved != nil } }
 
     var body: some View {
         List {
             if items.isEmpty { Text("No recordings on this phone.").foregroundStyle(.secondary) }
             else {
                 Section { ForEach(items) { r in
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(r.date.formatted(date: .abbreviated, time: .shortened))
-                        Text(sizeText(r.bytes) + (r.written ? " · written up, not saved yet" : "")).font(.caption).foregroundStyle(.secondary)
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(name(r))
+                            Text(detail(r)).font(.caption).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        if r.saved == nil {
+                            Menu(r.writtenUp ? "Continue" : "Write up") {
+                                ForEach(library.notebooks) { nb in Button(nb.title) { writing = WriteUp(url: r.url, notebookId: nb.id) } }
+                            }.font(.footnote.weight(.semibold))
+                        } else { Image(systemName: "checkmark.circle.fill").foregroundStyle(.green) }
                     }
                     .swipeActions { Button("Delete", role: .destructive) { remove(r); load() } }
                 } } footer: {
-                    Text("Saved meetings keep their text in the notebook. Deleting a recording here frees space and does not remove saved notes.")
+                    Text("Write up works out who spoke and saves the text into a notebook. Once a recording is saved you can delete the audio and keep the text.")
                 }
             }
         }
         .navigationTitle("My audio recordings")
-        .toolbar { if !items.isEmpty { ToolbarItem(placement: .primaryAction) { Button("Delete all", role: .destructive) { confirmAll = true } } } }
-        .confirmationDialog("Delete all \(items.count) recordings (\(sizeText(items.reduce(0) { $0 + $1.bytes })))?", isPresented: $confirmAll, titleVisibility: .visible) {
-            Button("Delete all", role: .destructive) { items.forEach(remove); load() }
+        .toolbar {
+            if !items.isEmpty {
+                ToolbarItem(placement: .primaryAction) {
+                    Menu {
+                        if !savedItems.isEmpty { Button("Delete saved recordings (keep the text)", role: .destructive) { confirmSaved = true } }
+                        Button("Delete everything", role: .destructive) { confirmAll = true }
+                    } label: { Image(systemName: "trash") }
+                }
+            }
         }
+        .confirmationDialog("Delete \(savedItems.count) saved recording\(savedItems.count == 1 ? "" : "s") (\(sizeText(savedItems.reduce(0) { $0 + $1.bytes })))? The notes stay in your notebooks.",
+                            isPresented: $confirmSaved, titleVisibility: .visible) {
+            Button("Delete audio", role: .destructive) { savedItems.forEach(remove); load() }
+        }
+        .confirmationDialog("Delete all \(items.count) recordings (\(sizeText(items.reduce(0) { $0 + $1.bytes })))? Recordings not yet saved will be lost.",
+                            isPresented: $confirmAll, titleVisibility: .visible) {
+            Button("Delete everything", role: .destructive) { items.forEach(remove); load() }
+        }
+        .sheet(item: $writing, onDismiss: load) { w in MeetingView(library: library, notebookId: w.notebookId, open: w.url) }
         .onAppear(perform: load)
     }
 }
