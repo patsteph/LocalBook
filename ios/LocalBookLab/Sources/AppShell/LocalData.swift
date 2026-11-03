@@ -97,7 +97,7 @@ struct MyRecordingsView: View {
         }
         .sheet(item: $writing, onDismiss: load) { w in MeetingView(library: library, notebookId: w.notebookId, open: w.url) }
         .onAppear(perform: load)
-        .task { await linkOlderRecordings(); load() }
+        .task { load(); await linkOlderRecordings(); load() }
     }
 
     private static func parse(_ s: String) -> Date? {
