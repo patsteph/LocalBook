@@ -19,15 +19,22 @@ final class Dictation {
     func toggle(onText: @escaping @MainActor (String) -> Void) {
         if listening { stop(); return }
         failure = nil
+        Self.askPermissions { [self] problem in
+            if let problem { failure = problem } else { start(onText) }
+        }
+    }
+
+    /// Asks for speech and microphone permission. Written outside the main actor because the system calls these
+    /// completions on its own queues; closures made inside a main-actor method would be main-actor and halt the app.
+    private nonisolated static func askPermissions(_ done: @escaping @MainActor (String?) -> Void) {
+        nonisolated(unsafe) let done = done
         SFSpeechRecognizer.requestAuthorization { status in
-            Task { @MainActor in
-                guard status == .authorized else { self.failure = "Allow Speech Recognition for LocalBook in Settings to dictate."; return }
-                AVAudioApplication.requestRecordPermission { ok in
-                    Task { @MainActor in
-                        guard ok else { self.failure = "Allow the microphone for LocalBook in Settings to dictate."; return }
-                        self.start(onText)
-                    }
-                }
+            guard status == .authorized else {
+                Task { @MainActor in done("Allow Speech Recognition for LocalBook in Settings to dictate.") }
+                return
+            }
+            AVAudioApplication.requestRecordPermission { ok in
+                Task { @MainActor in done(ok ? nil : "Allow the microphone for LocalBook in Settings to dictate.") }
             }
         }
     }
