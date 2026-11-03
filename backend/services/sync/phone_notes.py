@@ -9,6 +9,7 @@ import asyncio
 import base64
 import json
 import logging
+import re
 from typing import Any, Dict
 
 from fastapi import BackgroundTasks, HTTPException
@@ -153,3 +154,30 @@ async def add_note(notebook_id: str, client_id: str, title: str, text: str, kind
     # the answer is the source id, as soon as the source exists; indexing carries on in the task
     source_id = await asyncio.shield(started)
     return {"source_id": source_id, "duplicate": False}
+
+
+async def rename(notebook_id: str, source_id: str, title: str) -> Dict[str, Any]:
+    """Change a source's title (any kind of source). The chunks carry the name too, since citations show it."""
+    from services.sync import phone_library
+    title = " ".join((title or "").split())[:200]
+    if not title:
+        raise HTTPException(400, "a title is required")
+    if not re.fullmatch(r"[A-Za-z0-9_\-]{1,100}", source_id or ""):
+        raise HTTPException(400, "not a source id")
+    if not await asyncio.to_thread(phone_library.is_visible, notebook_id):
+        raise HTTPException(404, "no such notebook")
+    from storage.source_store import source_store
+    source = await source_store.get(source_id)
+    if not source or source.get("notebook_id") != notebook_id:
+        raise HTTPException(404, "no such source")
+    await source_store.update(notebook_id, source_id, {"filename": title})
+
+    def _chunks() -> None:
+        from services import rag_storage
+        rag_storage.get_table(notebook_id).update(where=f"source_id = '{source_id}'", values={"filename": title})
+    try:
+        await asyncio.to_thread(_chunks)
+    except Exception as exc:          # the record is renamed; only the name shown in citations is behind
+        logger.warning("[phone-notes] %s: chunks not renamed: %s", source_id, exc)
+    logger.warning("[phone-notes] %s: renamed to %r", source_id, title)
+    return {"source_id": source_id, "filename": title}

@@ -132,17 +132,33 @@ private struct SourceDetail: View {
     @State private var text = ""
     @State private var editing = false
     @State private var canEdit = false
+    @State private var renaming = false
+    @State private var newName = ""
+    @State private var shownName: String?
+    @State private var renameError: String?
 
     var body: some View {
         ScrollView {
             Text(text.isEmpty ? "…" : text).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading).padding()
         }
-        .navigationTitle(source.name).navigationBarTitleDisplayMode(.inline)
+        .navigationTitle(shownName ?? source.name).navigationBarTitleDisplayMode(.inline)
         .toolbar {
+            ToolbarItem(placement: .secondaryAction) { Button("Rename", systemImage: "pencil") { newName = shownName ?? source.name; renaming = true } }
             if canEdit { ToolbarItem(placement: .primaryAction) { Button("Edit") { editing = true } } }
             ToolbarItem(placement: .secondaryAction) { ShareLink(item: text) }
         }
         .task { await load() }
+        .alert("Rename", isPresented: $renaming) {
+            TextField("Name", text: $newName)
+            Button("Save") { Task {
+                renameError = await library.renameSource(source, to: newName)
+                if renameError == nil { shownName = newName.trimmingCharacters(in: .whitespacesAndNewlines) }
+            } }
+            Button("Cancel", role: .cancel) {}
+        }
+        .alert("Couldn't rename", isPresented: Binding(get: { renameError != nil }, set: { if !$0 { renameError = nil } })) {
+            Button("OK", role: .cancel) {}
+        } message: { Text(renameError ?? "") }
         .sheet(isPresented: $editing, onDismiss: { Task { await load() } }) {
             SourceEditor(library: library, source: source, text: text)
         }

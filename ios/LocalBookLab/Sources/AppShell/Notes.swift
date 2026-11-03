@@ -34,13 +34,17 @@ final class Dictation {
 
     private func start(_ onText: @escaping @MainActor (String) -> Void) {
         guard let recognizer, recognizer.isAvailable else { failure = "Dictation isn't available right now."; return }
+        guard recognizer.supportsOnDeviceRecognition else {
+            failure = "Dictation needs on-device speech for your language. Turn on Dictation in Settings > General > Keyboard, then try again."
+            return
+        }
         do {
             let session = AVAudioSession.sharedInstance()
-            try session.setCategory(.record, mode: .measurement, options: .duckOthers)
+            try session.setCategory(.playAndRecord, mode: .default, options: [.duckOthers, .defaultToSpeaker, .allowBluetoothHFP])
             try session.setActive(true, options: .notifyOthersOnDeactivation)
             let req = SFSpeechAudioBufferRecognitionRequest()
             req.shouldReportPartialResults = true
-            req.requiresOnDeviceRecognition = recognizer.supportsOnDeviceRecognition      // stays on the phone when it can
+            req.requiresOnDeviceRecognition = true                                        // stays on the phone
             request = req
             self.onText = onText
             let input = engine.inputNode
@@ -65,7 +69,11 @@ final class Dictation {
                 Task { @MainActor in
                     guard let self else { return }
                     if let result { self.onText?(result.bestTranscription.formattedString) }
-                    if error != nil || result?.isFinal == true { self.stop() }
+                    if let error, self.listening {
+                        let heard = result?.bestTranscription.formattedString.isEmpty == false
+                        if !heard { self.failure = "Dictation stopped: \(error.localizedDescription)" }
+                        self.stop()
+                    } else if result?.isFinal == true { self.stop() }
                 }
             }
         } catch { failure = "Couldn't start dictation: \(error.localizedDescription)"; stop() }

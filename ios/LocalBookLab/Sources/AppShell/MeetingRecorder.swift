@@ -9,7 +9,12 @@ import UIKit
 @MainActor @Observable
 final class MeetingSession {
     enum Phase: Equatable { case idle, recording, working, review, failed(String) }
-    struct Turn: Identifiable { let id = UUID(); var speaker: String; var start: Double; var text: String }
+    struct Turn: Identifiable, Codable {
+        var id = UUID(); var speaker: String; var start: Double; var text: String
+        private enum CodingKeys: String, CodingKey { case speaker, start, text }
+    }
+    /// The written-up meeting, kept beside the recording so it survives the app being closed before Save.
+    private struct Saved: Codable { var turns: [Turn]; var speakers: [String]; var names: [String: String]; var title: String }
 
     private(set) var phase: Phase = .idle
     private(set) var elapsed = 0.0
@@ -26,6 +31,7 @@ final class MeetingSession {
     /// Speaker ids in the order they first spoke, and the name the person gave each.
     private(set) var speakers: [String] = []
     var names: [String: String] = [:]
+    var title = ""
     private(set) var pending: URL?
 
     private var recorder: AVAudioRecorder?
@@ -42,7 +48,29 @@ final class MeetingSession {
         return url
     }
 
-    init() { pending = Self.latestRecording() }
+    init() {
+        pending = Self.latestRecording()
+        if let pending, let saved = Self.restore(for: pending) {            // written up before, never saved: back to the review screen
+            file = pending
+            turns = saved.turns; speakers = saved.speakers; names = saved.names; title = saved.title
+            phase = .review
+        }
+    }
+
+    private static func sidecar(for recording: URL) -> URL { recording.deletingPathExtension().appendingPathExtension("review.json") }
+
+    private static func restore(for recording: URL) -> Saved? {
+        guard let data = try? Data(contentsOf: sidecar(for: recording)),
+              let saved = try? JSONDecoder().decode(Saved.self, from: data), !saved.turns.isEmpty else { return nil }
+        return saved
+    }
+
+    /// Writes the review (transcript, speakers, names typed so far, title) to disk. Cheap; called whenever it changes.
+    func persist() {
+        guard phase == .review, let recording = file ?? pending else { return }
+        let saved = Saved(turns: turns, speakers: speakers, names: names, title: title)
+        if let data = try? JSONEncoder().encode(saved) { try? data.write(to: Self.sidecar(for: recording), options: .atomic) }
+    }
 
     private static func latestRecording() -> URL? {
         let files = (try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: [.contentModificationDateKey])) ?? []
@@ -173,7 +201,14 @@ final class MeetingSession {
     /// Lets the person leave the working screen: ends the wait for words (the recording stays).
     func stopWorking() { stopper?.stop() }
 
-    func processPending() async { if let pending { file = pending; await process(pending) } }
+    func processPending() async {
+        guard let pending else { return }
+        file = pending
+        if let saved = Self.restore(for: pending) {                // already written up: no need to do it again
+            turns = saved.turns; speakers = saved.speakers; names = saved.names; title = saved.title
+            phase = .review
+        } else { await process(pending) }
+    }
 
     // MARK: who said what
 
@@ -193,7 +228,8 @@ final class MeetingSession {
             func lap(_ what: String) { SoakTrace.log("meeting: \(what) after \(String(format: "%.1f", Date().timeIntervalSince(began))) s") }
             lap("start (recording \(Int(elapsed)) s)")
             step = "Finding who is speaking… (the first time this downloads a small model)"
-            let manager = OfflineDiarizerManager(config: OfflineDiarizerConfig())
+            // Re-embed stretches the speaker model could not place, so a whole turn is not absorbed into the speaker next to it.
+            let manager = OfflineDiarizerManager(config: OfflineDiarizerConfig(zeroVoteReembed: .init(enabled: true)))
             try await manager.prepareModels()
             lap("speaker models ready")
             let spoken = try await manager.process(url)
@@ -212,6 +248,7 @@ final class MeetingSession {
             stage = 2; wordsHeard = words.count; step = "Putting it in order…"
             build(words: words, who: who)
             phase = .review
+            persist()
         } catch {
             SoakTrace.log("meeting: failed: \(error)")
             phase = .failed(error.localizedDescription)
@@ -224,10 +261,10 @@ final class MeetingSession {
             if let hit = who.first(where: { t >= $0.start && t <= $0.end }) { return hit.id }
             return who.min { min(abs($0.start - t), abs($0.end - t)) < min(abs($1.start - t), abs($1.end - t)) }?.id ?? "0"
         }
+        let ids = Self.tidy(words, ids: words.map { speaker(at: ($0.start + $0.end) / 2) })
         var order: [String] = []
         var out: [Turn] = []
-        for w in words {
-            let id = speaker(at: (w.start + w.end) / 2)
+        for (w, id) in zip(words, ids) {
             if !order.contains(id) { order.append(id) }
             if var last = out.last, last.speaker == id {
                 last.text = LongTranscriber.join(last.text, w.text); out[out.count - 1] = last
@@ -237,13 +274,47 @@ final class MeetingSession {
         speakers = order; turns = out
     }
 
+    /// Words near a change of speaker are the least certain, since the speaker model works in short windows. Two repairs:
+    /// a lone word wedged inside one person's unbroken speech is theirs; a change in the middle of a sentence moves to
+    /// the nearest pause or sentence end (within a few words), because people hand over at those points.
+    private nonisolated static func tidy(_ words: [Word], ids input: [String]) -> [String] {
+        var ids = input
+        let n = words.count
+        guard n > 2 else { return ids }
+        func gap(_ j: Int) -> Double { max(0, words[j].start - words[j - 1].end) }       // silence before word j
+        for i in 1..<(n - 1) where ids[i - 1] == ids[i + 1] && ids[i] != ids[i - 1] && gap(i) < 0.15 && gap(i + 1) < 0.15 {
+            ids[i] = ids[i - 1]
+        }
+        func score(_ j: Int) -> Double {
+            let end = words[j - 1].text.trimmingCharacters(in: .whitespaces).last
+            return gap(j) + (end.map { ".?!".contains($0) } == true ? 0.5 : 0)
+        }
+        var i = 1
+        while i < n {
+            guard ids[i] != ids[i - 1] else { i += 1; continue }
+            var lo = i - 1; while lo > 0 && ids[lo - 1] == ids[i - 1] { lo -= 1 }           // the left speaker's run
+            var hi = i; while hi + 1 < n && ids[hi + 1] == ids[i] { hi += 1 }               // the right speaker's run
+            var best = i, top = score(i)
+            for j in max(lo + 1, i - 4)...min(hi, i + 4) where score(j) > top + 0.15 { best = j; top = score(j) }
+            if best != i {
+                let left = ids[i - 1], right = ids[i]
+                for k in min(i, best)..<max(i, best) { ids[k] = best > i ? left : right }
+            }
+            i = max(i, best) + 1
+        }
+        return ids
+    }
+
     // MARK: finishing
 
     /// Call after the note is saved (or the recording is thrown away).
     func discard() {
-        if let file { try? FileManager.default.removeItem(at: file) }
-        if let pending { try? FileManager.default.removeItem(at: pending) }
-        file = nil; pending = Self.latestRecording(); turns = []; speakers = []; names = [:]; phase = .idle
+        for url in [file, pending].compactMap({ $0 }) {
+            try? FileManager.default.removeItem(at: url)
+            try? FileManager.default.removeItem(at: Self.sidecar(for: url))
+        }
+        file = nil; turns = []; speakers = []; names = [:]; title = ""; phase = .idle
+        pending = Self.latestRecording()
     }
 
     func reset() { turns = []; speakers = []; names = [:]; phase = .idle; pending = Self.latestRecording() }
@@ -255,6 +326,7 @@ struct MeetingView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var session = MeetingSession()
     @State private var title = ""
+    @Environment(\.scenePhase) private var scenePhase
     @State private var saving = false
     @State private var saveProgress = 0.0
     @State private var saveError: String?
@@ -284,7 +356,11 @@ struct MeetingView: View {
             }
         }
         .overlay { if saving { savingCover } }
-        .task { session.library = library }
+        .task { session.library = library; title = session.title }
+        .onChange(of: title) { _, v in session.title = v; session.persist() }
+        .onChange(of: session.names) { _, _ in session.persist() }
+        .onChange(of: scenePhase) { _, p in if p != .active { session.persist() } }
+        .onChange(of: session.phase) { _, p in if p == .review { title = session.title } }
         .onDisappear { Task { await library.resumeModels() } }
         .interactiveDismissDisabled(session.phase == .recording || session.phase == .working || saving)
     }

@@ -654,6 +654,16 @@ async def phone_library_note(request: Request):
                                       str(b.get("photo", "")))
 
 
+@phone_sync_app.post("/phone/library/source/rename")
+async def phone_library_source_rename(request: Request):
+    """Change the title of a source from the phone."""
+    _check_enabled()
+    v = await _verified_phone(request)
+    from services.sync import phone_notes
+    b = v["body"]
+    return await phone_notes.rename(str(b.get("notebook_id", "")), str(b.get("source_id", "")), str(b.get("title", "")))
+
+
 @phone_sync_app.post("/phone/library/studio/put")
 async def phone_library_studio_put(request: Request):
     """A briefing, flashcards or quiz made on the phone, stored with the Studio items made here."""
