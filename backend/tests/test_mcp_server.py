@@ -29,8 +29,9 @@ def store(tmp_path, monkeypatch):
 
 @pytest.fixture
 def caller(monkeypatch):
-    """Pretend the middleware authenticated a companion holding `mcp`."""
-    identity = CompanionIdentity(companion_id="jocasta", scopes=("mcp",))
+    """Pretend the middleware authenticated Jocasta: `mcp`, plus `all_notebooks`,
+    which every key that held `mcp` before 2026-11-06 was granted on upgrade."""
+    identity = CompanionIdentity(companion_id="jocasta", scopes=("mcp", "all_notebooks"))
     mcp_server._set_caller(identity)
     return identity
 
@@ -265,7 +266,7 @@ def test_ask_notebook_returns_busy_when_the_model_is_held(store, caller, tools, 
         return False
 
     monkeypatch.setattr(mcp_server, "_model_is_available", held)
-    out = _call(tools, "ask_notebook", question="what did I save about X?")
+    out = _call(tools, "ask_notebook", question="what did I save about X?", notebook_id="n1")
     assert out["status"] == "busy"
     assert out["retry_after"] == mcp_server.BUSY_RETRY_AFTER
 
@@ -278,7 +279,7 @@ def test_a_busy_answer_is_audited_as_busy(store, caller, tools, monkeypatch):
         return False
 
     monkeypatch.setattr(mcp_server, "_model_is_available", held)
-    _call(tools, "ask_notebook", question="x")
+    _call(tools, "ask_notebook", question="x", notebook_id="n1")
     assert rows[-1]["outcome"] == companion_audit.OUTCOME_BUSY
     assert rows[-1]["tool"] == "ask_notebook"
 
@@ -398,7 +399,7 @@ def test_arguments_are_hashed_never_stored(store, caller, tools, monkeypatch):
         return False
 
     monkeypatch.setattr(mcp_server, "_model_is_available", held)
-    _call(tools, "ask_notebook", question=secret)
+    _call(tools, "ask_notebook", question=secret, notebook_id="n1")
 
     rows = companion_audit.recent("jocasta")
     assert rows, "the call was not audited at all"

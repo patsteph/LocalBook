@@ -1,0 +1,37 @@
+{
+  "manifest_version": "0.3",
+  "name": "localbook",
+  "display_name": "LocalBook",
+  "version": "2.5.5",
+  "description": "Search and read your LocalBook notebooks, sources and notes from Claude. Everything stays on this Mac.",
+  "long_description": "Connects Claude to the LocalBook app running on this Mac. Claude can list your notebooks, search one notebook the same way LocalBook's chat does, read sources and notes, and ask LocalBook for a cited answer. LocalBook must be open. The extension only talks to 127.0.0.1, with an agent key you issue (and can revoke) in LocalBook > Settings > Companions > Agent keys.",
+  "author": { "name": "Patrick Stephens" },
+  "homepage": "https://github.com/patsteph/LocalBook",
+  "icon": "icon.png",
+  "server": {
+    "type": "node",
+    "entry_point": "server/index.js",
+    "mcp_config": {
+      "command": "node",
+      "args": ["${__dirname}/server/index.js"],
+      "env": {
+        "LOCALBOOK_MCP_KEY": "${user_config.api_key}"
+      }
+    }
+  },
+  "user_config": {
+    "api_key": {
+      "type": "string",
+      "title": "LocalBook agent key",
+      "description": "Issue one in LocalBook > Settings > Companions > Agent keys. Tick \"mcp\" (and \"all_notebooks\" if Claude may search every notebook at once).",
+      "sensitive": true,
+      "required": true
+    }
+  },
+  "compatibility": {
+    "platforms": ["darwin"],
+    "runtimes": { "node": ">=18.0.0" }
+  },
+  "keywords": ["notebooks", "research", "local", "rag"],
+  "license": "MIT"
+}

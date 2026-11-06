@@ -44,6 +44,9 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 MCP_SCOPE = "mcp"
+# Searching or asking across EVERY notebook in one call. The product rule is one
+# notebook at a time (only @curator looks across all), so it is its own grant.
+ALL_NOTEBOOKS_SCOPE = "all_notebooks"
 
 # How long a companion waits for the model before being told to come back.
 # The plan's number. Shorter than a user would tolerate, because an agent can
@@ -158,6 +161,20 @@ class CompanionAuthMiddleware:
             await _deny(send, 403, "LocalBook's MCP endpoint is reachable from this machine only.")
             return
 
+        # DNS rebinding. A web page the user opens can resolve its own name to
+        # 127.0.0.1 and post here from a loopback address, so loopback alone is
+        # not "a program on this Mac". The MCP spec (Streamable HTTP, Security
+        # Warning) says servers MUST validate Origin; the Host check catches the
+        # same attack from clients that send no Origin. Real MCP clients (Claude
+        # Code, Claude Desktop's bridge, Hermes) send no Origin and a loopback Host.
+        headers = _header_map(scope)
+        if not _allowed_host(headers.get("host")):
+            await _deny(send, 403, "LocalBook's MCP endpoint answers only to 127.0.0.1 or localhost.")
+            return
+        if not _allowed_origin(headers.get("origin")):
+            await _deny(send, 403, "Requests from web pages are not accepted on LocalBook's MCP endpoint.")
+            return
+
         token = ""
         for raw_name, raw_value in scope.get("headers") or []:
             if raw_name.lower() == b"authorization":
@@ -186,6 +203,59 @@ class CompanionAuthMiddleware:
 
         _set_caller(identity)
         await self.app(scope, receive, send)
+
+
+def _header_map(scope) -> Dict[str, str]:
+    out: Dict[str, str] = {}
+    for raw_name, raw_value in scope.get("headers") or []:
+        out.setdefault(raw_name.decode("latin-1").lower(), raw_value.decode("latin-1"))
+    return out
+
+
+# "testserver" is what Starlette's TestClient sends, the same allowance
+# `_is_loopback` makes for its "testclient" peer address.
+_LOOPBACK_NAMES = {"localhost", "testserver"}
+
+
+def _strip_port(hostport: str) -> str:
+    hostport = hostport.strip().lower()
+    if hostport.startswith("["):                  # [::1]:8000
+        return hostport[1:hostport.find("]")] if "]" in hostport else hostport
+    if hostport.count(":") == 1:                  # 127.0.0.1:8000, localhost:8000
+        return hostport.split(":", 1)[0]
+    return hostport                               # bare name or bare IPv6
+
+
+def _loopback_name(host: str) -> bool:
+    if host in _LOOPBACK_NAMES:
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def _allowed_host(value: Optional[str]) -> bool:
+    """Absent is allowed (HTTP/1.0, raw ASGI); present must name this machine."""
+    if not value:
+        return True
+    return _loopback_name(_strip_port(value))
+
+
+def _allowed_origin(value: Optional[str]) -> bool:
+    """No Origin (every non-browser client) is fine. A browser Origin must be
+    LocalBook's own window or a loopback page; `null` and anything else is not."""
+    if not value:
+        return True
+    value = value.strip().lower()
+    if value in ("tauri://localhost", "http://tauri.localhost", "https://tauri.localhost"):
+        return True
+    if "://" not in value:
+        return False
+    scheme, rest = value.split("://", 1)
+    if scheme not in ("http", "https"):
+        return False
+    return _loopback_name(_strip_port(rest.split("/", 1)[0]))
 
 
 async def _deny(send, status: int, detail: str) -> None:
@@ -256,7 +326,11 @@ def build_server():
         instructions=(
             "LocalBook is the user's private, offline research library. Search and read "
             "their notebooks here rather than guessing, and cite the sources you are given. "
-            "Everything is local to this machine."
+            "Everything is local to this machine. Work one notebook at a time: call "
+            "list_notebooks, pick the notebook that fits, then search_notebook / "
+            "list_sources / list_notes / get_source within it. ask_notebook writes a "
+            "cited answer with LocalBook's own model and is slower; it may answer "
+            "busy when the user is using the model."
         ),
     )
 
@@ -311,13 +385,20 @@ def build_server():
         notebook_ids: Optional[List[str]] = None,
         k: int = 8,
     ) -> Dict[str, Any]:
-        """Search across notebooks and return matching passages with attribution.
+        """Search several notebooks at once and return passages with attribution.
 
-        Use this to FIND things. Use ask_notebook when you want a written answer.
+        Prefer search_notebook (one notebook, the same retrieval the app uses).
+        Searching more than one notebook needs a key with the `all_notebooks`
+        scope; with one id in `notebook_ids` any MCP key may call it.
         """
         k = _bounded_k(k, 8)
         args = {"query": query, "notebook_ids": notebook_ids, "k": k}
-        async with _audited("search_notebooks", args):
+        async with _audited("search_notebooks", args) as timer:
+            if not notebook_ids or len(notebook_ids) != 1:
+                denied = _scope_denied(timer, ALL_NOTEBOOKS_SCOPE)
+                if denied:
+                    denied["hint"] = "pass one notebook id, or use search_notebook"
+                    return denied
             from services.cross_notebook_search import cross_notebook_search
 
             result = await cross_notebook_search.search(
@@ -337,7 +418,8 @@ def build_server():
         """Ask a question and get a written, cited answer from the user's own material.
 
         With no notebook_id, the answer draws on every notebook and each citation
-        names the notebook it came from.
+        names the notebook it came from — that needs a key with the
+        `all_notebooks` scope. Otherwise name the notebook.
 
         Returns {"status": "busy", "retry_after": N} when the model is in use —
         the person sitting at the machine comes first.
@@ -348,11 +430,10 @@ def build_server():
             from config import settings
             from services import companion_audit
 
-            if not await _model_is_available(settings.main_model):
-                timer.outcome = companion_audit.OUTCOME_BUSY
-                return _busy("ask_notebook")
-
+            # Work out WHERE before waiting on the model, so a key that may not
+            # ask across notebooks is told so at once, not after the busy probe.
             target = notebook_id
+            across = False
             if not target:
                 from storage.notebook_store import notebook_store
 
@@ -361,11 +442,23 @@ def build_server():
                     return {"error": "there are no notebooks yet"}
                 if len(books) > 1:
                     # No notebook named: answer from all of them, citing which said what.
-                    from services.cross_notebook_search import cross_notebook_search
+                    denied = _scope_denied(timer, ALL_NOTEBOOKS_SCOPE)
+                    if denied:
+                        denied["hint"] = "pass notebook_id (see list_notebooks)"
+                        return denied
+                    across = True
+                else:
+                    target = books[0].get("id")
 
-                    out = await cross_notebook_search.answer(question, top_k=max(top_k * 2, 8))
-                    return {**out, "notebook_id": None}
-                target = books[0].get("id")
+            if not await _model_is_available(settings.main_model):
+                timer.outcome = companion_audit.OUTCOME_BUSY
+                return _busy("ask_notebook")
+
+            if across:
+                from services.cross_notebook_search import cross_notebook_search
+
+                out = await cross_notebook_search.answer(question, top_k=max(top_k * 2, 8))
+                return {**out, "notebook_id": None}
 
             from services.rag_engine import rag_engine
 

@@ -2,6 +2,26 @@
 
 All notable changes to LocalBook will be documented in this file.
 
+## Unreleased
+
+### Added
+- **Connect outside agents over MCP.** Claude Code, Claude Desktop, Cursor and other MCP clients
+  can search and read your notebooks through LocalBook's MCP server at `127.0.0.1:8000/mcp`.
+  Settings › Companions › Agent keys shows ready-to-paste setup once a key is issued, and
+  `mcp-bridge/` builds a Claude Desktop extension (`LocalBook.mcpb`) that reconnects by itself
+  when LocalBook restarts. Setup: [docs/MCP.md](docs/MCP.md).
+- **`search_notebook` and `list_notes`.** Search one notebook with the same retrieval as the
+  chat (hybrid search, then the reranker, no model), and list a notebook's notes.
+
+### Changed
+- **One notebook at a time, unless you allow more.** Searching or asking across every notebook
+  over MCP now needs the new `all_notebooks` scope on the key. Keys that already had `mcp`
+  (Jocasta's) are given it once on upgrade, so they keep working as before.
+
+### Security
+- The MCP endpoint now refuses requests whose `Host` isn't this machine or whose `Origin` is
+  a web page (DNS rebinding), as the MCP spec requires.
+
 ## v2.5.5 — LocalBook on your iPhone
 
 **Your notebooks, on your phone, answered on your phone.** The new iOS app pairs with your Mac,
