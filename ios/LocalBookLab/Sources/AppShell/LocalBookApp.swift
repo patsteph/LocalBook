@@ -31,6 +31,9 @@ struct LocalBookApp: App {
                     library.askMode = .phone
                     await library.open()
                 }
+                .onOpenURL { url in
+                    if RecorderLaunch.isRecorderURL(url) { RecorderLaunch.shared.requested = true }      // the widgets
+                }
                 .onReceive(NotificationCenter.default.publisher(for: UIApplication.didReceiveMemoryWarningNotification)) { _ in
                     library.trimMemory()
                 }

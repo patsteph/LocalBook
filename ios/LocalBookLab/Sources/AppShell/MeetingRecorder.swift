@@ -364,6 +364,13 @@ struct MeetingView: View {
     let notebookId: String
     /// A recording picked from the list on the Local Data screen, to be written up.
     var open: URL? = nil
+    /// Opened from a launcher (widget, control, Siri): start recording straight away, unless a write-up is waiting.
+    var startRecording = false
+    /// How many recorders are on screen (0 or 1), so a launcher never opens a second one over the first.
+    @MainActor static var onScreen = 0
+    /// The notebook the note will be saved in, if the person changed it on the review screen.
+    @State private var destination: String? = nil
+    private var target: String { destination ?? notebookId }
     @Environment(\.dismiss) private var dismiss
     @State private var session = MeetingSession()
     @State private var title = ""
@@ -373,7 +380,7 @@ struct MeetingView: View {
     @State private var saveError: String?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    private var notebookTitle: String { library.notebooks.first { $0.id == notebookId }?.title ?? "Notebook" }
+    private var notebookTitle: String { library.notebooks.first { $0.id == target }?.title ?? "Notebook" }
     private func clock(_ t: Double) -> String { String(format: "%d:%02d", Int(t) / 60, Int(t) % 60) }
 
     var body: some View {
@@ -400,16 +407,22 @@ struct MeetingView: View {
         .task {
             session.library = library; title = session.title
             if let open, session.phase == .idle { session.select(open); await session.processPending() }
+            else if startRecording, session.phase == .idle { await session.start() }
         }
+        .onAppear { Self.onScreen += 1 }
         .onChange(of: title) { _, v in session.title = v; session.persist() }
         .onChange(of: session.names) { _, _ in session.persist() }
         .onChange(of: scenePhase) { _, p in if p != .active { session.persist() } else { session.resumeIfInterrupted() } }
         .onChange(of: session.phase) { _, p in
             if p == .review { title = session.title }
             // Remember that a write-up was on screen, so it comes back after a lock that ended the app.
-            if p == .review || p == .working { UserDefaults.standard.set(notebookId, forKey: MeetingSession.openKey) }
+            if p == .review || p == .working { UserDefaults.standard.set(target, forKey: MeetingSession.openKey) }
+        }
+        .onChange(of: destination) { _, _ in
+            if session.phase == .review { UserDefaults.standard.set(target, forKey: MeetingSession.openKey) }
         }
         .onDisappear {
+            Self.onScreen = max(0, Self.onScreen - 1)
             if scenePhase == .active { UserDefaults.standard.removeObject(forKey: MeetingSession.openKey) }
             Task { await library.resumeModels() }
         }
@@ -525,7 +538,15 @@ struct MeetingView: View {
 
     private var review: some View {
         Form {
-            Section { TextField("Title (optional)", text: $title) }
+            Section {
+                TextField("Title (optional)", text: $title)
+                if library.notebooks.count > 1 {
+                    Picker("Save in", selection: Binding(get: { target }, set: { destination = $0 })) {
+                        ForEach(library.notebooks) { n in Text(n.title).tag(n.id) }
+                    }
+                    .pickerStyle(.navigationLink)
+                }
+            }
             Section {
                 ForEach(session.speakers, id: \.self) { id in
                     VStack(alignment: .leading, spacing: 2) {
@@ -569,9 +590,9 @@ struct MeetingView: View {
         let name = title.trimmingCharacters(in: .whitespaces).isEmpty ? "Meeting " + Date().formatted(date: .abbreviated, time: .shortened) : title
         do {
             await library.waitForSearch()                       // the search model is coming back; the note is embedded with it
-            try await library.addNote(notebook: notebookId, title: name, text: session.transcript, progress: { saveProgress = $0 })
+            try await library.addNote(notebook: target, title: name, text: session.transcript, progress: { saveProgress = $0 })
             session.rememberNames()
-            session.markSaved(title: name, notebookId: notebookId, notebookTitle: notebookTitle)
+            session.markSaved(title: name, notebookId: target, notebookTitle: notebookTitle)
             dismiss()
         } catch { saveError = "Couldn't save: \(error.localizedDescription)" }
     }

@@ -32,7 +32,7 @@ After `git pull origin dev`, `xcodegen generate`, rebuild. On the Mac: `./build.
 
 1. developer.apple.com → Identifiers: the app's bundle id `com.patsteph.localbook.ios` exists (Xcode creates it on first archive).
 2. appstoreconnect.apple.com → Apps → + New App: name LocalBook, iOS, that bundle id, primary language, SKU `localbook`.
-3. Xcode: scheme **LocalBook**, destination "Any iOS Device (arm64)", Product → Archive → Distribute App → App Store Connect → Upload. Version/build numbers come from project.yml; raise the build number for each upload.
+3. Xcode: scheme **LocalBook**, destination "Any iOS Device (arm64)", Product → Archive → Distribute App → App Store Connect → Upload. Version/build numbers come from project.yml; raise the build number for each upload, in both the LocalBook and LocalBookWidgets targets (they must match).
 4. App Store Connect → TestFlight: wait for "Processing" to finish, answer the export-compliance question (the app declares no non-exempt encryption).
 5. **Internal testers** (up to 100 people on your App Store Connect team): add them under Users and Access, then TestFlight → Internal Testing. No Apple review.
 6. **External testers** (anyone, by email or link): needs Apple's Beta App Review, usually about a day. Needs the notes below.
