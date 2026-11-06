@@ -91,9 +91,12 @@ installed beside the app.
   runs the scheduled collections (by default the one the others paired with) and sync brings the
   results to the rest. Verified between a Mac mini and a MacBook Pro.
 - **Companions can use LocalBook.** A companion agent such as Jocasta connects with its own key
-  and gets 20 tools over MCP (search notebooks, list a notebook's sources, read a source, the
+  and gets 22 tools over MCP (search notebooks, list a notebook's sources, read a source, the
   digest and Curator insights, research jobs, web search, events), a shared memory it reads from
   and writes to, and OpenAI-compatible speech in and out. Verified with Jocasta on a MacBook Pro.
+- **Connect Claude Code, Claude Desktop or any MCP agent.** Issue an agent key in Settings ›
+  Companions and paste the setup it shows; Claude Desktop gets a one-click extension. Agents
+  search one notebook at a time unless you allow all of them. See [docs/MCP.md](docs/MCP.md).
 - **Record a meeting from LocalBook.** The Meeting Notes card has a Record button and a running
   clock. macOS asks for the microphone on behalf of the recorder itself, the same as starting it
   from the menu bar.

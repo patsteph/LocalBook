@@ -36,11 +36,16 @@ type CallRow = {
     detail: string | null;
 };
 
-const ALL_SCOPES = ['llm', 'mcp', 'audio', 'memory', 'events'] as const;
+const ALL_SCOPES = ['mcp', 'all_notebooks', 'llm', 'audio', 'memory', 'events'] as const;
+
+// Where outside agents reach LocalBook's MCP server. Loopback only, fixed port
+// (the backend always listens on 127.0.0.1:8000).
+const MCP_URL = 'http://127.0.0.1:8000/mcp';
 
 const SCOPE_HELP: Record<string, string> = {
     llm: 'Use the local models',
-    mcp: 'Search and read your notebooks',
+    mcp: 'Search and read your notebooks, one notebook at a time',
+    all_notebooks: 'Also search across every notebook at once (as @curator does)',
     audio: 'Speech to text and text to speech',
     memory: 'Read and add to memory',
     events: 'See what LocalBook has been doing',
@@ -63,9 +68,10 @@ function when(value: string | number | null): string {
 export function AgentKeysPanel() {
     const [keys, setKeys] = useState<KeyRow[]>([]);
     const [calls, setCalls] = useState<CallRow[]>([]);
-    const [newId, setNewId] = useState('jocasta');
-    const [scopes, setScopes] = useState<string[]>(['mcp', 'events']);
-    const [issued, setIssued] = useState<{ companion_id: string; key: string } | null>(null);
+    const [newId, setNewId] = useState('');
+    const [scopes, setScopes] = useState<string[]>(['mcp']);
+    const [issued, setIssued] = useState<{ companion_id: string; key: string; scopes: string[] } | null>(null);
+    const [copiedWhat, setCopiedWhat] = useState<string | null>(null);
     const [copied, setCopied] = useState(false);
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState<string | null>(null);
@@ -97,7 +103,7 @@ export function AgentKeysPanel() {
                 companion_id: id,
                 scopes,
             });
-            setIssued({ companion_id: data.companion_id, key: data.key });
+            setIssued({ companion_id: data.companion_id, key: data.key, scopes: data.scopes ?? scopes });
             await refresh();
         } catch (e: any) {
             setError(e?.response?.data?.detail ?? 'Could not issue a key.');
@@ -199,12 +205,22 @@ export function AgentKeysPanel() {
                             {copied ? 'Copied' : 'Copy'}
                         </button>
                         <button
-                            onClick={() => { setIssued(null); setCopied(false); }}
+                            onClick={() => { setIssued(null); setCopied(false); setCopiedWhat(null); }}
                             className="rounded border border-gray-600 px-3 py-1.5 text-xs text-gray-300 hover:bg-gray-800"
                         >
                             Done
                         </button>
                     </div>
+                    {issued.scopes.includes('mcp') && (
+                        <ConnectHelp
+                            agentKey={issued.key}
+                            copiedWhat={copiedWhat}
+                            onCopy={(what, text) => {
+                                void navigator.clipboard?.writeText(text);
+                                setCopiedWhat(what);
+                            }}
+                        />
+                    )}
                 </div>
             )}
 
@@ -218,6 +234,7 @@ export function AgentKeysPanel() {
                             type="text"
                             value={newId}
                             onChange={(e) => setNewId(e.target.value)}
+                            placeholder="claude-code"
                             spellCheck={false}
                             className="w-48 rounded border border-gray-600 bg-gray-800 px-2 py-1.5 text-sm text-gray-100"
                         />
@@ -394,6 +411,77 @@ export function AgentKeysPanel() {
                         </table>
                     </div>
                 )}
+            </div>
+        </div>
+    );
+}
+
+
+/**
+ * How to plug the key that was just issued into the common MCP clients. Shown
+ * only while the key is on screen, since it can never be shown again. Full
+ * steps: docs/MCP.md.
+ */
+function ConnectHelp({ agentKey, copiedWhat, onCopy }: {
+    agentKey: string;
+    copiedWhat: string | null;
+    onCopy: (what: string, text: string) => void;
+}) {
+    const claudeCode =
+        `claude mcp add --transport http --scope user localbook ${MCP_URL} ` +
+        `--header "Authorization: Bearer ${agentKey}"`;
+    const generic = JSON.stringify({
+        mcpServers: {
+            localbook: {
+                type: 'http',
+                url: MCP_URL,
+                headers: { Authorization: `Bearer ${agentKey}` },
+            },
+        },
+    }, null, 2);
+    const rows: { id: string; title: string; text: string; help: string }[] = [
+        {
+            id: 'claude-code',
+            title: 'Claude Code',
+            text: claudeCode,
+            help: 'Run this once in Terminal.',
+        },
+        {
+            id: 'generic',
+            title: 'Other agents that speak MCP over HTTP',
+            text: generic,
+            help: 'Cursor, VS Code and most agent frameworks accept this shape.',
+        },
+    ];
+    return (
+        <div className="mt-4 space-y-3 border-t border-emerald-500/30 pt-3">
+            <p className="text-xs text-emerald-100/80">
+                Connect an agent with this key. LocalBook must be open for it to answer.
+            </p>
+            {rows.map((r) => (
+                <div key={r.id}>
+                    <div className="flex items-center justify-between">
+                        <span className="text-xs font-semibold text-emerald-200">{r.title}</span>
+                        <button
+                            onClick={() => onCopy(r.id, r.text)}
+                            className="rounded border border-emerald-500/50 px-2 py-0.5 text-xs text-emerald-100 hover:bg-emerald-500/20"
+                        >
+                            {copiedWhat === r.id ? 'Copied' : 'Copy'}
+                        </button>
+                    </div>
+                    <pre className="mt-1 overflow-x-auto whitespace-pre-wrap break-all rounded bg-gray-900 px-3 py-2 font-mono text-[11px] text-gray-100">
+                        {r.text}
+                    </pre>
+                    <p className="mt-0.5 text-[11px] text-gray-400">{r.help}</p>
+                </div>
+            ))}
+            <div>
+                <span className="text-xs font-semibold text-emerald-200">Claude Desktop</span>
+                <p className="mt-0.5 text-[11px] text-gray-400">
+                    Open <span className="font-mono">LocalBook.mcpb</span> (built by
+                    <span className="font-mono"> mcp-bridge/build.sh</span>) in Claude Desktop,
+                    choose Install, and paste this key when it asks. See docs/MCP.md.
+                </p>
             </div>
         </div>
     );

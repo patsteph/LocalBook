@@ -180,6 +180,7 @@ final class MeetingSession {
     @concurrent private static func startRecorder(_ url: URL) async throws -> AVAudioRecorder? {
         let r = try AVAudioRecorder(url: url, settings: [AVFormatIDKey: kAudioFormatMPEG4AAC, AVSampleRateKey: 16_000,
                                                          AVNumberOfChannelsKey: 1, AVEncoderBitRateKey: 48_000])
+        r.isMeteringEnabled = true                    // lets the mic check below see that sound is arriving
         return r.record() ? r : nil
     }
 
@@ -193,9 +194,10 @@ final class MeetingSession {
         do {
             // Creating and starting the recorder touches the audio session, so it is done off the main thread.
             guard let r = try await Self.startRecorder(url) else { phase = .failed("Couldn't start recording."); Task { await library?.resumeModels() }; return }
-            recorder = r; file = url; elapsed = 0; interrupted = false; phase = .recording
+            recorder = r; file = url; elapsed = 0; interrupted = false; micSilent = false; phase = .recording
             UIApplication.shared.isIdleTimerDisabled = false
             watchInterruptions()
+            checkMic(retry: true)
             ticker = Task { [weak self] in
                 while !Task.isCancelled {
                     try? await Task.sleep(for: .milliseconds(250))
@@ -204,6 +206,51 @@ final class MeetingSession {
                 }
             }
         } catch { phase = .failed("Couldn't start recording: \(error.localizedDescription)"); Task { await library?.resumeModels() } }
+    }
+
+    /// True when the microphone delivered nothing at all after a restart: shown on the recording screen.
+    private(set) var micSilent = false
+    private var micCheck: Task<Void, Never>?
+
+    /// A real microphone never gives perfect digital silence (-160 dB), even in a quiet room; that only happens when
+    /// iOS handed the app a dead input, which can happen when recording starts while the app is still coming on screen
+    /// (seen from the Control Center control). Listen for 2 s; if nothing at all arrived, start the recorder again once.
+    private func checkMic(retry: Bool) {
+        micCheck?.cancel()
+        micCheck = Task { [weak self] in
+            var loudest: Float = -160
+            for _ in 0..<8 {
+                try? await Task.sleep(for: .milliseconds(250))
+                guard !Task.isCancelled, let self, let r = self.recorder, self.phase == .recording else { return }
+                if self.interrupted { return }                    // a call or alert: silence is expected
+                r.updateMeters()
+                loudest = max(loudest, r.peakPower(forChannel: 0))
+                if loudest > -120 { return }                      // sound is arriving
+            }
+            guard let self, self.phase == .recording, !self.interrupted else { return }
+            SoakTrace.log("meeting: microphone silent after 2 s (peak \(loudest) dB)\(retry ? "; restarting the recorder" : "")")
+            guard retry else { self.micSilent = true; return }
+            await self.restartRecorder()
+        }
+    }
+
+    /// Throws away the dead first two seconds and records again into a fresh file, with the session set up afresh.
+    private func restartRecorder() async {
+        guard let old = recorder, let oldFile = file else { return }
+        await Self.stopRecorder(RecorderBox(recorder: old))
+        recorder = nil
+        try? FileManager.default.removeItem(at: oldFile)
+        await Self.prepareSession()
+        let url = Self.folder.appendingPathComponent(UUID().uuidString + ".m4a")
+        if let r = try? await Self.startRecorder(url) {
+            recorder = r; file = url
+            checkMic(retry: false)
+        } else {
+            phase = .failed("Couldn't start recording.")
+            ticker?.cancel(); ticker = nil
+            for o in observers { NotificationCenter.default.removeObserver(o) }; observers = []
+            Task { await library?.resumeModels() }
+        }
     }
 
     /// Back on screen after a pause the system never said to resume (an alert, Siri): carry on rather than sit paused.
@@ -230,6 +277,7 @@ final class MeetingSession {
     }
 
     func stopRecording() async {
+        micCheck?.cancel(); micCheck = nil
         ticker?.cancel(); ticker = nil
         if let r = recorder { await Self.stopRecorder(RecorderBox(recorder: r)) }
         recorder = nil
@@ -364,6 +412,13 @@ struct MeetingView: View {
     let notebookId: String
     /// A recording picked from the list on the Local Data screen, to be written up.
     var open: URL? = nil
+    /// Opened from a launcher (widget, control, Siri): start recording straight away, unless a write-up is waiting.
+    var startRecording = false
+    /// How many recorders are on screen (0 or 1), so a launcher never opens a second one over the first.
+    @MainActor static var onScreen = 0
+    /// The notebook the note will be saved in, if the person changed it on the review screen.
+    @State private var destination: String? = nil
+    private var target: String { destination ?? notebookId }
     @Environment(\.dismiss) private var dismiss
     @State private var session = MeetingSession()
     @State private var title = ""
@@ -373,7 +428,7 @@ struct MeetingView: View {
     @State private var saveError: String?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    private var notebookTitle: String { library.notebooks.first { $0.id == notebookId }?.title ?? "Notebook" }
+    private var notebookTitle: String { library.notebooks.first { $0.id == target }?.title ?? "Notebook" }
     private func clock(_ t: Double) -> String { String(format: "%d:%02d", Int(t) / 60, Int(t) % 60) }
 
     var body: some View {
@@ -400,16 +455,26 @@ struct MeetingView: View {
         .task {
             session.library = library; title = session.title
             if let open, session.phase == .idle { session.select(open); await session.processPending() }
+            else if startRecording, session.phase == .idle {
+                // From a launcher the app may still be coming on screen; iOS only gives a live microphone once it is.
+                for _ in 0..<50 where UIApplication.shared.applicationState != .active { try? await Task.sleep(for: .milliseconds(100)) }
+                await session.start()
+            }
         }
+        .onAppear { Self.onScreen += 1 }
         .onChange(of: title) { _, v in session.title = v; session.persist() }
         .onChange(of: session.names) { _, _ in session.persist() }
         .onChange(of: scenePhase) { _, p in if p != .active { session.persist() } else { session.resumeIfInterrupted() } }
         .onChange(of: session.phase) { _, p in
             if p == .review { title = session.title }
             // Remember that a write-up was on screen, so it comes back after a lock that ended the app.
-            if p == .review || p == .working { UserDefaults.standard.set(notebookId, forKey: MeetingSession.openKey) }
+            if p == .review || p == .working { UserDefaults.standard.set(target, forKey: MeetingSession.openKey) }
+        }
+        .onChange(of: destination) { _, _ in
+            if session.phase == .review { UserDefaults.standard.set(target, forKey: MeetingSession.openKey) }
         }
         .onDisappear {
+            Self.onScreen = max(0, Self.onScreen - 1)
             if scenePhase == .active { UserDefaults.standard.removeObject(forKey: MeetingSession.openKey) }
             Task { await library.resumeModels() }
         }
@@ -448,6 +513,10 @@ struct MeetingView: View {
                 .accessibilityLabel("Recording time \(Int(session.elapsed) / 60) minutes \(Int(session.elapsed) % 60) seconds")
             Text(session.interrupted ? "Paused by a call or alert. It carries on by itself." : "Recording. You can lock the screen.")
                 .font(.footnote).foregroundStyle(.secondary)
+            if session.micSilent {
+                Text("The microphone isn't picking anything up. Stop, then start again.")
+                    .font(.footnote).foregroundStyle(.orange).multilineTextAlignment(.center).padding(.horizontal, 32)
+            }
             Button { Task { await session.stopRecording() } } label: {
                 Label("Stop and write it up", systemImage: "stop.circle.fill").frame(maxWidth: 260).padding(.vertical, 6)
             }.buttonStyle(.borderedProminent).controlSize(.large)
@@ -525,7 +594,15 @@ struct MeetingView: View {
 
     private var review: some View {
         Form {
-            Section { TextField("Title (optional)", text: $title) }
+            Section {
+                TextField("Title (optional)", text: $title)
+                if library.notebooks.count > 1 {
+                    Picker("Save in", selection: Binding(get: { target }, set: { destination = $0 })) {
+                        ForEach(library.notebooks) { n in Text(n.title).tag(n.id) }
+                    }
+                    .pickerStyle(.navigationLink)
+                }
+            }
             Section {
                 ForEach(session.speakers, id: \.self) { id in
                     VStack(alignment: .leading, spacing: 2) {
@@ -569,9 +646,9 @@ struct MeetingView: View {
         let name = title.trimmingCharacters(in: .whitespaces).isEmpty ? "Meeting " + Date().formatted(date: .abbreviated, time: .shortened) : title
         do {
             await library.waitForSearch()                       // the search model is coming back; the note is embedded with it
-            try await library.addNote(notebook: notebookId, title: name, text: session.transcript, progress: { saveProgress = $0 })
+            try await library.addNote(notebook: target, title: name, text: session.transcript, progress: { saveProgress = $0 })
             session.rememberNames()
-            session.markSaved(title: name, notebookId: notebookId, notebookTitle: notebookTitle)
+            session.markSaved(title: name, notebookId: target, notebookTitle: notebookTitle)
             dismiss()
         } catch { saveError = "Couldn't save: \(error.localizedDescription)" }
     }

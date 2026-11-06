@@ -1,7 +1,8 @@
 """The rest of the Jocasta contract's MCP tools (2026-09-30).
 
 `get_note`, `list_recent_notes`, `youtube_search`, `scholarly_search`,
-`start_research` + `get_job`. Beside `mcp_server` (which is past 700 lines) and
+`start_research` + `get_job`. Plus (2026-11-06) the one-notebook tools any
+outside agent starts from: `search_notebook` and `list_notes`. Beside `mcp_server` (which is past 700 lines) and
 registered onto the same server by `register()`, with the same audit wrapper,
 bounds and busy/scope conventions. Tool and argument names are the contract:
 Hermes skills call them by name.
@@ -22,7 +23,91 @@ SCHOLARLY_SITES = {
 }
 
 
+PASSAGE_CHARS = 2_000
+
+
+def _passage(hit: Dict[str, Any], max_chars: int) -> Dict[str, Any]:
+    text = hit.get("text") or ""
+    score = hit.get("rerank_score")
+    if score is None and hit.get("_distance") is not None:
+        score = -float(hit["_distance"])        # higher is better either way
+    return {
+        "source_id": hit.get("source_id", ""),
+        "title": hit.get("filename") or hit.get("title") or "",
+        "source_type": hit.get("source_type", ""),
+        "chunk_index": hit.get("chunk_index", 0),
+        "text": text[:max_chars],
+        "truncated": len(text) > max_chars,
+        "score": score,
+    }
+
+
 def register(mcp, *, read_only, starts_work, audited, bounded_k, current_caller) -> None:
+
+    @mcp.tool(annotations=read_only)
+    async def search_notebook(notebook_id: str, query: str, k: int = 8) -> Dict[str, Any]:
+        """Search ONE notebook for passages about `query`, best first.
+
+        The same retrieval LocalBook's chat uses before it writes an answer
+        (keyword + meaning search, then the reranker), without the model, so it
+        is fast and never busy. Each passage carries its `source_id`; read more
+        of that source with get_source. Get notebook ids from list_notebooks.
+        """
+        k = bounded_k(k, 8)
+        query = (query or "").strip()
+        if not query:
+            return {"error": "a query is required"}
+        async with audited("search_notebook", {"notebook_id": notebook_id, "query": query, "k": k}):
+            from storage.notebook_store import notebook_store
+
+            # Checked first: rag_storage.get_table CREATES a table for an id it
+            # has not seen, and a typo'd id must not leave one behind.
+            notebook = await notebook_store.get(notebook_id)
+            if not notebook:
+                return {"error": f"no notebook with id {notebook_id} (see list_notebooks)"}
+
+            from config import settings
+            from services.rag_engine import rag_engine
+
+            embedding = (await rag_engine.encode_async(query, is_query=True))[0].tolist()
+
+            def _retrieve():
+                table = rag_engine._get_table(notebook_id)
+                if table.count_rows() == 0:
+                    return []
+                use_reranker = getattr(rag_engine, "_use_reranker", False)
+                pool = max(k, settings.retrieval_overcollect) if use_reranker else k
+                hits = [h for h in rag_engine._hybrid_search(query, table, embedding, k=pool)
+                        if h.get("source_id") != "placeholder"]
+                if use_reranker and len(hits) > k:
+                    hits = rag_engine.rerank(query, hits, top_k=k)
+                return hits[:k]
+
+            hits = await asyncio.to_thread(_retrieve)
+            return {
+                "notebook_id": notebook_id,
+                "notebook_title": notebook.get("title") or notebook.get("name"),
+                "results": [_passage(h, PASSAGE_CHARS) for h in hits],
+            }
+
+    @mcp.tool(annotations=read_only)
+    async def list_notes(notebook_id: str, n: int = 20) -> Dict[str, Any]:
+        """The notes saved in one notebook, most recently edited first
+        (title + a preview). Read one in full with get_note."""
+        n = bounded_k(n, 20)
+        async with audited("list_notes", {"notebook_id": notebook_id, "n": n}):
+            from storage.note_store import note_store
+
+            notes = await note_store.list_for_notebook(notebook_id)   # newest first
+            return {
+                "notebook_id": notebook_id,
+                "total": len(notes),
+                "notes": [{
+                    "id": x["id"], "title": x.get("title"), "tags": x.get("tags") or [],
+                    "updated_at": x.get("updated_at"),
+                    "preview": (x.get("content_markdown") or "")[:200],
+                } for x in notes[:n]],
+            }
 
     @mcp.tool(annotations=read_only)
     async def get_note(note_id: str, max_chars: int = NOTE_CHARS) -> Dict[str, Any]:

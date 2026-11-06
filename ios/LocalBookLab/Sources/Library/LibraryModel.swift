@@ -85,15 +85,23 @@ final class LibraryModel {
     private var personalCache: [String: PersonalContext] = [:]
     private(set) var recipeLine = "No answer recipe yet — sync first"
 
+    private var opening: Task<Void, Never>?
+
+    /// Opens the phone's library (no models). Safe to call from several places at once: they all wait for the same open.
     func open() async {
         GPUGate.installReopenOnActive()
+        if let opening { await opening.value; return }
         guard store == nil else { return }
-        do {
-            let s = try LibraryStore()
-            try await s.prepare()
-            store = s
-            await refresh()
-        } catch { syncState = .failed(error.localizedDescription) }
+        let task = Task { @MainActor in
+            do {
+                let s = try LibraryStore()
+                try await s.prepare()
+                self.store = s
+                await self.refresh()
+            } catch { self.syncState = .failed(error.localizedDescription) }
+        }
+        opening = task
+        await task.value
     }
 
     func refresh() async {
@@ -142,7 +150,9 @@ final class LibraryModel {
     /// Load the search model, the tokenizer and the re-ranker at the same time (they use different parts of the
     /// phone, and the search model alone takes about 13 s), then open Ask.
     func prepareSearch() async {
-        guard engine == nil else { return }
+        guard engine == nil, !searchLoading else { return }          // one load at a time, never two copies in memory
+        searchLoading = true
+        defer { searchLoading = false }
         let started = Date()
         searchState = .preparing("Search…")
         async let tokenizerLoad: any Tokenizers.Tokenizer = {
@@ -168,6 +178,12 @@ final class LibraryModel {
             Self.lap("search model loaded", since: t)
             tokenizer = try await tokenizerLoad
             await rerankerLoad
+            if modelsPaused {                           // put away while it loaded (a meeting started): don't keep it
+                tokenizer = nil; reranker = nil; rerankerLine = "Reranker: not loaded"
+                searchState = .notReady
+                SoakTrace.log("startup: search load finished while models were paused; dropped")
+                return
+            }
             engine = e
             searchState = .ready                        // a question waits for all three, or its passages would be ordered worse
             Self.lap("search ready", since: started)
@@ -322,7 +338,10 @@ final class LibraryModel {
     /// prompt reading stoppable is checked with a short real answer first; if it does not produce one, the plain model is used.
     func prepareAnswerModel() async {
         if gemma != nil { answerModelState = .ready; return }
-        guard answerModelState != .loading else { return }
+        guard !holdAnswerModel else { return }               // the meeting recorder was opened from a launcher
+        guard !answerLoading else { return }                  // one load at a time: two would not fit in memory
+        answerLoading = true
+        defer { answerLoading = false }
         answerModelState = .loading
         do {
             SoakTrace.log("answer model load begins (stoppable prefill: \(useStoppablePrefill ? "on" : "off"))")
@@ -335,6 +354,11 @@ final class LibraryModel {
             } else {
                 gemma = plain
                 SoakTrace.log("answer model ready (plain)")
+            }
+            if modelsPaused || holdAnswerModel {             // put away while it loaded (a meeting started): don't keep it
+                gemma = nil; answerModelState = .idle; Memory.clearCache()
+                SoakTrace.log("answer model finished loading while models were paused; dropped")
+                return
             }
             answerModelState = .ready
         } catch {
@@ -595,6 +619,11 @@ final class LibraryModel {
     // MARK: staging models around heavy jobs
 
     private var modelsPaused = false
+    private var answerLoading = false
+    private var searchLoading = false
+    /// True while the meeting recorder is open from a widget, control or Siri: the answer model (the 4 GB one) stays
+    /// unloaded until the recorder closes. Search still comes back after a write-up, because saving the note needs it.
+    var holdAnswerModel = false
 
     /// Frees the answer, search and re-rank models (about 4 GB) for a long job that doesn't use them, such as recording
     /// and writing up a meeting. A phone that holds less is far less likely to be shut down by iOS, especially while locked.

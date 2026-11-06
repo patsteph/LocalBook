@@ -47,14 +47,22 @@ logger = logging.getLogger(__name__)
 
 STORE_FILE = "companion_keys.json"
 LEGACY_KEY_FILE = "companion_key"
-STORE_VERSION = 1
+STORE_VERSION = 2
 
 KEY_PREFIX = "lb-"
 _TOKEN_BYTES = 32
 
 # The full set. A scope not listed here is refused at issue time, so a typo in a
 # manifest cannot silently grant nothing (or, worse, be treated as a wildcard).
-SCOPES = ("llm", "mcp", "audio", "memory", "events")
+SCOPES = ("llm", "mcp", "audio", "memory", "events", "all_notebooks")
+
+# `all_notebooks` (2026-11-06): search or ask across EVERY notebook in one call.
+# The product rule is that search is scoped to one notebook and only @curator
+# looks across all of them, so a key that reaches MCP gets one notebook at a time
+# unless the user ticks this too. Keys issued before the scope existed already
+# searched across notebooks (Jocasta does); `_upgrade` grants it to them once so
+# nothing that works today stops working. See mcp_server.ALL_NOTEBOOKS_SCOPE.
+CROSS_NOTEBOOK_SCOPE = "all_notebooks"
 
 # What the legacy single key becomes. It was only ever used against /v1, so
 # widening it during migration would grant the recorder access it never had.
@@ -99,13 +107,32 @@ def _load() -> Dict[str, Any]:
         data = json.loads(p.read_text())
         if not isinstance(data.get("companions"), dict):
             raise ValueError("no companions map")
-        return data
     except Exception as exc:
         # Deliberately loud and non-destructive. Returning an empty store would
         # silently revoke every companion; leaving the file alone means the user
         # can see what happened and a bad write can be recovered.
         logger.error("[companion-keys] store at %s is unreadable: %s", p, exc)
         raise RuntimeError(f"companion key store is unreadable: {exc}") from exc
+    if int(data.get("version") or 1) < STORE_VERSION:
+        data = _upgrade(data)
+    return data
+
+
+def _upgrade(data: Dict[str, Any]) -> Dict[str, Any]:
+    """v1 → v2: every key that held `mcp` before `all_notebooks` existed could
+    already search across notebooks. Grant it once, so the upgrade changes
+    nothing a working companion does. Keys issued afterwards opt in."""
+    for rec in data["companions"].values():
+        scopes = list(rec.get("scopes") or [])
+        if "mcp" in scopes and CROSS_NOTEBOOK_SCOPE not in scopes:
+            rec["scopes"] = scopes + [CROSS_NOTEBOOK_SCOPE]
+    data["version"] = STORE_VERSION
+    try:
+        _save(data)
+    except Exception as exc:
+        # Still correct in memory; it will be retried on the next load.
+        logger.warning("[companion-keys] could not save the v2 upgrade: %s", exc)
+    return data
 
 
 def _save(data: Dict[str, Any]) -> None:
