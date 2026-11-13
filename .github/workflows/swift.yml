@@ -1,0 +1,117 @@
+# The native Swift side of LocalBook: the shared package and the Mac app (docs/swift-migration/).
+# Runs only when those trees change; the Python, TypeScript and iOS checks stay in ci.yml.
+name: Swift
+
+on:
+  push:
+    branches: [ master, dev ]
+    paths:
+      - 'swift/**'
+      - 'mac/**'
+      - '.github/workflows/swift.yml'
+  pull_request:
+    paths:
+      - 'swift/**'
+      - 'mac/**'
+      - '.github/workflows/swift.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: swift-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # The plan fixes stable Xcode 27.2. The runner may only have another 27.x; the select step takes the newest
+  # stable 27 it finds and falls back to the image default, printing what it chose.
+  WANTED_XCODE_MAJOR: "27"
+
+jobs:
+  core-macos:
+    name: LocalBookCore on macOS (build + Swift Testing)
+    runs-on: macos-26
+    timeout-minutes: 90
+    defaults:
+      run:
+        working-directory: swift/LocalBookCore
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode
+        working-directory: .
+        run: ./scripts/ci/select-xcode.sh "$WANTED_XCODE_MAJOR"
+
+      - name: Cache SwiftPM
+        uses: actions/cache@v4
+        with:
+          path: |
+            swift/LocalBookCore/.build
+            ~/Library/Caches/org.swift.swiftpm
+          key: spm-core-${{ runner.os }}-${{ hashFiles('swift/LocalBookCore/Package.swift', 'swift/LocalBookCore/Package.resolved') }}
+          restore-keys: spm-core-${{ runner.os }}-
+
+      - name: Resolve
+        run: swift package resolve
+
+      - name: Build (both libraries)
+        # Xcode 27's new SwiftPM build system fails to link some header-only dependencies; the plan says to use
+        # the native one where that happens. Older toolchains have no such flag.
+        run: |
+          if swift build --help 2>/dev/null | grep -q -- '--build-system'; then
+            swift build --build-system native -c debug
+          else
+            swift build -c debug
+          fi
+
+      - name: Test (Swift Testing)
+        run: |
+          if swift build --help 2>/dev/null | grep -q -- '--build-system'; then
+            swift test --build-system native
+          else
+            swift test
+          fi
+
+  core-ios:
+    name: LocalBookCore for iOS (shims against UIKit)
+    runs-on: macos-26
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: swift/LocalBookCore
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select Xcode
+        working-directory: .
+        run: ./scripts/ci/select-xcode.sh "$WANTED_XCODE_MAJOR"
+      - name: Build the pure library for a device
+        # Only LocalBookCore: the engines need MLX, which the iOS app project already builds on Patrick's Mac.
+        run: |
+          xcodebuild build -scheme LocalBookCore -destination 'generic/platform=iOS' \
+            -derivedDataPath .derived CODE_SIGNING_ALLOWED=NO -skipPackagePluginValidation -quiet
+
+  mac-app:
+    name: LocalBook for Mac (xcodegen + xcodebuild)
+    runs-on: macos-26
+    timeout-minutes: 90
+    defaults:
+      run:
+        working-directory: mac/LocalBook
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select Xcode
+        working-directory: .
+        run: ./scripts/ci/select-xcode.sh "$WANTED_XCODE_MAJOR"
+      - name: Install xcodegen
+        run: brew list xcodegen >/dev/null 2>&1 || brew install xcodegen
+      - name: Generate the project
+        run: xcodegen generate
+      - name: Cache SwiftPM (Xcode)
+        uses: actions/cache@v4
+        with:
+          path: mac/LocalBook/.derived/SourcePackages
+          key: spm-mac-${{ runner.os }}-${{ hashFiles('swift/LocalBookCore/Package.swift', 'swift/LocalBookCore/Package.resolved') }}
+          restore-keys: spm-mac-${{ runner.os }}-
+      - name: Build
+        run: |
+          xcodebuild build -project LocalBook.xcodeproj -scheme LocalBook -destination 'platform=macOS' \
+            -derivedDataPath .derived CODE_SIGNING_ALLOWED=NO CODE_SIGN_IDENTITY="" DEVELOPMENT_TEAM="" \
+            -skipPackagePluginValidation -quiet

@@ -182,3 +182,10 @@ extension/.key.pem
 # Build/coverage profiling artifacts (regenerable; never commit)
 *.profraw
 
+
+# Native Swift (swift/, mac/): generated projects and build output
+mac/LocalBook/LocalBook.xcodeproj/
+mac/LocalBook/.derived/
+swift/LocalBookCore/.build/
+swift/LocalBookCore/.derived/
+swift/LocalBookCore/.swiftpm/
