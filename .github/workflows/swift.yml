@@ -86,7 +86,7 @@ jobs:
         # Only LocalBookCore: the engines need MLX, which the iOS app project already builds on Patrick's Mac.
         run: |
           xcodebuild build -scheme LocalBookCore -destination 'generic/platform=iOS' \
-            -derivedDataPath .derived CODE_SIGNING_ALLOWED=NO -skipPackagePluginValidation -quiet
+            -derivedDataPath .derived CODE_SIGNING_ALLOWED=NO -skipPackagePluginValidation -skipMacroValidation -quiet
 
   mac-app:
     name: LocalBook for Mac (xcodegen + xcodebuild)
@@ -114,4 +114,4 @@ jobs:
         run: |
           xcodebuild build -project LocalBook.xcodeproj -scheme LocalBook -destination 'platform=macOS' \
             -derivedDataPath .derived CODE_SIGNING_ALLOWED=NO CODE_SIGN_IDENTITY="" DEVELOPMENT_TEAM="" \
-            -skipPackagePluginValidation -quiet
+            -skipPackagePluginValidation -skipMacroValidation -quiet

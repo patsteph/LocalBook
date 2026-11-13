@@ -40,7 +40,7 @@ Library today: 19 LanceDB tables, 41,970 rows, 768-d f32 vectors.
 
 | Item | Value | Why |
 |---|---|---|
-| Xcode | 27.2 stable | 27.0 beta rejects swift-collections 1.7.6; CI selects the newest stable 27.x it has |
+| Xcode | 27.2 stable on Patrick's Macs; CI uses the newest stable 27.x the runner has, else the image default (Xcode 26.6, Swift 6.3.3 on the macos-26 image as of 2026-11-13) | 27.0 beta rejects swift-collections 1.7.6; GitHub's runner images had no Xcode 27 yet on 2026-11-13 |
 | Swift language mode | 6 | strict concurrency from the first line |
 | Minimum OS | macOS 26, iOS 27 | Vision document reader and SpeechAnalyzer need 26; the phone app is already on 27 |
 | swift-collections | 1.3.0 exact | 1.7.x needs an experimental feature flag |
@@ -71,4 +71,5 @@ Pins live in `swift/LocalBookCore/Package.swift` and `ios/LocalBookLab/project.y
 | 2026-11-13 | The Mac app's version starts at 3.0.0 | The Python app is on 2.5.x; the iPhone app follows the Mac's marketing version |
 | 2026-11-13 | On the iPhone the package keeps the Lab's folder names (`Library/`, `LocalBookLab/`) | Phase 1 moves code, not data; TestFlight build 5 must find everything where build 4 left it |
 | 2026-11-13 | The menu bar carries every planned action from day one, disabled until its phase lands | So the keyboard map and the app never drift; enabling the item is the last line of each feature's work |
+| 2026-11-13 | `xcodebuild` in CI passes `-skipMacroValidation` as well as `-skipPackagePluginValidation` | mlx-swift-lm ships a Swift macro (`MLXHuggingFaceMacros`); an unattended build cannot click "Trust" |
 | 2026-11-13 | `AppLifecycle.backgroundWithdrawsGPU` is true on iOS and false on macOS; the Mac may keep generating when not in front | The lock rule exists because iOS withdraws the GPU; the Mac does not. Phase 2 decides the Mac's policy with that fact, not by inheriting the phone's |
