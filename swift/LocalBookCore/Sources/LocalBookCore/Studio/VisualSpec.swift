@@ -19,7 +19,7 @@ public struct VisualSpec: Codable, Hashable, Sendable {
         public var value: String = ""
         public var children: [String] = []
     }
-    public struct Row: Codable, Hashable, Sendable { var label: String; var cells: [String] }
+    public struct Row: Codable, Hashable, Sendable { public var label: String; public var cells: [String] }
 
     public var layout: Layout
     public var title: String

@@ -55,7 +55,7 @@ public enum MacLink {
         SHA256.hash(data: der).map { String(format: "%02x", $0) }.joined()
     }
 
-    public struct PairingOutcome { let mac: PairedMac; let code: String }
+    public struct PairingOutcome { public let mac: PairedMac; public let code: String }
 
     /// Step 2: say hello to a Mac whose pairing window is open. Nothing is pinned until the user
     /// has compared the code on both screens and the Mac side has confirmed.

@@ -82,7 +82,7 @@ public enum StudioStore {
 
 /// A phone-made audio overview: the spoken lines (host 0 = Alex, 1 = Sam) with where each starts in the audio file.
 public struct AudioScript: Codable, Sendable, Hashable {
-    public struct Line: Codable, Sendable, Hashable { var host: Int; var text: String; var start: Double }
+    public struct Line: Codable, Sendable, Hashable { public var host: Int; public var text: String; public var start: Double }
     public var file: String
     public var duration: Double
     public var lines: [Line]

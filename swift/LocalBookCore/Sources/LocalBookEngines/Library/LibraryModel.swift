@@ -230,7 +230,7 @@ public final class LibraryModel {
         public let nothingRelevant: Bool         // the Mac would answer "I don't have enough relevant information"
         public var pool: [Ranked] = []           // the reranked, boosted passages before the keep/drop rules (what a retry starts from)
     }
-    public struct Ranked: Sendable { let hit: LibraryHit; let rerank: Double }
+    public struct Ranked: Sendable { public let hit: LibraryHit; public let rerank: Double }
 
     /// Retrieval the way the Mac does it (rag_engine.query): expand the question with the Mac's rule-based tables,
     /// fuse the nearest vectors and BM25 into `hybridK` candidates, rerank them with the cross-encoder (against the

@@ -50,8 +50,8 @@ public struct AnswerRecipe: Codable, Sendable {
         public var rrfMissingRank: Int
         public var bm25: BM25
         public var reranker: Reranker
-        public struct BM25: Codable, Sendable { var k1: Double; var b: Double; var epsilon: Double }
-        public struct Reranker: Codable, Sendable { var enabled: Bool; var model: String; var precision: String? }
+        public struct BM25: Codable, Sendable { public var k1: Double; public var b: Double; public var epsilon: Double }
+        public struct Reranker: Codable, Sendable { public var enabled: Bool; public var model: String; public var precision: String? }
     }
     public struct QueryExpansion: Codable, Sendable {
         public var expansions: [[String]]          // ordered [term, expansion] pairs
@@ -82,15 +82,15 @@ public struct AnswerRecipe: Codable, Sendable {
         public var routing: [RoutingCase]?
         public var personal: PersonalCases?
         public var expansion: [ExpandCase]?
-        public struct ExpandCase: Codable, Sendable { var question: String; var expanded: String }
-        public struct ClassCase: Codable, Sendable { var question: String; var type: String }
-        public struct CleanCase: Codable, Sendable { var raw: String; var cleaned: String }
-        public struct CitationCase: Codable, Sendable { var raw: String; var count: Int; var fixed: String }
-        public struct FormatCase: Codable, Sendable { var question: String; var hint: String }
-        public struct ConfidenceCase: Codable, Sendable { var rerank: Double?; var rrf: Double; var confidence: Double }
-        public struct QualityCase: Codable, Sendable { var question: String; var answer: String; var type: String; var ok: Bool }
-        public struct VariantCase: Codable, Sendable { var question: String; var variants: [String] }
-        public struct RoutingCase: Codable, Sendable { var question: String; var tabular: Double; var text: Double }
+        public struct ExpandCase: Codable, Sendable { public var question: String; public var expanded: String }
+        public struct ClassCase: Codable, Sendable { public var question: String; public var type: String }
+        public struct CleanCase: Codable, Sendable { public var raw: String; public var cleaned: String }
+        public struct CitationCase: Codable, Sendable { public var raw: String; public var count: Int; public var fixed: String }
+        public struct FormatCase: Codable, Sendable { public var question: String; public var hint: String }
+        public struct ConfidenceCase: Codable, Sendable { public var rerank: Double?; public var rrf: Double; public var confidence: Double }
+        public struct QualityCase: Codable, Sendable { public var question: String; public var answer: String; public var type: String; public var ok: Bool }
+        public struct VariantCase: Codable, Sendable { public var question: String; public var variants: [String] }
+        public struct RoutingCase: Codable, Sendable { public var question: String; public var tabular: Double; public var text: Double }
         public struct PersonalCases: Codable, Sendable {
             public var entities: [PersonalContext.Entity]
             public var relationships: [PersonalContext.Relationship]
@@ -99,7 +99,7 @@ public struct AnswerRecipe: Codable, Sendable {
             public struct Passage: Codable, Sendable {
                 public var sourceId: String; var text: String; var rerankScore: Double; var sourceType: String; var filename: String
             }
-            public struct Case: Codable, Sendable { var question: String; var order: [String]; var scores: [Double]; var suffix: String }
+            public struct Case: Codable, Sendable { public var question: String; public var order: [String]; public var scores: [Double]; public var suffix: String }
         }
     }
 

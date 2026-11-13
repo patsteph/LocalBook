@@ -54,7 +54,7 @@ public struct VideoSlideView: View {
 public enum VideoMaker {
     public static let size = CGSize(width: 1280, height: 720)
 
-    public struct Failure: Error, LocalizedError { let text: String; var errorDescription: String? { text } }
+    public struct Failure: Error, LocalizedError { public let text: String; public var errorDescription: String? { text } }
 
     /// `frames` pairs each slide image with the time (seconds) it appears; the picture ends at `duration`.
     public static func write(frames: [(image: CGImage, start: Double)], duration: Double, narration: URL, to output: URL) async throws {

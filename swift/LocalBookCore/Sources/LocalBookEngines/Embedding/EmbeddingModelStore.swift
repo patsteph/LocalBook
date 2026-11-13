@@ -73,7 +73,7 @@ public enum EmbeddingModelStore {
         FileManager.default.fileExists(atPath: compiledVisionURL.path) && FileManager.default.fileExists(atPath: visionTableURL.path)
     }
 
-    public struct VisionLocation: Sendable { let compiledModel: URL; let positions: URL }
+    public struct VisionLocation: Sendable { public let compiledModel: URL; public let positions: URL }
 
     public static func prepareVision(progress: @escaping @Sendable (Double) -> Void) async throws -> VisionLocation {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)

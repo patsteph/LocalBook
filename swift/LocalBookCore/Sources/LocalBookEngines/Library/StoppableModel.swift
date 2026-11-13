@@ -15,7 +15,7 @@ import MLXNN
 /// queued, checking `GPUGate` between them. When the gate is closed (the app is about to leave the foreground) it
 /// stops BEFORE queuing more work. Everything else is forwarded to the real model unchanged.
 public enum GPUGate {
-    public struct Closed: Error, LocalizedError { var errorDescription: String? { "Stopped because the screen is locking." } }
+    public struct Closed: Error, LocalizedError { public var errorDescription: String? { "Stopped because the screen is locking." } }
 
     private static let lock = NSLock()
     nonisolated(unsafe) private static var closed = false

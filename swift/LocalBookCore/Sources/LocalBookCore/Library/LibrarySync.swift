@@ -13,18 +13,18 @@ public enum LibrarySync {
             public let modelId: String; let dims: Int; let maxTokens: Int
             public let queryTemplate: String; let documentTemplate: String
         }
-        public struct Notebook: Decodable { let id: String; let title: String; let section: String?; let color: String?; let collapsed: Bool?; let sources: Int; let chunks: Int; let digest: String }
+        public struct Notebook: Decodable { public let id: String; public let title: String; public let section: String?; public let color: String?; public let collapsed: Bool?; public let sources: Int; public let chunks: Int; public let digest: String }
         public let embedder: Embedder
         public let notebooks: [Notebook]
     }
-    public struct Sources: Decodable { struct Source: Decodable { let sourceId: String; let hash: String; let created: String? }; let sources: [Source] }
+    public struct Sources: Decodable { public struct Source: Decodable { public let sourceId: String; public let hash: String; public let created: String? }; public let sources: [Source] }
     public struct ChunkPage: Decodable {
         public struct Row: Decodable {
             public let sourceId: String; let chunkIndex: Int; let text: String; let summary: Bool
             public let filename: String; let sourceType: String; let vector: String
         }
         public let chunks: [Row]; let more: Bool; let after: After?
-        public struct After: Codable { let sourceId: String; let chunkIndex: Int }
+        public struct After: Codable { public let sourceId: String; public let chunkIndex: Int }
     }
 
     public struct Summary: Sendable {

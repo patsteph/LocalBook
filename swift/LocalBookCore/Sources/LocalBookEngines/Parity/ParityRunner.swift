@@ -189,9 +189,9 @@ public struct ParityReport: Codable, Sendable {
             p50 = s[Int((Double(s.count - 1) * 0.5).rounded())]
         }
     }
-    public struct Disagreement: Codable, Sendable { let question: String; let mac: [String]; let phone: [String] }
-    public struct OverCap: Codable, Sendable { let count: Int; let longestTokens: Int; let truncatedCosine: Stats }
-    public struct TokenizerCheck: Codable, Sendable { let checked: Int; let identical: Int; let firstMismatch: String? }
+    public struct Disagreement: Codable, Sendable { public let question: String; public let mac: [String]; public let phone: [String] }
+    public struct OverCap: Codable, Sendable { public let count: Int; public let longestTokens: Int; public let truncatedCosine: Stats }
+    public struct TokenizerCheck: Codable, Sendable { public let checked: Int; public let identical: Int; public let firstMismatch: String? }
     public struct Verdict: Codable, Sendable {
         public let meanCosine: Bool, worstCosine: Bool, retrievalAgrees: Bool, noneOverCap: Bool, noErrors: Bool
         public var pass: Bool { meanCosine && worstCosine && retrievalAgrees && noErrors && noneOverCap }

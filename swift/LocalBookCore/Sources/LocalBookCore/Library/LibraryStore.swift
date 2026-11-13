@@ -232,7 +232,7 @@ public actor LibraryStore {
     /// Source ids of notes made on this device start with this; the Mac never removes them.
     public static let localNotePrefix = "local:"
 
-    public struct LocalNote: Sendable, Identifiable { let id: String; let notebookId: String; let title: String; let text: String; let kind: String; var hasPicture = false }
+    public struct LocalNote: Sendable, Identifiable { public let id: String; public let notebookId: String; public let title: String; public let text: String; public let kind: String; public var hasPicture = false }
 
     public func addLocalNote(notebook: String, sourceId: String, title: String, kind: String, chunks: [LibraryChunk], hash: String) throws {
         dropMatrix()
@@ -302,7 +302,7 @@ public actor LibraryStore {
 
     // MARK: browsing a notebook's sources
 
-    public struct SourceInfo: Sendable, Identifiable { let id: String; let notebookId: String; let name: String; let type: String; let pieces: Int; let characters: Int; let created: String; var isLocal: Bool { id.hasPrefix("local:") } }
+    public struct SourceInfo: Sendable, Identifiable { public let id: String; public let notebookId: String; public let name: String; public let type: String; public let pieces: Int; public let characters: Int; public let created: String; public var isLocal: Bool { id.hasPrefix("local:") } }
 
     public func sources(notebook: String) -> [SourceInfo] {
         guard let s = try? statement("""
@@ -529,6 +529,7 @@ public actor LibraryStore {
         public var rrfK = 60.0
         public var missingRank = 1000.0
         public var k1 = 1.5, b = 0.75, epsilon = 0.25
+        public init() {}
     }
 
     /// Hybrid retrieval exactly as the Mac's `hybrid_search`: the nearest vectors and the best BM25 documents

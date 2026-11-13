@@ -8,7 +8,7 @@ import Speech
 /// Uses Apple's SpeechAnalyzer (iOS 26+), which is built for long recordings such as meetings and lectures.
 /// The older SFSpeechRecognizer drops most of a long recording; a 10 minute call came back as its last few sentences.
 public enum LongTranscriber {
-    public struct Word: Sendable { var start: Double; var end: Double; var text: String }
+    public struct Word: Sendable { public var start: Double; public var end: Double; public var text: String }
 
     /// Set from anywhere to end a transcription early.
     public final class Stopper: @unchecked Sendable {
@@ -18,7 +18,7 @@ public enum LongTranscriber {
         public var isStopped: Bool { lock.lock(); defer { lock.unlock() }; return stopped }
     }
 
-    public struct Failure: Error, LocalizedError { let text: String; var errorDescription: String? { text } }
+    public struct Failure: Error, LocalizedError { public let text: String; public var errorDescription: String? { text } }
 
     /// `progress` gets 0…1 as words arrive. `step` gets a short note when the speech model must be downloaded first.
     public static func transcribe(_ url: URL, total: Double, stopper: Stopper,
