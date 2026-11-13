@@ -8,11 +8,13 @@ on:
     paths:
       - 'swift/**'
       - 'mac/**'
+      - 'ios/**'
       - '.github/workflows/swift.yml'
   pull_request:
     paths:
       - 'swift/**'
       - 'mac/**'
+      - 'ios/**'
       - '.github/workflows/swift.yml'
   workflow_dispatch:
 
@@ -113,5 +115,33 @@ jobs:
       - name: Build
         run: |
           xcodebuild build -project LocalBook.xcodeproj -scheme LocalBook -destination 'platform=macOS' \
+            -derivedDataPath .derived CODE_SIGNING_ALLOWED=NO CODE_SIGN_IDENTITY="" DEVELOPMENT_TEAM="" \
+            -skipPackagePluginValidation -skipMacroValidation -quiet
+
+  ios-app:
+    name: LocalBook for iPhone (unsigned build, checks the package extraction)
+    runs-on: macos-26
+    timeout-minutes: 90
+    defaults:
+      run:
+        working-directory: ios/LocalBookLab
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select Xcode
+        working-directory: .
+        run: ./scripts/ci/select-xcode.sh "$WANTED_XCODE_MAJOR"
+      - name: Install xcodegen
+        run: brew list xcodegen >/dev/null 2>&1 || brew install xcodegen
+      - name: Generate the project
+        run: xcodegen generate
+      - name: Cache SwiftPM (Xcode)
+        uses: actions/cache@v4
+        with:
+          path: ios/LocalBookLab/.derived/SourcePackages
+          key: spm-ios-${{ runner.os }}-${{ hashFiles('swift/LocalBookCore/Package.swift', 'ios/LocalBookLab/project.yml') }}
+          restore-keys: spm-ios-${{ runner.os }}-
+      - name: Build the LocalBook app for a device, unsigned
+        run: |
+          xcodebuild build -project LocalBookLab.xcodeproj -scheme LocalBook -destination 'generic/platform=iOS' \
             -derivedDataPath .derived CODE_SIGNING_ALLOWED=NO CODE_SIGN_IDENTITY="" DEVELOPMENT_TEAM="" \
             -skipPackagePluginValidation -skipMacroValidation -quiet

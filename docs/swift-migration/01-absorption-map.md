@@ -1,6 +1,6 @@
 # 01. Absorption map: every Mac feature, its Swift approach, its phase, its status
 
-*Copied from the approved plan (`/mnt/project-files/research/2026-11-13-native-swift-plan.md`, revision 2, 2026-11-13) with a Status column. This is the working copy: a row changes here first, and the gate log (`02-gate-log.md`) records when a phase gate closes. Status values: **not started**, **in progress**, **done** (side-by-side check passed and the Python counterpart may be switched off), **hatched** (shipping behind one of the two pre-approved escape hatches; the replacement date is in `00-decision.md`).*
+*Approved by Patrick 2026-11-13. Copied from the plan (`/mnt/project-files/research/2026-11-13-native-swift-plan.md`, revision 2, 2026-11-13) with a Status column. This is the working copy: a row changes here first, and the gate log (`02-gate-log.md`) records when a phase gate closes. Status values: **not started**, **in progress**, **done** (side-by-side check passed and the Python counterpart may be switched off), **hatched** (shipping behind one of the two pre-approved escape hatches; the replacement date is in `00-decision.md`).*
 
 Rule: nothing leaves this table. If a feature turns up that is not here, it is added with an approach and a phase before any phase gate closes.
 
