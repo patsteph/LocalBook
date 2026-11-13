@@ -2,8 +2,7 @@ import LocalBookCore
 import LocalBookEngines
 import SwiftUI
 
-extension StudioItem.Kind: Identifiable {
-    var id: String { rawValue }
+extension StudioItem.Kind {
     var blurb: String {
         switch self {
         case .doc: "A written summary"

@@ -3,8 +3,9 @@ import Foundation
 /// One thing made in Studio on this phone: a written piece, a quiz or a set of flashcards. Kept as a small JSON file
 /// per item, so it is there offline and nothing about it leaves the phone.
 public struct StudioItem: Codable, Identifiable, Sendable, Hashable {
-    public enum Kind: String, Codable, CaseIterable, Sendable {
+    public enum Kind: String, Codable, CaseIterable, Sendable, Identifiable {
         case doc, quiz, cards, audio, visual, video
+        public var id: String { rawValue }
         public var label: String { switch self { case .doc: "Briefing"; case .quiz: "Quiz"; case .cards: "Flashcards"; case .audio: "Audio overview"; case .visual: "Visual"; case .video: "Video" } }
         public var short: String { self == .audio ? "Audio" : label }
         public var symbol: String { switch self { case .doc: "doc.text"; case .quiz: "checklist"; case .cards: "rectangle.stack"; case .audio: "waveform"; case .visual: "chart.bar.doc.horizontal"; case .video: "film" } }
