@@ -52,7 +52,12 @@ public struct AnswerRecipe: Codable, Sendable {
         public var reranker: Reranker
         public struct BM25: Codable, Sendable { public var k1: Double; public var b: Double; public var epsilon: Double }
         public struct Reranker: Codable, Sendable { public var enabled: Bool; public var model: String; public var precision: String? }
-    }
+    
+
+        public init(topK: Int, overcollect: Int, rerankKeep: Int, hybridK: Int, vectorCandidates: Int, bm25Candidates: Int, rrfK: Int, rrfMissingRank: Int, bm25: BM25, reranker: Reranker) {
+            self.topK = topK; self.overcollect = overcollect; self.rerankKeep = rerankKeep; self.hybridK = hybridK; self.vectorCandidates = vectorCandidates; self.bm25Candidates = bm25Candidates; self.rrfK = rrfK; self.rrfMissingRank = rrfMissingRank; self.bm25 = bm25; self.reranker = reranker
+        }
+}
     public struct QueryExpansion: Codable, Sendable {
         public var expansions: [[String]]          // ordered [term, expansion] pairs
         public var nameExpansions: [[String]]

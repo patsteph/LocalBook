@@ -27,6 +27,13 @@ public struct LibraryHit: Sendable, Identifiable {
     public let score: Float
     public var rrf: Float = 0              // Reciprocal Rank Fusion score divided by the best one in the pool (0…1)
     public var sourceType: String = ""
+
+
+    public init(notebookId: String, notebookTitle: String, sourceId: String, chunkIndex: Int, filename: String, text: String, score: Float, rrf: Float = 0, sourceType: String = "") {
+
+        self.notebookId = notebookId; self.notebookTitle = notebookTitle; self.sourceId = sourceId; self.chunkIndex = chunkIndex; self.filename = filename; self.text = text; self.score = score; self.rrf = rrf; self.sourceType = sourceType
+
+    }
 }
 
 public struct LibraryNotebookInfo: Sendable, Identifiable {

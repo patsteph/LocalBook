@@ -23,6 +23,10 @@ public struct StudioItem: Codable, Identifiable, Sendable, Hashable {
     /// Audio or video file kept next to the item (Mac items download on request), and its size on the Mac.
     public var mediaFile: String? = nil
     public var mediaBytes: Int? = nil
+
+    public init(id: String, notebookId: String, kind: Kind, title: String, created: Date, body: String, origin: String? = nil, rev: String? = nil, mediaFile: String? = nil, mediaBytes: Int? = nil) {
+        self.id = id; self.notebookId = notebookId; self.kind = kind; self.title = title; self.created = created; self.body = body; self.origin = origin; self.rev = rev; self.mediaFile = mediaFile; self.mediaBytes = mediaBytes
+    }
 }
 
 /// A video: the file, how long it is, and the narration lines it speaks.
@@ -30,6 +34,10 @@ public struct VideoInfo: Codable, Sendable, Hashable {
     public var file: String
     public var duration: Double
     public var lines: [String] = []
+
+    public init(file: String, duration: Double, lines: [String] = []) {
+        self.file = file; self.duration = duration; self.lines = lines
+    }
 }
 
 public struct StudioQuestion: Codable, Sendable, Identifiable, Hashable {
@@ -38,12 +46,26 @@ public struct StudioQuestion: Codable, Sendable, Identifiable, Hashable {
     public let choices: [String]
     public let answer: Int
     public let why: String?
+
+
+    public init(question: String, choices: [String], answer: Int, why: String?) {
+
+        self.question = question; self.choices = choices; self.answer = answer; self.why = why
+
+    }
 }
 
 public struct StudioCard: Codable, Sendable, Identifiable, Hashable {
     public var id: String { front }
     public let front: String
     public let back: String
+
+
+    public init(front: String, back: String) {
+
+        self.front = front; self.back = back
+
+    }
 }
 
 public enum StudioStore {
@@ -82,8 +104,12 @@ public enum StudioStore {
 
 /// A phone-made audio overview: the spoken lines (host 0 = Alex, 1 = Sam) with where each starts in the audio file.
 public struct AudioScript: Codable, Sendable, Hashable {
-    public struct Line: Codable, Sendable, Hashable { public var host: Int; public var text: String; public var start: Double }
+    public struct Line: Codable, Sendable, Hashable { public var host: Int; public var text: String; public var start: Double; public init(host: Int, text: String, start: Double) { self.host = host; self.text = text; self.start = start } }
     public var file: String
     public var duration: Double
     public var lines: [Line]
+
+    public init(file: String, duration: Double, lines: [Line]) {
+        self.file = file; self.duration = duration; self.lines = lines
+    }
 }

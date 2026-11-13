@@ -51,6 +51,10 @@ extension AnswerRecipe {
         public var rerank: Double
         public var score: Double          // rerank plus the boosts
         public var index: Int             // position before this step, to keep ties in the Mac's (stable) order
+        public init(sourceId: String, text: String, sourceType: String, filename: String, rerank: Double, score: Double, index: Int) {
+            self.sourceId = sourceId; self.text = text; self.sourceType = sourceType; self.filename = filename
+            self.rerank = rerank; self.score = score; self.index = index
+        }
     }
 
     // MARK: response format hint (rag_query_analyzer.detect_response_format)
