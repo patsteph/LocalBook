@@ -14,6 +14,11 @@ public struct LibraryChunk: Sendable {
     public let filename: String
     public let sourceType: String
     public let vector: Data            // 768 × float16, little endian
+    public init(notebookId: String, sourceId: String, chunkIndex: Int, text: String, summary: Bool,
+                filename: String, sourceType: String, vector: Data) {
+        self.notebookId = notebookId; self.sourceId = sourceId; self.chunkIndex = chunkIndex; self.text = text
+        self.summary = summary; self.filename = filename; self.sourceType = sourceType; self.vector = vector
+    }
 }
 
 public struct LibraryHit: Sendable, Identifiable {
@@ -537,6 +542,11 @@ public actor LibraryStore {
         public var missingRank = 1000.0
         public var k1 = 1.5, b = 0.75, epsilon = 0.25
         public init() {}
+        public init(vectorCandidates: Int = 48, bm25Candidates: Int = 48, hybridK: Int = 24, rrfK: Double = 60.0,
+                    missingRank: Double = 1000.0, k1: Double = 1.5, b: Double = 0.75, epsilon: Double = 0.25) {
+            self.vectorCandidates = vectorCandidates; self.bm25Candidates = bm25Candidates; self.hybridK = hybridK
+            self.rrfK = rrfK; self.missingRank = missingRank; self.k1 = k1; self.b = b; self.epsilon = epsilon
+        }
     }
 
     /// Hybrid retrieval exactly as the Mac's `hybrid_search`: the nearest vectors and the best BM25 documents
