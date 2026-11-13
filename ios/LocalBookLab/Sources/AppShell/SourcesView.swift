@@ -1,3 +1,5 @@
+import LocalBookCore
+import LocalBookEngines
 import SwiftUI
 
 /// Everything a notebook holds, like the Mac's Sources list: search it, filter by kind, open a source to read it.

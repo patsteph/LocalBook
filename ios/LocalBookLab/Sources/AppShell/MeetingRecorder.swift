@@ -1,3 +1,5 @@
+import LocalBookCore
+import LocalBookEngines
 import AVFoundation
 import FluidAudio
 import Speech
@@ -129,7 +131,7 @@ final class MeetingSession {
     }
 
     /// Opens every saved meeting, so search (and the answer model) can tell a conversation from a document.
-    nonisolated static let header = "Meeting transcript"
+    nonisolated static let header = MeetingNotes.header
 
     /// The transcript as it will be saved: a short header, then one paragraph per turn, led by the speaker's name.
     var transcript: String {

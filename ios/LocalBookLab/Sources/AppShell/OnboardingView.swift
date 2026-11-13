@@ -1,3 +1,5 @@
+import LocalBookCore
+import LocalBookEngines
 import SwiftUI
 
 /// Welcome → pick your Mac → compare the code → first sync → ready.

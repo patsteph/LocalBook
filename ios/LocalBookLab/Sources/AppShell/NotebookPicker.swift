@@ -1,3 +1,5 @@
+import LocalBookCore
+import LocalBookEngines
 import SwiftUI
 
 /// Notebooks grouped the way the desktop app groups them: those in no section first, then each section.

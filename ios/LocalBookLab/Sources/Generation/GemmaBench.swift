@@ -1,3 +1,5 @@
+import LocalBookCore
+import LocalBookEngines
 import Foundation
 import HuggingFace
 import MLX
@@ -80,21 +82,6 @@ struct GemmaReport: Codable, Sendable {
         e.keyEncodingStrategy = .convertToSnakeCase
         return (try? e.encode(self)) ?? Data()
     }
-}
-
-/// Memory the OS charges this process (what jetsam looks at), in MB.
-enum MemoryProbe {
-    static func footprintMB() -> Double {
-        var info = task_vm_info_data_t()
-        var count = mach_msg_type_number_t(MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<natural_t>.size)
-        let kr = withUnsafeMutablePointer(to: &info) {
-            $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
-                task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count)
-            }
-        }
-        return kr == KERN_SUCCESS ? Double(info.phys_footprint) / 1_048_576 : .nan
-    }
-    static func availableMB() -> Double { Double(os_proc_available_memory()) / 1_048_576 }
 }
 
 @MainActor

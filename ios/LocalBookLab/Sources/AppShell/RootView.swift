@@ -1,3 +1,5 @@
+import LocalBookCore
+import LocalBookEngines
 import SwiftUI
 
 /// Pairing comes first; after that the app is four tabs, usable at once. Models load in the background, except when

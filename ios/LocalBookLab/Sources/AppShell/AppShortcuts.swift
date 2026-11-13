@@ -1,3 +1,5 @@
+import LocalBookCore
+import LocalBookEngines
 import AppIntents
 
 /// Siri, Spotlight and the Action button ("Shortcut") can start a meeting recording without opening the app first.

@@ -64,3 +64,14 @@ extension ImageRenderer {
         #endif
     }
 }
+
+extension Color {
+    /// The window background: `systemBackground` on iOS, `windowBackgroundColor` on the Mac.
+    public static var platformBackground: Color {
+        #if canImport(UIKit)
+        return Color(uiColor: .systemBackground)
+        #else
+        return Color(nsColor: .windowBackgroundColor)
+        #endif
+    }
+}
