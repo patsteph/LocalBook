@@ -1,5 +1,4 @@
 import Foundation
-import MLXLMCommon
 
 /// The Mac's answer recipe, followed by the phone so both answer the same way. It is DATA the Mac publishes
 /// (prompts, classifier rules, decode settings, cleaning steps), so a change on the Mac reaches the phone at
@@ -175,15 +174,6 @@ public struct AnswerRecipe: Codable, Sendable {
         return userPrompt.replacingOccurrences(of: "{context}", with: context).replacingOccurrences(of: "{question}", with: question)
     }
 
-    public var generateParameters: GenerateParameters { parameters(maxTokens: nil) }
-
-    public func parameters(maxTokens: Int?) -> GenerateParameters {
-        var p = GenerateParameters(maxTokens: maxTokens ?? generation.maxTokens, temperature: generation.temperature)
-        p.topP = generation.topP
-        p.repetitionPenalty = generation.repetitionPenalty
-        p.repetitionContextSize = generation.repetitionContextSize
-        return p
-    }
 
     // MARK: the Mac's output cleaner (rag_generation.clean_llm_output), as data
 
