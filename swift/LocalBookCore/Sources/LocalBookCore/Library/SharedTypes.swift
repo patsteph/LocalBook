@@ -32,6 +32,7 @@ public struct DeviceInfo: Codable, Sendable {
 
 /// A thread-safe one-way flag.
 public final class CancelFlag: @unchecked Sendable {
+    public init() {}
     private let lock = NSLock()
     private var value = false
     public var isSet: Bool { lock.withLock { value } }

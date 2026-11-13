@@ -12,6 +12,7 @@ public enum LongTranscriber {
 
     /// Set from anywhere to end a transcription early.
     public final class Stopper: @unchecked Sendable {
+        public init() {}
         private let lock = NSLock()
         private var stopped = false
         public func stop() { lock.lock(); stopped = true; lock.unlock() }

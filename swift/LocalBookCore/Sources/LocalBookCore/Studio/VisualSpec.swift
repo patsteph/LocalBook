@@ -354,6 +354,10 @@ public struct VisualSlide: View {
     public var fit: CGFloat = 1
     public var expanded: Binding<Set<Int>> = .constant([])
 
+    public init(spec: VisualSpec, fit: CGFloat = 1, expanded: Binding<Set<Int>> = .constant([])) {
+        self.spec = spec; self.fit = fit; self.expanded = expanded
+    }
+
     public var body: some View {
         VisualCanvas(spec: spec, slide: true, expanded: expanded)
             .frame(width: Self.size.width / fit)

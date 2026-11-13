@@ -42,6 +42,7 @@ public enum GPUGuard {
 
 /// Set from a notification callback, read from the awaiting code.
 public final class LockFlag: @unchecked Sendable {
+    public init() {}
     private let lock = NSLock()
     private var value = false
     public func set() { lock.lock(); value = true; lock.unlock() }

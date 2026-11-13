@@ -13,6 +13,7 @@ import Tokenizers
 @MainActor
 @Observable
 public final class LibraryModel {
+    public init() {}
     public enum SyncState: Equatable { case idle, syncing(String), failed(String) }
     public enum SearchState: Equatable { case notReady, preparing(String), ready, failed(String) }
 

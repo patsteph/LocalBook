@@ -9,6 +9,7 @@ import Security
 @MainActor
 @Observable
 public final class MacBrowser {
+    public init() {}
     public struct Mac: Identifiable, Equatable {
         public let id: String            // the Bonjour instance name
         public let name: String

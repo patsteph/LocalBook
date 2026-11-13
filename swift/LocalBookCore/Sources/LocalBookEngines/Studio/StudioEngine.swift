@@ -11,6 +11,7 @@ import SwiftUI
 /// to a locked phone, so leaving the app stops the work.
 @MainActor @Observable
 public final class StudioEngine {
+    public init() {}
     public private(set) var working = false
     public private(set) var status = ""
     public private(set) var preview = ""
