@@ -19,7 +19,11 @@ public enum LongTranscriber {
         public var isStopped: Bool { lock.lock(); defer { lock.unlock() }; return stopped }
     }
 
-    public struct Failure: Error, LocalizedError { public let text: String; public var errorDescription: String? { text } }
+    public struct Failure: Error, LocalizedError {
+        public let text: String
+        public init(text: String) { self.text = text }
+        public var errorDescription: String? { text }
+    }
 
     /// `progress` gets 0…1 as words arrive. `step` gets a short note when the speech model must be downloaded first.
     public static func transcribe(_ url: URL, total: Double, stopper: Stopper,

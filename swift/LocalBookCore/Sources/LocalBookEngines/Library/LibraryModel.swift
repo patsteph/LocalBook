@@ -89,7 +89,7 @@ public final class LibraryModel {
     private var opening: Task<Void, Never>?
 
     /// Opens the phone's library (no models). Safe to call from several places at once: they all wait for the same open.
-    func open() async {
+    public func open() async {
         GPUGate.installReopenOnActive()
         if let opening { await opening.value; return }
         guard store == nil else { return }
