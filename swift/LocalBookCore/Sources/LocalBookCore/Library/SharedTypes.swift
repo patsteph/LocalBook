@@ -2,7 +2,7 @@ import Foundation
 
 // Small types the Lab and the LocalBook app both use.
 
-public enum LabError: LocalizedError {
+public enum LabError: LocalizedError, Sendable {
     case fixture(String)
     case model(String)
     case tooLong(Int)

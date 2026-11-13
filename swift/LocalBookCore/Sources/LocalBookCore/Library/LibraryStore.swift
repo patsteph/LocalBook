@@ -51,7 +51,7 @@ public struct LibraryNotebookInfo: Sendable, Identifiable {
     public var sectionCollapsed = false     // whether the desktop shows its section folded
 }
 
-public enum LibraryError: LocalizedError {
+public enum LibraryError: LocalizedError, Sendable {
     case sqlite(String)
     case embedderMismatch(String)
     case notPaired

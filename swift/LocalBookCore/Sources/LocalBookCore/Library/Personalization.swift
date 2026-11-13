@@ -43,7 +43,7 @@ extension AnswerRecipe {
     }
 
     /// A reranked passage as the boosts see it.
-    public struct Scored {
+    public struct Scored: Sendable {
         public var sourceId: String
         public var text: String
         public var sourceType: String

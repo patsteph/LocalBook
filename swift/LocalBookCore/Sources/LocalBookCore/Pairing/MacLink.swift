@@ -6,7 +6,7 @@ import Security
 /// 6-digit code both screens show is what authenticates the certificate), then talk on
 /// `sync_port + 3` with mutual TLS pinned to exactly the certificate seen at pairing and every
 /// request signed with this phone's key.
-public struct PairedMac: Codable, Equatable {
+public struct PairedMac: Codable, Equatable, Sendable {
     public var deviceId: String
     public var name: String
     public var host: String
@@ -18,7 +18,7 @@ public struct PairedMac: Codable, Equatable {
     public var verified: Bool? = nil
 }
 
-public enum MacLinkError: LocalizedError {
+public enum MacLinkError: LocalizedError, Sendable {
     case http(Int, String), certificateMismatch, noCertificate, notPaired, detail(String)
     public var errorDescription: String? {
         switch self {
@@ -55,7 +55,7 @@ public enum MacLink {
         SHA256.hash(data: der).map { String(format: "%02x", $0) }.joined()
     }
 
-    public struct PairingOutcome { public let mac: PairedMac; public let code: String }
+    public struct PairingOutcome: Sendable { public let mac: PairedMac; public let code: String }
 
     /// Step 2: say hello to a Mac whose pairing window is open. Nothing is pinned until the user
     /// has compared the code on both screens and the Mac side has confirmed.

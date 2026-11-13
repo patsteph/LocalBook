@@ -10,7 +10,7 @@ import Security
 @Observable
 public final class MacBrowser {
     public init() {}
-    public struct Mac: Identifiable, Equatable {
+    public struct Mac: Identifiable, Equatable, Sendable {
         public let id: String            // the Bonjour instance name
         public let name: String
         public let deviceId: String?     // `id=` in the advertisement's TXT record
@@ -22,13 +22,13 @@ public final class MacBrowser {
     /// What the Mac's certificate looks like to iOS. The Mac's identity is an Ed25519
     /// certificate; if iOS's TLS stack can't complete a handshake against it, pairing needs a
     /// different transport or a different Mac certificate — so find out before building on it.
-    public enum TLSProbe: Equatable {
+    public enum TLSProbe: Equatable, Sendable {
         case notRun, running
         case sawCertificate(fingerprint: String, chain: Int)
         case noCertificate(String)
     }
 
-    public enum Reachability: Equatable {
+    public enum Reachability: Equatable, Sendable {
         case unknown, checking, reachable(ms: Int), unreachable(String)
     }
 

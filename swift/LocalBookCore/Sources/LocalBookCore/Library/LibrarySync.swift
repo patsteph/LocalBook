@@ -8,23 +8,23 @@ public enum LibrarySync {
     public static let expectedDims = 768
     public static let expectedMaxTokens = 512
 
-    public struct Manifest: Decodable {
-        public struct Embedder: Decodable {
+    public struct Manifest: Decodable, Sendable {
+        public struct Embedder: Decodable, Sendable {
             public let modelId: String; let dims: Int; let maxTokens: Int
             public let queryTemplate: String; let documentTemplate: String
         }
-        public struct Notebook: Decodable { public let id: String; public let title: String; public let section: String?; public let color: String?; public let collapsed: Bool?; public let sources: Int; public let chunks: Int; public let digest: String }
+        public struct Notebook: Decodable, Sendable { public let id: String; public let title: String; public let section: String?; public let color: String?; public let collapsed: Bool?; public let sources: Int; public let chunks: Int; public let digest: String }
         public let embedder: Embedder
         public let notebooks: [Notebook]
     }
-    public struct Sources: Decodable { public struct Source: Decodable { public let sourceId: String; public let hash: String; public let created: String? }; public let sources: [Source] }
-    public struct ChunkPage: Decodable {
-        public struct Row: Decodable {
+    public struct Sources: Decodable, Sendable { public struct Source: Decodable, Sendable { public let sourceId: String; public let hash: String; public let created: String? }; public let sources: [Source] }
+    public struct ChunkPage: Decodable, Sendable {
+        public struct Row: Decodable, Sendable {
             public let sourceId: String; let chunkIndex: Int; let text: String; let summary: Bool
             public let filename: String; let sourceType: String; let vector: String
         }
         public let chunks: [Row]; let more: Bool; let after: After?
-        public struct After: Codable { public let sourceId: String; public let chunkIndex: Int }
+        public struct After: Codable, Sendable { public let sourceId: String; public let chunkIndex: Int }
     }
 
     public struct Summary: Sendable {
