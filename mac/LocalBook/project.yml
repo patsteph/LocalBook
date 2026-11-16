@@ -1,7 +1,7 @@
 # LocalBook for Mac: the native Swift app built around the phone's engine (docs/swift-migration/).
 # Generate the Xcode project with:  brew install xcodegen && xcodegen generate
 #
-# Phase 0: the shell (window, sidebar, empty Ask view, menu bar map, Settings). Phase 2 fills it in as a sync peer.
+# Phase 2: a sync peer (pairs with the Python Mac, copies its notebooks, asks them with the package's engine).
 # The engine comes from the local package ../../swift/LocalBookCore, which the iOS app will also depend on.
 name: LocalBook
 options:
@@ -44,6 +44,15 @@ targets:
     sources:
       - path: Sources
       - path: Resources/Assets.xcassets
+      # The reranker, shared with the iPhone app: a Core ML conversion of the Python Mac's own model
+      # (ios/LocalBookLab/tools/convert_reranker.py writes it). Not committed (64 MB); the app builds without it and
+      # then skips reranking, as the phone does. CI strips these entries before generating the project.
+      - path: ../../ios/LocalBookLab/tools/cache/RerankerL12.mlpackage
+        optional: true
+      - path: ../../ios/LocalBookLab/Models/RerankerTokenizer
+        type: folder
+      - path: ../../ios/LocalBookLab/tools/cache/rerank_conformance.json
+        optional: true
     dependencies:
       - package: LocalBookCore
         product: LocalBookCore

@@ -335,27 +335,7 @@ struct AskView: View {
     }
 }
 
-/// The model writes light markdown (headings, bullets, bold). Show it readably without a full renderer.
-enum AnswerText {
-    static func render(_ raw: String) -> AttributedString {
-        var out = AttributedString()
-        for (i, line) in raw.split(separator: "\n", omittingEmptySubsequences: false).enumerated() {
-            var text = String(line)
-            var heading = false
-            text = text.replacingOccurrences(of: #"\[(\d{1,2})\]"#, with: "[\\[$1\\]](lb-source://$1)", options: .regularExpression)
-            if let r = text.range(of: #"^#{1,4}\s+"#, options: .regularExpression) { text.removeSubrange(r); heading = true }
-            if let r = text.range(of: #"^(\s*)[\*\-]\s+"#, options: .regularExpression) {
-                let indent = text[r].prefix { $0 == " " }
-                text.replaceSubrange(r, with: indent + "•  ")
-            }
-            var piece = (try? AttributedString(markdown: text, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(text)
-            if heading { piece.font = .headline }
-            if i > 0 { out.append(AttributedString("\n")) }
-            out.append(piece)
-        }
-        return out
-    }
-}
+// `AnswerText` (the answer renderer) lives in LocalBookCore since Phase 2; the Mac app uses the same one.
 
 struct SourceRef: Identifiable { let id = UUID(); let number: Int; let hits: [LibraryHit] }
 

@@ -31,7 +31,7 @@ public enum GPUGate {
     /// steps) and the GPU is given a moment to finish what it has, because the GPU refuses work from the background and
     /// MLX turns that refusal into a crash. It opens again when the app is back in front.
     @MainActor public static func installReopenOnActive() {
-        guard !installed else { return }
+        guard !installed, AppLifecycle.backgroundWithdrawsGPU else { return }     // the Mac's gate never closes
         installed = true
         NotificationCenter.default.addObserver(forName: AppLifecycle.willResignActive, object: nil, queue: nil) { _ in
             close()

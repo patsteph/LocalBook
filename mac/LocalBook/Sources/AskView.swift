@@ -1,78 +1,386 @@
-import Combine
+import AppKit
+import LocalBookCore
+import LocalBookEngines
 import SwiftUI
 
-/// The primary screen: a conversation with one notebook, the composer pinned at the bottom.
-/// Phase 0 shows the empty state and a composer that cannot send yet; Phase 2 streams answers from the engine.
+/// The primary screen: a conversation with one notebook, the composer pinned at the bottom. The same conversation the
+/// phone shows (`ios/LocalBookLab/Sources/AppShell/AskView.swift`), laid out for a window: a 60 to 70 character
+/// measure, citations as inline anchors that open a popover, Send that becomes Stop while streaming (⌘.).
 struct AskView: View {
-    let notebook: AppModel.Notebook?
     @Environment(AppModel.self) private var model
-    @State private var question = ""
     @FocusState private var composerFocused: Bool
+    @State private var waited = 0
+    @State private var queued: String?
+    @State private var atBottom = true
+    @State private var openSource: SourceRef?
+    @State private var length = AnswerLength.current.rawValue
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private var library: LibraryModel { model.library }
+    private var ready: Bool { model.ready }
+    private var currentTitle: String { model.selectedNotebook?.title ?? "Notebook" }
 
     var body: some View {
         VStack(spacing: 0) {
-            ScrollView {
-                emptyState
-                    .frame(maxWidth: 640)
-                    .padding(.top, 80)
-                    .padding(.horizontal, 24)
-                    .frame(maxWidth: .infinity)
+            ScrollViewReader { proxy in
+                ScrollView {
+                    conversation
+                        .frame(maxWidth: 720)
+                        .padding(.horizontal, 24)
+                        .padding(.vertical, 20)
+                        .frame(maxWidth: .infinity)
+                }
+                .onScrollGeometryChange(for: Bool.self) { g in
+                    g.contentOffset.y + g.containerSize.height >= g.contentSize.height - 60
+                } action: { _, now in atBottom = now }
+                .onChange(of: library.answerText) { _, _ in
+                    if atBottom && library.answering { proxy.scrollTo("bottom", anchor: .bottom) }
+                }
+                .onChange(of: library.shownQuestion) { _, q in
+                    if !q.isEmpty { withAnimation(reduceMotion ? nil : .easeOut) { proxy.scrollTo("bottom", anchor: .bottom) } }
+                }
+                .overlay(alignment: .bottom) {
+                    if library.answering && !atBottom {
+                        Button { withAnimation(reduceMotion ? nil : .easeOut) { proxy.scrollTo("bottom", anchor: .bottom) } } label: {
+                            Label("Jump to latest", systemImage: "arrow.down").font(.footnote.weight(.semibold))
+                                .padding(.horizontal, 14).padding(.vertical, 8).background(.regularMaterial, in: Capsule())
+                        }
+                        .buttonStyle(.plain)
+                        .padding(.bottom, 8)
+                    }
+                }
             }
             Divider()
             composer
         }
+        .popover(item: $openSource, arrowEdge: .bottom) { ref in
+            SourcePopover(number: ref.number, hit: ref.hits[ref.number - 1])
+        }
         .onReceive(NotificationCenter.default.publisher(for: .focusComposer)) { _ in composerFocused = true }
+        .onChange(of: ready) { _, isReady in
+            guard isReady, let q = queued else { return }
+            queued = nil
+            library.query = q
+            Task { await library.ask() }
+        }
+        .onAppear { composerFocused = true }
     }
 
-    private var emptyState: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            if let notebook {
-                Text(notebook.name).font(.title2.weight(.semibold))
-                Text("Ask anything in this notebook. Answers come from its sources and stay on this Mac.")
-                    .foregroundStyle(.secondary)
+    // MARK: conversation
+
+    @ViewBuilder private var conversation: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            if library.notebooks.isEmpty {
+                emptyLibrary
             } else {
-                Text("LocalBook").font(.title2.weight(.semibold))
-                Text(model.isPaired
-                     ? "Choose a notebook in the sidebar to start asking."
-                     : "Pair with your Mac to bring your notebooks here, then ask anything. Everything stays on your devices.")
+                if !ready { ReadyBar(library: library) }
+                if let q = queued {
+                    HStack {
+                        Label("Queued: \(q)", systemImage: "clock").lineLimit(2)
+                        Spacer()
+                        Button("Cancel") { queued = nil }
+                    }
+                    .font(.footnote).padding(12).background(.quaternary, in: RoundedRectangle(cornerRadius: 10))
+                }
+                ForEach(Array(library.history.enumerated()), id: \.element.id) { i, turn in
+                    pastTurn(turn, previous: i > 0 ? library.history[i - 1].notebookId : nil)
+                }
+                if !library.shownQuestion.isEmpty, let nb = library.liveNotebookId, nb != (library.history.last?.notebookId ?? nb) {
+                    notebookTag(library.notebooks.first { $0.id == nb }?.title ?? "Notebook")
+                }
+                if library.answering || !library.answerText.isEmpty || !library.answerStatus.isEmpty, !library.shownQuestion.isEmpty {
+                    questionBubble(library.shownQuestion)
+                } else if queued == nil && library.history.isEmpty {
+                    intro
+                }
+                if library.answering && library.answerText.isEmpty {
+                    phases
+                }
+                if !library.answerText.isEmpty {
+                    answerBody(library.answerText, sources: library.answerSources)
+                    if !library.answering, !library.answerStatus.isEmpty {
+                        Text(library.answerStatus).font(.caption2).foregroundStyle(.secondary)
+                    }
+                    if !library.answering { actions(for: library.answerText) }
+                    sourcesRow(library.answerSources)
+                    if !library.followUps.isEmpty {
+                        VStack(alignment: .leading, spacing: 6) {
+                            ForEach(library.followUps, id: \.self) { q in
+                                Button(q) { library.query = q; send() }.font(.footnote).buttonStyle(.bordered)
+                            }
+                        }
+                    }
+                }
+            }
+            Color.clear.frame(height: 1).id("bottom")
+        }
+    }
+
+    /// Real phases while waiting: "Searching notebook…", "Reading 6 passages…", "Writing…", with the sources as they arrive.
+    private var phases: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack { ProgressView().controlSize(.small); Text(library.answerStatus.isEmpty ? "Working…" : library.answerStatus).font(.footnote).foregroundStyle(.secondary) }
+            if !library.answerSources.isEmpty {
+                ForEach(Array(library.answerSources.prefix(4).enumerated()), id: \.element.id) { _, h in
+                    Label(h.filename, systemImage: "doc.text").font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                }
+            }
+            if waited > 30 { Text("This is taking longer than usual. You can stop (⌘.) and ask again.").font(.caption).foregroundStyle(.orange) }
+        }
+        .task(id: library.answering) {
+            waited = 0
+            while library.answering && library.answerText.isEmpty { try? await Task.sleep(for: .seconds(1)); waited += 1 }
+        }
+    }
+
+    private var emptyLibrary: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("LocalBook").font(.title2.weight(.semibold))
+            if model.paired {
+                Text("Copying your notebooks from your Mac. The first one appears here as soon as it has arrived.")
                     .foregroundStyle(.secondary)
+                if case .syncing(let line) = library.syncState { Text(line).font(.footnote).foregroundStyle(.secondary) }
+                if case .failed(let why) = library.syncState {
+                    Text(why).font(.footnote).foregroundStyle(.orange)
+                    Button("Try again") { model.syncNow() }
+                }
+            } else {
+                Text("Pair with the Mac that holds your notebooks, then ask anything. Everything stays on your devices.")
+                    .foregroundStyle(.secondary)
+                Button("Pair with a Mac…") { model.showPairing = true }.buttonStyle(.borderedProminent)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.top, 60)
     }
 
+    private var intro: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(currentTitle).font(.title3.bold())
+            Text("Try asking:").font(.footnote).foregroundStyle(.secondary)
+            ForEach(["What are the main points in this notebook?", "What changed most recently?", "Who is mentioned most often?"], id: \.self) { q in
+                Button { library.query = q; send() } label: {
+                    Text(q).font(.subheadline).multilineTextAlignment(.leading).frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(12).background(.quaternary, in: RoundedRectangle(cornerRadius: 10))
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.top, 40)
+    }
+
+    /// The notebook a run of turns was asked in, shown where the conversation moves to another notebook.
+    private func notebookTag(_ title: String) -> some View {
+        Label(title, systemImage: "book.closed").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+            .padding(.top, 6).frame(maxWidth: .infinity, alignment: .center)
+    }
+
+    private func questionBubble(_ q: String) -> some View {
+        Text(q).font(.body.weight(.medium)).textSelection(.enabled)
+            .padding(.horizontal, 12).padding(.vertical, 8)
+            .background(.tint.opacity(0.15), in: RoundedRectangle(cornerRadius: 12))
+            .frame(maxWidth: .infinity, alignment: .trailing)
+    }
+
+    /// The answer, streaming without reflowing earlier paragraphs. `[n]` citations are anchors: a click opens the passage.
+    private func answerBody(_ text: String, sources: [LibraryHit]) -> some View {
+        Text(AnswerText.render(text)).textSelection(.enabled)
+            .lineSpacing(3)
+            .contentTransition(.opacity)
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.25), value: text)
+            .environment(\.openURL, OpenURLAction { url in
+                if let n = AnswerText.citation(in: url, count: sources.count) {
+                    openSource = SourceRef(number: n, hits: sources); return .handled
+                }
+                return .systemAction
+            })
+    }
+
+    /// A finished turn higher up in the conversation.
+    @ViewBuilder private func pastTurn(_ turn: AskTurn, previous: String?) -> some View {
+        if turn.notebookId != previous { notebookTag(turn.notebookTitle) }
+        questionBubble(turn.question)
+        if turn.answer.isEmpty {
+            if !turn.status.isEmpty { Text(turn.status).font(.footnote).foregroundStyle(.orange) }
+        } else {
+            answerBody(turn.answer, sources: turn.sources)
+            actions(for: turn.answer)
+            sourcesRow(turn.sources)
+        }
+        Divider().padding(.vertical, 4)
+    }
+
+    /// Under a finished answer: Copy, Share, answer length. (Read aloud arrives with the Mac's voices in a later slice.)
+    private func actions(for text: String) -> some View {
+        HStack(spacing: 16) {
+            Button { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(text, forType: .string) } label: { Label("Copy", systemImage: "doc.on.doc") }
+            ShareLink(item: text) { Label("Share", systemImage: "square.and.arrow.up") }
+            Spacer()
+        }
+        .font(.footnote).buttonStyle(.borderless)
+    }
+
+    @ViewBuilder private func sourcesRow(_ sources: [LibraryHit]) -> some View {
+        if !sources.isEmpty {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Sources").font(.footnote.weight(.semibold)).foregroundStyle(.secondary)
+                FlowRow(spacing: 6) {
+                    ForEach(Array(sources.enumerated()), id: \.element.id) { i, h in
+                        Button { openSource = SourceRef(number: i + 1, hits: sources) } label: {
+                            HStack(spacing: 6) {
+                                Text("\(i + 1)").font(.caption.weight(.semibold)).frame(minWidth: 18, minHeight: 18)
+                                    .background(.tint.opacity(0.15), in: Circle())
+                                Text(h.filename).font(.caption).lineLimit(1)
+                            }
+                            .padding(.horizontal, 8).padding(.vertical, 4)
+                            .background(.quaternary, in: Capsule())
+                        }
+                        .buttonStyle(.plain)
+                        .help(h.filename)
+                        .accessibilityLabel("Source \(i + 1): \(h.filename)")
+                    }
+                }
+            }
+        }
+    }
+
+    // MARK: composer
+
     private var composer: some View {
-        HStack(alignment: .bottom, spacing: 8) {
-            TextField(notebook == nil ? "Choose a notebook to ask" : "Ask \(notebook!.name)…", text: $question, axis: .vertical)
+        @Bindable var lib = library
+        return HStack(alignment: .bottom, spacing: 8) {
+            Menu {
+                Picker("Answer length", selection: $length) {
+                    ForEach(AnswerLength.allCases) { Text($0.label).tag($0.rawValue) }
+                }
+                .pickerStyle(.inline)
+            } label: { Image(systemName: "text.alignleft") }
+                .menuStyle(.borderlessButton).fixedSize()
+                .help("Answer length")
+                .accessibilityLabel("Answer length")
+                .onChange(of: length) { _, v in UserDefaults.standard.set(v, forKey: "answerLength") }
+            TextField(placeholder, text: $lib.query, axis: .vertical)
                 .textFieldStyle(.plain)
                 .lineLimit(1...6)
                 .focused($composerFocused)
                 .onSubmit(send)
-                .disabled(notebook == nil)
-            Button(action: send) {
-                Image(systemName: "arrow.up.circle.fill").font(.title2)
+                .disabled(library.notebooks.isEmpty)
+            if library.answering {
+                Button { library.stopAnswer() } label: { Image(systemName: "stop.circle.fill").font(.title2) }
+                    .buttonStyle(.plain)
+                    .help("Stop (⌘.)")
+                    .accessibilityLabel("Stop")
+            } else {
+                Button(action: send) { Image(systemName: "arrow.up.circle.fill").font(.title2) }
+                    .buttonStyle(.plain)
+                    .disabled(!canSend)
+                    .help("Send (Return)")
+                    .accessibilityLabel("Send")
             }
-            .buttonStyle(.plain)
-            .keyboardShortcut(.return, modifiers: [])
-            .disabled(!canSend)
-            .help("Send (Return)")
-            .accessibilityLabel("Send")
         }
         .padding(12)
         .background(.bar)
     }
 
+    private var placeholder: String {
+        if library.notebooks.isEmpty { return model.paired ? "Your notebooks are on their way" : "Pair with a Mac to ask" }
+        return ready ? "Ask \(currentTitle)…" : "Ask now, the answer starts when ready"
+    }
+
     private var canSend: Bool {
-        notebook != nil && !question.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && model.isPaired
+        !library.notebooks.isEmpty && !library.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     private func send() {
-        guard canSend else { return }
-        // Phase 2: hand the question to the engine and stream the answer.
+        let q = library.query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !q.isEmpty, !library.answering, !library.notebooks.isEmpty else { return }
+        if !ready { queued = q; library.query = ""; return }
+        library.query = q
+        Task { await library.ask() }
     }
 }
 
-extension Notification.Name {
-    /// Posted by the Ask menu item (⌘L): put the cursor in the composer.
-    static let focusComposer = Notification.Name("LocalBook.focusComposer")
+struct SourceRef: Identifiable { let id = UUID(); let number: Int; let hits: [LibraryHit] }
+
+/// The cited passage, in a popover. Double-click to open the source viewer arrives with Sources (read) later in Phase 2.
+struct SourcePopover: View {
+    let number: Int
+    let hit: LibraryHit
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Source \(number)").font(.headline)
+                Spacer()
+                Text(hit.filename).font(.footnote).foregroundStyle(.secondary).lineLimit(1)
+            }
+            Divider()
+            ScrollView {
+                VStack(alignment: .leading, spacing: 10) {
+                    if hit.sourceId.hasPrefix(LocalNotes.prefix), let image = NSImage(contentsOfFile: LibraryModel.photoURL(hit.sourceId).path) {
+                        Image(nsImage: image).resizable().scaledToFit().clipShape(RoundedRectangle(cornerRadius: 8))
+                    }
+                    Text(hit.text).textSelection(.enabled)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .padding(16)
+        .frame(width: 440)
+        .frame(minHeight: 120, maxHeight: 420)
+    }
+}
+
+/// One calm line while the Mac gets ready; the question field stays usable.
+struct ReadyBar: View {
+    let library: LibraryModel
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if let why = failure {
+                Label(why, systemImage: "exclamationmark.triangle.fill").font(.footnote).foregroundStyle(.orange)
+            } else {
+                Text("Getting ready — about a minute the first time. You can ask now; the answer starts when ready.").font(.footnote).foregroundStyle(.secondary)
+                ProgressView(value: progress)
+            }
+        }
+        .accessibilityElement(children: .combine)
+    }
+    private var progress: Double {
+        var p = library.notebooks.isEmpty ? 0.0 : 0.2
+        if library.searchState == .ready { p += 0.3 }
+        if library.answerModelState == .ready { p += 0.5 }
+        return p
+    }
+    private var failure: String? {
+        if case .failed(let why) = library.searchState { return why }
+        if case .failed(let why) = library.answerModelState { return why }
+        return nil
+    }
+}
+
+/// Lays its children out left to right, wrapping to the next line when the width runs out.
+struct FlowRow: Layout {
+    var spacing: CGFloat = 6
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let width = proposal.width ?? 600
+        var x: CGFloat = 0, y: CGFloat = 0, rowHeight: CGFloat = 0
+        for s in subviews {
+            let size = s.sizeThatFits(.unspecified)
+            if x > 0, x + size.width > width { x = 0; y += rowHeight + spacing; rowHeight = 0 }
+            x += size.width + spacing
+            rowHeight = max(rowHeight, size.height)
+        }
+        return CGSize(width: width, height: y + rowHeight)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        var x = bounds.minX, y = bounds.minY, rowHeight: CGFloat = 0
+        for s in subviews {
+            let size = s.sizeThatFits(.unspecified)
+            if x > bounds.minX, x + size.width > bounds.maxX { x = bounds.minX; y += rowHeight + spacing; rowHeight = 0 }
+            s.place(at: CGPoint(x: x, y: y), proposal: .unspecified)
+            x += size.width + spacing
+            rowHeight = max(rowHeight, size.height)
+        }
+    }
 }

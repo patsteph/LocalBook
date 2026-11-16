@@ -8,8 +8,15 @@ import MLX
 /// step. So when the screen is about to lock, stop the work AND wait for the GPU to finish what is queued while
 /// we are still allowed to use it.
 public enum GPUGuard {
+    /// Posted by nobody: the observer handed back on the Mac, where leaving the front withdraws nothing, so the
+    /// caller's `removeObserver` has something real to remove and the answer keeps streaming behind other windows.
+    private static let never = Notification.Name("LocalBookEngines.GPUGuard.never")
+
     public static func protect<T: Sendable>(_ task: Task<T, any Error>, label: String = "answer", onLock: @escaping @Sendable () -> Void = {}) -> NSObjectProtocol {
-        NotificationCenter.default.addObserver(forName: AppLifecycle.willResignActive, object: nil, queue: nil) { _ in
+        guard AppLifecycle.backgroundWithdrawsGPU else {
+            return NotificationCenter.default.addObserver(forName: never, object: nil, queue: nil) { _ in }
+        }
+        return NotificationCenter.default.addObserver(forName: AppLifecycle.willResignActive, object: nil, queue: nil) { _ in
             GPUGate.close()                                 // 0. prompt processing queues nothing more
             onLock()
             task.cancel()                                   // 1. no new tokens
@@ -37,8 +44,8 @@ public enum GPUGuard {
         return done.wait(timeout: .now() + timeout) == .success
     }
 
-    /// Don't start GPU work unless the app is in front.
-    @MainActor public static var canStart: Bool { AppLifecycle.isActive }
+    /// Don't start GPU work unless the app is in front. The Mac may start it any time: its GPU is never withdrawn.
+    @MainActor public static var canStart: Bool { !AppLifecycle.backgroundWithdrawsGPU || AppLifecycle.isActive }
 }
 
 /// Set from a notification callback, read from the awaiting code.

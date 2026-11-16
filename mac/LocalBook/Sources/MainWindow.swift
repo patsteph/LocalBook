@@ -1,3 +1,5 @@
+import LocalBookCore
+import LocalBookEngines
 import SwiftUI
 
 /// Sidebar on the left, the selected destination on the right. One idea per window: ask a notebook.
@@ -13,7 +15,7 @@ struct MainWindow: View {
         } detail: {
             switch model.selection {
             case .notebook, nil:
-                AskView(notebook: model.selectedNotebook)
+                AskView()
             case .studio:
                 PlaceholderPane(symbol: "sparkles", title: "Studio",
                                 line: "Briefings, quizzes, flashcards, audio overviews and visuals, made on this Mac.")
@@ -25,8 +27,37 @@ struct MainWindow: View {
                                 line: "Your notes, with the editor and canvas.")
             }
         }
-        .navigationTitle(model.selectedNotebook?.name ?? "LocalBook")
+        .navigationTitle(model.title)
         .navigationSubtitle(model.readiness)
+        .toolbar {
+            ToolbarItemGroup(placement: .primaryAction) {
+                if model.paired {
+                    Button {
+                        model.syncNow()
+                    } label: {
+                        if case .syncing = model.library.syncState {
+                            ProgressView().controlSize(.small)
+                        } else {
+                            Label("Sync", systemImage: "arrow.triangle.2.circlepath")
+                        }
+                    }
+                    .help("Sync with your Mac now (⌘R)")
+                } else {
+                    Button {
+                        model.showPairing = true
+                    } label: {
+                        Label("Pair with a Mac", systemImage: "laptopcomputer.and.arrow.down")
+                    }
+                    .help("Pair with the Mac that holds your notebooks")
+                }
+            }
+        }
+        .sheet(isPresented: $model.showPairing) { PairingSheet(model: model) }
+        .task { await model.start() }
+        .onChange(of: model.library.scopeToNotebook) { _, _ in model.syncSelectionToScope() }
+        .onReceive(NotificationCenter.default.publisher(for: .syncNow)) { _ in model.syncNow() }
+        .onReceive(NotificationCenter.default.publisher(for: .stopAnswer)) { _ in model.library.stopAnswer() }
+        .onReceive(NotificationCenter.default.publisher(for: .pairWithMac)) { _ in model.showPairing = true }
     }
 }
 
@@ -43,4 +74,15 @@ struct PlaceholderPane: View {
             Text(line)
         }
     }
+}
+
+extension Notification.Name {
+    /// Posted by the Ask menu item (⌘L): put the cursor in the composer.
+    static let focusComposer = Notification.Name("LocalBook.focusComposer")
+    /// Notebook › Stop Answer (⌘.).
+    static let stopAnswer = Notification.Name("LocalBook.stopAnswer")
+    /// Notebook › Sync Now (⌘R).
+    static let syncNow = Notification.Name("LocalBook.syncNow")
+    /// Notebook › Pair with a Mac….
+    static let pairWithMac = Notification.Name("LocalBook.pairWithMac")
 }

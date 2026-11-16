@@ -10,8 +10,8 @@ Legend for "How": **Direct** = same design, Swift frameworks; **Port** = rewrite
 
 | Feature today | How | Swift approach | Phase | Status |
 |---|---|---|---|---|
-| Ask with citations, streaming, answer length, voice modifier | Direct | `AnswerRecipe` + Gemma via MLX Swift; `MLXGuidedGeneration` for structured calls | 2 | not started |
-| Hybrid search (BM25 + vectors) + FlashRank reranker | Direct | Phone's exact BM25, Accelerate flat scan (0.29 ms at the largest notebook), Core ML MiniLM | 2 | not started |
+| Ask with citations, streaming, answer length, voice modifier | Direct | `AnswerRecipe` + Gemma via MLX Swift; `MLXGuidedGeneration` for structured calls | 2 | in progress (2026-11-16: Ask with streaming, citations and answer length in the Mac app, on the phone's engine; voice modifier and read-aloud to come) |
+| Hybrid search (BM25 + vectors) + FlashRank reranker | Direct | Phone's exact BM25, Accelerate flat scan (0.29 ms at the largest notebook), Core ML MiniLM | 2 | in progress (2026-11-16: the Mac app runs the phone's search and reranker from the package) |
 | @curator cross-notebook search | Replace | Flat scan across all notebooks (1 ms for the whole library today); USearch index added only past ~1M chunks | 2 | not started |
 | Notebooks, folders, desktop ordering | Direct | SQLite, SwiftUI sidebar (AppKit outline view) | 2 | not started |
 | Sources list, source viewer, articles per source, export | Direct | SwiftUI + Quick Look previews, PDFKit viewer, export via `NSSavePanel` and Share | 2 to 3 | not started |
@@ -68,14 +68,14 @@ Legend for "How": **Direct** = same design, Swift frameworks; **Port** = rewrite
 | Feature today | How | Swift approach | Phase | Status |
 |---|---|---|---|---|
 | Sync (HLC, journal, merge, scope, retention, blobs, discovery, phone library/notes/personal/studio) | Port | Module-by-module with the 16 test files ported first; the Python pytest suite runs as a black-box conformance suite against the Swift host | 4 | not started |
-| Mac-to-Mac mTLS (Ed25519) and phone link (P-256) | Direct | swift-nio-ssl listener with `.ed25519` in `verifySignatureAlgorithms` (verified); Network.framework for the phone port | 4 | not started |
+| Mac-to-Mac mTLS (Ed25519) and phone link (P-256) | Direct | swift-nio-ssl listener with `.ed25519` in `verifySignatureAlgorithms` (verified); Network.framework for the phone port | 4 | in progress (2026-11-16: the Mac app pairs as a P-256 peer, the phone's side of the link; the listener is Phase 4) |
 | Encrypted volume (create, migrate, compact, open at login), staged restore, recovery phrase (BIP-39), K-1 keyvault (X25519/HKDF/AES-GCM), credential locker, Touch ID | Direct | `hdiutil` via `Process`; CryptoKit + Secure Enclave; LocalAuthentication; a one-time key migration from today's keyvault | 4 | not started |
 | Backup and restore | Port | Same archive format so old backups restore | 4 | not started |
 | MCP server, agent keys, `.mcpb` bridge, companions (install, connect, wire up) | Port | Official Swift MCP SDK (stdio + Streamable HTTP); bridge unchanged | 4 | not started |
 | OpenAI-compatible `/v1` (chat, embeddings, audio) | Port | Local HTTP server (Hummingbird or NIO); same routes and JSON | 4 | not started |
 | Browser extension endpoints (capture, transform, agent browser automation) | Port | Same HTTP contract so the shipped extension keeps working unchanged; agent-browser automation moves from Playwright to WKWebView | 4 | not started |
 | Health portal, system info, engine truth, updates | Port | Settings > Diagnostics with the same numbers; Sparkle or App Store for updates | 4 | not started |
-| Settings (all tabs), themes, encryption prompts, volume recovery | Direct | SwiftUI Settings scenes; system appearance plus the existing accent themes | 2 to 4 | not started |
+| Settings (all tabs), themes, encryption prompts, volume recovery | Direct | SwiftUI Settings scenes; system appearance plus the existing accent themes | 2 to 4 | in progress (2026-11-16: General, Sync (peer) and Models tabs live) |
 | Tauri shell duties (backend watchdog, port cleanup, crash log, token file) | Replace | None needed: there is no second process. Crash reporting via `MXMetricManager` and the app's log | 2 | not started |
 | Scripts (phone readiness, re-embed, backfills, benchmarks) | Port | Swift command-line targets in the package, run from Terminal or Settings > Library | 3 to 5 | not started |
 

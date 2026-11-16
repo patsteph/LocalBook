@@ -1,17 +1,18 @@
+import LocalBookCore
 import SwiftUI
 
-/// Notebooks in the desktop app's order, then the three cross-notebook places. The list is a SwiftUI `List` with
-/// the sidebar style; if selection, focus or density feel wrong on the Mac it becomes an `NSOutlineView`, as the
-/// plan allows, without changing anything else.
+/// Notebooks in the desktop app's order with its sections and colors, then the three cross-notebook places. A SwiftUI
+/// `List` with the sidebar style; if selection, focus or density feel wrong on the Mac it becomes an `NSOutlineView`,
+/// as the plan allows, without changing anything else.
 struct Sidebar: View {
     @Environment(AppModel.self) private var model
     @Binding var selection: AppModel.Destination?
 
     var body: some View {
         List(selection: $selection) {
-            if model.notebooks.isEmpty {
+            if model.library.notebooks.isEmpty {
                 Section("Notebooks") {
-                    Text(model.isPaired ? "Syncing notebooks…" : "Pair with your Mac to bring your notebooks here.")
+                    Text(model.paired ? "Syncing notebooks…" : "Pair with your Mac to bring your notebooks here.")
                         .font(.callout)
                         .foregroundStyle(.secondary)
                         .padding(.vertical, 4)
@@ -21,12 +22,13 @@ struct Sidebar: View {
                     Section(section.name) {
                         ForEach(section.notebooks) { notebook in
                             Label {
-                                Text(notebook.name)
+                                Text(notebook.title)
                             } icon: {
                                 Image(systemName: "book.closed")
-                                    .foregroundStyle(Color(hex: notebook.colorHex) ?? .accentColor)
+                                    .foregroundStyle(Color(hex: notebook.color) ?? .accentColor)
                             }
                             .tag(AppModel.Destination.notebook(notebook.id))
+                            .help("\(notebook.chunks) passages")
                         }
                     }
                 }

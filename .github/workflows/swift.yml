@@ -104,8 +104,17 @@ jobs:
         run: ./scripts/ci/select-xcode.sh "$WANTED_XCODE_MAJOR"
       - name: Install xcodegen
         run: brew list xcodegen >/dev/null 2>&1 || brew install xcodegen
-      - name: Generate the project
-        run: xcodegen generate
+      - name: Generate the project without the uncommitted reranker model
+        # The same two optional entries the iOS job drops (see below): the model lives only on Patrick's Mac.
+        run: |
+          python3 - <<'PY'
+          import re
+          p = 'project.yml'; s = open(p).read()
+          s = re.sub(r'      - path: [^\n]*tools/cache/[^\n]*\n        optional: true\n', '', s)
+          open(p, 'w').write(s)
+          PY
+          grep -c 'tools/cache' project.yml && exit 1 || true
+          xcodegen generate
       - name: Cache SwiftPM (Xcode)
         uses: actions/cache@v4
         with:

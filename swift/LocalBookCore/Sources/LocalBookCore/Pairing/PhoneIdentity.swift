@@ -25,7 +25,7 @@ public enum PhoneIdentity {
                              (kSecClassCertificate, [kSecAttrLabel as String: oldLabel])] as [(CFString, [String: Any])] {
             var q: [String: Any] = [kSecClass as String: cls]
             q.merge(extra) { $1 }
-            SecItemDelete(q as CFDictionary)
+            SecItemDelete(keychain(q))
         }
         UserDefaults.standard.removeObject(forKey: idKey)            // a new device id, so the Mac treats this as a new phone
         MacLink.paired = nil
@@ -36,12 +36,40 @@ public enum PhoneIdentity {
 
     public static var deviceId: String {
         if let id = UserDefaults.standard.string(forKey: idKey) { return id }
-        let id = "phone-" + (0..<6).map { _ in String(format: "%02x", UInt8.random(in: 0...255)) }.joined()
+        let id = idPrefix + (0..<6).map { _ in String(format: "%02x", UInt8.random(in: 0...255)) }.joined()
         UserDefaults.standard.set(id, forKey: idKey)
         return id
     }
 
-    public static let deviceName = "iPhone"
+    /// `phone-` on the iPhone, `mac-` for the Swift Mac app pairing as a peer. The Python host keys nothing on the
+    /// prefix; it only makes the device list on the host readable.
+    private static var idPrefix: String {
+        #if os(macOS)
+        return "mac-"
+        #else
+        return "phone-"
+        #endif
+    }
+
+    /// What the host's device list calls this peer. The iPhone has always said "iPhone"; the Mac gives its own name.
+    public static var deviceName: String {
+        #if os(macOS)
+        return DeviceDescription.userName
+        #else
+        return "iPhone"
+        #endif
+    }
+
+    /// Every Keychain dictionary goes through here. On the Mac the app is sandboxed and uses Secure Enclave keys,
+    /// which live only in the data-protection Keychain (the iOS-style one); without this flag macOS would use the
+    /// legacy file-based Keychain and the key creation fails with -34018 or -50. iOS has only the one Keychain.
+    private static func keychain(_ dict: [String: Any]) -> CFDictionary {
+        var d = dict
+        #if os(macOS)
+        d[kSecUseDataProtectionKeychain as String] = true
+        #endif
+        return d as CFDictionary
+    }
 
     /// The private key, created on first use. In the Secure Enclave on a phone: it can sign but never be copied out.
     public static func privateKey() throws -> SecKey {
@@ -54,7 +82,7 @@ public enum PhoneIdentity {
                                     kSecAttrKeyClass as String: kSecAttrKeyClassPrivate,
                                     kSecReturnRef as String: true]
         var found: CFTypeRef?
-        if SecItemCopyMatching(query as CFDictionary, &found) == errSecSuccess, let k = found {
+        if SecItemCopyMatching(keychain(query), &found) == errSecSuccess, let k = found {
             return k as! SecKey
         }
         var priv: [String: Any] = [kSecAttrIsPermanent as String: true, kSecAttrApplicationTag as String: tag]
@@ -70,7 +98,7 @@ public enum PhoneIdentity {
         }
         attrs[kSecPrivateKeyAttrs as String] = priv
         var err: Unmanaged<CFError>?
-        guard let key = SecKeyCreateRandomKey(attrs as CFDictionary, &err) else { throw err!.takeRetainedValue() }
+        guard let key = SecKeyCreateRandomKey(keychain(attrs), &err) else { throw err!.takeRetainedValue() }
         SoakTrace.log("pairing: new \(keyIsHardware ? "Secure Enclave" : "software") key")
         return key
     }
@@ -81,14 +109,14 @@ public enum PhoneIdentity {
         let q: [String: Any] = [kSecClass as String: kSecClassCertificate, kSecAttrLabel as String: label,
                                 kSecReturnRef as String: true]
         var found: CFTypeRef?
-        if SecItemCopyMatching(q as CFDictionary, &found) == errSecSuccess, let c = found {
+        if SecItemCopyMatching(keychain(q), &found) == errSecSuccess, let c = found {
             return c as! SecCertificate
         }
         let der = try buildCertificateDER()
         guard let cert = SecCertificateCreateWithData(nil, der as CFData) else { throw LabError.model("bad certificate") }
         let add: [String: Any] = [kSecClass as String: kSecClassCertificate, kSecValueRef as String: cert,
                                   kSecAttrLabel as String: label]
-        let status = SecItemAdd(add as CFDictionary, nil)
+        let status = SecItemAdd(keychain(add), nil)
         guard status == errSecSuccess || status == errSecDuplicateItem else { throw LabError.model("keychain \(status)") }
         return cert
     }
@@ -111,7 +139,7 @@ public enum PhoneIdentity {
                                 kSecReturnRef as String: true,
                                 kSecMatchLimit as String: kSecMatchLimitAll]
         var found: CFTypeRef?
-        let s = SecItemCopyMatching(q as CFDictionary, &found)
+        let s = SecItemCopyMatching(keychain(q), &found)
         guard s == errSecSuccess, let all = found as? [SecIdentity] else {
             throw LabError.model("no identities in the Keychain (\(s)) — key and certificate are stored but not paired")
         }

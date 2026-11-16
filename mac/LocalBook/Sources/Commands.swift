@@ -23,10 +23,12 @@ struct LocalBookCommands: Commands {
         CommandMenu("Notebook") {
             Button("Ask") { NotificationCenter.default.post(name: .focusComposer, object: nil) }
                 .keyboardShortcut("l")
-            Button("Stop Answer") {}.keyboardShortcut(".").disabled(true)                         // Phase 2
+            Button("Stop Answer") { NotificationCenter.default.post(name: .stopAnswer, object: nil) }
+                .keyboardShortcut(".")
             Divider()
-            Button("Sync Now") {}.keyboardShortcut("r").disabled(true)                            // Phase 2
-            Button("Pair with a Mac…") {}.disabled(true)                                          // Phase 2
+            Button("Sync Now") { NotificationCenter.default.post(name: .syncNow, object: nil) }
+                .keyboardShortcut("r")
+            Button("Pair with a Mac…") { NotificationCenter.default.post(name: .pairWithMac, object: nil) }
             Divider()
             Button("Read Answer Aloud") {}.keyboardShortcut("r", modifiers: [.command, .option]).disabled(true) // Phase 2
             Divider()
