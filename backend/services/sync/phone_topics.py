@@ -1,34 +1,36 @@
-"""The topics of one notebook, for a peer's sidebar: what the desktop's Themes panel shows, compact.
+"""The topics of one notebook, for a peer's sidebar: the source tags the desktop's Sources panel shows as a cloud,
+counted across the notebook's sources, biggest first.
 
-Pure function of the topic model's state (services/topic_modeling): per topic the display name, a few keywords,
-and how many of THIS notebook's chunks and sources it covers, biggest first. Nothing is computed here; a notebook
-whose topics were never modelled simply has none.
+Read straight from localbook.db (sources.tags is a JSON list per source), so it needs no model and costs one query.
+A notebook whose sources were never tagged simply has none.
 """
+import json
+import sqlite3
 from typing import Any, Dict, List
 
 from services.sync import phone_library
 
 
-async def topics(notebook_id: str, limit: int = 12) -> List[Dict[str, Any]]:
+def topics(notebook_id: str, limit: int = 24) -> List[Dict[str, Any]]:
     if not phone_library.is_visible(notebook_id):
         return []
+    from services.sync import runtime
+    path = runtime.data_dir() / runtime.DB_FILES["main"]
+    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=10)
     try:
-        from services.topic_modeling import topic_modeling_service as svc
-        found = await svc.get_topics(notebook_id)
-    except Exception:
+        rows = conn.execute("SELECT tags FROM sources WHERE notebook_id = ?", (notebook_id,)).fetchall()
+    except sqlite3.Error:
         return []
-    chunks: Dict[int, int] = {}
-    sources: Dict[int, set] = {}
-    for d in getattr(svc, "_documents", []):
-        if d.notebook_id == notebook_id and d.topic_id != -1:
-            chunks[d.topic_id] = chunks.get(d.topic_id, 0) + 1
-            sources.setdefault(d.topic_id, set()).add(d.source_id)
-    out = []
-    for t in found:
-        n = chunks.get(t.topic_id, 0)
-        if n == 0:
+    finally:
+        conn.close()
+    counts: Dict[str, int] = {}
+    for (raw,) in rows:
+        try:
+            tags = json.loads(raw) if raw else []
+        except (TypeError, ValueError):
             continue
-        out.append({"id": str(t.topic_id), "name": t.display_name, "keywords": [k for k, _ in t.keywords[:8]],
-                    "chunks": n, "sources": len(sources.get(t.topic_id, ()))})
-    out.sort(key=lambda x: (-x["chunks"], x["name"]))
+        for t in {str(t).strip() for t in tags if str(t).strip()}:
+            counts[t] = counts.get(t, 0) + 1
+    out = [{"id": t, "name": t, "keywords": [], "chunks": 0, "sources": n} for t, n in counts.items()]
+    out.sort(key=lambda x: (-x["sources"], x["name"]))
     return out[:limit]

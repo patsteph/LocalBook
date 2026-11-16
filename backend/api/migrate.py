@@ -196,9 +196,7 @@ async def topics(request: Request):
     _loopback(request)
     b = await request.json()
     from services.sync import phone_topics
-    ctx = contextvars.copy_context()
-    ctx.run(phone_library.include_everything.set, True)
-    return {"topics": await asyncio.create_task(phone_topics.topics(str(b.get("notebook_id", ""))), context=ctx)}
+    return {"topics": await _everything(phone_topics.topics, str(b.get("notebook_id", "")))}
 
 
 @router.post("/studio/list")

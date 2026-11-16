@@ -31,6 +31,8 @@ public final class LibraryModel {
     public private(set) var chunkCount = 0
     /// Bumped whenever the topics in the store changed, so a sidebar can reload what it shows.
     public private(set) var topicsVersion = 0
+    /// Why the last sync could not fetch a notebook's topics, by notebook id (an older Mac app answers 404).
+    public private(set) var topicProblems: [String: String] = [:]
     public private(set) var lastSyncLine = "Never synced"
     public private(set) var lastSummary: LibrarySync.Summary?
     public private(set) var hits: [LibraryHit] = []
@@ -159,8 +161,8 @@ public final class LibraryModel {
             await flushNotes()
             if let call = try? LibrarySync.pairedMacCall() {
                 let ids = notebooks.map(\.id)
-                let problems = await TopicsPull.pull(call: call, root: "/phone/library", store: store, notebooks: ids)
-                if !problems.isEmpty { SoakTrace.log("topics: \(problems.count) of \(ids.count) notebooks failed: \(problems.first ?? "")") }
+                topicProblems = await TopicsPull.pull(call: call, root: "/phone/library", store: store, notebooks: ids)
+                if !topicProblems.isEmpty { SoakTrace.log("topics: \(topicProblems.count) of \(ids.count) notebooks failed: \(topicProblems.values.first ?? "")") }
                 topicsVersion += 1
             }
         } catch {

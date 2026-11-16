@@ -113,8 +113,11 @@ struct TopicChips: View {
 
     var body: some View {
         if let topics {
-            if topics.isEmpty {
-                Text(model.paired ? "No topics yet. The Mac makes them after a notebook settles." : "No topics came over for this notebook.")
+            if let why = model.library.topicProblems[notebook.id] {
+                Text(why.contains("404") ? "The Mac's LocalBook is older than this app: restart it from the current code." : "Couldn't get topics from the Mac: \(why)")
+                    .font(.caption).foregroundStyle(.orange).padding(.vertical, 2)
+            } else if topics.isEmpty {
+                Text(model.paired ? "No topics yet: tag this notebook's sources in the Mac's Sources panel." : "No topics came over for this notebook.")
                     .font(.caption).foregroundStyle(.tertiary).padding(.vertical, 2)
             } else {
                 let shown = showAll ? topics : Array(topics.prefix(6))
@@ -127,7 +130,7 @@ struct TopicChips: View {
                             Text(t.name).lineLimit(1)
                         }
                         .buttonStyle(.chip)
-                        .help("\(t.chunks) passages in \(t.sources) source\(t.sources == 1 ? "" : "s")" + (t.keywords.isEmpty ? "" : "\n" + t.keywords.joined(separator: ", ")))
+                        .help("\(t.sources) source\(t.sources == 1 ? "" : "s") tagged \(t.name)")
                     }
                     if topics.count > 6 {
                         Button(showAll ? "Fewer" : "\(topics.count - 6) more…") { showAll.toggle() }.buttonStyle(.chipQuiet)
@@ -209,14 +212,33 @@ struct SyncStatusDot: View {
         }
     }
 
+    @State private var showing = false
+
     var body: some View {
         let s = state
-        HStack(spacing: 6) {
-            Circle().fill(s.color).frame(width: 8, height: 8)
-            Text(s.word).font(.caption).foregroundStyle(.secondary)
-            Spacer(minLength: 0)
+        Button {
+            showing.toggle()
+        } label: {
+            HStack(spacing: 6) {
+                Circle().fill(s.color).frame(width: 8, height: 8)
+                Text(s.word).font(.caption).foregroundStyle(.secondary)
+                Spacer(minLength: 0)
+            }
+            .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
         .help(s.detail)
+        .popover(isPresented: $showing, arrowEdge: .top) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text(s.word).font(.headline)
+                ForEach(s.detail.components(separatedBy: "\n"), id: \.self) { line in
+                    Text(line).font(.callout).foregroundStyle(.secondary)
+                }
+                if model.paired { Button("Sync Now") { showing = false; model.syncNow() }.controlSize(.small).padding(.top, 2) }
+            }
+            .padding(12)
+            .frame(minWidth: 220, maxWidth: 320, alignment: .leading)
+        }
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(s.word). \(s.detail)")
     }

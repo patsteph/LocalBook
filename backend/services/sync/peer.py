@@ -752,7 +752,7 @@ async def phone_library_topics(request: Request):
     _check_enabled()
     v = await _verified_phone(request)
     from services.sync import phone_topics
-    return {"topics": await phone_topics.topics(str(v["body"].get("notebook_id", "")))}
+    return {"topics": await asyncio.to_thread(phone_topics.topics, str(v["body"].get("notebook_id", "")))}
 
 
 @phone_sync_app.post("/phone/library/studio/list")

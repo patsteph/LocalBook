@@ -1,14 +1,14 @@
 import Foundation
 
-/// Copies each notebook's topics (the Mac's topic model, what its Themes panel shows) into the store, after a sync
+/// Copies each notebook's topics (the Mac's topic model, the source tags its Sources panel shows as a cloud) into the store, after a sync
 /// or an import. Topics are a convenience for the sidebar, so a failure is kept, never thrown: the notebook is still
 /// usable without them, and the next sync tries again.
 public enum TopicsPull {
     /// Root "/phone/library" over the paired link, "/migrate" over loopback to the old app.
-    /// Returns the problems, one per notebook whose topics could not be fetched.
+    /// Returns the problems by notebook id, for every notebook whose topics could not be fetched.
     @discardableResult
-    public static func pull(call: LibraryCall, root: String, store: LibraryStore, notebooks: [String]) async -> [String] {
-        var problems: [String] = []
+    public static func pull(call: LibraryCall, root: String, store: LibraryStore, notebooks: [String]) async -> [String: String] {
+        var problems: [String: String] = [:]
         for id in notebooks {
             do {
                 let data = try await call("\(root)/topics", try JSONSerialization.data(withJSONObject: ["notebook_id": id]))
@@ -20,7 +20,7 @@ public enum TopicsPull {
                 }
                 try await store.setTopics(notebook: id, list)
             } catch {
-                problems.append("\(id): \(error.localizedDescription)")
+                problems[id] = error.localizedDescription
             }
         }
         return problems
