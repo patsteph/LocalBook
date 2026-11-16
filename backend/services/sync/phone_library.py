@@ -17,6 +17,7 @@ ones to the phone.
 from __future__ import annotations
 
 import base64
+import contextvars
 import hashlib
 import json
 import logging
@@ -37,8 +38,15 @@ _cache_lock = threading.Lock()
 # ── who may see what ─────────────────────────────────────────────────────────
 
 
+# The one-way import into the Swift Mac app (api/migrate.py) reads every notebook, device-only ones included: it is
+# the owner moving their own library on their own Mac, over loopback, with the app token. Set only for that call.
+include_everything: contextvars.ContextVar[bool] = contextvars.ContextVar("phone_library_include_everything", default=False)
+
+
 def excluded() -> List[str]:
     """Notebooks phones must not read: the device-only ones (sync/scope.py) plus the older phones-only marks."""
+    if include_everything.get():
+        return []
     from services.sync import scope
     return scope.hidden_from_phones()
 

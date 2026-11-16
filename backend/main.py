@@ -970,6 +970,9 @@ app.include_router(correspondent_api.router, prefix="/correspondent", tags=["cor
 app.include_router(synthesis_api.router, prefix="/synthesis", tags=["synthesis"])
 app.include_router(articles_api.router, prefix="/articles", tags=["articles"])
 app.include_router(notebooks.router, prefix="/notebooks", tags=["notebooks"])
+# One-way import into the Swift Mac app on this Mac: loopback + app token, read-only (api/migrate.py).
+from api import migrate as migrate_api
+app.include_router(migrate_api.router, prefix="/migrate", tags=["migrate"])
 app.include_router(sources.router, prefix="/sources", tags=["sources"])
 app.include_router(chat.router, prefix="/chat", tags=["chat"])
 app.include_router(system_api.router, prefix="/system", tags=["system"])
