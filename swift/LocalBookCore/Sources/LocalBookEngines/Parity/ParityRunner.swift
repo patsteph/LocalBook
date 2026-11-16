@@ -12,6 +12,10 @@ public struct ParityRunner: Sendable {
     public let engine: EmbeddingGemma2Engine
     public var passes: Int = 1                 // >1 to keep a background run going long enough to lock the phone
 
+    public init(fixture: ParityFixture, engine: EmbeddingGemma2Engine, passes: Int = 1) {
+        self.fixture = fixture; self.engine = engine; self.passes = passes
+    }
+
     public struct Bars: Codable, Sendable {
         public var meanCosineMin = 0.999
         public var worstCosineMin = 0.998
