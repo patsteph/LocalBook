@@ -98,7 +98,16 @@ public enum PhoneIdentity {
         }
         attrs[kSecPrivateKeyAttrs as String] = priv
         var err: Unmanaged<CFError>?
-        guard let key = SecKeyCreateRandomKey(keychain(attrs), &err) else { throw err!.takeRetainedValue() }
+        guard let key = SecKeyCreateRandomKey(keychain(attrs), &err) else {
+            let error = err!.takeRetainedValue()
+            // errSecMissingEntitlement: the Secure Enclave and the data-protection Keychain are only open to an app
+            // signed with an App ID (`com.apple.application-identifier`), which Xcode adds when a Team is set. A Mac
+            // build with no Team ("Sign to Run Locally") has none, so say so instead of showing the raw code.
+            if CFErrorGetCode(error) == Int(errSecMissingEntitlement) {
+                throw LabError.model("this build is not signed with a development team, so macOS will not let it create its pairing key in the Secure Enclave. In Xcode, set Signing & Capabilities › Team for the LocalBook target, build again, and retry.")
+            }
+            throw error
+        }
         SoakTrace.log("pairing: new \(keyIsHardware ? "Secure Enclave" : "software") key")
         return key
     }
