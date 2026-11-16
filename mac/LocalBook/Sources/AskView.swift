@@ -169,6 +169,7 @@ struct AskView: View {
     private var intro: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text(currentTitle).font(.title3.bold())
+            if let nb = model.selectedNotebook { NotebookSummaryLine(notebook: nb) }
             Text("Try asking:").font(.footnote).foregroundStyle(.secondary)
             ForEach(["What are the main points in this notebook?", "What changed most recently?", "Who is mentioned most often?"], id: \.self) { q in
                 Button { library.query = q; send() } label: {
@@ -410,6 +411,30 @@ struct FlowRow: Layout {
             s.place(at: CGPoint(x: x, y: y), proposal: .unspecified)
             x += size.width + spacing
             rowHeight = max(rowHeight, size.height)
+        }
+    }
+}
+
+
+/// "12 sources · 1,480 passages" under the notebook's name, with the way to the Sources pane: what is actually here.
+struct NotebookSummaryLine: View {
+    @Environment(AppModel.self) private var model
+    let notebook: LibraryNotebookInfo
+    @State private var sourceCount: Int?
+
+    var body: some View {
+        HStack(spacing: 10) {
+            if notebook.chunks == 0 {
+                Text("Nothing copied yet").font(.footnote).foregroundStyle(.secondary)
+            } else {
+                Text("\(sourceCount.map { "\($0) source\($0 == 1 ? "" : "s") · " } ?? "")\(notebook.chunks.formatted()) passages")
+                    .font(.footnote).foregroundStyle(.secondary)
+            }
+            Button("Show Sources") { model.selection = .sources }.font(.footnote).buttonStyle(.link)
+        }
+        .task(id: notebook.id) { sourceCount = await model.library.sources(in: notebook.id).count }
+        .onReceive(NotificationCenter.default.publisher(for: .librarySynced)) { _ in
+            Task { sourceCount = await model.library.sources(in: notebook.id).count }
         }
     }
 }

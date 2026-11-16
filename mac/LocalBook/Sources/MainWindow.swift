@@ -39,6 +39,14 @@ struct MainWindow: View {
         .navigationSubtitle(model.readiness)
         .toolbar {
             ToolbarItemGroup(placement: .primaryAction) {
+                if model.currentNotebookId != nil {
+                    Button {
+                        model.selection = model.selection == .sources ? .notebook(model.currentNotebookId!) : .sources
+                    } label: {
+                        Label("Sources", systemImage: "doc.text.magnifyingglass")
+                    }
+                    .help("The notebook's sources (⌥⌘1)")
+                }
                 if model.paired {
                     Button {
                         model.syncNow()
