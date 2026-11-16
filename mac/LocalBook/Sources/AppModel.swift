@@ -34,6 +34,8 @@ final class AppModel {
     var showInspector = false
     /// A Studio kind the menu asked for (Studio › Briefing…): the Studio pane opens its make sheet.
     var makeRequest: StudioItem.Kind?
+    /// Record › Voice Note (⇧⌘V): the note editor with dictation already listening.
+    var showVoiceNote = false
     /// What the Sources pane and the inspector list, and what Ask returns to: the scoped notebook.
     var currentNotebookId: String? { library.scopeToNotebook }
     private var modelsStarted = false

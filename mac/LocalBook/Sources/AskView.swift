@@ -14,6 +14,7 @@ struct AskView: View {
     @State private var atBottom = true
     @State private var openSource: SourceRef?
     @State private var length = AnswerLength.current.rawValue
+    @State private var reader = ReadAloud()
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var library: LibraryModel { model.library }
@@ -57,6 +58,11 @@ struct AskView: View {
             SourcePopover(number: ref.number, hit: ref.hits[ref.number - 1])
         }
         .onReceive(NotificationCenter.default.publisher(for: .focusComposer)) { _ in composerFocused = true }
+        .onReceive(NotificationCenter.default.publisher(for: .readAnswerAloud)) { _ in
+            let latest = library.answerText.isEmpty ? (library.history.last?.answer ?? "") : library.answerText
+            if !latest.isEmpty { reader.toggle(latest) }
+        }
+        .onDisappear { reader.stop() }
         .onChange(of: ready) { _, isReady in
             guard isReady, let q = queued else { return }
             queued = nil
@@ -210,14 +216,27 @@ struct AskView: View {
         Divider().padding(.vertical, 4)
     }
 
-    /// Under a finished answer: Copy, Share, answer length. (Read aloud arrives with the Mac's voices in a later slice.)
-    private func actions(for text: String) -> some View {
+    /// Under a finished answer: Copy, Share, Read aloud (⌥⌘R) with the phone's on-device voice.
+    @ViewBuilder private func actions(for text: String) -> some View {
         HStack(spacing: 16) {
             Button { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(text, forType: .string) } label: { Label("Copy", systemImage: "doc.on.doc") }
             ShareLink(item: text) { Label("Share", systemImage: "square.and.arrow.up") }
+            Button { reader.toggle(text) } label: {
+                switch reader.state {
+                case .preparing: HStack(spacing: 6) { ProgressView().controlSize(.mini); Text("Preparing voice…") }
+                case .speaking: Label("Pause", systemImage: "pause.fill")
+                case .paused: Label("Resume", systemImage: "play.fill")
+                default: Label("Read Aloud", systemImage: "speaker.wave.2.fill")
+                }
+            }
+            if reader.isActive {
+                Button { reader.stop() } label: { Label("Stop", systemImage: "stop.fill") }
+                ProgressView(value: reader.fraction).frame(maxWidth: 80)
+            }
             Spacer()
         }
         .font(.footnote).buttonStyle(.borderless)
+        if case .failed(let why) = reader.state { Text(why).font(.caption).foregroundStyle(.orange) }
     }
 
     @ViewBuilder private func sourcesRow(_ sources: [LibraryHit]) -> some View {
@@ -294,6 +313,7 @@ struct AskView: View {
     private func send() {
         let q = library.query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !q.isEmpty, !library.answering, !library.notebooks.isEmpty else { return }
+        reader.stop()
         if !ready { queued = q; library.query = ""; return }
         library.query = q
         Task { await library.ask() }

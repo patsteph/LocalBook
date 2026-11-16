@@ -14,6 +14,11 @@ options:
 packages:
   LocalBookCore:
     path: ../../swift/LocalBookCore
+  # Linked by the app itself for the read-aloud voice and the meeting recorder (Kokoro, the speaker and speech
+  # models), as the iPhone app does; same pin as the package.
+  FluidAudio:
+    url: https://github.com/FluidInference/FluidAudio
+    from: "0.17.6"
 
 settings:
   base:
@@ -58,6 +63,8 @@ targets:
         product: LocalBookCore
       - package: LocalBookCore
         product: LocalBookEngines
+      - package: FluidAudio
+        product: FluidAudio
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.patsteph.localbook.mac

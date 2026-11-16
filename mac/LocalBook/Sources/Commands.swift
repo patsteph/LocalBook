@@ -14,7 +14,8 @@ struct LocalBookCommands: Commands {
         // File
         CommandGroup(replacing: .newItem) {
             Button("New Notebook…") {}.keyboardShortcut("n").disabled(true)                       // Phase 3
-            Button("New Note") {}.keyboardShortcut("n", modifiers: [.command, .shift]).disabled(true) // Phase 3
+            Button("New Note") { NotificationCenter.default.post(name: .newNote, object: nil) }
+                .keyboardShortcut("n", modifiers: [.command, .shift])
             Divider()
             Button("Add Sources…") {}.keyboardShortcut("o").disabled(true)                        // Phase 3
             Button("Add Web Page…") {}.keyboardShortcut("l", modifiers: [.command, .shift]).disabled(true)
@@ -35,7 +36,8 @@ struct LocalBookCommands: Commands {
                 .keyboardShortcut("r")
             Button("Pair with a Mac…") { NotificationCenter.default.post(name: .pairWithMac, object: nil) }
             Divider()
-            Button("Read Answer Aloud") {}.keyboardShortcut("r", modifiers: [.command, .option]).disabled(true) // Phase 2
+            Button("Read Answer Aloud") { NotificationCenter.default.post(name: .readAnswerAloud, object: nil) }
+                .keyboardShortcut("r", modifiers: [.command, .option])
             Divider()
             Button("Keep Local") {}.disabled(true)                                                 // Phase 4
             Button("Sync Everywhere") {}.disabled(true)                                           // Phase 4
@@ -57,8 +59,10 @@ struct LocalBookCommands: Commands {
 
         // Record
         CommandMenu("Record") {
-            Button("Start Meeting Recording") {}.keyboardShortcut("r", modifiers: [.command, .shift]).disabled(true) // Phase 2
-            Button("Voice Note") {}.keyboardShortcut("v", modifiers: [.command, .shift]).disabled(true)              // Phase 2
+            Button("Start Meeting Recording") { NotificationCenter.default.post(name: .startMeetingRecording, object: nil) }
+                .keyboardShortcut("r", modifiers: [.command, .shift])
+            Button("Voice Note") { NotificationCenter.default.post(name: .voiceNote, object: nil) }
+                .keyboardShortcut("v", modifiers: [.command, .shift])
         }
 
         // View
@@ -68,7 +72,8 @@ struct LocalBookCommands: Commands {
                 .keyboardShortcut("1", modifiers: [.command, .option])
             Button("Show Studio") { NotificationCenter.default.post(name: .showStudio, object: nil) }
                 .keyboardShortcut("2", modifiers: [.command, .option])
-            Button("Show Meetings") {}.keyboardShortcut("3", modifiers: [.command, .option]).disabled(true)       // Phase 2, later slice
+            Button("Show Meetings") { NotificationCenter.default.post(name: .showMeetings, object: nil) }
+                .keyboardShortcut("3", modifiers: [.command, .option])
             Divider()
             Button("Show Inspector") { NotificationCenter.default.post(name: .toggleInspector, object: nil) }
                 .keyboardShortcut("i", modifiers: [.command, .option])

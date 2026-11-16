@@ -60,6 +60,9 @@ struct MainWindow: View {
             }
         }
         .sheet(isPresented: $model.showPairing) { PairingSheet(model: model) }
+        .sheet(isPresented: $model.showVoiceNote) {
+            if let id = model.currentNotebookId { NoteEditor(notebookId: id, startDictating: true).environment(model) }
+        }
         .task { await model.start() }
         .onChange(of: model.library.scopeToNotebook) { _, _ in model.syncSelectionToScope() }
         .onReceive(NotificationCenter.default.publisher(for: .syncNow)) { _ in model.syncNow() }
@@ -68,6 +71,17 @@ struct MainWindow: View {
         .onReceive(NotificationCenter.default.publisher(for: .focusComposer)) { _ in model.showAsk() }
         .onReceive(NotificationCenter.default.publisher(for: .showSources)) { _ in if model.currentNotebookId != nil { model.selection = .sources } }
         .onReceive(NotificationCenter.default.publisher(for: .showStudio)) { _ in model.selection = .studio }
+        .onReceive(NotificationCenter.default.publisher(for: .showMeetings)) { _ in model.selection = .meetings }
+        .onReceive(NotificationCenter.default.publisher(for: .startMeetingRecording)) { _ in model.selection = .meetings }
+        .onReceive(NotificationCenter.default.publisher(for: .newNote)) { note in
+            guard note.object == nil, model.currentNotebookId != nil else { return }
+            if model.selection != .notes {
+                model.selection = .notes
+                // The Notes pane is not on screen yet to hear this one: tell it once it is.
+                Task { @MainActor in NotificationCenter.default.post(name: .newNote, object: "pane") }
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .voiceNote)) { _ in if model.currentNotebookId != nil { model.showVoiceNote = true } }
         .onReceive(NotificationCenter.default.publisher(for: .toggleInspector)) { _ in model.showInspector.toggle() }
         .onReceive(NotificationCenter.default.publisher(for: .makeStudio)) { note in
             if let raw = note.object as? String, let kind = StudioItem.Kind(rawValue: raw) { model.make(kind) }
@@ -105,4 +119,11 @@ extension Notification.Name {
     static let toggleInspector = Notification.Name("LocalBook.toggleInspector")
     /// Studio › Briefing … Video Explainer; `object` is the `StudioItem.Kind` raw value.
     static let makeStudio = Notification.Name("LocalBook.makeStudio")
+    /// View › Show Meetings (⌥⌘3); Record › Start Meeting Recording (⇧⌘R), Voice Note (⇧⌘V); File › New Note (⇧⌘N);
+    /// Notebook › Read Answer Aloud (⌥⌘R).
+    static let showMeetings = Notification.Name("LocalBook.showMeetings")
+    static let startMeetingRecording = Notification.Name("LocalBook.startMeetingRecording")
+    static let voiceNote = Notification.Name("LocalBook.voiceNote")
+    static let newNote = Notification.Name("LocalBook.newNote")
+    static let readAnswerAloud = Notification.Name("LocalBook.readAnswerAloud")
 }

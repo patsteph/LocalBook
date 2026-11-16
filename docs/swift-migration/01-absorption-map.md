@@ -10,7 +10,7 @@ Legend for "How": **Direct** = same design, Swift frameworks; **Port** = rewrite
 
 | Feature today | How | Swift approach | Phase | Status |
 |---|---|---|---|---|
-| Ask with citations, streaming, answer length, voice modifier | Direct | `AnswerRecipe` + Gemma via MLX Swift; `MLXGuidedGeneration` for structured calls | 2 | in progress (2026-11-16: Ask with streaming, citations and answer length in the Mac app, on the phone's engine; voice modifier and read-aloud to come) |
+| Ask with citations, streaming, answer length, voice modifier | Direct | `AnswerRecipe` + Gemma via MLX Swift; `MLXGuidedGeneration` for structured calls | 2 | in progress (2026-11-16: Ask with streaming, citations and answer length in the Mac app, on the phone's engine; voice modifier to come; read-aloud landed in slice 3 with the phone's Kokoro voice) |
 | Hybrid search (BM25 + vectors) + FlashRank reranker | Direct | Phone's exact BM25, Accelerate flat scan (0.29 ms at the largest notebook), Core ML MiniLM | 2 | in progress (2026-11-16: the Mac app runs the phone's search and reranker from the package) |
 | @curator cross-notebook search | Replace | Flat scan across all notebooks (1 ms for the whole library today); USearch index added only past ~1M chunks | 2 | not started |
 | Notebooks, folders, desktop ordering | Direct | SQLite, SwiftUI sidebar (AppKit outline view) | 2 | not started |
@@ -34,7 +34,7 @@ Legend for "How": **Direct** = same design, Swift frameworks; **Port** = rewrite
 | YouTube transcripts | Direct | swift-youtube-transcript or own Innertube client; paste fallback | 3 | not started |
 | Folder watcher | Direct | `FSEvents` / `DispatchSource` | 3 | not started |
 | Scan pipeline (capture sessions, image upload, WebSocket push from phone) | Direct | Phone already captures; Mac receives over the sync link; Vision OCR | 3 | not started |
-| Voice notes (Whisper) | Direct | SpeechAnalyzer + FluidAudio Parakeet | 2 | not started |
+| Voice notes (Whisper) | Direct | SpeechAnalyzer + FluidAudio Parakeet | 2 | in progress (2026-11-16: the Mac app's Notes pane writes, dictates (on-device SFSpeechRecognizer), photographs (Vision OCR) and transcribes audio/video files into notes; the meeting recorder with speaker turns is the Meetings pane; notes reach the Python host over the phone route) |
 | Audio and video transcription (mlx-whisper, parakeet-mlx, PyAV decode) | Direct | AVFoundation decode + SpeechAnalyzer; WhisperKit via the Argmax SDK for the Whisper-specific path if a language needs it | 3 | not started |
 | Multimodal extractor (images in documents through the vision model) | Direct | MLXVLM (Gemma 4 vision) | 3 | not started |
 
