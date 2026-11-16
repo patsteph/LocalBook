@@ -1,7 +1,9 @@
+import AppKit
 import Combine
 import LocalBookCore
 import LocalBookEngines
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// Sidebar on the left, the selected destination on the right. One idea per window: ask a notebook.
 struct MainWindow: View {
@@ -31,6 +33,9 @@ struct MainWindow: View {
                 }
             }
             .acceptsDrops(for: model.currentNotebookId)
+            // ⌘V with files on the clipboard (copied in the Finder) adds them to the notebook on screen; a text
+            // field that has the focus still takes its own paste first.
+            .onPasteCommand(of: [.fileURL]) { providers in pasteFiles(providers) }
             .overlay(alignment: .bottom) { IntakeBanner().padding(.bottom, 14) }
             .inspector(isPresented: $model.showInspector) {
                 InspectorView()
@@ -73,6 +78,7 @@ struct MainWindow: View {
         .modifier(EditPromptsHost())
         .sheet(isPresented: $model.showPairing) { PairingSheet(model: model) }
         .sheet(isPresented: $model.showImport) { ImportSheet() }
+        .sheet(isPresented: Binding(get: { !model.filesToPlace.isEmpty }, set: { if !$0 { model.filesToPlace = [] } })) { PlaceFilesSheet() }
         .sheet(isPresented: $model.showVoiceNote) {
             if let id = model.currentNotebookId { NoteEditor(notebookId: id, startDictating: true).environment(model) }
         }
@@ -85,7 +91,8 @@ struct MainWindow: View {
     /// Every menu item speaks through one notification stream, so the body stays a short modifier chain.
     @MainActor private static let menuActions = Publishers.MergeMany(
         [Notification.Name.syncNow, .stopAnswer, .pairWithMac, .focusComposer, .showSources, .showStudio, .showMeetings,
-         .startMeetingRecording, .newNote, .voiceNote, .toggleInspector, .makeStudio, .askQuestion, .newNotebook, .importLibrary]
+         .startMeetingRecording, .newNote, .voiceNote, .toggleInspector, .makeStudio, .askQuestion, .newNotebook, .importLibrary,
+         .addSources, .openFiles]
             .map { NotificationCenter.default.publisher(for: $0) }
     )
 
@@ -111,10 +118,72 @@ struct MainWindow: View {
             if let q = note.object as? String, !q.isEmpty { model.pendingQuestion = q; model.showAsk() }
         case .voiceNote: if model.currentNotebookId != nil { model.showVoiceNote = true }
         case .toggleInspector: model.showInspector.toggle()
+        case .addSources: chooseFiles()
+        case .openFiles: if let url = note.object as? URL { model.addFiles([url], ask: true) }
         case .makeStudio:
             if let raw = note.object as? String, let kind = StudioItem.Kind(rawValue: raw) { model.make(kind) }
         default: break
         }
+    }
+}
+
+extension MainWindow {
+    /// File › Add Sources… (⌘O): the standard open panel, then the drop's path into the notebook on screen.
+    @MainActor fileprivate func chooseFiles() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true; panel.canChooseDirectories = false; panel.allowsMultipleSelection = true
+        panel.allowedContentTypes = IntakeModel.openableTypes
+        panel.message = model.currentNotebookId == nil ? "Choose files to add to a notebook" : "Choose files to add to \(model.title)"
+        panel.prompt = "Add"
+        guard panel.runModal() == .OK else { return }
+        model.addFiles(panel.urls)
+    }
+
+    @MainActor fileprivate func pasteFiles(_ providers: [NSItemProvider]) {
+        Task {
+            var urls: [URL] = []
+            for p in providers {
+                if let item = try? await p.loadItem(forTypeIdentifier: UTType.fileURL.identifier) {
+                    if let url = item as? URL { urls.append(url) }
+                    else if let data = item as? Data, let url = URL(dataRepresentation: data, relativeTo: nil) { urls.append(url) }
+                }
+            }
+            model.addFiles(urls)
+        }
+    }
+}
+
+/// "Which notebook?" for files that arrived without one: opened with LocalBook from the Finder, dropped on the Dock
+/// icon, or added while no notebook was on screen. One picker, one button.
+struct PlaceFilesSheet: View {
+    @Environment(AppModel.self) private var model
+    @State private var notebookId = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text(model.filesToPlace.count == 1 ? "Add “\(model.filesToPlace.first?.lastPathComponent ?? "")” to" : "Add \(model.filesToPlace.count) files to")
+                .font(.headline)
+            Picker("Notebook", selection: $notebookId) {
+                ForEach(model.sections) { section in
+                    Section(section.name) { ForEach(section.notebooks) { Text($0.title).tag($0.id) } }
+                }
+            }
+            .labelsHidden()
+            if model.filesToPlace.count > 1 {
+                Text(model.filesToPlace.map(\.lastPathComponent).joined(separator: ", ")).font(.caption).foregroundStyle(.secondary).lineLimit(3)
+            }
+            HStack {
+                Spacer()
+                Button("Cancel") { model.filesToPlace = [] }.keyboardShortcut(.cancelAction)
+                Button("Add") {
+                    let urls = model.filesToPlace; model.filesToPlace = []
+                    model.intake.take(files: urls, notebook: notebookId, library: model.library)
+                }
+                .keyboardShortcut(.defaultAction).disabled(notebookId.isEmpty)
+            }
+        }
+        .padding(20).frame(width: 380)
+        .onAppear { notebookId = model.currentNotebookId ?? model.library.notebooks.first?.id ?? "" }
     }
 }
 
@@ -163,4 +232,8 @@ extension Notification.Name {
     static let askQuestion = Notification.Name("LocalBook.askQuestion")
     /// Window › Open in New Window (⇧⌘D): the pane on screen opens its selected item in a window.
     static let detachItem = Notification.Name("LocalBook.detachItem")
+    /// File › Add Sources… (⌘O): the open panel.
+    static let addSources = Notification.Name("LocalBook.addSources")
+    /// A file opened with LocalBook (Finder, Dock icon); `object` is its URL.
+    static let openFiles = Notification.Name("LocalBook.openFiles")
 }

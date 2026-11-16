@@ -113,6 +113,27 @@ targets:
         NSMicrophoneUsageDescription: LocalBook listens when you dictate a note or record a meeting.
         NSSpeechRecognitionUsageDescription: LocalBook turns your dictation into text, on this Mac.
         NSCameraUsageDescription: LocalBook photographs pages and whiteboards so the text can be added to a notebook.
+        # "Open with LocalBook" in the Finder and drops on the Dock icon: the kinds a notebook drop takes. Alternate
+        # rank, so LocalBook never becomes a file's default app.
+        CFBundleDocumentTypes:
+          - CFBundleTypeName: Document
+            CFBundleTypeRole: Viewer
+            LSHandlerRank: Alternate
+            LSItemContentTypes:
+              - com.adobe.pdf
+              - org.openxmlformats.wordprocessingml.document
+              - com.microsoft.word.doc
+              - public.rtf
+              - com.apple.rtfd
+              - org.oasis-open.opendocument.text
+              - public.html
+              - com.apple.webarchive
+              - public.plain-text
+              - public.comma-separated-values-text
+              - public.json
+              - public.image
+              - public.audio
+              - public.movie
         # localbook://record and the other links the phone and the widgets already use.
         CFBundleURLTypes:
           - CFBundleURLName: com.patsteph.localbook.mac

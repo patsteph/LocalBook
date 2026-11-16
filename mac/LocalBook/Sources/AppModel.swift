@@ -74,6 +74,16 @@ final class AppModel {
     var pendingQuestion: String?
     /// Record › Voice Note (⇧⌘V): the note editor with dictation already listening.
     var showVoiceNote = false
+    /// Files that arrived without a notebook to land in (opened from the Finder or the Dock, or added with no
+    /// notebook selected): a small sheet asks which notebook, then they go the drop's way.
+    var filesToPlace: [URL] = []
+
+    /// Add `urls` to the current notebook, or ask which notebook when there is none (or when `ask` says to).
+    func addFiles(_ urls: [URL], ask: Bool = false) {
+        guard !urls.isEmpty else { return }
+        if !ask, let id = currentNotebookId { intake.take(files: urls, notebook: id, library: library) }
+        else { filesToPlace.append(contentsOf: urls) }
+    }
     /// What the Sources pane and the inspector list, and what Ask returns to: the scoped notebook.
     var currentNotebookId: String? { library.scopeToNotebook }
     private var modelsStarted = false

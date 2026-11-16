@@ -17,7 +17,7 @@ struct LocalBookCommands: Commands {
             Button("New Note") { NotificationCenter.default.post(name: .newNote, object: nil) }
                 .keyboardShortcut("n", modifiers: [.command, .shift])
             Divider()
-            Button("Add Sources…") {}.keyboardShortcut("o").disabled(true)                        // Phase 3
+            Button("Add Sources…") { NotificationCenter.default.post(name: .addSources, object: nil) }.keyboardShortcut("o")
             Button("Add Web Page…") {}.keyboardShortcut("l", modifiers: [.command, .shift]).disabled(true)
             Button("Watch Folder…") {}.disabled(true)
         }

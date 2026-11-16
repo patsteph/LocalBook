@@ -80,8 +80,10 @@ final class LaunchRequests {
         for (name, object) in queue { NotificationCenter.default.post(name: name, object: object) }
     }
 
-    /// localbook://record · localbook://ask?q=… · localbook://note?text=…
+    /// localbook://record · localbook://ask?q=… · localbook://note?text=… · a file opened with LocalBook from the
+    /// Finder or dropped on the Dock icon (`object` is its URL; the window asks which notebook).
     func open(_ url: URL) {
+        if url.isFileURL { post(.openFiles, object: url); return }
         guard url.scheme == "localbook" else { return }
         let parts = URLComponents(url: url, resolvingAgainstBaseURL: false)
         func value(_ key: String) -> String? { parts?.queryItems?.first { $0.name == key }?.value }

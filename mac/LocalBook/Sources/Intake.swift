@@ -40,6 +40,20 @@ final class IntakeModel {
     static let textTypes: [UTType] = [.plainText, .utf8PlainText, .rtf, .commaSeparatedText, .json, .xml, .html, .sourceCode, .yaml]
     static let acceptedTypes: [UTType] = [.fileURL, .url, .plainText, .utf8PlainText, .text]
 
+    /// Files chosen in an open panel, opened from the Finder or the Dock, or pasted: the same path as a drop.
+    func take(files urls: [URL], notebook: String, library: LibraryModel) {
+        guard !urls.isEmpty, !working else { return }
+        working = true; status = "Adding to the notebook…"
+        Task {
+            var report = Report()
+            for url in urls {
+                do { try await file(url, notebook: notebook, library: library, report: &report) }
+                catch { report.failed.append(error.localizedDescription) }
+            }
+            await finish(report, notebook: notebook, library: library)
+        }
+    }
+
     /// Everything the pasteboard offers for one drop, for one notebook.
     func take(_ providers: [NSItemProvider], notebook: String, library: LibraryModel) {
         guard !providers.isEmpty, !working else { return }
@@ -62,19 +76,28 @@ final class IntakeModel {
                     }
                 } catch { report.failed.append(error.localizedDescription) }
             }
-            // Files kept in the Inbox earlier that this Mac can read now become sources too.
-            for url in Self.queued(notebook) where TextExtract.canRead(url) {
-                do {
-                    try await library.ingestFile(url, notebook: notebook) { [weak self] s in self?.status = s }
-                    try? FileManager.default.removeItem(at: url)
-                    report.sources += 1
-                } catch { report.failed.append(error.localizedDescription) }
-            }
-            working = false; status = ""
-            lastReport = report; reportShownAt = Date()
-            NotificationCenter.default.post(name: .librarySynced, object: nil)
+            await finish(report, notebook: notebook, library: library)
         }
     }
+
+    /// Files kept in the Inbox earlier that this Mac can read now become sources too; then the result shows.
+    private func finish(_ initial: Report, notebook: String, library: LibraryModel) async {
+        var report = initial
+        for url in Self.queued(notebook) where TextExtract.canRead(url) {
+            do {
+                try await library.ingestFile(url, notebook: notebook) { [weak self] s in self?.status = s }
+                try? FileManager.default.removeItem(at: url)
+                report.sources += 1
+            } catch { report.failed.append(error.localizedDescription) }
+        }
+        working = false; status = ""
+        lastReport = report; reportShownAt = Date()
+        NotificationCenter.default.post(name: .librarySynced, object: nil)
+    }
+
+    /// What the open panel offers: everything a drop takes.
+    static let openableTypes: [UTType] = [.pdf, .rtf, .rtfd, .html, .plainText, .utf8PlainText, .commaSeparatedText, .json, .xml, .yaml, .sourceCode,
+                                          .image, .audio, .movie, .data]
 
     // MARK: one item
 
