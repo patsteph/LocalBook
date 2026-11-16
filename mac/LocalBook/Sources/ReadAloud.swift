@@ -58,6 +58,7 @@ final class ReadAloud {
                 kokoro = k
             }
             guard let kokoro, !Task.isCancelled else { return }
+            let voice = ReadAloudVoice.current.id, speed = ReadAloudVoice.speed
             let player = SpeechPlayer(sampleRate: Double(KokoroAneConstants.sampleRate))
             self.player = player
             try player.start()
@@ -71,7 +72,7 @@ final class ReadAloud {
             }
             for (i, text) in chunks.enumerated() {
                 if Task.isCancelled { return }
-                let result = try await kokoro.synthesizeDetailed(text: text)
+                let result = try await kokoro.synthesizeDetailed(text: text, voice: voice, speed: speed)
                 if Task.isCancelled { return }
                 player.schedule(result.samples)
                 if i == 0 { state = .speaking }

@@ -9,6 +9,9 @@ struct SettingsView: View {
     @State private var freed = ""
     @State private var unsent = 0
     @State private var length = AnswerLength.current.rawValue
+    @State private var voice = ReadAloudVoice.current.id
+    @State private var speed = Double(ReadAloudVoice.speed)
+    @State private var reader = ReadAloud()
     @State private var searchUnits = UserDefaults.standard.string(forKey: "searchUnits") ?? "ane"
     @State private var stoppable = UserDefaults.standard.object(forKey: "stoppablePrefill") as? Bool ?? true
 
@@ -42,6 +45,27 @@ struct SettingsView: View {
                 } header: { Text("Answers") } footer: {
                     Text("Short ≈ 200 words, Standard ≈ 350, Detailed ≈ 500. Longer answers take longer to write.")
                 }
+                Section {
+                    Picker("Voice", selection: $voice) {
+                        ForEach(ReadAloudVoice.Accent.allCases, id: \.self) { accent in
+                            Section(accent == .american ? "American" : "British") {
+                                ForEach(ReadAloudVoice.all.filter { $0.accent == accent }) { v in
+                                    Text("\(v.name) · \(v.feminine ? "woman" : "man")").tag(v.id)
+                                }
+                            }
+                        }
+                    }
+                    .onChange(of: voice) { _, v in UserDefaults.standard.set(v, forKey: "readAloudVoice"); if reader.isActive { reader.start(ReadAloudVoice.sampleLine) } }
+                    HStack {
+                        Text("Speed")
+                        Slider(value: $speed, in: 0.7...1.3, step: 0.05)
+                        Text(speed.formatted(.number.precision(.fractionLength(2))) + "×").monospacedDigit().foregroundStyle(.secondary)
+                    }
+                    .onChange(of: speed) { _, v in UserDefaults.standard.set(v, forKey: "readAloudSpeed") }
+                    Button(reader.isActive ? "Stop" : "Hear it") { if reader.isActive { reader.stop() } else { reader.start(ReadAloudVoice.sampleLine) } }
+                } header: { Text("Read aloud") } footer: {
+                    Text("Heart comes with the app; another voice is fetched the first time it speaks, then kept. Your Mac uses the same voice.")
+                }
                 DisclosureGroup("Advanced") {
                     Toggle("Stop safely when the screen locks", isOn: $stoppable)
                         .onChange(of: stoppable) { _, on in
@@ -69,6 +93,7 @@ struct SettingsView: View {
                 }
             }
             .navigationTitle("Settings")
+            .onDisappear { reader.stop() }
             .confirmationDialog("Remove this Mac?", isPresented: $confirmForget, titleVisibility: .visible) {
                 Button("Remove and delete library", role: .destructive) {
                     Task {

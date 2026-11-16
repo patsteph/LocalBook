@@ -25,14 +25,51 @@ struct GeneralSettings: View {
 
     var body: some View {
         Form {
-            Picker("Answer length", selection: $answerLength) {
-                ForEach(AnswerLength.allCases) { Text($0.label).tag($0.rawValue) }
+            Section("Answers") {
+                Picker("Answer length", selection: $answerLength) {
+                    ForEach(AnswerLength.allCases) { Text($0.label).tag($0.rawValue) }
+                }
+                .pickerStyle(.segmented)
+                Text("Short ≈ 200 words, Standard ≈ 350, Detailed ≈ 500. The same setting the iPhone app has.")
+                    .font(.callout).foregroundStyle(.secondary)
             }
-            .pickerStyle(.segmented)
-            Text("Short ≈ 200 words, Standard ≈ 350, Detailed ≈ 500. The same setting the iPhone app has.")
-                .font(.callout).foregroundStyle(.secondary)
+            ReadAloudSettings()
         }
         .formStyle(.grouped)
+    }
+}
+
+/// The voice and speed Read Aloud uses, with a line to hear it. Shared with the phone through the same defaults keys.
+struct ReadAloudSettings: View {
+    @AppStorage("readAloudVoice") private var voice = ReadAloudVoice.standard.id
+    @AppStorage("readAloudSpeed") private var speed = 1.0
+    @State private var reader = ReadAloud()
+
+    var body: some View {
+        Section("Read aloud") {
+            Picker("Voice", selection: $voice) {
+                ForEach(ReadAloudVoice.Accent.allCases, id: \.self) { accent in
+                    Section(accent == .american ? "American" : "British") {
+                        ForEach(ReadAloudVoice.all.filter { $0.accent == accent }) { v in
+                            Text("\(v.name) · \(v.feminine ? "woman" : "man")").tag(v.id)
+                        }
+                    }
+                }
+            }
+            .onChange(of: voice) { _, _ in if reader.isActive { reader.start(ReadAloudVoice.sampleLine) } }
+            HStack {
+                Slider(value: $speed, in: 0.7...1.3, step: 0.05) { Text("Speed") }
+                Text(speed.formatted(.number.precision(.fractionLength(2))) + "×").monospacedDigit().foregroundStyle(.secondary).frame(width: 44, alignment: .trailing)
+            }
+            HStack {
+                Button(reader.isActive ? "Stop" : "Hear it") { if reader.isActive { reader.stop() } else { reader.start(ReadAloudVoice.sampleLine) } }
+                if reader.state == .preparing { ProgressView().controlSize(.small) }
+                if case .failed(let why) = reader.state { Text(why).font(.caption).foregroundStyle(.orange) }
+            }
+            Text("Heart comes with the app; another voice is fetched the first time it speaks, then kept. The iPhone app uses the same voice.")
+                .font(.callout).foregroundStyle(.secondary)
+        }
+        .onDisappear { reader.stop() }
     }
 }
 
