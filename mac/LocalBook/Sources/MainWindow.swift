@@ -1,3 +1,4 @@
+import Combine
 import LocalBookCore
 import LocalBookEngines
 import SwiftUI
@@ -22,11 +23,9 @@ struct MainWindow: View {
                 case .studio:
                     StudioPane()
                 case .meetings:
-                PlaceholderPane(symbol: "waveform", title: "Meetings",
-                                line: "Record a meeting and get the transcript and notes in a notebook.")
+                    MeetingsPane()
                 case .notes:
-                    PlaceholderPane(symbol: "note.text", title: "Notes",
-                                    line: "Your notes, with the editor and canvas.")
+                    NotesPane()
                 }
             }
             .inspector(isPresented: $model.showInspector) {
@@ -65,26 +64,37 @@ struct MainWindow: View {
         }
         .task { await model.start() }
         .onChange(of: model.library.scopeToNotebook) { _, _ in model.syncSelectionToScope() }
-        .onReceive(NotificationCenter.default.publisher(for: .syncNow)) { _ in model.syncNow() }
-        .onReceive(NotificationCenter.default.publisher(for: .stopAnswer)) { _ in model.library.stopAnswer() }
-        .onReceive(NotificationCenter.default.publisher(for: .pairWithMac)) { _ in model.showPairing = true }
-        .onReceive(NotificationCenter.default.publisher(for: .focusComposer)) { _ in model.showAsk() }
-        .onReceive(NotificationCenter.default.publisher(for: .showSources)) { _ in if model.currentNotebookId != nil { model.selection = .sources } }
-        .onReceive(NotificationCenter.default.publisher(for: .showStudio)) { _ in model.selection = .studio }
-        .onReceive(NotificationCenter.default.publisher(for: .showMeetings)) { _ in model.selection = .meetings }
-        .onReceive(NotificationCenter.default.publisher(for: .startMeetingRecording)) { _ in model.selection = .meetings }
-        .onReceive(NotificationCenter.default.publisher(for: .newNote)) { note in
+        .onReceive(Self.menuActions) { note in handle(note) }
+    }
+
+    /// Every menu item speaks through one notification stream, so the body stays a short modifier chain.
+    @MainActor private static let menuActions = Publishers.MergeMany(
+        [Notification.Name.syncNow, .stopAnswer, .pairWithMac, .focusComposer, .showSources, .showStudio, .showMeetings,
+         .startMeetingRecording, .newNote, .voiceNote, .toggleInspector, .makeStudio]
+            .map { NotificationCenter.default.publisher(for: $0) }
+    )
+
+    private func handle(_ note: Notification) {
+        switch note.name {
+        case .syncNow: model.syncNow()
+        case .stopAnswer: model.library.stopAnswer()
+        case .pairWithMac: model.showPairing = true
+        case .focusComposer: model.showAsk()
+        case .showSources: if model.currentNotebookId != nil { model.selection = .sources }
+        case .showStudio: model.selection = .studio
+        case .showMeetings, .startMeetingRecording: model.selection = .meetings
+        case .newNote:
             guard note.object == nil, model.currentNotebookId != nil else { return }
             if model.selection != .notes {
                 model.selection = .notes
                 // The Notes pane is not on screen yet to hear this one: tell it once it is.
                 Task { @MainActor in NotificationCenter.default.post(name: .newNote, object: "pane") }
             }
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .voiceNote)) { _ in if model.currentNotebookId != nil { model.showVoiceNote = true } }
-        .onReceive(NotificationCenter.default.publisher(for: .toggleInspector)) { _ in model.showInspector.toggle() }
-        .onReceive(NotificationCenter.default.publisher(for: .makeStudio)) { note in
+        case .voiceNote: if model.currentNotebookId != nil { model.showVoiceNote = true }
+        case .toggleInspector: model.showInspector.toggle()
+        case .makeStudio:
             if let raw = note.object as? String, let kind = StudioItem.Kind(rawValue: raw) { model.make(kind) }
+        default: break
         }
     }
 }
