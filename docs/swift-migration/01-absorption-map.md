@@ -17,9 +17,9 @@ Legend for "How": **Direct** = same design, Swift frameworks; **Port** = rewrite
 | Sources list, source viewer, articles per source, export | Direct | SwiftUI + Quick Look previews, PDFKit viewer, export via `NSSavePanel` and Share | 2 to 3 | in progress (2026-11-16: Sources pane, inspector and source viewer window read synced sources; Quick Look, PDFKit and export with Phase 3 ingestion) |
 | Rich note editor, canvas notes | Direct | TextKit 2 (`NSTextView`) with Markdown round-trip | 3 | not started |
 | Chunking, synthetic questions, parent text, re-index, repair zero vectors | Port | Same algorithm as `phone_recipe.py`; maintenance commands in Settings > Library | 3 | not started |
-| Embedding selector, LLM Studio, model catalog, HF downloads, hardware profiler | Direct | `swift-huggingface` (phone uses it), MLX model registry, `ProcessInfo`/IOKit for hardware | 2 | not started |
+| Embedding selector, LLM Studio, model catalog, HF downloads, hardware profiler | Direct | `swift-huggingface` (phone uses it), MLX model registry, `ProcessInfo`/IOKit for hardware | 2 | in progress (2026-11-16: Settings › Models is LLM Studio: Locker (models in the Hub cache, "Use" switches the answer model), Browse (Hugging Face MLX search with "will it fit" against the GPU working set, downloads), Evaluator (speed test with kept history), Hardware; embedding selector and model catalog beyond MLX repos still to come) |
 | Memory system (persistent preferences, consolidation, memory bridge for companions) | Port | SQLite store + prompt ports; bridge endpoints on the local HTTP server | 4 | not started |
-| RAG health, rag profiles, evaluator capability probes, feature parity runner | Port | Fixtures become Swift Testing + the parity harness; a Settings > Diagnostics screen shows the same numbers | 4 | not started |
+| RAG health, rag profiles, evaluator capability probes, feature parity runner | Port | Fixtures become Swift Testing + the parity harness; a Settings > Diagnostics screen shows the same numbers | 4 | in progress (2026-11-16: Settings › Diagnostics runs the embedding parity test on the Mac at the phone's bars, with the tokenizer check, and keeps the JSON reports; health, RAG profiles and the evaluator probes come in Phase 4) |
 
 ### 4b. Ingestion and sources
 

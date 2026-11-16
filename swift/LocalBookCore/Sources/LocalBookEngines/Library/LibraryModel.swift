@@ -347,7 +347,7 @@ public final class LibraryModel {
         do {
             SoakTrace.log("answer model load begins (stoppable prefill: \(useStoppablePrefill ? "on" : "off"))")
             Memory.cacheLimit = 64 * 1024 * 1024
-            let plain = try await #huggingFaceLoadModelContainer(configuration: LLMRegistry.gemma4_e4b_it_4bit)
+            let plain = try await #huggingFaceLoadModelContainer(configuration: AnswerModels.configuration)
             if useStoppablePrefill {
                 let wrapped = await StoppableLM.wrap(plain)
                 if await Self.producesAnAnswer(wrapped) { gemma = wrapped; SoakTrace.log("answer model ready (stoppable prompt reading verified)") }
@@ -475,7 +475,7 @@ public final class LibraryModel {
         if gemma == nil {
             SoakTrace.log("answer model load begins")
             Memory.cacheLimit = 64 * 1024 * 1024
-            gemma = try await #huggingFaceLoadModelContainer(configuration: LLMRegistry.gemma4_e4b_it_4bit)
+            gemma = try await #huggingFaceLoadModelContainer(configuration: AnswerModels.configuration)
             SoakTrace.log("answer model load ends")
         }
         guard let gemma else { throw LibraryError.badResponse("answer model not loaded") }
@@ -707,7 +707,7 @@ public final class LibraryModel {
             if gemma == nil {
                 answerStatus = "Getting the answer model ready…"
                 Memory.cacheLimit = 64 * 1024 * 1024
-                gemma = try await #huggingFaceLoadModelContainer(configuration: LLMRegistry.gemma4_e4b_it_4bit)
+                gemma = try await #huggingFaceLoadModelContainer(configuration: AnswerModels.configuration)
             }
             guard let gemma else { return }
             guard GPUGuard.canStart else { answerStatus = "Open the app and ask again — answers can't run while the screen is off."; return }

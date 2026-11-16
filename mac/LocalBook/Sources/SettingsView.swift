@@ -9,14 +9,14 @@ struct SettingsView: View {
         TabView {
             Tab("General", systemImage: "gear") { GeneralSettings() }
             Tab("Sync", systemImage: "arrow.triangle.2.circlepath") { SyncSettings() }
-            Tab("Models", systemImage: "cpu") { ModelsSettings() }
+            Tab("Models", systemImage: "cpu") { LLMStudioView() }
             Tab("Library", systemImage: "books.vertical") { SettingsPlaceholder(line: "Re-index, repair, migrate from the previous LocalBook, backups. Phase 3.") }
             Tab("Agents", systemImage: "person.2") { SettingsPlaceholder(line: "Curator, Collector, Correspondent, People, schedules and keys for companions. Phases 4 and 5.") }
             Tab("Security", systemImage: "lock") { SettingsPlaceholder(line: "Encrypted volume, recovery phrase, Touch ID, credential locker. Phase 4.") }
-            Tab("Diagnostics", systemImage: "stethoscope") { SettingsPlaceholder(line: "Health, engine truth, parity, rough edges, logs. Phase 4.") }
+            Tab("Diagnostics", systemImage: "stethoscope") { DiagnosticsSettings() }
         }
         .scenePadding()
-        .frame(width: 560, height: 400)
+        .frame(width: 680, height: 560)
     }
 }
 
@@ -94,55 +94,6 @@ struct SyncSettings: View {
         case .syncing(let line): line
         case .failed(let why): "Sync failed: \(why)"
         case .idle: library.lastSyncLine
-        }
-    }
-}
-
-/// Phase 2: the two models the Mac runs (search, answers), the reranker and the recipe. Voices, downloads and the
-/// hardware profile join as Read-aloud and LLM Studio land.
-struct ModelsSettings: View {
-    @Environment(AppModel.self) private var model
-    @AppStorage("searchUnits") private var searchUnits = "ane"
-
-    private var library: LibraryModel { model.library }
-
-    var body: some View {
-        Form {
-            Section("Loaded on this Mac") {
-                LabeledContent("Search model", value: searchLine)
-                LabeledContent("Answer model", value: answerLine)
-                if case .failed = library.answerModelState {
-                    Button("Load again") { Task { await library.reloadAnswerModel() } }
-                }
-                Text(library.rerankerLine).font(.callout).foregroundStyle(.secondary)
-                Text(library.recipeLine).font(.callout).foregroundStyle(.secondary)
-            }
-            Section {
-                Picker("Search runs on", selection: $searchUnits) {
-                    Text("Neural Engine").tag("ane")
-                    Text("GPU").tag("gpu")
-                }
-                Text("Takes effect the next time the app opens.").font(.callout).foregroundStyle(.secondary)
-            } header: { Text("Hardware") }
-        }
-        .formStyle(.grouped)
-    }
-
-    private var searchLine: String {
-        switch library.searchState {
-        case .notReady: "Not loaded"
-        case .preparing(let what): "Loading \(what)"
-        case .ready: "Ready (EmbeddingGemma 2, Core ML)"
-        case .failed(let why): "Failed: \(why)"
-        }
-    }
-
-    private var answerLine: String {
-        switch library.answerModelState {
-        case .idle: "Not loaded"
-        case .loading: "Loading…"
-        case .ready: "Ready (Gemma 4 E4B, MLX)"
-        case .failed(let why): "Failed: \(why)"
         }
     }
 }
