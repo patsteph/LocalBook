@@ -41,7 +41,12 @@ final class AppModel {
     /// The rename, new and delete prompts the sidebar's menus open; one host at the window root shows them.
     let prompts = EditPrompts()
 
-    func loadSections() async { macSections = await library.sections() }
+    /// Why the last section list failed, for the Move to Section menu; nil once it works.
+    var sectionsProblem: String?
+    func loadSections() async {
+        do { macSections = try await library.sectionsFromMac(); sectionsProblem = nil }
+        catch { sectionsProblem = error.localizedDescription }
+    }
 
     /// Runs one change through the Mac, shows its problem if any, then tells open lists to reload.
     func edit(_ work: @escaping @MainActor () async -> String?) {

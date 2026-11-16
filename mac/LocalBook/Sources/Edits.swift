@@ -54,6 +54,7 @@ struct NotebookContextMenu: View {
 
     var body: some View {
         Button("Ask") { model.selection = .notebook(notebook.id) }
+            .onAppear { Task { await model.loadSections() } }   // the menu is built when shown, so this refreshes the list each time
         Button("Show Sources") { model.selection = .notebook(notebook.id); model.selection = .sources }
         Divider()
         Button("New Notebook…") { model.prompts.text = ""; model.prompts.newNotebook = true }
@@ -73,6 +74,9 @@ struct NotebookContextMenu: View {
             ForEach(model.macSections) { s in
                 Button(s.name) { model.edit { await model.library.editNotebooks("section", ["notebook_id": notebook.id, "section_id": s.id]) } }
                     .disabled(notebook.section == s.name)
+            }
+            if model.macSections.isEmpty {
+                Button(model.sectionsProblem.map { "Couldn't list the Mac's sections: \($0)" } ?? "No sections on the Mac yet") {}.disabled(true)
             }
             Divider()
             Button("New Section…") { model.prompts.text = ""; model.prompts.newSection = true }

@@ -2,77 +2,55 @@ import LocalBookCore
 import LocalBookEngines
 import SwiftUI
 
-/// Notebooks in the desktop app's order with its sections and colors, each opening to its sources, then the three
-/// cross-notebook places. Every action the desktop sidebar has is in the context menus; each goes through the paired
-/// Mac (the system of record until Phase 3) and syncs back.
+/// Notebooks in the desktop app's order with its sections and colors, then the three cross-notebook places. Every
+/// action the desktop sidebar has is in the context menus; each goes through the paired Mac (the system of record
+/// until Phase 3) and syncs back. Sources live behind the toolbar's Sources button, not here.
 struct Sidebar: View {
     @Environment(AppModel.self) private var model
     @Binding var selection: AppModel.Destination?
-    @State private var expanded: Set<String> = []
-    @State private var sources: [String: [LibraryStore.SourceInfo]] = [:]
 
     var body: some View {
-        List(selection: $selection) {
-            if model.library.notebooks.isEmpty {
-                Section("Notebooks") {
-                    Text(model.paired ? "Syncing notebooks…" : "Pair with your Mac to bring your notebooks here.")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                        .padding(.vertical, 4)
-                    if !model.paired {
-                        Button("Move my library here…") { model.showImport = true }.buttonStyle(.link).font(.callout)
+        VStack(spacing: 0) {
+            List(selection: $selection) {
+                if model.library.notebooks.isEmpty {
+                    Section("Notebooks") {
+                        Text(model.paired ? "Syncing notebooks…" : "Pair with your Mac to bring your notebooks here.")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                            .padding(.vertical, 4)
+                        if !model.paired {
+                            Button("Move my library here…") { model.showImport = true }.buttonStyle(.link).font(.callout)
+                        }
+                    }
+                } else {
+                    ForEach(model.sections) { section in
+                        Section {
+                            ForEach(section.notebooks) { notebook in notebookRow(notebook) }
+                        } header: {
+                            Text(section.name).contextMenu { sectionMenu(section) }
+                        }
                     }
                 }
-            } else {
-                ForEach(model.sections) { section in
-                    Section {
-                        ForEach(section.notebooks) { notebook in notebookRow(notebook) }
-                    } header: {
-                        Text(section.name).contextMenu { sectionMenu(section) }
-                    }
+                Section("Library") {
+                    Label("Studio", systemImage: "sparkles").tag(AppModel.Destination.studio)
+                    Label("Meetings", systemImage: "waveform").tag(AppModel.Destination.meetings)
+                    Label("Notes", systemImage: "note.text").tag(AppModel.Destination.notes)
                 }
             }
-            Section("Library") {
-                Label("Studio", systemImage: "sparkles").tag(AppModel.Destination.studio)
-                Label("Meetings", systemImage: "waveform").tag(AppModel.Destination.meetings)
-                Label("Notes", systemImage: "note.text").tag(AppModel.Destination.notes)
-            }
+            .listStyle(.sidebar)
+            Divider()
+            SyncStatusDot().padding(.horizontal, 12).padding(.vertical, 6)
         }
-        .listStyle(.sidebar)
-        .safeAreaInset(edge: .bottom) { SyncStatusLine().padding(.horizontal, 12).padding(.vertical, 8) }
-        .onChange(of: expanded) { _, now in Task { await load(now) } }
-        .onReceive(NotificationCenter.default.publisher(for: .librarySynced)) { _ in Task { await load(expanded, fresh: true) } }
     }
 
     private func notebookRow(_ notebook: LibraryNotebookInfo) -> some View {
-        DisclosureGroup(isExpanded: Binding(get: { expanded.contains(notebook.id) },
-                                            set: { if $0 { expanded.insert(notebook.id) } else { expanded.remove(notebook.id) } })) {
-            if let list = sources[notebook.id] {
-                if list.isEmpty {
-                    Text(notebook.chunks == 0 ? "Nothing copied yet" : "No sources").font(.callout).foregroundStyle(.tertiary)
-                }
-                ForEach(list) { s in
-                    Label {
-                        Text(s.name).lineLimit(1)
-                    } icon: { Image(systemName: SourceKinds.symbol(s.type)) }
-                    .tag(AppModel.Destination.source(SourceWindowKey(notebookId: s.notebookId, sourceId: s.id, name: s.name)))
-                    .help(SourceKinds.detail(s))
-                    .contextMenu { SourceContextMenu(source: s) }
-                }
-            } else {
-                ProgressView().controlSize(.small)
-            }
-        } label: {
-            Label {
-                Text(notebook.title)
-            } icon: {
-                Image(systemName: "book.closed")
-                    .foregroundStyle(Color(hex: notebook.color) ?? .accentColor)
-            }
-            .badge(notebook.chunks)
-            .help("\(notebook.chunks) passages")
-            .acceptsDrops(for: notebook.id)
+        Label {
+            Text(notebook.title).lineLimit(1)
+        } icon: {
+            Image(systemName: "book.closed")
+                .foregroundStyle(Color(hex: notebook.color) ?? .accentColor)
         }
+        .acceptsDrops(for: notebook.id)
         .tag(AppModel.Destination.notebook(notebook.id))
         .contextMenu { NotebookContextMenu(notebook: notebook) }
     }
@@ -86,40 +64,37 @@ struct Sidebar: View {
         Button("New Section…") { model.prompts.text = ""; model.prompts.newSection = true }
         Button("New Notebook…") { model.prompts.text = ""; model.prompts.newNotebook = true }
     }
-
-    /// The sources of every open notebook; only the ones not loaded yet unless `fresh`.
-    private func load(_ ids: Set<String>, fresh: Bool = false) async {
-        for id in ids where fresh || sources[id] == nil {
-            sources[id] = await model.library.sources(in: id)
-        }
-    }
 }
 
-/// What the copy on this Mac holds and what sync is doing, at the foot of the sidebar: the answer to "is it done?"
-/// without opening Settings. Progress while a sync runs, the failure when it fails, the totals otherwise.
-struct SyncStatusLine: View {
+/// One line at the foot of the sidebar: a colored dot and two words. The totals, the last sync and any failure are
+/// in the tooltip, so the line never grows and never covers the list above it.
+struct SyncStatusDot: View {
     @Environment(AppModel.self) private var model
 
-    var body: some View {
+    private var state: (color: Color, word: String, detail: String) {
         let library = model.library
-        VStack(alignment: .leading, spacing: 4) {
-            switch library.syncState {
-            case .syncing(let line):
-                HStack(spacing: 6) { ProgressView().controlSize(.mini); Text("Syncing…").font(.caption.weight(.semibold)) }
-                Text(line).font(.caption2).foregroundStyle(.secondary).lineLimit(2)
-            case .failed(let why):
-                Label("Sync failed", systemImage: "exclamationmark.triangle.fill").font(.caption.weight(.semibold)).foregroundStyle(.orange)
-                Text(why).font(.caption2).foregroundStyle(.secondary).lineLimit(3)
-            case .idle:
-                if model.paired {
-                    Text("\(library.notebooks.count) notebook\(library.notebooks.count == 1 ? "" : "s") · \(library.chunkCount.formatted()) passages")
-                        .font(.caption.weight(.semibold))
-                    Text(library.lastSyncLine + (library.lastSummary.map { " · \($0.changeLine)" } ?? "")).font(.caption2).foregroundStyle(.secondary).lineLimit(2)
-                }
-            }
+        let totals = "\(library.notebooks.count) notebook\(library.notebooks.count == 1 ? "" : "s") · \(library.chunkCount.formatted()) passages"
+        switch library.syncState {
+        case .syncing(let line):
+            return (.yellow, "Syncing…", line)
+        case .failed(let why):
+            return (.red, "Sync failed", why + "\n" + totals)
+        case .idle:
+            guard model.paired else { return (.gray, "Not paired", "Pair with your Mac in Settings › Sync, or move your library here.") }
+            return (.green, "Synced", library.lastSyncLine + (library.lastSummary.map { " · \($0.changeLine)" } ?? "") + "\n" + totals)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    var body: some View {
+        let s = state
+        HStack(spacing: 6) {
+            Circle().fill(s.color).frame(width: 8, height: 8)
+            Text(s.word).font(.caption).foregroundStyle(.secondary)
+            Spacer(minLength: 0)
+        }
+        .help(s.detail)
         .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(s.word). \(s.detail)")
     }
 }
 

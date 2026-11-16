@@ -64,9 +64,13 @@ extension LibraryModel {
     // MARK: notebooks and sections
 
     /// The Mac's sections, with the ids the move action needs (the manifest carries names only).
-    public func sections() async -> [Section] {
-        guard let r = try? await mac("/phone/library/notebook/edit", ["action": "sections"]),
-              let rows = r["sections"] as? [[String: Any]] else { return [] }
+    public func sections() async -> [Section] { (try? await sectionsFromMac()) ?? [] }
+
+    /// Same, but the failure is kept, so a menu can say why it has nothing to offer (an old app that predates the
+    /// route answers 404; an unpaired copy has no Mac to ask).
+    public func sectionsFromMac() async throws -> [Section] {
+        let r = try await mac("/phone/library/notebook/edit", ["action": "sections"])
+        guard let rows = r["sections"] as? [[String: Any]] else { throw LabError.model("The Mac's reply had no sections in it.") }
         return rows.compactMap { row in
             guard let id = row["id"] as? String, let name = row["name"] as? String else { return nil }
             return Section(id: id, name: name)
