@@ -126,10 +126,14 @@ public enum MacLink {
     /// A signed JSON call to the Mac's phone link; returns the raw response body.
     public static func signedCall(_ mac: PairedMac, path: String, json: [String: Any] = [:],
                            timeout: TimeInterval = 60) async throws -> Data {
+        try await signedCall(mac, path: path, body: try JSONSerialization.data(withJSONObject: json, options: [.sortedKeys]), timeout: timeout)
+    }
+
+    /// The same call with the JSON body already serialised (what `LibraryCall` carries).
+    public static func signedCall(_ mac: PairedMac, path: String, body: Data, timeout: TimeInterval = 60) async throws -> Data {
         let delegate = TrustCapture(pinned: mac.certDER, identity: nil)
         let session = URLSession(configuration: .ephemeral, delegate: delegate, delegateQueue: nil)
         defer { session.finishTasksAndInvalidate() }
-        let body = try JSONSerialization.data(withJSONObject: json, options: [.sortedKeys])
         var req = URLRequest(url: URL(string: "https://\(mac.host):\(mac.syncPort)\(path)")!)
         req.httpMethod = "POST"
         req.timeoutInterval = timeout

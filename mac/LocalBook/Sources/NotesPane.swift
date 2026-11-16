@@ -306,9 +306,12 @@ struct NotesPane: View {
     @State private var writing = false
     @State private var startText = ""
     @State private var confirmDelete: LibraryStore.LocalNote?
+    /// The old app's Canvas notes for the current notebook, moved over by the import. Read here, kept as they were.
+    @State private var imported: [LibraryStore.ImportedNote] = []
 
     private var library: LibraryModel { model.library }
     private var opened: LibraryStore.LocalNote? { notes.first { $0.id == selected } }
+    private var openedImported: LibraryStore.ImportedNote? { imported.first { $0.id == selected } }
 
     var body: some View {
         HSplitView {
@@ -317,6 +320,7 @@ struct NotesPane: View {
         }
         .task { await load(); await library.flushNotes(); await load() }
         .onReceive(NotificationCenter.default.publisher(for: .librarySynced)) { _ in Task { await load() } }
+        .onChange(of: library.scopeToNotebook) { _, _ in Task { await load() } }
         .onReceive(NotificationCenter.default.publisher(for: .newNote)) { note in
             // Only the main window's forwarded request: it has switched to this pane and may carry text to start from.
             guard let request = note.object as? NewNoteRequest, library.scopeToNotebook != nil else { return }
@@ -364,6 +368,20 @@ struct NotesPane: View {
                     .tag(n.id)
                     .contextMenu { Button("Delete…", role: .destructive) { confirmDelete = n } }
                 }
+                if !imported.isEmpty {
+                    Section("From the LocalBook on this Mac") {
+                        ForEach(imported) { n in
+                            HStack(alignment: .top, spacing: 10) {
+                                Image(systemName: "note.text").foregroundStyle(.secondary).frame(width: 22)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(n.title).lineLimit(1)
+                                    Text(n.created.prefix(10)).font(.caption).foregroundStyle(.secondary)
+                                }
+                            }
+                            .tag(n.id)
+                        }
+                    }
+                }
             }
             .listStyle(.inset)
             .onDeleteCommand { if let n = opened { confirmDelete = n } }
@@ -396,6 +414,26 @@ struct NotesPane: View {
                 }
             }
             .id(n.id)
+        } else if let n = openedImported {
+            VStack(spacing: 0) {
+                HStack(spacing: 12) {
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(n.title).font(.headline).lineLimit(1)
+                        Text("From the LocalBook on this Mac · " + (library.notebooks.first { $0.id == n.notebookId }?.title ?? "")).font(.caption).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(n.text, forType: .string) } label: { Image(systemName: "doc.on.doc") }.help("Copy text")
+                    ShareLink(item: n.text) { Image(systemName: "square.and.arrow.up") }.help("Share")
+                }
+                .buttonStyle(.borderless)
+                .padding(12)
+                Divider()
+                ScrollView {
+                    Text(AnswerText.render(n.text)).textSelection(.enabled).lineSpacing(3)
+                        .frame(maxWidth: 760, alignment: .leading).padding(20).frame(maxWidth: .infinity)
+                }
+            }
+            .id(n.id)
         } else {
             ContentUnavailableView {
                 Label("Notes", systemImage: "note.text")
@@ -407,10 +445,11 @@ struct NotesPane: View {
 
     private func load() async {
         notes = await library.localNotes()
+        imported = await library.importedNotes(in: library.scopeToNotebook)
         var s: Set<String> = []
         for n in notes where await library.noteSentSourceId(n.id) != nil { s.insert(n.id) }
         sent = s
-        if selected != nil, !notes.contains(where: { $0.id == selected }) { selected = nil }
+        if selected != nil, !notes.contains(where: { $0.id == selected }), !imported.contains(where: { $0.id == selected }) { selected = nil }
     }
 }
 

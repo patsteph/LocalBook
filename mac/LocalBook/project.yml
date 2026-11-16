@@ -104,6 +104,9 @@ targets:
         LSApplicationCategoryType: public.app-category.productivity
         NSHumanReadableCopyright: © 2026 Patrick Stephens
         ITSAppUsesNonExemptEncryption: false
+        # The import talks to the old LocalBook on this Mac over plain HTTP on loopback (its own port, with its token).
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
         NSLocalNetworkUsageDescription: LocalBook finds and syncs with your other Macs and your iPhone on this network.
         NSBonjourServices:
           - _localbook._tcp

@@ -19,6 +19,9 @@ struct Sidebar: View {
                         .font(.callout)
                         .foregroundStyle(.secondary)
                         .padding(.vertical, 4)
+                    if !model.paired {
+                        Button("Move my library here…") { model.showImport = true }.buttonStyle(.link).font(.callout)
+                    }
                 }
             } else {
                 ForEach(model.sections) { section in

@@ -58,6 +58,14 @@ struct SyncSettings: View {
                     Button("Pair with a Mac…") { showPairing = true }
                 }
             }
+            Section {
+                HStack {
+                    Text("Moves every notebook, every source's text, your notes and Studio items from the LocalBook already on this Mac. The old app must be running; nothing in it is changed.")
+                        .font(.callout).foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Move My Library Here…") { model.showImport = true }
+                }
+            } header: { Text("From the LocalBook on this Mac") }
             if model.paired {
                 Section("On this Mac") {
                     LabeledContent("Notebooks", value: "\(library.notebooks.count)")

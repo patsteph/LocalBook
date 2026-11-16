@@ -41,6 +41,10 @@ Patrick ran the parity fixture (500 chunks, 50 questions from the production lib
 
 497 items in 39 s, 0.15 ms per token. The ten top-5 disagreements are order swaps among the same passages (ranks 4 and 5), the same pattern the phone showed. The week of daily use was dropped by Patrick the same day; Phase 2 is CLOSED and the cleanup list he sends replaces it.
 
+## Phase 3, slice 1: Move my library here (2026-11-16, on `dev`, untested on a Mac)
+
+Backend: `backend/api/migrate.py` (loopback + app token, read-only; tests in `tests/test_migrate.py`). Swift: `LibraryImport` (Engines), `LibrarySync.run(store:call:origin:)`, `source_text` and `imported_notes` tables, `ImportSheet` (Settings › Sync, Notebook › Move My Library Here…, the pairing sheet and the empty sidebar). Device script: open the old LocalBook; in the new app choose Move My Library Here…, pick `~/Library/Application Support/LocalBook`, Move; expect every notebook (device-only ones included) in the sidebar, full text in a source's reader, the old notes under Notes, Studio items on the shelf. Run it twice: the second run copies nothing.
+
 ## Phase 2 gate script (Mac app from `dev`)
 
 1. On the Python Mac: `cd backend && LOCALBOOK_USE_PRODUCTION_DATA=1 .venv/bin/python scripts/export_cortex_parity.py` (the same fixture the phone used; it writes `~/Desktop/localbook-parity/parity_fixture.json`, read-only on the library, no Keychain).

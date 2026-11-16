@@ -127,6 +127,10 @@ public actor LibraryStore {
               text TEXT NOT NULL, summary INTEGER NOT NULL, filename TEXT NOT NULL, source_type TEXT NOT NULL,
               vector BLOB NOT NULL, PRIMARY KEY (notebook_id, source_id, chunk_index))
             """,
+            // The whole text of a source as the old app extracted it (the chunks are pieces of it), from the import.
+            "CREATE TABLE IF NOT EXISTS source_text (notebook_id TEXT NOT NULL, source_id TEXT NOT NULL, text TEXT NOT NULL, url TEXT, format TEXT, PRIMARY KEY (notebook_id, source_id))",
+            // The old app's Canvas notes, moved over as they were; read here, never sent anywhere.
+            "CREATE TABLE IF NOT EXISTS imported_notes (id TEXT PRIMARY KEY, notebook_id TEXT NOT NULL, title TEXT NOT NULL, text TEXT NOT NULL, kind TEXT NOT NULL, created TEXT NOT NULL)",
         ] { try exec(sql) }
         // Keyword ranking is exact BM25 computed in memory (see bm25Index); the SQLite full-text table an earlier
         // build kept beside the chunks is not used any more, so drop it and its space.
@@ -194,6 +198,66 @@ public actor LibraryStore {
         defer { sqlite3_finalize(s) }
         bind(s, 1, key); bind(s, 2, value)
         guard sqlite3_step(s) == SQLITE_DONE else { throw LibraryError.sqlite(String(cString: sqlite3_errmsg(db))) }
+    }
+
+    public func metaKeys(prefix: String) -> [String] {
+        guard let s = try? statement("SELECT key FROM meta WHERE key LIKE ? || '%'") else { return [] }
+        defer { sqlite3_finalize(s) }
+        bind(s, 1, prefix)
+        var out: [String] = []
+        while sqlite3_step(s) == SQLITE_ROW { out.append(String(cString: sqlite3_column_text(s, 0))) }
+        return out
+    }
+
+    public func deleteMeta(_ key: String) throws {
+        let s = try statement("DELETE FROM meta WHERE key=?")
+        defer { sqlite3_finalize(s) }
+        bind(s, 1, key); sqlite3_step(s)
+    }
+
+    // MARK: moved over from the old app
+
+    public func setSourceText(notebook: String, sourceId: String, text: String, url: String?, format: String?) throws {
+        let s = try statement("INSERT OR REPLACE INTO source_text(notebook_id, source_id, text, url, format) VALUES (?,?,?,?,?)")
+        defer { sqlite3_finalize(s) }
+        bind(s, 1, notebook); bind(s, 2, sourceId); bind(s, 3, text)
+        if let url { bind(s, 4, url) } else { sqlite3_bind_null(s, 4) }
+        if let format { bind(s, 5, format) } else { sqlite3_bind_null(s, 5) }
+        guard sqlite3_step(s) == SQLITE_DONE else { throw LibraryError.sqlite(String(cString: sqlite3_errmsg(db))) }
+    }
+
+    public func hasSourceText(notebook: String, sourceId: String) -> Bool {
+        guard let s = try? statement("SELECT 1 FROM source_text WHERE notebook_id=? AND source_id=?") else { return false }
+        defer { sqlite3_finalize(s) }
+        bind(s, 1, notebook); bind(s, 2, sourceId)
+        return sqlite3_step(s) == SQLITE_ROW
+    }
+
+    public struct ImportedNote: Sendable, Identifiable, Hashable {
+        public let id: String, notebookId: String, title: String, text: String, kind: String, created: String
+        public init(id: String, notebookId: String, title: String, text: String, kind: String, created: String) {
+            self.id = id; self.notebookId = notebookId; self.title = title; self.text = text; self.kind = kind; self.created = created
+        }
+    }
+
+    public func addImportedNote(_ n: ImportedNote) throws {
+        let s = try statement("INSERT OR REPLACE INTO imported_notes(id, notebook_id, title, text, kind, created) VALUES (?,?,?,?,?,?)")
+        defer { sqlite3_finalize(s) }
+        bind(s, 1, n.id); bind(s, 2, n.notebookId); bind(s, 3, n.title); bind(s, 4, n.text); bind(s, 5, n.kind); bind(s, 6, n.created)
+        guard sqlite3_step(s) == SQLITE_DONE else { throw LibraryError.sqlite(String(cString: sqlite3_errmsg(db))) }
+    }
+
+    public func importedNotes(notebook: String?) -> [ImportedNote] {
+        guard let s = try? statement("SELECT id, notebook_id, title, text, kind, created FROM imported_notes WHERE (? IS NULL OR notebook_id=?) ORDER BY created DESC") else { return [] }
+        defer { sqlite3_finalize(s) }
+        if let notebook { bind(s, 1, notebook); bind(s, 2, notebook) } else { sqlite3_bind_null(s, 1); sqlite3_bind_null(s, 2) }
+        var out: [ImportedNote] = []
+        while sqlite3_step(s) == SQLITE_ROW {
+            out.append(.init(id: String(cString: sqlite3_column_text(s, 0)), notebookId: String(cString: sqlite3_column_text(s, 1)),
+                             title: String(cString: sqlite3_column_text(s, 2)), text: String(cString: sqlite3_column_text(s, 3)),
+                             kind: String(cString: sqlite3_column_text(s, 4)), created: String(cString: sqlite3_column_text(s, 5))))
+        }
+        return out
     }
 
     // MARK: what is here
@@ -358,8 +422,16 @@ public actor LibraryStore {
         return sqlite3_step(s) == SQLITE_ROW ? String(cString: sqlite3_column_text(s, 0)) : nil
     }
 
-    /// A source's text, its pieces in order.
+    /// A source's text: the whole of it when the import brought it, otherwise its pieces in order.
     public func sourceText(notebook: String, sourceId: String) -> String {
+        if let full = try? statement("SELECT text FROM source_text WHERE notebook_id=? AND source_id=?") {
+            defer { sqlite3_finalize(full) }
+            bind(full, 1, notebook); bind(full, 2, sourceId)
+            if sqlite3_step(full) == SQLITE_ROW {
+                let text = String(cString: sqlite3_column_text(full, 0))
+                if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return text }
+            }
+        }
         guard let s = try? statement("SELECT text FROM chunks WHERE notebook_id=? AND source_id=? AND summary=0 AND chunk_index < \(Self.pictureIndex) ORDER BY chunk_index") else { return "" }
         defer { sqlite3_finalize(s) }
         bind(s, 1, notebook); bind(s, 2, sourceId)
@@ -378,14 +450,15 @@ public actor LibraryStore {
 
     public func wipe() throws {
         dropMatrix()
-        for t in ["chunks", "sources", "notebooks"] { try exec("DELETE FROM \(t)") }
+        for t in ["chunks", "sources", "notebooks", "source_text", "imported_notes"] { try exec("DELETE FROM \(t)") }
         try exec("DELETE FROM meta WHERE key LIKE 'personal:%'")        // profile, memory, entities: all of it goes
+        try exec("DELETE FROM meta WHERE key LIKE 'imported:%'")
     }
 
     public func removeNotebooks(except keep: Set<String>) throws {
         dropMatrix()
         for n in notebooks() where !keep.contains(n.id) {
-            for t in ["chunks", "sources"] {
+            for t in ["chunks", "sources", "source_text", "imported_notes"] {
                 let s = try statement("DELETE FROM \(t) WHERE notebook_id=?")
                 bind(s, 1, n.id); sqlite3_step(s); sqlite3_finalize(s)
             }
@@ -415,7 +488,7 @@ public actor LibraryStore {
         try exec("BEGIN IMMEDIATE")
         do {
             for sid in removed + resent {
-                for t in ["chunks", "sources"] {
+                for t in ["chunks", "sources", "source_text"] {
                     let s = try statement("DELETE FROM \(t) WHERE notebook_id=? AND source_id=?")
                     bind(s, 1, notebook); bind(s, 2, sid); sqlite3_step(s); sqlite3_finalize(s)
                 }

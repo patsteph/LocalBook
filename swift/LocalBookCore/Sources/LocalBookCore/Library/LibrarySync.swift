@@ -1,8 +1,18 @@
 import Foundation
 
+/// One POST to whoever holds the library: a path and a JSON body, the reply's bytes. The phone link signs its
+/// calls; the import from the old app on the same Mac sends a token over loopback. The sync is the same.
+public typealias LibraryCall = @Sendable (_ path: String, _ body: Data) async throws -> Data
+
 /// Pulls the Mac's library onto the phone over the signed phone link: a manifest, then — for each
 /// notebook whose digest differs — the source hashes, then only the changed sources' chunks.
 public enum LibrarySync {
+    /// Where the library comes from: the paired Mac over the phone link (`/phone/library/…`, visible notebooks),
+    /// or the old LocalBook on this same Mac being moved over (`/migrate/…`, every notebook).
+    public enum Origin: Sendable { case pairedMac, oldAppOnThisMac }
+
+    static let importedPrefix = "imported:"
+
     /// What this phone's embedder is. Vectors from any other embedder are refused.
     public static let expectedModel = "mlx-community/embeddinggemma-2-bf16"
     public static let expectedDims = 768
@@ -46,22 +56,35 @@ public enum LibrarySync {
         let d = JSONDecoder(); d.keyDecodingStrategy = .convertFromSnakeCase; return d
     }
 
-    private static func call<T: Decodable>(_ mac: PairedMac, _ path: String, _ json: [String: Any] = [:],
+    private static func call<T: Decodable>(_ call: LibraryCall, _ path: String, _ json: [String: Any] = [:],
                                            as: T.Type, bytes: inout Int) async throws -> T {
-        let data = try await MacLink.signedCall(mac, path: path, json: json, timeout: 180)   // the Mac can take a while to total a big notebook
+        let data = try await call(path, try JSONSerialization.data(withJSONObject: json, options: [.sortedKeys]))
         bytes += data.count
         do { return try decoder.decode(T.self, from: data) }
         catch { throw LibraryError.badResponse("\(path): \(error.localizedDescription)") }
     }
 
-    /// Bring the phone's copy in line with the Mac. `progress` gets short human-readable lines.
+    /// The phone link's call: signed, to the paired Mac. The Mac can take a while to total a big notebook.
+    public static func pairedMacCall() throws -> LibraryCall {
+        guard let mac = MacLink.paired else { throw LibraryError.notPaired }
+        return { path, body in try await MacLink.signedCall(mac, path: path, body: body, timeout: 180) }
+    }
+
+    /// Bring the phone's copy in line with the paired Mac. `progress` gets short human-readable lines.
     public static func run(store: LibraryStore, onNotebook: @escaping @Sendable () -> Void = {},
                     progress: @escaping @Sendable (String) -> Void) async throws -> Summary {
-        guard let mac = MacLink.paired else { throw LibraryError.notPaired }
+        try await run(store: store, call: try pairedMacCall(), origin: .pairedMac, onNotebook: onNotebook, progress: progress)
+    }
+
+    /// The sync itself, from either origin.
+    public static func run(store: LibraryStore, call mac: @escaping LibraryCall, origin: Origin,
+                           onNotebook: @escaping @Sendable () -> Void = {},
+                           progress: @escaping @Sendable (String) -> Void) async throws -> Summary {
+        let root = origin == .pairedMac ? "/phone/library" : "/migrate"
         let started = Date()
         var sum = Summary()
         progress("Asking the Mac what it has…")
-        let manifest = try await call(mac, "/phone/library/manifest", as: Manifest.self, bytes: &sum.bytes)
+        let manifest = try await call(mac, "\(root)/manifest", as: Manifest.self, bytes: &sum.bytes)
         let key = manifest.embedder
         guard key.modelId == expectedModel, key.dims == expectedDims, key.maxTokens == expectedMaxTokens else {
             throw LibraryError.embedderMismatch("The Mac searches with \(key.modelId) (\(key.dims) numbers, \(key.maxTokens)-token limit); "
@@ -75,7 +98,7 @@ public enum LibrarySync {
 
         // The Mac's answer recipe (prompts, classifier, decode settings, cleaning): kept as published, then
         // checked against the Mac's own sample outputs so a mismatch is reported rather than trusted.
-        let recipeData = try await MacLink.signedCall(mac, path: "/phone/library/recipe")
+        let recipeData = try await mac("\(root)/recipe", Data("{}".utf8))
         sum.bytes += recipeData.count
         if let recipe = try? decoder.decode(AnswerRecipe.self, from: recipeData) {
             try await store.setMeta("recipe", String(decoding: recipeData, as: UTF8.self))
@@ -85,12 +108,22 @@ public enum LibrarySync {
             sum.recipeProblems = ["The Mac sent an answer recipe this phone cannot read (version mismatch?)"]
         }
 
-        try await store.removeNotebooks(except: Set(manifest.notebooks.map(\.id)))
+        let listed = Set(manifest.notebooks.map(\.id))
+        switch origin {
+        case .pairedMac:
+            // Notebooks the old app moved over but keeps on that Mac only are not in the link's manifest; they stay.
+            // One the link does list is the link's to manage from now on.
+            let imported = Set(await store.metaKeys(prefix: importedPrefix).map { String($0.dropFirst(importedPrefix.count)) })
+            try await store.removeNotebooks(except: listed.union(imported))
+            for id in listed where imported.contains(id) { try await store.deleteMeta(importedPrefix + id) }
+        case .oldAppOnThisMac:
+            for id in listed { try await store.setMeta(importedPrefix + id, "1") }
+        }
         sum.notebooks = manifest.notebooks.count
         // The Mac's profile, core memory, entities and relationships (they shape its answers). Best effort: an
         // older Mac without this endpoint just leaves the phone without them.
         for nb in manifest.notebooks {
-            if let p = try? await call(mac, "/phone/library/personal", ["notebook_id": nb.id], as: PersonalContext.self, bytes: &sum.bytes),
+            if let p = try? await call(mac, "\(root)/personal", ["notebook_id": nb.id], as: PersonalContext.self, bytes: &sum.bytes),
                let data = try? JSONEncoder().encode(p) {
                 try await store.setMeta("personal:" + nb.id, String(decoding: data, as: UTF8.self))
             }
@@ -101,7 +134,7 @@ public enum LibrarySync {
             if local[nb.id] == nb.digest && datesKnown { progress("\(nb.title): up to date"); continue }
             sum.notebooksChanged += 1
             progress("\(nb.title): comparing (\(i + 1) of \(manifest.notebooks.count))…")
-            let remote = try await call(mac, "/phone/library/sources", ["notebook_id": nb.id], as: Sources.self, bytes: &sum.bytes)
+            let remote = try await call(mac, "\(root)/sources", ["notebook_id": nb.id], as: Sources.self, bytes: &sum.bytes)
             let have = await store.sourceHashes(notebook: nb.id)
             let remoteHashes = Dictionary(uniqueKeysWithValues: remote.sources.map { ($0.sourceId, $0.hash) })
             let removed = have.keys.filter { remoteHashes[$0] == nil && !$0.hasPrefix(LibraryStore.localNotePrefix) }   // notes made on this phone are not the Mac's to remove
@@ -119,7 +152,7 @@ public enum LibrarySync {
                 repeat {
                     var body: [String: Any] = ["notebook_id": nb.id, "source_ids": batch, "limit": 200]
                     if let after { body["after"] = ["source_id": after.sourceId, "chunk_index": after.chunkIndex] }
-                    let page = try await call(mac, "/phone/library/chunks", body, as: ChunkPage.self, bytes: &sum.bytes)
+                    let page = try await call(mac, "\(root)/chunks", body, as: ChunkPage.self, bytes: &sum.bytes)
                     for r in page.chunks {
                         guard let vec = Data(base64Encoded: r.vector), vec.count == expectedDims * 2 else { continue }
                         rows.append(.init(notebookId: nb.id, sourceId: r.sourceId, chunkIndex: r.chunkIndex, text: r.text,

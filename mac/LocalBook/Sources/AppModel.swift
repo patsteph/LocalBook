@@ -59,6 +59,8 @@ final class AppModel {
     var paired = MacLink.paired?.verified == true
     /// The pairing sheet (menu: Notebook › Pair with a Mac…, or the empty states).
     var showPairing = false
+    /// The import sheet: move the library of the LocalBook already on this Mac into this app.
+    var showImport = false
     /// The inspector on the right edge (View › Show Inspector, ⌥⌘I): the notebook's sources.
     var showInspector = false
     /// A Studio kind the menu asked for (Studio › Briefing…): the Studio pane opens its make sheet.
@@ -120,9 +122,16 @@ final class AppModel {
     func start() async {
         await library.open()
         syncSelectionToScope()
-        guard paired else { return }
-        Task { await runSync(); await loadSections() }
-        await startModels()
+        if paired { Task { await runSync(); await loadSections() } }
+        // A library moved over from the old app answers without a pairing; the models warm for it too.
+        if paired || !library.notebooks.isEmpty { await startModels() }
+    }
+
+    /// The import finished: the sidebar reloads and the models warm if they have not.
+    func importDone() {
+        syncSelectionToScope()
+        NotificationCenter.default.post(name: .librarySynced, object: nil)
+        Task { await startModels() }
     }
 
     /// Search (Neural Engine) and the answer model (GPU) load at the same time, as on the phone.

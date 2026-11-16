@@ -17,7 +17,7 @@ public final class LibraryModel {
     public enum SyncState: Equatable { case idle, syncing(String), failed(String) }
     public enum SearchState: Equatable { case notReady, preparing(String), ready, failed(String) }
 
-    public private(set) var syncState: SyncState = .idle
+    public internal(set) var syncState: SyncState = .idle
     public private(set) var searchState: SearchState = .notReady
     public enum ModelState: Equatable { case idle, loading, ready, failed(String) }
     public private(set) var answerModelState: ModelState = .idle

@@ -37,7 +37,8 @@ struct PairingSheet: View {
             Divider()
             HStack {
                 if case .findMac = step {
-                    Text("Both Macs must be on the same network.").font(.footnote).foregroundStyle(.secondary)
+                    Button("Moving from the LocalBook on this Mac? Move my library here…") { model.showPairing = false; model.showImport = true }
+                        .buttonStyle(.link).font(.footnote)
                 }
                 Spacer()
                 Button(step == .syncing ? "Close" : "Cancel") { cancel() }

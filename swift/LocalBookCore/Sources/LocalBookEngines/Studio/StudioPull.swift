@@ -21,8 +21,17 @@ public enum StudioPull {
             await MainActor.run { lastProblem = "Not paired with a Mac." }
             return false
         }
+        return await pull(call: { path, body in try await MacLink.signedCall(mac, path: path, body: body, timeout: 90) }, root: "/phone/library/studio")
+    }
+
+    /// The same pull from any origin: the paired Mac's link, or the old app on this Mac being moved over.
+    @discardableResult
+    public static func pull(call mac: @escaping LibraryCall, root: String) async -> Bool {
+        func post(_ path: String, _ json: [String: Any]) async throws -> Data {
+            try await mac("\(root)/\(path)", try JSONSerialization.data(withJSONObject: json, options: [.sortedKeys]))
+        }
         do {
-            let data = try await MacLink.signedCall(mac, path: "/phone/library/studio/list", json: [:], timeout: 60)
+            let data = try await post("list", [:])
             let remote = try JSONDecoder().decode(Listing.self, from: data).items
             let local = Dictionary(uniqueKeysWithValues: StudioStore.all(notebook: nil).map { ($0.id, $0) })
             let hidden = StudioSync.read(StudioSync.hiddenURL)
@@ -45,7 +54,7 @@ public enum StudioPull {
             for start in stride(from: 0, to: wanted.count, by: 20) {
                 let batch = Array(wanted[start..<min(wanted.count, start + 20)])
                 let ask = batch.map { ["kind": $0.kind, "id": $0.id] }
-                let reply = try await MacLink.signedCall(mac, path: "/phone/library/studio/get", json: ["items": ask], timeout: 90)
+                let reply = try await post("get", ["items": ask])
                 guard let got = (try JSONSerialization.jsonObject(with: reply) as? [String: Any])?["items"] as? [[String: Any]] else { continue }
                 let byId = Dictionary(uniqueKeysWithValues: got.compactMap { g in (g["id"] as? String).map { ($0, g) } })
                 for r in batch {

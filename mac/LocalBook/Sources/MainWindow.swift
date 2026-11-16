@@ -72,6 +72,7 @@ struct MainWindow: View {
         }
         .modifier(EditPromptsHost())
         .sheet(isPresented: $model.showPairing) { PairingSheet(model: model) }
+        .sheet(isPresented: $model.showImport) { ImportSheet() }
         .sheet(isPresented: $model.showVoiceNote) {
             if let id = model.currentNotebookId { NoteEditor(notebookId: id, startDictating: true).environment(model) }
         }
@@ -84,7 +85,7 @@ struct MainWindow: View {
     /// Every menu item speaks through one notification stream, so the body stays a short modifier chain.
     @MainActor private static let menuActions = Publishers.MergeMany(
         [Notification.Name.syncNow, .stopAnswer, .pairWithMac, .focusComposer, .showSources, .showStudio, .showMeetings,
-         .startMeetingRecording, .newNote, .voiceNote, .toggleInspector, .makeStudio, .askQuestion, .newNotebook]
+         .startMeetingRecording, .newNote, .voiceNote, .toggleInspector, .makeStudio, .askQuestion, .newNotebook, .importLibrary]
             .map { NotificationCenter.default.publisher(for: $0) }
     )
 
@@ -94,6 +95,7 @@ struct MainWindow: View {
         case .newNotebook: if model.paired { model.prompts.text = ""; model.prompts.newNotebook = true }
         case .stopAnswer: model.library.stopAnswer()
         case .pairWithMac: model.showPairing = true
+        case .importLibrary: model.showImport = true
         case .focusComposer: model.showAsk()
         case .showSources: if model.currentNotebookId != nil { model.selection = .sources }
         case .showStudio: model.selection = .studio
@@ -140,6 +142,8 @@ extension Notification.Name {
     static let syncNow = Notification.Name("LocalBook.syncNow")
     /// File › New Notebook… (⌘N).
     static let newNotebook = Notification.Name("LocalBook.newNotebook")
+    /// Notebook › Move My Library Here…
+    static let importLibrary = Notification.Name("LocalBook.importLibrary")
     /// Notebook › Pair with a Mac….
     static let pairWithMac = Notification.Name("LocalBook.pairWithMac")
     /// View › Show Sources (⌥⌘1), Show Studio (⌥⌘2), Show Inspector (⌥⌘I).

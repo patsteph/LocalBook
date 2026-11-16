@@ -35,6 +35,7 @@ struct LocalBookCommands: Commands {
             Button("Sync Now") { NotificationCenter.default.post(name: .syncNow, object: nil) }
                 .keyboardShortcut("r")
             Button("Pair with a Mac…") { NotificationCenter.default.post(name: .pairWithMac, object: nil) }
+            Button("Move My Library Here…") { NotificationCenter.default.post(name: .importLibrary, object: nil) }
             Divider()
             Button("Read Answer Aloud") { NotificationCenter.default.post(name: .readAnswerAloud, object: nil) }
                 .keyboardShortcut("r", modifiers: [.command, .option])
