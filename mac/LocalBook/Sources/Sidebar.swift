@@ -2,12 +2,14 @@ import LocalBookCore
 import LocalBookEngines
 import SwiftUI
 
-/// Notebooks in the desktop app's order with its sections and colors, then the three cross-notebook places. A SwiftUI
-/// `List` with the sidebar style; if selection, focus or density feel wrong on the Mac it becomes an `NSOutlineView`,
-/// as the plan allows, without changing anything else.
+/// Notebooks in the desktop app's order with its sections and colors, each opening to its sources, then the three
+/// cross-notebook places. Every action the desktop sidebar has is in the context menus; each goes through the paired
+/// Mac (the system of record until Phase 3) and syncs back.
 struct Sidebar: View {
     @Environment(AppModel.self) private var model
     @Binding var selection: AppModel.Destination?
+    @State private var expanded: Set<String> = []
+    @State private var sources: [String: [LibraryStore.SourceInfo]] = [:]
 
     var body: some View {
         List(selection: $selection) {
@@ -20,19 +22,10 @@ struct Sidebar: View {
                 }
             } else {
                 ForEach(model.sections) { section in
-                    Section(section.name) {
-                        ForEach(section.notebooks) { notebook in
-                            Label {
-                                Text(notebook.title)
-                            } icon: {
-                                Image(systemName: "book.closed")
-                                    .foregroundStyle(Color(hex: notebook.color) ?? .accentColor)
-                            }
-                            .tag(AppModel.Destination.notebook(notebook.id))
-                            .badge(notebook.chunks)
-                            .help("\(notebook.chunks) passages")
-                            .acceptsDrops(for: notebook.id)
-                        }
+                    Section {
+                        ForEach(section.notebooks) { notebook in notebookRow(notebook) }
+                    } header: {
+                        Text(section.name).contextMenu { sectionMenu(section) }
                     }
                 }
             }
@@ -44,6 +37,58 @@ struct Sidebar: View {
         }
         .listStyle(.sidebar)
         .safeAreaInset(edge: .bottom) { SyncStatusLine().padding(.horizontal, 12).padding(.vertical, 8) }
+        .onChange(of: expanded) { _, now in Task { await load(now) } }
+        .onReceive(NotificationCenter.default.publisher(for: .librarySynced)) { _ in Task { await load(expanded, fresh: true) } }
+    }
+
+    private func notebookRow(_ notebook: LibraryNotebookInfo) -> some View {
+        DisclosureGroup(isExpanded: Binding(get: { expanded.contains(notebook.id) },
+                                            set: { if $0 { expanded.insert(notebook.id) } else { expanded.remove(notebook.id) } })) {
+            if let list = sources[notebook.id] {
+                if list.isEmpty {
+                    Text(notebook.chunks == 0 ? "Nothing copied yet" : "No sources").font(.callout).foregroundStyle(.tertiary)
+                }
+                ForEach(list) { s in
+                    Label {
+                        Text(s.name).lineLimit(1)
+                    } icon: { Image(systemName: SourceKinds.symbol(s.type)) }
+                    .tag(AppModel.Destination.source(SourceWindowKey(notebookId: s.notebookId, sourceId: s.id, name: s.name)))
+                    .help(SourceKinds.detail(s))
+                    .contextMenu { SourceContextMenu(source: s) }
+                }
+            } else {
+                ProgressView().controlSize(.small)
+            }
+        } label: {
+            Label {
+                Text(notebook.title)
+            } icon: {
+                Image(systemName: "book.closed")
+                    .foregroundStyle(Color(hex: notebook.color) ?? .accentColor)
+            }
+            .badge(notebook.chunks)
+            .help("\(notebook.chunks) passages")
+            .acceptsDrops(for: notebook.id)
+        }
+        .tag(AppModel.Destination.notebook(notebook.id))
+        .contextMenu { NotebookContextMenu(notebook: notebook) }
+    }
+
+    @ViewBuilder private func sectionMenu(_ section: AppModel.NotebookSection) -> some View {
+        if let s = model.macSections.first(where: { $0.name == section.name }) {
+            Button("Rename Section…") { model.prompts.text = s.name; model.prompts.renameSection = s }
+            Button("Delete Section…", role: .destructive) { model.prompts.deleteSection = s }
+            Divider()
+        }
+        Button("New Section…") { model.prompts.text = ""; model.prompts.newSection = true }
+        Button("New Notebook…") { model.prompts.text = ""; model.prompts.newNotebook = true }
+    }
+
+    /// The sources of every open notebook; only the ones not loaded yet unless `fresh`.
+    private func load(_ ids: Set<String>, fresh: Bool = false) async {
+        for id in ids where fresh || sources[id] == nil {
+            sources[id] = await model.library.sources(in: id)
+        }
     }
 }
 

@@ -18,6 +18,8 @@ struct MainWindow: View {
                 switch model.selection {
                 case .notebook, nil:
                     AskView()
+                case .source(let key):
+                    SourceScreen(key: key).id(key)
                 case .sources:
                     SourcesPane()
                 case .studio:
@@ -68,6 +70,7 @@ struct MainWindow: View {
                 }
             }
         }
+        .modifier(EditPromptsHost())
         .sheet(isPresented: $model.showPairing) { PairingSheet(model: model) }
         .sheet(isPresented: $model.showVoiceNote) {
             if let id = model.currentNotebookId { NoteEditor(notebookId: id, startDictating: true).environment(model) }
@@ -81,13 +84,14 @@ struct MainWindow: View {
     /// Every menu item speaks through one notification stream, so the body stays a short modifier chain.
     @MainActor private static let menuActions = Publishers.MergeMany(
         [Notification.Name.syncNow, .stopAnswer, .pairWithMac, .focusComposer, .showSources, .showStudio, .showMeetings,
-         .startMeetingRecording, .newNote, .voiceNote, .toggleInspector, .makeStudio, .askQuestion]
+         .startMeetingRecording, .newNote, .voiceNote, .toggleInspector, .makeStudio, .askQuestion, .newNotebook]
             .map { NotificationCenter.default.publisher(for: $0) }
     )
 
     private func handle(_ note: Notification) {
         switch note.name {
         case .syncNow: model.syncNow()
+        case .newNotebook: if model.paired { model.prompts.text = ""; model.prompts.newNotebook = true }
         case .stopAnswer: model.library.stopAnswer()
         case .pairWithMac: model.showPairing = true
         case .focusComposer: model.showAsk()
@@ -134,6 +138,8 @@ extension Notification.Name {
     static let stopAnswer = Notification.Name("LocalBook.stopAnswer")
     /// Notebook › Sync Now (⌘R).
     static let syncNow = Notification.Name("LocalBook.syncNow")
+    /// File › New Notebook… (⌘N).
+    static let newNotebook = Notification.Name("LocalBook.newNotebook")
     /// Notebook › Pair with a Mac….
     static let pairWithMac = Notification.Name("LocalBook.pairWithMac")
     /// View › Show Sources (⌥⌘1), Show Studio (⌥⌘2), Show Inspector (⌥⌘I).

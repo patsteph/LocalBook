@@ -13,6 +13,8 @@ final class AppModel {
 
     enum Destination: Hashable {
         case notebook(String)
+        /// One source, chosen under its notebook in the sidebar.
+        case source(SourceWindowKey)
         /// The selected notebook's sources, in a pane (View › Show Sources, ⌥⌘1). Not a sidebar row.
         case sources
         case studio
@@ -22,9 +24,34 @@ final class AppModel {
 
     var selection: Destination? {
         didSet {
-            guard case .notebook(let id)? = selection, library.scopeToNotebook != id else { return }
+            let id: String
+            switch selection {
+            case .notebook(let n)?: id = n
+            case .source(let key)?: id = key.notebookId
+            default: return
+            }
+            guard library.scopeToNotebook != id else { return }
             library.scopeToNotebook = id
             UserDefaults.standard.set(id, forKey: "lastNotebook")
+        }
+    }
+
+    /// The Mac's sections with their ids (the synced list carries names only), for "Move to Section".
+    var macSections: [LibraryModel.Section] = []
+    /// The rename, new and delete prompts the sidebar's menus open; one host at the window root shows them.
+    let prompts = EditPrompts()
+
+    func loadSections() async { macSections = await library.sections() }
+
+    /// Runs one change through the Mac, shows its problem if any, then tells open lists to reload.
+    func edit(_ work: @escaping @MainActor () async -> String?) {
+        prompts.busy = true
+        Task { @MainActor in
+            let problem = await work()
+            prompts.busy = false
+            if let problem { prompts.problem = problem }
+            NotificationCenter.default.post(name: .librarySynced, object: nil)
+            await loadSections()
         }
     }
 
@@ -94,7 +121,7 @@ final class AppModel {
         await library.open()
         syncSelectionToScope()
         guard paired else { return }
-        Task { await runSync() }
+        Task { await runSync(); await loadSections() }
         await startModels()
     }
 

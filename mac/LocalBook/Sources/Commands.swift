@@ -13,7 +13,7 @@ struct LocalBookCommands: Commands {
     var body: some Commands {
         // File
         CommandGroup(replacing: .newItem) {
-            Button("New Notebook…") {}.keyboardShortcut("n").disabled(true)                       // Phase 3
+            Button("New Notebook…") { NotificationCenter.default.post(name: .newNotebook, object: nil) }.keyboardShortcut("n")
             Button("New Note") { NotificationCenter.default.post(name: .newNote, object: nil) }
                 .keyboardShortcut("n", modifiers: [.command, .shift])
             Divider()

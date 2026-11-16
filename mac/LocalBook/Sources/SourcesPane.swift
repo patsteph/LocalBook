@@ -128,7 +128,7 @@ struct SourcesPane: View {
                         }
                     }
                     .tag(s.id)
-                    .contextMenu { SourceOpenButton(key: key(s)) }
+                    .contextMenu { SourceContextMenu(source: s) }
                 }
                 if !inbox.isEmpty {
                     Section {
@@ -248,6 +248,33 @@ struct SourceDetail: View {
     }
 }
 
+/// A source chosen in the sidebar: the same reader as the Sources pane, in the window's detail.
+struct SourceScreen: View {
+    let key: SourceWindowKey
+    @Environment(AppModel.self) private var model
+    @State private var source: LibraryStore.SourceInfo?
+    @State private var looked = false
+
+    var body: some View {
+        Group {
+            if let source {
+                SourceDetail(source: source).id(source.id)
+            } else if looked {
+                ContentUnavailableView("This source is gone", systemImage: "doc.text", description: Text("It is no longer in \(model.library.notebooks.first { $0.id == key.notebookId }?.title ?? "the notebook")."))
+            } else {
+                ProgressView()
+            }
+        }
+        .task(id: key) { await find() }
+        .onReceive(NotificationCenter.default.publisher(for: .librarySynced)) { _ in Task { await find() } }
+    }
+
+    private func find() async {
+        source = await model.library.sources(in: key.notebookId).first { $0.id == key.sourceId }
+        looked = true
+    }
+}
+
 /// The source viewer: one source in its own window, from a citation or a source row.
 struct SourceWindow: View {
     let key: SourceWindowKey
@@ -303,7 +330,7 @@ struct InspectorView: View {
                             Text(SourceKinds.label(s.type)).font(.caption2).foregroundStyle(.secondary)
                         }
                     } icon: { Image(systemName: SourceKinds.symbol(s.type)) }
-                    .contextMenu { SourceOpenButton(key: SourceWindowKey(notebookId: s.notebookId, sourceId: s.id, name: s.name)) }
+                    .contextMenu { SourceContextMenu(source: s) }
                 }
             }
             .listStyle(.sidebar)
