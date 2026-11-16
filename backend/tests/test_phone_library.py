@@ -154,3 +154,16 @@ def test_a_phone_only_query_leaves_no_trace_on_the_mac():
     m.record_retrieval(chunks_retrieved=1)
     assert m.anything_at_all() is None
     assert asyncio.run(m.end_query(12.0)) is None
+
+
+def test_a_notebook_with_nothing_indexed_is_still_listed(lib):
+    import sqlite3
+    from config import settings
+    c = sqlite3.connect(settings.data_dir / "localbook.db")
+    c.execute("INSERT INTO notebooks VALUES ('nb-empty', 'Just made')"); c.commit(); c.close()
+    m = _call(lib, "/phone/library/manifest").json()
+    empty = next(n for n in m["notebooks"] if n["id"] == "nb-empty")
+    assert empty["sources"] == 0 and empty["chunks"] == 0 and empty["digest"]
+    assert _call(lib, "/phone/library/sources", {"notebook_id": "nb-empty"}).json()["sources"] == []
+    page = _call(lib, "/phone/library/chunks", {"notebook_id": "nb-empty"}).json()
+    assert page["chunks"] == [] and page["more"] is False

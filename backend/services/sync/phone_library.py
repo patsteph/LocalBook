@@ -201,10 +201,9 @@ def manifest() -> Dict[str, Any]:
         nid, title = item["id"], item["title"]
         if nid in off or nid not in titles:
             continue
+        # A notebook with nothing indexed yet (just made, or emptied) has no Lance table; it is still a notebook.
         table = _table(nid)
-        if table is None:
-            continue
-        sums = _summaries(table)
+        sums = _summaries(table) if table is not None else {}
         digest = hashlib.sha256("".join(f'{sid}:{s["hash"]};' for sid, s in sorted(sums.items())).encode()).hexdigest()[:24]
         notebooks.append({"id": nid, "title": title, "section": item["section"], "color": item.get("color"),
                           "collapsed": item.get("collapsed", False), "sources": len(sums),
@@ -237,9 +236,7 @@ def sources(notebook_id: str) -> Optional[Dict[str, Any]]:
     if not _visible(notebook_id):
         return None
     table = _table(notebook_id)
-    if table is None:
-        return None
-    sums = _summaries(table)
+    sums = _summaries(table) if table is not None else {}
     _note_churn(notebook_id, sums)
     return {"notebook_id": notebook_id, "sources": list(sums.values())}
 
@@ -252,7 +249,7 @@ def chunks(notebook_id: str, *, source_ids: Optional[List[str]] = None,
         return None
     table = _table(notebook_id)
     if table is None:
-        return None
+        return {"notebook_id": notebook_id, "chunks": [], "more": False, "after": None}
     limit = max(1, min(int(limit), MAX_PAGE))
     want = set(source_ids) if source_ids else None
     key = embedder_key()

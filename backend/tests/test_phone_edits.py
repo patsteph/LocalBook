@@ -2,8 +2,6 @@
 import types
 
 import pytest
-from fastapi import HTTPException
-
 from services.sync import phone_edits, phone_library
 from tests.test_phone_library import NB_OPEN, NB_PRIVATE, _call, lib  # noqa: F401
 
