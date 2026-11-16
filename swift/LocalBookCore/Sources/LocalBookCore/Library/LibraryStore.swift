@@ -385,6 +385,37 @@ public actor LibraryStore {
         } catch { try? exec("ROLLBACK"); throw error }
     }
 
+    /// A source this device ingested itself (Phase 3): its chunks as the chunker cut them, the summary chunk at -1 when
+    /// there is one, its whole text for the reader, and a `sources` row so sync leaves it alone. Local notes are the
+    /// ones without a `source_text` row; these have one, so they are listed as sources, not notes.
+    public func addLocalSource(notebook: String, sourceId: String, title: String, format: String, text: String, url: String?, chunks: [LibraryChunk]) throws {
+        dropMatrix()
+        try exec("BEGIN IMMEDIATE")
+        do {
+            let insert = try statement("""
+                INSERT OR REPLACE INTO chunks(notebook_id, source_id, chunk_index, text, summary, filename, source_type, vector)
+                VALUES (?,?,?,?,?,?,?,?)
+                """)
+            defer { sqlite3_finalize(insert) }
+            for c in chunks {
+                sqlite3_reset(insert)
+                bind(insert, 1, notebook); bind(insert, 2, sourceId)
+                sqlite3_bind_int64(insert, 3, Int64(c.chunkIndex))
+                bind(insert, 4, c.text); sqlite3_bind_int(insert, 5, c.summary ? 1 : 0)
+                bind(insert, 6, title); bind(insert, 7, c.sourceType)
+                _ = c.vector.withUnsafeBytes { sqlite3_bind_blob(insert, 8, $0.baseAddress, Int32($0.count), Self.transient) }
+                guard sqlite3_step(insert) == SQLITE_DONE else { throw LibraryError.sqlite(String(cString: sqlite3_errmsg(db))) }
+            }
+            let s = try statement("INSERT INTO sources(notebook_id, source_id, hash, created) VALUES (?,?,?,?) ON CONFLICT(notebook_id, source_id) DO UPDATE SET hash=excluded.hash")
+            bind(s, 1, notebook); bind(s, 2, sourceId); bind(s, 3, "local"); bind(s, 4, ISO8601DateFormatter().string(from: Date())); sqlite3_step(s); sqlite3_finalize(s)
+            let t = try statement("INSERT OR REPLACE INTO source_text(notebook_id, source_id, text, url, format) VALUES (?,?,?,?,?)")
+            bind(t, 1, notebook); bind(t, 2, sourceId); bind(t, 3, text)
+            if let url { bind(t, 4, url) } else { sqlite3_bind_null(t, 4) }
+            bind(t, 5, format); sqlite3_step(t); sqlite3_finalize(t)
+            try exec("COMMIT")
+        } catch { try? exec("ROLLBACK"); throw error }
+    }
+
     /// A note's picture is one extra chunk at this index, apart from its text chunks (0…).
     public static let pictureIndex = 1000
 
@@ -393,7 +424,9 @@ public actor LibraryStore {
             SELECT notebook_id, source_id, filename,
                    COALESCE(GROUP_CONCAT(CASE WHEN chunk_index < \(Self.pictureIndex) THEN text END, char(10)), ''),
                    MIN(source_type), MAX(chunk_index >= \(Self.pictureIndex))
-            FROM (SELECT * FROM chunks WHERE source_id LIKE 'local:%' ORDER BY notebook_id, source_id, chunk_index)
+            FROM (SELECT * FROM chunks c WHERE c.source_id LIKE 'local:%'
+                    AND NOT EXISTS (SELECT 1 FROM source_text t WHERE t.notebook_id = c.notebook_id AND t.source_id = c.source_id)
+                  ORDER BY notebook_id, source_id, chunk_index)
             GROUP BY notebook_id, source_id ORDER BY source_id DESC
             """) else { return [] }
         defer { sqlite3_finalize(s) }
@@ -415,7 +448,7 @@ public actor LibraryStore {
 
     public func removeLocalNote(notebook: String, sourceId: String) throws {
         dropMatrix()
-        for t in ["chunks", "sources"] {
+        for t in ["chunks", "sources", "source_text"] {
             let s = try statement("DELETE FROM \(t) WHERE notebook_id=? AND source_id=?")
             bind(s, 1, notebook); bind(s, 2, sourceId); sqlite3_step(s); sqlite3_finalize(s)
         }

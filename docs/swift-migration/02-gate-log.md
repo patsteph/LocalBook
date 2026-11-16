@@ -41,6 +41,10 @@ Patrick ran the parity fixture (500 chunks, 50 questions from the production lib
 
 497 items in 39 s, 0.15 ms per token. The ten top-5 disagreements are order swaps among the same passages (ranks 4 and 5), the same pattern the phone showed. The week of daily use was dropped by Patrick the same day; Phase 2 is CLOSED and the cleanup list he sends replaces it.
 
+## Phase 3, slice 2: the chunker and the first readers (2026-11-16, on `dev`, untested on a Mac)
+
+Swift: `Chunker`, `TokenBudget`, `PyText` (Core, pure), `ChunkerTests` against `Fixtures/chunk_golden.json`; `TextExtract` and `LibraryModel.ingestFile/ingestText` (Engines); `LibraryStore.addLocalSource`; the Mac's `IntakeModel` sends PDF, Word, RTF, ODT and HTML through it and drains the Inbox. Device script: drop a PDF on a notebook; expect the status capsule to walk through reading, cutting, summarising, questions and embedding, then the file under Sources with its page count of passages and the summary line; ask a question only that PDF answers and expect it cited. Drop the same PDF on the old app and compare the passage count (Sources panel); a difference is a chunk-text diff to explain.
+
 ## Phase 3, slice 1: Move my library here (2026-11-16, on `dev`, untested on a Mac)
 
 Backend: `backend/api/migrate.py` (loopback + app token, read-only; tests in `tests/test_migrate.py`). Swift: `LibraryImport` (Engines), `LibrarySync.run(store:call:origin:)`, `source_text` and `imported_notes` tables, `ImportSheet` (Settings › Sync, Notebook › Move My Library Here…, the pairing sheet and the empty sidebar). Device script: open the old LocalBook; in the new app choose Move My Library Here…, pick `~/Library/Application Support/LocalBook`, Move; expect every notebook (device-only ones included) in the sidebar, full text in a source's reader, the old notes under Notes, Studio items on the shelf. Run it twice: the second run copies nothing.

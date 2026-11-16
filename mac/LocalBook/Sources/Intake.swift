@@ -11,12 +11,14 @@ import UniformTypeIdentifiers
 /// - a web address → a note holding the address (the page itself is fetched by the Mac from Phase 3);
 /// - a picture → a picture note, its text read with Vision;
 /// - audio or video → a note with the transcript;
-/// - anything else (PDF, Word, EPUB…) → the notebook's Inbox, a folder on this Mac that Phase 3 turns into sources.
+/// - PDF, Word, RTF, OpenDocument, HTML → a source made on this Mac (Phase 3): the old app's chunker, a summary and
+///   questions from the answer model, embedded here; it stays on this Mac until Phase 4 makes this app the host;
+/// - anything else (spreadsheets, PowerPoint, EPUB…) → the notebook's Inbox, a folder on this Mac, until its reader lands.
 ///
-/// Phase 2's drop handling is the phone's note route, no more: the Python Mac is still the system of record for sources.
+/// Notes still go the phone's note route, so they reach the Python Mac and every other device.
 @MainActor @Observable
 final class IntakeModel {
-    struct Report: Equatable { var notes = 0; var queued = 0; var failed: [String] = [] }
+    struct Report: Equatable { var notes = 0; var sources = 0; var queued = 0; var failed: [String] = [] }
 
     private(set) var working = false
     private(set) var status = ""
@@ -60,6 +62,14 @@ final class IntakeModel {
                     }
                 } catch { report.failed.append(error.localizedDescription) }
             }
+            // Files kept in the Inbox earlier that this Mac can read now become sources too.
+            for url in Self.queued(notebook) where TextExtract.canRead(url) {
+                do {
+                    try await library.ingestFile(url, notebook: notebook) { [weak self] s in self?.status = s }
+                    try? FileManager.default.removeItem(at: url)
+                    report.sources += 1
+                } catch { report.failed.append(error.localizedDescription) }
+            }
             working = false; status = ""
             lastReport = report; reportShownAt = Date()
             NotificationCenter.default.post(name: .librarySynced, object: nil)
@@ -100,6 +110,9 @@ final class IntakeModel {
             }
             guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw LabError.model("\(url.lastPathComponent) has no text") }
             try await note(text, title: name, notebook: notebook, library: library, report: &report)
+        } else if TextExtract.canRead(url) {
+            try await library.ingestFile(url, notebook: notebook) { [weak self] s in self?.status = s }
+            report.sources += 1
         } else {
             status = "Keeping \(url.lastPathComponent) for the notebook…"
             var dest = Self.inbox(notebook).appending(path: url.lastPathComponent)
@@ -199,7 +212,8 @@ struct IntakeBanner: View {
     static func words(_ r: IntakeModel.Report) -> String {
         var parts: [String] = []
         if r.notes > 0 { parts.append("\(r.notes) note\(r.notes == 1 ? "" : "s") added") }
-        if r.queued > 0 { parts.append("\(r.queued) file\(r.queued == 1 ? "" : "s") kept in the Inbox for Phase 3") }
+        if r.sources > 0 { parts.append("\(r.sources) source\(r.sources == 1 ? "" : "s") added") }
+        if r.queued > 0 { parts.append("\(r.queued) file\(r.queued == 1 ? "" : "s") kept in the Inbox until this Mac can read them") }
         if !r.failed.isEmpty { parts.append("\(r.failed.count) could not be read") }
         return parts.isEmpty ? "Nothing to add" : parts.joined(separator: " · ")
     }

@@ -143,7 +143,7 @@ struct SourcesPane: View {
                             }
                         }
                     } header: { Text("Inbox · waiting to become sources") } footer: {
-                        Text("Dropped files this Mac cannot read yet. They are added as sources when this Mac hosts the library (Phase 3).").font(.caption)
+                        Text("Dropped files this Mac cannot read yet (spreadsheets, PowerPoint, EPUB…). Each becomes a source as soon as its reader lands; PDF, Word and rich text already do.").font(.caption)
                     }
                 }
             }
