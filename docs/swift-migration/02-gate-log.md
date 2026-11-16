@@ -28,7 +28,7 @@ Build number 5 is set on `dev` (app and widget targets together). Patrick pulled
 
 ## Phase 2 gate script (Mac app from `dev`)
 
-1. On the Python Mac: `LOCALBOOK_USE_PRODUCTION_DATA=1 python scripts/export_cortex_parity.py` (the same fixture the phone used) and copy `parity_fixture.json` to this Mac.
+1. On the Python Mac: `cd backend && LOCALBOOK_USE_PRODUCTION_DATA=1 .venv/bin/python scripts/export_cortex_parity.py` (the same fixture the phone used; it writes `~/Desktop/localbook-parity/parity_fixture.json`, read-only on the library, no Keychain).
 2. In the Mac app: Settings › Diagnostics › Open fixture…; Prepare EmbeddingGemma 2 (the app's own search model is reused when it is loaded on the Neural Engine); leave "Also check this Mac's tokenizer" on; Run now. Pass = all five bars green. Save the report (it is kept under `User Files/Diagnostics/`) and paste its verdict here.
 3. When the parity run passes, the next slice is the one-click library import (decision record, 2026-11-16), so the week of daily use runs on the whole library, not only the synced notebooks.
 4. ~~Daily use for a week~~ Dropped by Patrick on 2026-11-16: he already has a list of tweaks after the first day, so the parity run alone closes Phase 2 and the tweaks come in as cleanup.
