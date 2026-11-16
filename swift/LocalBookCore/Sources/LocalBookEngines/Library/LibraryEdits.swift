@@ -11,7 +11,8 @@ extension LibraryModel {
 
     private func mac(_ path: String, _ json: [String: Any]) async throws -> [String: Any] {
         guard let mac = MacLink.paired else { throw LabError.model(problemNotPaired) }
-        let data = try await MacLink.signedCall(mac, path: path, json: json, timeout: 120)
+        let body = try JSONSerialization.data(withJSONObject: json, options: [.sortedKeys])  // Data is Sendable; the dictionary is not
+        let data = try await MacLink.signedCall(mac, path: path, body: body, timeout: 120)
         return (try? JSONSerialization.jsonObject(with: data) as? [String: Any]) ?? [:]
     }
 
