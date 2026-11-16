@@ -1,0 +1,245 @@
+{
+  "bars" : {
+    "mean_cosine_min" : 0.999,
+    "top1_same_min" : 0.95,
+    "top5_overlap_min" : 0.9,
+    "worst_cosine_min" : 0.998
+  },
+  "chunk_cosine" : {
+    "mean" : 0.9999519314541913,
+    "min" : 0.9998441338539124,
+    "n" : 447,
+    "p1" : 0.9998868703842163,
+    "p50" : 0.9999560117721558
+  },
+  "compute_units" : "GPU",
+  "cosine" : {
+    "mean" : 0.9999522774272281,
+    "min" : 0.9997527599334717,
+    "n" : 497,
+    "p1" : 0.9998868703842163,
+    "p50" : 0.999956488609314
+  },
+  "created_at" : "2026-11-16T15:17:48Z",
+  "device" : {
+    "memory_gb" : 48,
+    "model" : "arm64",
+    "system" : "macOS 27.3",
+    "thermal_state" : "nominal"
+  },
+  "disagreements" : [
+    {
+      "mac" : [
+        "de79b6012f96",
+        "7eade69872c2",
+        "493539dbb409",
+        "0c3a2eaab5a7",
+        "8825b5633daf"
+      ],
+      "phone" : [
+        "de79b6012f96",
+        "7eade69872c2",
+        "493539dbb409",
+        "8825b5633daf",
+        "0c3a2eaab5a7"
+      ],
+      "question" : "task: search result | query: Is there a re-ranker in Agentic AI as part of the answering?"
+    },
+    {
+      "mac" : [
+        "de79b6012f96",
+        "493539dbb409",
+        "cb23f8a55c74",
+        "2de5845b08b3",
+        "9e99b00131ac"
+      ],
+      "phone" : [
+        "de79b6012f96",
+        "493539dbb409",
+        "cb23f8a55c74",
+        "2de5845b08b3",
+        "7eade69872c2"
+      ],
+      "question" : "task: search result | query: where do RAG and Agentic AI overlap"
+    },
+    {
+      "mac" : [
+        "4e89401a0d1b",
+        "39c813e1ac0b",
+        "11f868efa6ce",
+        "c2cad2b8e15a",
+        "79b0e9066dac"
+      ],
+      "phone" : [
+        "4e89401a0d1b",
+        "39c813e1ac0b",
+        "11f868efa6ce",
+        "c2cad2b8e15a",
+        "d20c36f79f61"
+      ],
+      "question" : "task: search result | query: How long is onbaording at Netflix"
+    },
+    {
+      "mac" : [
+        "5ed0af985c34",
+        "d43f25f9d018",
+        "83ec70fcfd5b",
+        "40ddd6b6989e",
+        "1994601bedbc"
+      ],
+      "phone" : [
+        "5ed0af985c34",
+        "d43f25f9d018",
+        "83ec70fcfd5b",
+        "40ddd6b6989e",
+        "389115c38dbc"
+      ],
+      "question" : "task: search result | query: What is BM25 and how does it figure into RAG?"
+    },
+    {
+      "mac" : [
+        "ff7e09312a2f",
+        "0c3a2eaab5a7",
+        "c2cad2b8e15a",
+        "2832cc9344fb",
+        "8825b5633daf"
+      ],
+      "phone" : [
+        "ff7e09312a2f",
+        "0c3a2eaab5a7",
+        "2832cc9344fb",
+        "8825b5633daf",
+        "c2cad2b8e15a"
+      ],
+      "question" : "task: search result | query: What are the best use cases for local RAG?"
+    },
+    {
+      "mac" : [
+        "a8351078a0d5",
+        "2de5845b08b3",
+        "c2cad2b8e15a",
+        "1272fc70e5d9",
+        "8825b5633daf"
+      ],
+      "phone" : [
+        "a8351078a0d5",
+        "2de5845b08b3",
+        "c2cad2b8e15a",
+        "8825b5633daf",
+        "1272fc70e5d9"
+      ],
+      "question" : "task: search result | query: What is needed to create a RAG process on a local laptop?"
+    },
+    {
+      "mac" : [
+        "6c31b08c8c08",
+        "0c3a2eaab5a7",
+        "6c3d6bd8d87d",
+        "f531b5593fdb",
+        "e98a4ce4d172"
+      ],
+      "phone" : [
+        "6c31b08c8c08",
+        "0c3a2eaab5a7",
+        "f531b5593fdb",
+        "6c3d6bd8d87d",
+        "83ec70fcfd5b"
+      ],
+      "question" : "task: search result | query: what are the top reasoning mechnisms in AI"
+    },
+    {
+      "mac" : [
+        "33c4900c6101",
+        "4e13e81dd37d",
+        "c13cf823c6c6",
+        "b860f32360fa",
+        "9a4f78f8aa92"
+      ],
+      "phone" : [
+        "33c4900c6101",
+        "4e13e81dd37d",
+        "b860f32360fa",
+        "c13cf823c6c6",
+        "9a4f78f8aa92"
+      ],
+      "question" : "task: search result | query: What are the top uses for AI in healthcare today?"
+    },
+    {
+      "mac" : [
+        "c5386ebc5c2f",
+        "7873d393ba6a",
+        "56d34b7b27a2",
+        "40cb93529cf9",
+        "93591a201f8f"
+      ],
+      "phone" : [
+        "c5386ebc5c2f",
+        "7873d393ba6a",
+        "40cb93529cf9",
+        "56d34b7b27a2",
+        "93591a201f8f"
+      ],
+      "question" : "task: search result | query: How much has Tracy’s accounts booked the last 3 years?"
+    },
+    {
+      "mac" : [
+        "767616f672a8",
+        "2db01efc4053",
+        "521f81e961f0",
+        "d5febc83c99a",
+        "c5386ebc5c2f"
+      ],
+      "phone" : [
+        "767616f672a8",
+        "2db01efc4053",
+        "521f81e961f0",
+        "d5febc83c99a",
+        "905a4bea0613"
+      ],
+      "question" : "task: search result | query: List the accounts for Tracy Bayliff"
+    }
+  ],
+  "embedded_while_in_background" : 0,
+  "errors" : [
+
+  ],
+  "items_embedded" : 497,
+  "mac_model" : "mlx-community\/embeddinggemma-2-bf16",
+  "ms_per_token" : 0.1494599892212464,
+  "over_cap" : {
+    "count" : 0,
+    "longest_tokens" : 0,
+    "truncated_cosine" : {
+      "mean" : "nan",
+      "min" : "nan",
+      "n" : 0,
+      "p1" : "nan",
+      "p50" : "nan"
+    }
+  },
+  "passes" : 1,
+  "query_cosine" : {
+    "mean" : 0.999955370426178,
+    "min" : 0.9997527599334717,
+    "n" : 50,
+    "p1" : 0.9997527599334717,
+    "p50" : 0.9999626278877258
+  },
+  "questions_compared" : 50,
+  "seconds" : 39.137953996658325,
+  "skipped_over_phone_cap" : 0,
+  "tokenizer" : {
+    "checked" : 497,
+    "identical" : 497
+  },
+  "top1_same_rate" : 0.98,
+  "top5_identical_rate" : 0.64,
+  "top5_mean_overlap" : 0.9719999999999999,
+  "verdict" : {
+    "mean_cosine" : true,
+    "no_errors" : true,
+    "none_over_cap" : true,
+    "retrieval_agrees" : true,
+    "worst_cosine" : true
+  }
+}

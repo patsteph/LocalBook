@@ -26,6 +26,21 @@ Build number 5 is set on `dev` (app and widget targets together). Patrick pulled
 5. Ask again and lock the phone mid-answer; unlock; the app is still responsive and the partial answer kept.
 6. Sync once more; nothing duplicates.
 
+## Phase 2 result: PASS (2026-11-16)
+
+Patrick ran the parity fixture (500 chunks, 50 questions from the production library) in Settings › Diagnostics on the MBP (M5 Pro, 48 GB, macOS 27.3), compute GPU, one pass. Report: `reports/2026-11-16-mac-parity-report.json`.
+
+| Bar | Result |
+|---|---|
+| Mean cosine ≥ 0.999 | 0.99995 |
+| Worst cosine ≥ 0.998 | 0.99975 |
+| Top-1 same ≥ 95 % / top-5 overlap ≥ 90 % | 98 % / 97 % |
+| Errors | 0 |
+| Over the 512-token cap | 0 |
+| Tokenizer identical | 497 of 497 |
+
+497 items in 39 s, 0.15 ms per token. The ten top-5 disagreements are order swaps among the same passages (ranks 4 and 5), the same pattern the phone showed. The week of daily use was dropped by Patrick the same day; Phase 2 is CLOSED and the cleanup list he sends replaces it.
+
 ## Phase 2 gate script (Mac app from `dev`)
 
 1. On the Python Mac: `cd backend && LOCALBOOK_USE_PRODUCTION_DATA=1 .venv/bin/python scripts/export_cortex_parity.py` (the same fixture the phone used; it writes `~/Desktop/localbook-parity/parity_fixture.json`, read-only on the library, no Keychain).
