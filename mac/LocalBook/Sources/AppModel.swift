@@ -11,6 +11,8 @@ final class AppModel {
 
     enum Destination: Hashable {
         case notebook(String)
+        /// The selected notebook's sources, in a pane (View › Show Sources, ⌥⌘1). Not a sidebar row.
+        case sources
         case studio
         case meetings
         case notes
@@ -28,6 +30,12 @@ final class AppModel {
     var paired = MacLink.paired?.verified == true
     /// The pairing sheet (menu: Notebook › Pair with a Mac…, or the empty states).
     var showPairing = false
+    /// The inspector on the right edge (View › Show Inspector, ⌥⌘I): the notebook's sources.
+    var showInspector = false
+    /// A Studio kind the menu asked for (Studio › Briefing…): the Studio pane opens its make sheet.
+    var makeRequest: StudioItem.Kind?
+    /// What the Sources pane and the inspector list, and what Ask returns to: the scoped notebook.
+    var currentNotebookId: String? { library.scopeToNotebook }
     private var modelsStarted = false
 
     init() {
@@ -80,7 +88,7 @@ final class AppModel {
         await library.open()
         syncSelectionToScope()
         guard paired else { return }
-        Task { await library.sync() }
+        Task { await runSync() }
         await startModels()
     }
 
@@ -107,7 +115,13 @@ final class AppModel {
     func syncNow() {
         guard paired else { return }
         if case .syncing = library.syncState { return }
-        Task { await library.sync() }
+        Task { await runSync() }
+    }
+
+    /// A sync, then the lists that show sources reload.
+    func runSync() async {
+        await library.sync()
+        NotificationCenter.default.post(name: .librarySynced, object: nil)
     }
 
     /// Remove the pairing and the copy of the library on this Mac.
@@ -126,5 +140,16 @@ final class AppModel {
         case .notebook, nil: selection = .notebook(id)
         default: return
         }
+    }
+
+    /// Back to the conversation with the current notebook (Notebook › Ask, ⌘L).
+    func showAsk() {
+        if let id = library.scopeToNotebook { selection = .notebook(id) } else { selection = nil }
+    }
+
+    /// Studio › Briefing, Quiz, …: show the Studio pane and open that kind's make sheet.
+    func make(_ kind: StudioItem.Kind) {
+        selection = .studio
+        makeRequest = kind
     }
 }

@@ -19,6 +19,12 @@ struct LocalBookApp: App {
         .defaultSize(width: 1180, height: 760)
         .commands { LocalBookCommands() }
 
+        // A source in its own window (from a citation popover or a source row: ⌘↓ / Open in Window).
+        WindowGroup("Source", id: "source", for: SourceWindowKey.self) { $key in
+            if let key { SourceWindow(key: key).environment(model) }
+        }
+        .defaultSize(width: 720, height: 620)
+
         Settings {
             SettingsView()
                 .environment(model)

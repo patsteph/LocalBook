@@ -1,10 +1,15 @@
 import AppKit
+import LocalBookCore
 import SwiftUI
 
 /// The menu bar. Every action the app will have is here from day one, with its keyboard shortcut, so the map in
 /// `03-mac-design-profile.md` and the app never drift. Items whose feature arrives in a later phase are disabled
 /// until then; enabling one is the last line of that feature's work.
 struct LocalBookCommands: Commands {
+    private func make(_ kind: StudioItem.Kind) {
+        NotificationCenter.default.post(name: .makeStudio, object: kind.rawValue)
+    }
+
     var body: some Commands {
         // File
         CommandGroup(replacing: .newItem) {
@@ -21,7 +26,7 @@ struct LocalBookCommands: Commands {
 
         // Notebook
         CommandMenu("Notebook") {
-            Button("Ask") { NotificationCenter.default.post(name: .focusComposer, object: nil) }
+            Button("Ask") { NotificationCenter.default.post(name: .focusComposer, object: nil) }   // also returns to the conversation
                 .keyboardShortcut("l")
             Button("Stop Answer") { NotificationCenter.default.post(name: .stopAnswer, object: nil) }
                 .keyboardShortcut(".")
@@ -38,13 +43,13 @@ struct LocalBookCommands: Commands {
 
         // Studio
         CommandMenu("Studio") {
-            Button("Briefing") {}.keyboardShortcut("1", modifiers: [.command, .control]).disabled(true)
-            Button("Quiz") {}.keyboardShortcut("2", modifiers: [.command, .control]).disabled(true)
-            Button("Flashcards") {}.keyboardShortcut("3", modifiers: [.command, .control]).disabled(true)
-            Button("Audio Overview") {}.keyboardShortcut("4", modifiers: [.command, .control]).disabled(true)
-            Button("Visual") {}.keyboardShortcut("5", modifiers: [.command, .control]).disabled(true)
+            Button("Briefing") { make(.doc) }.keyboardShortcut("1", modifiers: [.command, .control])
+            Button("Quiz") { make(.quiz) }.keyboardShortcut("2", modifiers: [.command, .control])
+            Button("Flashcards") { make(.cards) }.keyboardShortcut("3", modifiers: [.command, .control])
+            Button("Audio Overview") { make(.audio) }.keyboardShortcut("4", modifiers: [.command, .control])
+            Button("Visual") { make(.visual) }.keyboardShortcut("5", modifiers: [.command, .control])
             Divider()
-            Button("Video Explainer") {}.disabled(true)
+            Button("Video Explainer") { make(.video) }
             Button("Image…") {}.disabled(true)                                                    // Phase 5
             Button("Canvas") {}.disabled(true)                                                    // Phase 5
             Button("Constellation") {}.disabled(true)                                             // Phase 5
@@ -59,11 +64,14 @@ struct LocalBookCommands: Commands {
         // View
         SidebarCommands()
         CommandGroup(after: .sidebar) {
-            Button("Show Sources") {}.keyboardShortcut("1", modifiers: [.command, .option]).disabled(true) // Phase 2
-            Button("Show Studio") {}.keyboardShortcut("2", modifiers: [.command, .option]).disabled(true)
-            Button("Show Meetings") {}.keyboardShortcut("3", modifiers: [.command, .option]).disabled(true)
+            Button("Show Sources") { NotificationCenter.default.post(name: .showSources, object: nil) }
+                .keyboardShortcut("1", modifiers: [.command, .option])
+            Button("Show Studio") { NotificationCenter.default.post(name: .showStudio, object: nil) }
+                .keyboardShortcut("2", modifiers: [.command, .option])
+            Button("Show Meetings") {}.keyboardShortcut("3", modifiers: [.command, .option]).disabled(true)       // Phase 2, later slice
             Divider()
-            Button("Show Inspector") {}.keyboardShortcut("i", modifiers: [.command, .option]).disabled(true) // Phase 2
+            Button("Show Inspector") { NotificationCenter.default.post(name: .toggleInspector, object: nil) }
+                .keyboardShortcut("i", modifiers: [.command, .option])
         }
 
         // Help

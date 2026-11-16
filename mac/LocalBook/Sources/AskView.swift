@@ -302,7 +302,7 @@ struct AskView: View {
 
 struct SourceRef: Identifiable { let id = UUID(); let number: Int; let hits: [LibraryHit] }
 
-/// The cited passage, in a popover. Double-click to open the source viewer arrives with Sources (read) later in Phase 2.
+/// The cited passage, in a popover; the window button (⌘↓) opens the whole source in the source viewer.
 struct SourcePopover: View {
     let number: Int
     let hit: LibraryHit
@@ -312,6 +312,8 @@ struct SourcePopover: View {
                 Text("Source \(number)").font(.headline)
                 Spacer()
                 Text(hit.filename).font(.footnote).foregroundStyle(.secondary).lineLimit(1)
+                SourceOpenButton(key: SourceWindowKey(notebookId: hit.notebookId, sourceId: hit.sourceId, name: hit.filename))
+                    .labelStyle(.iconOnly).buttonStyle(.borderless).help("Open in Window (⌘↓)")
             }
             Divider()
             ScrollView {

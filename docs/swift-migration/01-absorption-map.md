@@ -14,7 +14,7 @@ Legend for "How": **Direct** = same design, Swift frameworks; **Port** = rewrite
 | Hybrid search (BM25 + vectors) + FlashRank reranker | Direct | Phone's exact BM25, Accelerate flat scan (0.29 ms at the largest notebook), Core ML MiniLM | 2 | in progress (2026-11-16: the Mac app runs the phone's search and reranker from the package) |
 | @curator cross-notebook search | Replace | Flat scan across all notebooks (1 ms for the whole library today); USearch index added only past ~1M chunks | 2 | not started |
 | Notebooks, folders, desktop ordering | Direct | SQLite, SwiftUI sidebar (AppKit outline view) | 2 | not started |
-| Sources list, source viewer, articles per source, export | Direct | SwiftUI + Quick Look previews, PDFKit viewer, export via `NSSavePanel` and Share | 2 to 3 | not started |
+| Sources list, source viewer, articles per source, export | Direct | SwiftUI + Quick Look previews, PDFKit viewer, export via `NSSavePanel` and Share | 2 to 3 | in progress (2026-11-16: Sources pane, inspector and source viewer window read synced sources; Quick Look, PDFKit and export with Phase 3 ingestion) |
 | Rich note editor, canvas notes | Direct | TextKit 2 (`NSTextView`) with Markdown round-trip | 3 | not started |
 | Chunking, synthetic questions, parent text, re-index, repair zero vectors | Port | Same algorithm as `phone_recipe.py`; maintenance commands in Settings > Library | 3 | not started |
 | Embedding selector, LLM Studio, model catalog, HF downloads, hardware profiler | Direct | `swift-huggingface` (phone uses it), MLX model registry, `ProcessInfo`/IOKit for hardware | 2 | not started |
@@ -42,7 +42,7 @@ Legend for "How": **Direct** = same design, Swift frameworks; **Port** = rewrite
 
 | Feature today | How | Swift approach | Phase | Status |
 |---|---|---|---|---|
-| Briefing, quiz, flashcards, audio overview, video explainer | Direct | `StudioEngine`, FluidAudio Kokoro, AVAssetWriter (phone has all of it) | 2 | not started |
+| Briefing, quiz, flashcards, audio overview, video explainer | Direct | `StudioEngine`, FluidAudio Kokoro, AVAssetWriter (phone has all of it) | 2 | in progress (2026-11-16: Studio pane on the Mac makes and shows all six kinds with the phone's engine; items sync to the Python host as the phone's do) |
 | Podcast generator (multi-voice, styles) | Direct | Audio overview's four styles and two accents already cover it; add the Mac's voice roster | 2 | not started |
 | Visuals: v1 smart stream, v2 compose with critic, infographic, SVG templates, Mermaid | Replace | `VisualSpec` drawn natively (five layouts) extended with the v2 layouts users actually get (infographic stickers become SF Symbols and Swift Charts); Mermaid in sources rendered by swift-mermaid or BeautifulMermaidSwift; export PNG/PDF/SVG via `ImageRenderer`. Equivalence: the same 15-prompt golden set the audit proposed, judged side by side by Patrick | 3 | not started |
 | Image generation (mflux FLUX.2 Klein) | Replace, with Hatch | flux-2-swift-mlx / mlx-swift-image behind the same UI; mflux in-process until the Swift port matches on the golden prompts | 5 | not started |
