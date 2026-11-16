@@ -11,6 +11,9 @@ struct Sidebar: View {
     @State private var expanded: Set<String> = []
     @State private var topics: [String: [LibraryStore.TopicInfo]] = [:]
     @State private var summaries: [String: String] = [:]
+    /// Which notebook sections are folded, by section name, kept across launches. A section this Mac has never
+    /// touched follows the fold the old app's sidebar shows for it.
+    @AppStorage("sidebar.collapsedSections") private var collapsedData = Data()
 
     var body: some View {
         VStack(spacing: 0) {
@@ -27,7 +30,7 @@ struct Sidebar: View {
                     }
                 } else {
                     ForEach(model.sections) { section in
-                        Section {
+                        Section(isExpanded: sectionExpanded(section)) {
                             ForEach(section.notebooks) { notebook in notebookRow(notebook) }
                         } header: {
                             Text(section.name).contextMenu { sectionMenu(section) }
@@ -48,6 +51,19 @@ struct Sidebar: View {
         .onChange(of: expanded) { _, now in Task { await loadTopics(now) } }
         .onChange(of: model.library.topicsVersion) { _, _ in Task { await loadTopics(expanded, fresh: true) } }
         .onReceive(NotificationCenter.default.publisher(for: .librarySynced)) { _ in Task { await loadSummaries() } }
+    }
+
+    /// Collapsed sections by name; absent means "follow the Mac".
+    private var collapsed: [String: Bool] {
+        get { (try? JSONDecoder().decode([String: Bool].self, from: collapsedData)) ?? [:] }
+        nonmutating set { collapsedData = (try? JSONEncoder().encode(newValue)) ?? Data() }
+    }
+
+    /// The section header's fold. Clicking the header toggles it; the choice outlives the launch.
+    private func sectionExpanded(_ section: AppModel.NotebookSection) -> Binding<Bool> {
+        Binding(
+            get: { !(collapsed[section.name] ?? section.notebooks.first?.sectionCollapsed ?? false) },
+            set: { open in var c = collapsed; c[section.name] = !open; collapsed = c })
     }
 
     /// The color mark and the title; the chevron opens the notebook's topics. Counts live in the tooltip.
