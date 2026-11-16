@@ -1,6 +1,8 @@
 import Foundation
 import LocalBookCore
+import HuggingFace
 import MLXHuggingFace
+import Tokenizers
 import MLXLMCommon
 import PDFKit
 #if canImport(AppKit)
