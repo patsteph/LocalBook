@@ -176,6 +176,7 @@ extension NSImage {
 struct NoteEditor: View {
     let notebookId: String
     var startDictating = false
+    var startText = ""
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
     @State private var title = ""
@@ -267,7 +268,7 @@ struct NoteEditor: View {
                 if !found.isEmpty { text = text.isEmpty ? found : text + "\n\n" + found }
             }
         }
-        .task { if startDictating { dictation.toggle { spoken in text = spoken } } }
+        .task { text = startText; if startDictating { dictation.toggle { spoken in text = spoken } } }
         .onDisappear { dictation.stop() }
     }
 
@@ -303,6 +304,7 @@ struct NotesPane: View {
     @State private var sent: Set<String> = []
     @State private var selected: String?
     @State private var writing = false
+    @State private var startText = ""
     @State private var confirmDelete: LibraryStore.LocalNote?
 
     private var library: LibraryModel { model.library }
@@ -316,12 +318,13 @@ struct NotesPane: View {
         .task { await load(); await library.flushNotes(); await load() }
         .onReceive(NotificationCenter.default.publisher(for: .librarySynced)) { _ in Task { await load() } }
         .onReceive(NotificationCenter.default.publisher(for: .newNote)) { note in
-            // The menu's own post (no object) is handled when the pane is already showing; the main window re-posts
-            // with an object after switching to this pane.
-            if library.scopeToNotebook != nil, note.object == nil ? model.selection == .notes : true { writing = true }
+            // Only the main window's forwarded request: it has switched to this pane and may carry text to start from.
+            guard let request = note.object as? NewNoteRequest, library.scopeToNotebook != nil else { return }
+            startText = request.text ?? ""
+            writing = true
         }
         .sheet(isPresented: $writing) {
-            if let id = library.scopeToNotebook { NoteEditor(notebookId: id).environment(model) }
+            if let id = library.scopeToNotebook { NoteEditor(notebookId: id, startText: startText).environment(model) }
         }
         .confirmationDialog("Delete this note?", isPresented: Binding(get: { confirmDelete != nil }, set: { if !$0 { confirmDelete = nil } }), titleVisibility: .visible) {
             Button("Delete", role: .destructive) {
@@ -410,3 +413,6 @@ struct NotesPane: View {
         if selected != nil, !notes.contains(where: { $0.id == selected }) { selected = nil }
     }
 }
+
+/// File › New Note or an intent, forwarded by the main window once the Notes pane is showing.
+struct NewNoteRequest { let text: String? }

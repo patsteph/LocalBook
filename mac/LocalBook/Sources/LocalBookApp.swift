@@ -25,6 +25,12 @@ struct LocalBookApp: App {
         }
         .defaultSize(width: 720, height: 620)
 
+        // A Studio item in its own window (Open in Window from the shelf, or Window › Open in New Window).
+        WindowGroup("Studio", id: "studio", for: StudioWindowKey.self) { $key in
+            if let key { StudioWindow(key: key).environment(model) }
+        }
+        .defaultSize(width: 820, height: 640)
+
         Settings {
             SettingsView()
                 .environment(model)

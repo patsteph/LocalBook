@@ -29,6 +29,7 @@ struct Sidebar: View {
                             }
                             .tag(AppModel.Destination.notebook(notebook.id))
                             .help("\(notebook.chunks) passages")
+                            .acceptsDrops(for: notebook.id)
                         }
                     }
                 }

@@ -58,6 +58,12 @@ struct AskView: View {
             SourcePopover(number: ref.number, hit: ref.hits[ref.number - 1])
         }
         .onReceive(NotificationCenter.default.publisher(for: .focusComposer)) { _ in composerFocused = true }
+        .onChange(of: model.pendingQuestion, initial: true) { _, q in
+            guard let q else { return }
+            model.pendingQuestion = nil
+            library.query = q
+            send()
+        }
         .onReceive(NotificationCenter.default.publisher(for: .readAnswerAloud)) { _ in
             let latest = library.answerText.isEmpty ? (library.history.last?.answer ?? "") : library.answerText
             if !latest.isEmpty { reader.toggle(latest) }
@@ -221,6 +227,7 @@ struct AskView: View {
         HStack(spacing: 16) {
             Button { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(text, forType: .string) } label: { Label("Copy", systemImage: "doc.on.doc") }
             ShareLink(item: text) { Label("Share", systemImage: "square.and.arrow.up") }
+            Image(systemName: "line.3.horizontal").foregroundStyle(.secondary).draggable(text).help("Drag the answer out as text")
             Button { reader.toggle(text) } label: {
                 switch reader.state {
                 case .preparing: HStack(spacing: 6) { ProgressView().controlSize(.mini); Text("Preparing voice…") }

@@ -54,6 +54,8 @@ struct SourceWindowKey: Codable, Hashable {
 /// host until then).
 struct SourcesPane: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.openWindow) private var openWindow
+    @State private var inbox: [URL] = []
     @State private var sources: [LibraryStore.SourceInfo] = []
     @State private var loaded = false
     @State private var search = ""
@@ -80,8 +82,11 @@ struct SourcesPane: View {
             list.frame(minWidth: 260, idealWidth: 320, maxWidth: 460)
             detail.frame(minWidth: 320, maxWidth: .infinity, maxHeight: .infinity)
         }
-        .task(id: notebook?.id) { await reload() }
-        .onReceive(NotificationCenter.default.publisher(for: .librarySynced)) { _ in Task { await reload() } }
+        .task(id: notebook?.id) { await reload(); inbox = notebook.map { IntakeModel.queued($0.id) } ?? [] }
+        .onReceive(NotificationCenter.default.publisher(for: .librarySynced)) { _ in Task { await reload(); inbox = notebook.map { IntakeModel.queued($0.id) } ?? [] } }
+        .onReceive(NotificationCenter.default.publisher(for: .detachItem)) { _ in
+            if let s = shown.first(where: { $0.id == selected }) { openWindow(id: "source", value: key(s)) }
+        }
     }
 
     private var list: some View {
@@ -124,6 +129,22 @@ struct SourcesPane: View {
                     }
                     .tag(s.id)
                     .contextMenu { SourceOpenButton(key: key(s)) }
+                }
+                if !inbox.isEmpty {
+                    Section {
+                        ForEach(inbox, id: \.self) { url in
+                            HStack(spacing: 10) {
+                                Image(systemName: "tray.and.arrow.down").foregroundStyle(.orange).frame(width: 22)
+                                Text(url.lastPathComponent).lineLimit(1)
+                            }
+                            .contextMenu {
+                                Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([url]) }
+                                Button("Remove", role: .destructive) { try? FileManager.default.removeItem(at: url); inbox = notebook.map { IntakeModel.queued($0.id) } ?? [] }
+                            }
+                        }
+                    } header: { Text("Inbox · waiting to become sources") } footer: {
+                        Text("Dropped files this Mac cannot read yet. They are added as sources when this Mac hosts the library (Phase 3).").font(.caption)
+                    }
                 }
             }
             .listStyle(.inset)

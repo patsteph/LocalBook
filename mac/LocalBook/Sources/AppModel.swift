@@ -8,6 +8,8 @@ import LocalBookEngines
 @Observable @MainActor
 final class AppModel {
     let library = LibraryModel()
+    /// Drops and intents that add to a notebook.
+    let intake = IntakeModel()
 
     enum Destination: Hashable {
         case notebook(String)
@@ -34,6 +36,8 @@ final class AppModel {
     var showInspector = false
     /// A Studio kind the menu asked for (Studio › Briefing…): the Studio pane opens its make sheet.
     var makeRequest: StudioItem.Kind?
+    /// A question from an intent or a `localbook://ask` link, asked by the Ask view once it is on screen.
+    var pendingQuestion: String?
     /// Record › Voice Note (⇧⌘V): the note editor with dictation already listening.
     var showVoiceNote = false
     /// What the Sources pane and the inspector list, and what Ask returns to: the scoped notebook.

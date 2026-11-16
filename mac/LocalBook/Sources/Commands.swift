@@ -79,6 +79,12 @@ struct LocalBookCommands: Commands {
                 .keyboardShortcut("i", modifiers: [.command, .option])
         }
 
+        // Window
+        CommandGroup(after: .windowArrangement) {
+            Button("Open in New Window") { NotificationCenter.default.post(name: .detachItem, object: nil) }
+                .keyboardShortcut("d", modifiers: [.command, .shift])
+        }
+
         // Help
         CommandGroup(replacing: .help) {
             Button("LocalBook Help") {}.disabled(true)

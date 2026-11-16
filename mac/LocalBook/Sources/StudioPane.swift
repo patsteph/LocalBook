@@ -28,6 +28,7 @@ extension StudioItem.Kind {
 /// Mac the way the phone's are, so they reach its Canvas.
 struct StudioPane: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.openWindow) private var openWindow
     @State private var engine = StudioEngine()
     @State private var items: [StudioItem] = []
     @State private var notebookId: String?
@@ -59,6 +60,9 @@ struct StudioPane: View {
         }
         .task { reload(); await send(); _ = await StudioPull.pull(); reload() }
         .onReceive(NotificationCenter.default.publisher(for: .librarySynced)) { _ in Task { _ = await StudioPull.pull(); reload() } }
+        .onReceive(NotificationCenter.default.publisher(for: .detachItem)) { _ in
+            if let item = opened { openWindow(id: "studio", value: StudioWindowKey(notebookId: item.notebookId, itemId: item.id, title: item.title)) }
+        }
         .confirmationDialog("Delete all \(items.count) items made from this notebook?", isPresented: $confirmClear, titleVisibility: .visible) {
             Button("Delete all", role: .destructive) {
                 for item in items { StudioSync.delete(item) }
@@ -125,6 +129,7 @@ struct StudioPane: View {
                         .tag(item.id)
                         .contextMenu {
                             StudioShareButton(item: item)
+                            Button { openWindow(id: "studio", value: StudioWindowKey(notebookId: item.notebookId, itemId: item.id, title: item.title)) } label: { Label("Open in Window", systemImage: "macwindow") }
                             Button { newName = item.title; renaming = item } label: { Label("Rename", systemImage: "pencil") }
                             if item.kind != .video {
                                 Button { prefill = Self.subject(of: item); making = item.kind } label: { Label("Make Another Version", systemImage: "arrow.triangle.2.circlepath") }
@@ -943,5 +948,28 @@ struct StudioShareButton: View {
         } else if let text = StudioShare.text(item) {
             ShareLink(item: text, subject: Text(item.title)) { Label("Share", systemImage: "square.and.arrow.up") }
         }
+    }
+}
+
+/// A Studio item in its own window (Open in Window, ⇧⌘D).
+struct StudioWindowKey: Codable, Hashable {
+    let notebookId: String
+    let itemId: String
+    let title: String
+}
+
+struct StudioWindow: View {
+    let key: StudioWindowKey
+
+    var body: some View {
+        Group {
+            if let item = StudioStore.all(notebook: key.notebookId).first(where: { $0.id == key.itemId }) {
+                StudioItemDetail(item: item)
+            } else {
+                ContentUnavailableView("This item is gone", systemImage: "sparkles", description: Text("It was deleted from this Mac."))
+            }
+        }
+        .frame(minWidth: 480, minHeight: 360)
+        .navigationTitle(key.title)
     }
 }

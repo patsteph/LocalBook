@@ -28,6 +28,8 @@ struct MainWindow: View {
                     NotesPane()
                 }
             }
+            .acceptsDrops(for: model.currentNotebookId)
+            .overlay(alignment: .bottom) { IntakeBanner().padding(.bottom, 14) }
             .inspector(isPresented: $model.showInspector) {
                 InspectorView()
                     .inspectorColumnWidth(min: 220, ideal: 280, max: 400)
@@ -62,7 +64,8 @@ struct MainWindow: View {
         .sheet(isPresented: $model.showVoiceNote) {
             if let id = model.currentNotebookId { NoteEditor(notebookId: id, startDictating: true).environment(model) }
         }
-        .task { await model.start() }
+        .task { LaunchRequests.shared.windowReady(); await model.start() }
+        .onOpenURL { url in LaunchRequests.shared.open(url) }
         .onChange(of: model.library.scopeToNotebook) { _, _ in model.syncSelectionToScope() }
         .onReceive(Self.menuActions) { note in handle(note) }
     }
@@ -70,7 +73,7 @@ struct MainWindow: View {
     /// Every menu item speaks through one notification stream, so the body stays a short modifier chain.
     @MainActor private static let menuActions = Publishers.MergeMany(
         [Notification.Name.syncNow, .stopAnswer, .pairWithMac, .focusComposer, .showSources, .showStudio, .showMeetings,
-         .startMeetingRecording, .newNote, .voiceNote, .toggleInspector, .makeStudio]
+         .startMeetingRecording, .newNote, .voiceNote, .toggleInspector, .makeStudio, .askQuestion]
             .map { NotificationCenter.default.publisher(for: $0) }
     )
 
@@ -84,12 +87,14 @@ struct MainWindow: View {
         case .showStudio: model.selection = .studio
         case .showMeetings, .startMeetingRecording: model.selection = .meetings
         case .newNote:
-            guard note.object == nil, model.currentNotebookId != nil else { return }
-            if model.selection != .notes {
-                model.selection = .notes
-                // The Notes pane is not on screen yet to hear this one: tell it once it is.
-                Task { @MainActor in NotificationCenter.default.post(name: .newNote, object: "pane") }
-            }
+            // The menu and the intents post it bare (or with text to start from); the Notes pane answers only the
+            // forwarded request, sent once the pane is on screen.
+            guard !(note.object is NewNoteRequest), model.currentNotebookId != nil else { return }
+            let request = NewNoteRequest(text: note.object as? String)
+            model.selection = .notes
+            Task { @MainActor in NotificationCenter.default.post(name: .newNote, object: request) }
+        case .askQuestion:
+            if let q = note.object as? String, !q.isEmpty { model.pendingQuestion = q; model.showAsk() }
         case .voiceNote: if model.currentNotebookId != nil { model.showVoiceNote = true }
         case .toggleInspector: model.showInspector.toggle()
         case .makeStudio:
@@ -136,4 +141,8 @@ extension Notification.Name {
     static let voiceNote = Notification.Name("LocalBook.voiceNote")
     static let newNote = Notification.Name("LocalBook.newNote")
     static let readAnswerAloud = Notification.Name("LocalBook.readAnswerAloud")
+    /// From an intent or `localbook://ask?q=`: `object` is the question.
+    static let askQuestion = Notification.Name("LocalBook.askQuestion")
+    /// Window › Open in New Window (⇧⌘D): the pane on screen opens its selected item in a window.
+    static let detachItem = Notification.Name("LocalBook.detachItem")
 }
