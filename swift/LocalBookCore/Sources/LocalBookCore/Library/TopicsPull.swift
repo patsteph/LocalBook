@@ -12,13 +12,15 @@ public enum TopicsPull {
         for id in notebooks {
             do {
                 let data = try await call("\(root)/topics", try JSONSerialization.data(withJSONObject: ["notebook_id": id]))
-                let rows = ((try JSONSerialization.jsonObject(with: data) as? [String: Any])?["topics"] as? [[String: Any]]) ?? []
+                let reply = (try JSONSerialization.jsonObject(with: data) as? [String: Any]) ?? [:]
+                let rows = reply["topics"] as? [[String: Any]] ?? []
                 let list = rows.compactMap { r -> LibraryStore.TopicInfo? in
                     guard let tid = r["id"] as? String, let name = r["name"] as? String, !name.isEmpty else { return nil }
                     return .init(id: tid, notebookId: id, name: name, keywords: r["keywords"] as? [String] ?? [],
                                  chunks: r["chunks"] as? Int ?? 0, sources: r["sources"] as? Int ?? 0)
                 }
                 try await store.setTopics(notebook: id, list)
+                try await store.setMeta("untagged:\(id)", "\(reply["untagged"] as? Int ?? 0)")
             } catch {
                 problems[id] = error.localizedDescription
             }

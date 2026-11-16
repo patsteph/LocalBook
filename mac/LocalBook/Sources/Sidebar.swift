@@ -110,6 +110,7 @@ struct TopicChips: View {
     let topics: [LibraryStore.TopicInfo]?
     @Environment(AppModel.self) private var model
     @State private var showAll = false
+    @State private var untagged = 0
 
     var body: some View {
         if let topics {
@@ -120,23 +121,32 @@ struct TopicChips: View {
                 Text(model.paired ? "No topics yet: tag this notebook's sources in the Mac's Sources panel." : "No topics came over for this notebook.")
                     .font(.caption).foregroundStyle(.tertiary).padding(.vertical, 2)
             } else {
-                let shown = showAll ? topics : Array(topics.prefix(6))
-                ChipFlow(spacing: 5) {
-                    ForEach(shown) { t in
-                        Button {
-                            model.selection = .notebook(notebook.id)
-                            model.pendingQuestion = "What do my sources say about \(t.name)?"
-                        } label: {
-                            Text(t.name).lineLimit(1)
+                let shown = showAll ? topics : Array(topics.prefix(8))
+                VStack(alignment: .leading, spacing: 4) {
+                    ChipFlow(spacing: 5) {
+                        ForEach(shown) { t in
+                            Button {
+                                model.selection = .notebook(notebook.id)
+                                model.pendingQuestion = "What do my sources say about \(t.name)?"
+                            } label: {
+                                HStack(spacing: 4) {
+                                    Text(t.name).lineLimit(1)
+                                    Text(t.sources.formatted()).foregroundStyle(.secondary).monospacedDigit()
+                                }
+                            }
+                            .buttonStyle(.chip)
+                            .help("\(t.sources) source\(t.sources == 1 ? "" : "s") tagged \(t.name). Click to ask about it.")
                         }
-                        .buttonStyle(.chip)
-                        .help("\(t.sources) source\(t.sources == 1 ? "" : "s") tagged \(t.name)")
+                        if topics.count > 8 {
+                            Button(showAll ? "Fewer" : "\(topics.count - 8) more…") { showAll.toggle() }.buttonStyle(.chipQuiet)
+                        }
                     }
-                    if topics.count > 6 {
-                        Button(showAll ? "Fewer" : "\(topics.count - 6) more…") { showAll.toggle() }.buttonStyle(.chipQuiet)
+                    if untagged > 0 {
+                        Text("\(untagged) untagged").font(.caption2).foregroundStyle(.tertiary)
                     }
                 }
                 .padding(.vertical, 2)
+                .task(id: topics.count) { untagged = await model.library.untaggedCount(in: notebook.id) }
             }
         } else {
             ProgressView().controlSize(.small)

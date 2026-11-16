@@ -196,7 +196,7 @@ async def topics(request: Request):
     _loopback(request)
     b = await request.json()
     from services.sync import phone_topics
-    return {"topics": await _everything(phone_topics.topics, str(b.get("notebook_id", "")))}
+    return await _everything(phone_topics.cloud, str(b.get("notebook_id", "")))
 
 
 @router.post("/studio/list")

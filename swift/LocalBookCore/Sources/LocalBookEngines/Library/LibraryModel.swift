@@ -140,6 +140,12 @@ public final class LibraryModel {
         return await store.topics(notebook: notebook)
     }
 
+    /// How many of the notebook's sources carry no tag at all (the old app's "N untagged").
+    public func untaggedCount(in notebook: String) async -> Int {
+        guard let store, let v = await store.meta("untagged:\(notebook)") else { return 0 }
+        return Int(v) ?? 0
+    }
+
     /// What a sidebar row says on hover.
     public func notebookSummary(_ notebook: String) async -> (sources: Int, lastAdded: String?) {
         guard let store else { return (0, nil) }

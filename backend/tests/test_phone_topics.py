@@ -22,6 +22,7 @@ def test_tags_are_counted_once_per_source_biggest_first(lib, tagged):
     r = _call(lib, "/phone/library/topics", {"notebook_id": NB_OPEN})
     assert r.status_code == 200
     assert [(t["name"], t["sources"]) for t in r.json()["topics"]] == [("research", 2), ("technology", 2)]
+    assert r.json()["sources"] == 5 and r.json()["untagged"] == 3      # s3 empty, s4 null, s5 unreadable
 
 
 def test_a_hidden_notebook_has_no_topics_for_a_peer(lib, tagged):

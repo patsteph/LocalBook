@@ -504,6 +504,7 @@ public actor LibraryStore {
         for t in ["chunks", "sources", "notebooks", "source_text", "imported_notes", "topics"] { try exec("DELETE FROM \(t)") }
         try exec("DELETE FROM meta WHERE key LIKE 'personal:%'")        // profile, memory, entities: all of it goes
         try exec("DELETE FROM meta WHERE key LIKE 'imported:%'")
+        try exec("DELETE FROM meta WHERE key LIKE 'untagged:%'")
     }
 
     public func removeNotebooks(except keep: Set<String>) throws {
