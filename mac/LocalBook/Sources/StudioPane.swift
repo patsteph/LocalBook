@@ -116,7 +116,14 @@ struct StudioPane: View {
             Divider()
             List(selection: $selected) {
                 Section("Made from this notebook") {
-                    if items.isEmpty { Text("Nothing yet. Pick a kind above.").font(.callout).foregroundStyle(.tertiary) }
+                    if items.isEmpty {
+                        if let why = StudioPull.lastProblem {
+                            Label("The Mac's Studio items could not be fetched: \(why)", systemImage: "exclamationmark.triangle")
+                                .font(.callout).foregroundStyle(.orange)
+                        } else {
+                            Text("Nothing yet. Pick a kind above.").font(.callout).foregroundStyle(.tertiary)
+                        }
+                    }
                     ForEach(items) { item in
                         HStack(spacing: 10) {
                             Image(systemName: item.kind.symbol).foregroundStyle(item.kind.tint).frame(width: 22)

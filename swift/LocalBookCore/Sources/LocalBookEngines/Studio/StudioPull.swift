@@ -11,10 +11,16 @@ public enum StudioPull {
     }
     private struct Listing: Decodable { let items: [Remote] }
 
+    /// Why the last pull brought nothing, in words a pane can show; nil after a pull that reached the Mac.
+    @MainActor public private(set) static var lastProblem: String?
+
     /// Returns true when the Mac answered (even if nothing changed).
     @discardableResult
     public static func pull() async -> Bool {
-        guard let mac = MacLink.paired else { return false }
+        guard let mac = MacLink.paired else {
+            await MainActor.run { lastProblem = "Not paired with a Mac." }
+            return false
+        }
         do {
             let data = try await MacLink.signedCall(mac, path: "/phone/library/studio/list", json: [:], timeout: 60)
             let remote = try JSONDecoder().decode(Listing.self, from: data).items
@@ -48,8 +54,14 @@ public enum StudioPull {
                     StudioStore.save(item)
                 }
             }
+            SoakTrace.log("studio pull: \(remote.count) on the Mac, \(wanted.count) fetched")
+            await MainActor.run { lastProblem = nil }
             return true
-        } catch { return false }
+        } catch {
+            SoakTrace.log("studio pull failed: \(error.localizedDescription)")
+            await MainActor.run { lastProblem = error.localizedDescription }
+            return false
+        }
     }
 
     /// The Mac's timestamps come as "2026-10-20T12:34:56.123456" (no zone, microseconds) or with a zone; read all forms.
