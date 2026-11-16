@@ -131,6 +131,7 @@ public actor LibraryStore {
             "CREATE TABLE IF NOT EXISTS source_text (notebook_id TEXT NOT NULL, source_id TEXT NOT NULL, text TEXT NOT NULL, url TEXT, format TEXT, PRIMARY KEY (notebook_id, source_id))",
             // The old app's Canvas notes, moved over as they were; read here, never sent anywhere.
             "CREATE TABLE IF NOT EXISTS imported_notes (id TEXT PRIMARY KEY, notebook_id TEXT NOT NULL, title TEXT NOT NULL, text TEXT NOT NULL, kind TEXT NOT NULL, created TEXT NOT NULL)",
+            "CREATE TABLE IF NOT EXISTS topics (notebook_id TEXT NOT NULL, topic_id TEXT NOT NULL, name TEXT NOT NULL, keywords TEXT NOT NULL, chunks INTEGER NOT NULL, sources INTEGER NOT NULL, position INTEGER NOT NULL, PRIMARY KEY (notebook_id, topic_id))",
         ] { try exec(sql) }
         // Keyword ranking is exact BM25 computed in memory (see bm25Index); the SQLite full-text table an earlier
         // build kept beside the chunks is not used any more, so drop it and its space.
@@ -245,6 +246,56 @@ public actor LibraryStore {
         defer { sqlite3_finalize(s) }
         bind(s, 1, n.id); bind(s, 2, n.notebookId); bind(s, 3, n.title); bind(s, 4, n.text); bind(s, 5, n.kind); bind(s, 6, n.created)
         guard sqlite3_step(s) == SQLITE_DONE else { throw LibraryError.sqlite(String(cString: sqlite3_errmsg(db))) }
+    }
+
+    // MARK: topics (the Mac's topic model, one row per topic per notebook, biggest first)
+
+    public struct TopicInfo: Sendable, Identifiable, Hashable {
+        public let id: String, notebookId: String, name: String, keywords: [String], chunks: Int, sources: Int
+        public init(id: String, notebookId: String, name: String, keywords: [String], chunks: Int, sources: Int) {
+            self.id = id; self.notebookId = notebookId; self.name = name; self.keywords = keywords; self.chunks = chunks; self.sources = sources
+        }
+    }
+
+    /// Replaces the notebook's topics with this list, in this order.
+    public func setTopics(notebook: String, _ list: [TopicInfo]) throws {
+        try exec("BEGIN")
+        do {
+            let d = try statement("DELETE FROM topics WHERE notebook_id=?")
+            bind(d, 1, notebook); _ = sqlite3_step(d); sqlite3_finalize(d)
+            for (i, t) in list.enumerated() {
+                let s = try statement("INSERT INTO topics(notebook_id, topic_id, name, keywords, chunks, sources, position) VALUES (?,?,?,?,?,?,?)")
+                defer { sqlite3_finalize(s) }
+                bind(s, 1, notebook); bind(s, 2, t.id); bind(s, 3, t.name); bind(s, 4, t.keywords.joined(separator: "\u{1F}"))
+                sqlite3_bind_int64(s, 5, Int64(t.chunks)); sqlite3_bind_int64(s, 6, Int64(t.sources)); sqlite3_bind_int64(s, 7, Int64(i))
+                guard sqlite3_step(s) == SQLITE_DONE else { throw LibraryError.sqlite(String(cString: sqlite3_errmsg(db))) }
+            }
+            try exec("COMMIT")
+        } catch { try? exec("ROLLBACK"); throw error }
+    }
+
+    public func topics(notebook: String) -> [TopicInfo] {
+        guard let s = try? statement("SELECT topic_id, name, keywords, chunks, sources FROM topics WHERE notebook_id=? ORDER BY position") else { return [] }
+        defer { sqlite3_finalize(s) }
+        bind(s, 1, notebook)
+        var out: [TopicInfo] = []
+        while sqlite3_step(s) == SQLITE_ROW {
+            let kw = String(cString: sqlite3_column_text(s, 2))
+            out.append(.init(id: String(cString: sqlite3_column_text(s, 0)), notebookId: notebook, name: String(cString: sqlite3_column_text(s, 1)),
+                             keywords: kw.isEmpty ? [] : kw.components(separatedBy: "\u{1F}"),
+                             chunks: Int(sqlite3_column_int64(s, 3)), sources: Int(sqlite3_column_int64(s, 4))))
+        }
+        return out
+    }
+
+    /// The one-line summary a sidebar row shows on hover: how many sources, and when the newest was added.
+    public func notebookSummary(notebook: String) -> (sources: Int, lastAdded: String?) {
+        guard let s = try? statement("SELECT COUNT(*), MAX(created) FROM sources WHERE notebook_id=?") else { return (0, nil) }
+        defer { sqlite3_finalize(s) }
+        bind(s, 1, notebook)
+        guard sqlite3_step(s) == SQLITE_ROW else { return (0, nil) }
+        let last = sqlite3_column_text(s, 1).map { String(cString: $0) }
+        return (Int(sqlite3_column_int64(s, 0)), (last?.isEmpty == false) ? last : nil)
     }
 
     public func importedNotes(notebook: String?) -> [ImportedNote] {
@@ -450,7 +501,7 @@ public actor LibraryStore {
 
     public func wipe() throws {
         dropMatrix()
-        for t in ["chunks", "sources", "notebooks", "source_text", "imported_notes"] { try exec("DELETE FROM \(t)") }
+        for t in ["chunks", "sources", "notebooks", "source_text", "imported_notes", "topics"] { try exec("DELETE FROM \(t)") }
         try exec("DELETE FROM meta WHERE key LIKE 'personal:%'")        // profile, memory, entities: all of it goes
         try exec("DELETE FROM meta WHERE key LIKE 'imported:%'")
     }
@@ -458,7 +509,7 @@ public actor LibraryStore {
     public func removeNotebooks(except keep: Set<String>) throws {
         dropMatrix()
         for n in notebooks() where !keep.contains(n.id) {
-            for t in ["chunks", "sources", "source_text", "imported_notes"] {
+            for t in ["chunks", "sources", "source_text", "imported_notes", "topics"] {
                 let s = try statement("DELETE FROM \(t) WHERE notebook_id=?")
                 bind(s, 1, n.id); sqlite3_step(s); sqlite3_finalize(s)
             }

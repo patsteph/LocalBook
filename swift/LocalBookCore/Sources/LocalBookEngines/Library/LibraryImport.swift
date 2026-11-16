@@ -120,6 +120,9 @@ public enum LibraryImport {
         } else if let why = await StudioPull.lastProblem {
             report.problems.append("Studio items: \(why)")
         }
+        progress("Topics…")
+        let topicProblems = await TopicsPull.pull(call: call, root: "/migrate", store: store, notebooks: await store.notebooks().map(\.id))
+        if !topicProblems.isEmpty { report.problems.append("Topics: \(topicProblems.count) notebook(s) had none readable (\(topicProblems[0]))") }
         try await store.setMeta("imported_from", app.folder.path)
         report.seconds = Date().timeIntervalSince(started)
         SoakTrace.log("import: \(report.notebooks) notebooks, \(report.chunks) chunks, \(report.texts) texts, \(report.notes) notes, \(report.studio) studio in \(Int(report.seconds)) s; \(report.problems.count) problems")

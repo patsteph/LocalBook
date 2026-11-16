@@ -746,6 +746,15 @@ async def phone_library_studio_delete(request: Request):
     return await phone_studio.delete(str(v["body"].get("id", "")))
 
 
+@phone_sync_app.post("/phone/library/topics")
+async def phone_library_topics(request: Request):
+    """The topics of one notebook (the desktop's Themes), for the peer's sidebar."""
+    _check_enabled()
+    v = await _verified_phone(request)
+    from services.sync import phone_topics
+    return {"topics": await phone_topics.topics(str(v["body"].get("notebook_id", "")))}
+
+
 @phone_sync_app.post("/phone/library/studio/list")
 async def phone_library_studio_list(request: Request):
     """What this Mac has made in Studio, compact: the phone fetches only what it lacks."""

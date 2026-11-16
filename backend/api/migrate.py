@@ -191,6 +191,16 @@ async def notes(request: Request):
     return {"notebook_id": notebook_id, "notes": await asyncio.to_thread(read)}
 
 
+@router.post("/topics")
+async def topics(request: Request):
+    _loopback(request)
+    b = await request.json()
+    from services.sync import phone_topics
+    ctx = contextvars.copy_context()
+    ctx.run(phone_library.include_everything.set, True)
+    return {"topics": await asyncio.create_task(phone_topics.topics(str(b.get("notebook_id", ""))), context=ctx)}
+
+
 @router.post("/studio/list")
 async def studio_list(request: Request):
     _loopback(request)

@@ -29,6 +29,8 @@ public final class LibraryModel {
     }
     public private(set) var notebooks: [LibraryNotebookInfo] = []
     public private(set) var chunkCount = 0
+    /// Bumped whenever the topics in the store changed, so a sidebar can reload what it shows.
+    public private(set) var topicsVersion = 0
     public private(set) var lastSyncLine = "Never synced"
     public private(set) var lastSummary: LibrarySync.Summary?
     public private(set) var hits: [LibraryHit] = []
@@ -130,6 +132,18 @@ public final class LibraryModel {
         Task.detached { await store.warmUp(notebook: nb) }          // build that notebook's vector block before the first question
     }
 
+    /// The notebook's topics, biggest first, as the last sync or import left them.
+    public func topics(in notebook: String) async -> [LibraryStore.TopicInfo] {
+        guard let store else { return [] }
+        return await store.topics(notebook: notebook)
+    }
+
+    /// What a sidebar row says on hover.
+    public func notebookSummary(_ notebook: String) async -> (sources: Int, lastAdded: String?) {
+        guard let store else { return (0, nil) }
+        return await store.notebookSummary(notebook: notebook)
+    }
+
     public func sync() async {
         guard let store else { return }
         syncState = .syncing("Starting…")
@@ -143,6 +157,12 @@ public final class LibraryModel {
             await refresh()
             syncState = .idle
             await flushNotes()
+            if let call = try? LibrarySync.pairedMacCall() {
+                let ids = notebooks.map(\.id)
+                let problems = await TopicsPull.pull(call: call, root: "/phone/library", store: store, notebooks: ids)
+                if !problems.isEmpty { SoakTrace.log("topics: \(problems.count) of \(ids.count) notebooks failed: \(problems.first ?? "")") }
+                topicsVersion += 1
+            }
         } catch {
             syncState = .failed(error.localizedDescription)
         }
