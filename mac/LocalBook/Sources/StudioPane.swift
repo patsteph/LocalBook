@@ -804,12 +804,10 @@ final class AudioOverviewPlayer {
     func load(_ script: AudioScript) {
         stop()
         self.script = script
-        let url = StudioStore.audioURL(script.file)
-        Task {
-            let p = await Task.detached { try? AVAudioPlayer(contentsOf: url) }.value
-            guard let p, self.script == script else { return }
-            player = p; duration = p.duration; time = 0; current = 0
-        }
+        // Opened on the main actor: a local file opens in milliseconds, and AVAudioPlayer is not Sendable, so it
+        // cannot come back from another task under strict concurrency.
+        guard let p = try? AVAudioPlayer(contentsOf: StudioStore.audioURL(script.file)) else { return }
+        player = p; duration = p.duration; time = 0; current = 0
     }
 
     func toggle() { playing ? pause() : play() }
