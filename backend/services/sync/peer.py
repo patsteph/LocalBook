@@ -664,6 +664,59 @@ async def phone_library_source_rename(request: Request):
     return await phone_notes.rename(str(b.get("notebook_id", "")), str(b.get("source_id", "")), str(b.get("title", "")))
 
 
+@phone_sync_app.post("/phone/library/source/delete")
+async def phone_library_source_delete(request: Request):
+    """Delete a source from the phone or the Swift Mac app (the desktop's own delete)."""
+    _check_enabled()
+    v = await _verified_phone(request)
+    from services.sync import phone_edits
+    b = v["body"]
+    return await phone_edits.delete_source(str(b.get("notebook_id", "")), str(b.get("source_id", "")))
+
+
+@phone_sync_app.post("/phone/library/source/move")
+async def phone_library_source_move(request: Request):
+    """Move a source to another notebook the peer can see (re-indexed there, as the desktop does)."""
+    _check_enabled()
+    v = await _verified_phone(request)
+    from services.sync import phone_edits
+    b = v["body"]
+    return await phone_edits.move_source(str(b.get("notebook_id", "")), str(b.get("source_id", "")), str(b.get("target_notebook_id", "")))
+
+
+@phone_sync_app.post("/phone/library/notebook/edit")
+async def phone_library_notebook_edit(request: Request):
+    """The notebook list, from a peer: {"action": "create"|"rename"|"color"|"delete"|"section"|"sections"|
+    "section_create"|"section_rename"|"section_delete", ...}. One route, since every action is a few fields and the
+    phone link signs the whole body."""
+    _check_enabled()
+    v = await _verified_phone(request)
+    from services.sync import phone_edits
+    b = v["body"]
+    action = str(b.get("action", ""))
+    nb, title = str(b.get("notebook_id", "")), str(b.get("title", ""))
+    if action == "create":
+        return await phone_edits.create_notebook(title, b.get("color"))
+    if action == "rename":
+        return await phone_edits.rename_notebook(nb, title)
+    if action == "color":
+        return await phone_edits.color_notebook(nb, str(b.get("color", "")))
+    if action == "delete":
+        return await phone_edits.delete_notebook(nb)
+    if action == "section":
+        sid = b.get("section_id")
+        return await phone_edits.move_notebook(nb, str(sid) if sid else None)
+    if action == "sections":
+        return {"sections": await asyncio.to_thread(phone_edits.sections)}
+    if action == "section_create":
+        return await phone_edits.create_section(str(b.get("name", "")))
+    if action == "section_rename":
+        return await phone_edits.rename_section(str(b.get("section_id", "")), str(b.get("name", "")))
+    if action == "section_delete":
+        return await phone_edits.delete_section(str(b.get("section_id", "")))
+    raise HTTPException(400, "unknown action")
+
+
 @phone_sync_app.post("/phone/library/studio/put")
 async def phone_library_studio_put(request: Request):
     """A briefing, flashcards or quiz made on the phone, stored with the Studio items made here."""
