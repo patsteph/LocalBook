@@ -88,6 +88,12 @@ targets:
         com.apple.security.device.camera: true
         # Letting the user grant a folder once (the folder watcher) and keep it across launches.
         com.apple.security.files.bookmarks.app-scope: true
+        # The pairing key lives in the Secure Enclave, in the data-protection Keychain. macOS opens that only to an
+        # app whose App ID entitlement is authorised by a provisioning profile; a Team alone is not enough, since
+        # Xcode embeds a profile in a Mac app only for a capability that needs one. Keychain Sharing, with just our
+        # own group, is that capability. Without it pairing fails with -34018.
+        keychain-access-groups:
+          - $(AppIdentifierPrefix)com.patsteph.localbook.mac
     info:
       path: Resources/Info.plist
       properties:
