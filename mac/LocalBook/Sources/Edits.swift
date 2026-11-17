@@ -43,6 +43,11 @@ struct SourceContextMenu: View {
         }
         .disabled(!model.paired)
         Divider()
+        Button("Export Text…") { Task { if let p = await Exporter.exportSource(source, original: false, library: model.library) { model.prompts.problem = p } } }
+        if let file = source.file, FileManager.default.fileExists(atPath: LibraryModel.originalURL(file).path) {
+            Button("Export Original…") { Task { if let p = await Exporter.exportSource(source, original: true, library: model.library) { model.prompts.problem = p } } }
+        }
+        Divider()
         Button("Delete…", role: .destructive) { model.prompts.deleteSource = source }
     }
 }
@@ -56,6 +61,7 @@ struct NotebookContextMenu: View {
         Button("Ask") { model.selection = .notebook(notebook.id) }
             .onAppear { Task { await model.loadSections() } }   // the menu is built when shown, so this refreshes the list each time
         Button("Show Sources") { model.selection = .notebook(notebook.id); model.selection = .sources }
+        Button("Export…") { Task { if let p = await Exporter.exportNotebook(notebook, library: model.library) { model.prompts.problem = p } } }
         Divider()
         Button("New Notebook…") { model.prompts.text = ""; model.prompts.newNotebook = true }
         Button("Rename…") { model.prompts.text = notebook.title; model.prompts.renameNotebook = notebook }

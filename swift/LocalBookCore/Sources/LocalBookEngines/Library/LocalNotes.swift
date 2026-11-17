@@ -108,6 +108,7 @@ extension LibraryModel {
 
     public func sources(in notebook: String) async -> [LibraryStore.SourceInfo] { await store?.sources(notebook: notebook) ?? [] }
     public func sourceText(notebook: String, sourceId: String) async -> String { await store?.sourceText(notebook: notebook, sourceId: sourceId) ?? "" }
+    public func sourceURL(notebook: String, sourceId: String) async -> String? { await store?.sourceURL(notebook: notebook, sourceId: sourceId) }
 
     /// Renames a saved item. Items the Mac knows about are renamed there first so it stays the same everywhere.
     /// Returns an error message, or nil when done.

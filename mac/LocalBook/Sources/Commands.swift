@@ -22,7 +22,7 @@ struct LocalBookCommands: Commands {
             Button("Watch Folder…") { NotificationCenter.default.post(name: .watchFolder, object: nil) }
         }
         CommandGroup(after: .importExport) {
-            Button("Export Notebook…") {}.keyboardShortcut("e", modifiers: [.command, .shift]).disabled(true) // Phase 3
+            Button("Export Notebook…") { NotificationCenter.default.post(name: .exportNotebook, object: nil) }.keyboardShortcut("e", modifiers: [.command, .shift])
         }
 
         // Notebook

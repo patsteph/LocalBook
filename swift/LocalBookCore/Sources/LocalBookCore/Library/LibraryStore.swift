@@ -683,6 +683,16 @@ public actor LibraryStore {
     }
 
     /// A source's text: the whole of it when the import brought it, otherwise its pieces in order.
+    /// The address a web source was read from, when it was one.
+    public func sourceURL(notebook: String, sourceId: String) -> String? {
+        guard let s = try? statement("SELECT url FROM source_text WHERE notebook_id=? AND source_id=?") else { return nil }
+        defer { sqlite3_finalize(s) }
+        bind(s, 1, notebook); bind(s, 2, sourceId)
+        guard sqlite3_step(s) == SQLITE_ROW, let c = sqlite3_column_text(s, 0) else { return nil }
+        let url = String(cString: c)
+        return url.isEmpty ? nil : url
+    }
+
     public func sourceText(notebook: String, sourceId: String) -> String {
         if let full = try? statement("SELECT text FROM source_text WHERE notebook_id=? AND source_id=?") {
             defer { sqlite3_finalize(full) }
