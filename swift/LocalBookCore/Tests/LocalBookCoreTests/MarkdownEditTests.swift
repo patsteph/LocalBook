@@ -69,16 +69,16 @@ struct MarkdownEditTests {
 
     @Test("Return continues a list, numbers on, and ends it on an empty item")
     func newline() throws {
-        let e1 = try #require(MarkdownEdit.newline("- one", NSRange(location: 5, length: 0)))
+        let e1 = try #require(MarkdownEdit.newline("- one", selection: NSRange(location: 5, length: 0)))
         #expect(e1.apply(to: "- one") == "- one\n- ")
-        let e2 = try #require(MarkdownEdit.newline("1. one\n2. two", NSRange(location: 13, length: 0)))
+        let e2 = try #require(MarkdownEdit.newline("1. one\n2. two", selection: NSRange(location: 13, length: 0)))
         #expect(e2.apply(to: "1. one\n2. two") == "1. one\n2. two\n3. ")
-        let e3 = try #require(MarkdownEdit.newline("- [x] done", NSRange(location: 10, length: 0)))
+        let e3 = try #require(MarkdownEdit.newline("- [x] done", selection: NSRange(location: 10, length: 0)))
         #expect(e3.replacement == "\n- [ ] ")
-        let e4 = try #require(MarkdownEdit.newline("- one\n- ", NSRange(location: 8, length: 0)))
+        let e4 = try #require(MarkdownEdit.newline("- one\n- ", selection: NSRange(location: 8, length: 0)))
         #expect(e4.apply(to: "- one\n- ") == "- one\n")
-        #expect(MarkdownEdit.newline("plain", NSRange(location: 5, length: 0)) == nil)
-        #expect(MarkdownEdit.newline("- one", NSRange(location: 1, length: 0)) == nil)     // caret inside the marker
+        #expect(MarkdownEdit.newline("plain", selection: NSRange(location: 5, length: 0)) == nil)
+        #expect(MarkdownEdit.newline("- one", selection: NSRange(location: 1, length: 0)) == nil)     // caret inside the marker
     }
 
     @Test("task boxes toggle and words are counted without syntax")

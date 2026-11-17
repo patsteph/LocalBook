@@ -161,7 +161,7 @@ struct NoteTextView: NSViewRepresentable {
     }
 
     /// What each Markdown style looks like.
-    enum Styler {
+    @MainActor enum Styler {
         static let body = NSFont.systemFont(ofSize: 15)
         static let mono = NSFont.monospacedSystemFont(ofSize: 13.5, weight: .regular)
 
