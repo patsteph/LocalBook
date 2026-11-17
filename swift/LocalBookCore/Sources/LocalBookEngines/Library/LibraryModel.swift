@@ -172,7 +172,7 @@ public final class LibraryModel {
                 topicsVersion += 1
             }
         } catch {
-            syncState = .failed(error.localizedDescription)
+            syncState = .failed(Self.isUnreachable(error) ? Self.problemMacAway : error.localizedDescription)
         }
     }
 

@@ -86,8 +86,21 @@ extension LibraryModel {
         do {
             let r = try await mac("/phone/library/notebook/edit", body)
             made?(r)
-        } catch { return "The Mac couldn't do that. (\(error.localizedDescription))" }
+        } catch {
+            if Self.isUnreachable(error) { return Self.problemMacAway }
+            return "The Mac couldn't do that. (\(error.localizedDescription))"
+        }
         await sync()
         return nil
+    }
+
+    /// What the app says when the paired Mac cannot be reached (another network, or that Mac asleep).
+    public static let problemMacAway = "Your paired Mac can't be reached from here. Notebook changes need it; this Mac keeps showing its own copy and syncs again when they're on the same network."
+
+    /// A timeout or a connection failure, as against a refusal the Mac answered.
+    public static func isUnreachable(_ error: Error) -> Bool {
+        let e = error as NSError
+        guard e.domain == NSURLErrorDomain else { return false }
+        return [NSURLErrorTimedOut, NSURLErrorCannotConnectToHost, NSURLErrorCannotFindHost, NSURLErrorNetworkConnectionLost, NSURLErrorNotConnectedToInternet].contains(e.code)
     }
 }

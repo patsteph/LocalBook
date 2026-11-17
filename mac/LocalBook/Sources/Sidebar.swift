@@ -231,7 +231,7 @@ struct SyncStatusDot: View {
         case .syncing(let line):
             return (.yellow, "Syncing…", line)
         case .failed(let why):
-            return (.red, "Sync failed", why + "\n" + totals)
+            return (why == LibraryModel.problemMacAway ? .orange : .red, why == LibraryModel.problemMacAway ? "Mac not reachable" : "Sync failed", why + "\n" + totals)
         case .idle:
             guard model.paired else { return (.gray, "Not paired", "Pair with your Mac in Settings › Sync, or move your library here.") }
             return (.green, "Synced", library.lastSyncLine + (library.lastSummary.map { " · \($0.changeLine)" } ?? "") + "\n" + totals)

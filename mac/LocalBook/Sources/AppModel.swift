@@ -44,6 +44,9 @@ final class AppModel {
     /// Why the last section list failed, for the Move to Section menu; nil once it works.
     var sectionsProblem: String?
     func loadSections() async {
+        // Away from the Mac (the last sync could not reach it), the list is not asked for again: each try would wait
+        // the whole timeout. Sync Now, or the next change, asks again.
+        if case .failed = library.syncState { sectionsProblem = LibraryModel.problemMacAway; return }
         do { macSections = try await library.sectionsFromMac(); sectionsProblem = nil }
         catch { sectionsProblem = error.localizedDescription }
     }
