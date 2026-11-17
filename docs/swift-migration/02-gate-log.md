@@ -41,6 +41,10 @@ Patrick ran the parity fixture (500 chunks, 50 questions from the production lib
 
 497 items in 39 s, 0.15 ms per token. The ten top-5 disagreements are order swaps among the same passages (ranks 4 and 5), the same pattern the phone showed. The week of daily use was dropped by Patrick the same day; Phase 2 is CLOSED and the cleanup list he sends replaces it.
 
+## Phase 3, slice 6: originals, watched folders, Settings › Library (2026-11-17, on `dev`, untested on a Mac)
+
+Swift: `LibraryStore` (`source_text.file`, `watched_folders`, `watched_files`, counts, empty vectors), `LibraryModel.ingestFile(keep:)`, `LibraryMaintenance.swift` (re-index, repair, watch, scan), `WatchFolderSheet`, `LibrarySettings`, Quick Look in `SourceDetail`. Device script: drop a PDF, select it under Sources and press Space (Quick Look opens the kept copy), click the folder button (Finder shows `Sources/<notebook>/`); File › Watch Folder…, pick a folder with two readable files, Watch, expect both under Sources within a minute; copy a third file into the folder and expect it within five minutes (or Settings › Library › Scan Now); Settings › Library shows the counts and the folder's last scan; Re-index with the rewrite toggle off finishes with "Done: N".
+
 ## Phase 3, slice 5: the remaining readers (2026-11-17, on `dev`, no device gate by Patrick's choice)
 
 Swift: `OLE2`, `XLSReader`, `PPTLegacyReader`, `JupyterText` (Core) with `XLSReaderTests` (`Fixtures/xls_golden.json` from `scripts/ci/xls_golden.py`) and `JupyterTextTests` (`Fixtures/jupyter_golden.json` from `scripts/ci/jupyter_golden.py`); `EPUBReader`, `XHTMLText`, `ODSReader`, `SVGText` (Engines). When Patrick gets to it: drop an .xls, a .ppt, an .epub, an .ipynb, an .ods and an .svg on a notebook; each should become a source rather than wait in the Inbox, and the .xls should read like the same book saved as .xlsx.

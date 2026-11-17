@@ -20,16 +20,51 @@ public struct IngestReport: Sendable {
 }
 
 extension LibraryModel {
+    /// What becomes of the file itself once its text is in the library.
+    public enum OriginalFile: Sendable {
+        /// Copied under the app's files (`Sources/<notebook>/`), so Quick Look and "Show in Finder" work for good.
+        case copy
+        /// Left where it is and remembered by path (a watched folder the user granted).
+        case reference
+        case none
+    }
+
     /// Read `url` into a new source of `notebook`. `progress` hears each stage in words. `title` and `link` stand in
     /// for the filename and record where a downloaded file came from.
     @discardableResult
-    public func ingestFile(_ url: URL, notebook: String, title: String? = nil, link: String? = nil, enrich: Bool = true,
+    public func ingestFile(_ url: URL, notebook: String, title: String? = nil, link: String? = nil, enrich: Bool = true, keep: OriginalFile = .copy,
                            progress: (@MainActor (String) -> Void)? = nil) async throws -> IngestReport {
         guard let format = TextExtract.format(for: url) else { throw LabError.model("\(url.lastPathComponent) is a kind of file this Mac cannot read into a source yet") }
         progress?("Reading \(url.lastPathComponent)…")
         let text = try await TextExtract.text(from: url) { s in Task { @MainActor in progress?(s) } }
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw LabError.model("No text could be read from \(url.lastPathComponent)") }
-        return try await ingestText(text, title: title ?? url.lastPathComponent, format: format, notebook: notebook, url: link, enrich: enrich, progress: progress)
+        let sourceId = Self.newSourceId()
+        let file: String?
+        switch keep {
+        case .copy: file = try Self.keepOriginal(url, notebook: notebook, sourceId: sourceId)
+        case .reference: file = url.path(percentEncoded: false)
+        case .none: file = nil
+        }
+        return try await ingestText(text, title: title ?? url.lastPathComponent, format: format, notebook: notebook, url: link, enrich: enrich,
+                                    sourceId: sourceId, file: file, progress: progress)
+    }
+
+    public static func newSourceId() -> String { LibraryStore.localNotePrefix + "file-" + UUID().uuidString.lowercased() }
+
+    /// Copies a file under `Sources/<notebook>/` in the app's files; returns the path relative to the user files folder.
+    public static func keepOriginal(_ url: URL, notebook: String, sourceId: String) throws -> String {
+        let folder = try AppFolders.ensure(AppFolders.userFiles.appending(path: "Sources", directoryHint: .isDirectory).appending(path: notebook, directoryHint: .isDirectory))
+        let stem = String(sourceId.split(separator: "-").last ?? "file").prefix(8)
+        let name = "\(stem) \(url.lastPathComponent)"
+        let dest = folder.appending(path: name)
+        if FileManager.default.fileExists(atPath: dest.path) { try FileManager.default.removeItem(at: dest) }
+        try FileManager.default.copyItem(at: url, to: dest)
+        return "Sources/\(notebook)/\(name)"
+    }
+
+    /// The kept original's location on disk, for Quick Look and the Finder.
+    public static func originalURL(_ file: String) -> URL {
+        file.hasPrefix("/") ? URL(filePath: file) : AppFolders.userFiles.appending(path: file)
     }
 
     /// Make a web address a source of `notebook`: the page's article, a video's transcript, or the document the
@@ -40,7 +75,7 @@ extension LibraryModel {
         switch fetched {
         case .file(let file, let name):
             defer { try? FileManager.default.removeItem(at: file.deletingLastPathComponent()) }
-            return try await ingestFile(file, notebook: notebook, title: name, link: link.absoluteString, enrich: enrich, progress: progress)
+            return try await ingestFile(file, notebook: notebook, title: name, link: link.absoluteString, enrich: enrich, keep: .copy, progress: progress)
         case .text(let title, let text, let format, _, _):
             return try await ingestText(text, title: title, format: format, notebook: notebook, url: link.absoluteString, enrich: enrich, progress: progress)
         }
@@ -50,7 +85,7 @@ extension LibraryModel {
     /// `rag_storage.ingest_document`, with its prompts, minus the topic model and entity graph (Phase 5).
     @discardableResult
     public func ingestText(_ text: String, title: String, format: String, notebook: String, url: String?, enrich: Bool = true,
-                           progress: (@MainActor (String) -> Void)? = nil) async throws -> IngestReport {
+                           sourceId: String? = nil, file: String? = nil, progress: (@MainActor (String) -> Void)? = nil) async throws -> IngestReport {
         guard let store else { throw LibraryError.badResponse("library not open") }
         await waitForSearch()
         guard let engine, let tokenizer else { throw LibraryError.badResponse("search model not ready") }
@@ -86,7 +121,7 @@ extension LibraryModel {
         }
 
         progress?("Embedding \(chunks.count) passages…")
-        let sourceId = LibraryStore.localNotePrefix + "file-" + UUID().uuidString.lowercased()
+        let sourceId = sourceId ?? Self.newSourceId()
         var rows: [LibraryChunk] = []
         for (i, chunk) in chunks.enumerated() {
             let toEmbed = questions[i].isEmpty ? chunk : "\(chunk)\n\nQuestions this answers:\n\(questions[i])"
@@ -105,7 +140,7 @@ extension LibraryModel {
             rows.append(.init(notebookId: notebook, sourceId: sourceId, chunkIndex: -1, text: summary, summary: true,
                               filename: title, sourceType: "summary", vector: half.withUnsafeBytes { Data($0) }))
         }
-        try await store.addLocalSource(notebook: notebook, sourceId: sourceId, title: title, format: format, text: text, url: url, chunks: rows)
+        try await store.addLocalSource(notebook: notebook, sourceId: sourceId, title: title, format: format, text: text, url: url, chunks: rows, file: file)
         await refresh()
         return IngestReport(sourceId: sourceId, title: title, format: format, characters: PyLen(text), chunks: chunks.count,
                             summarized: summary != nil, questioned: questioned)

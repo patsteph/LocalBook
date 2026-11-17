@@ -1,6 +1,7 @@
 import AppKit
 import LocalBookCore
 import LocalBookEngines
+import QuickLook
 import SwiftUI
 
 /// What a source is called and looks like in a list, the same words the phone uses.
@@ -206,6 +207,14 @@ struct SourceDetail: View {
     @State private var shownName: String?
     @State private var renameError: String?
     @State private var busy = false
+    @State private var preview: URL?
+
+    /// The kept original file, when the source was read on this Mac and the file is still there.
+    private var original: URL? {
+        guard let file = source.file else { return nil }
+        let url = LibraryModel.originalURL(file)
+        return FileManager.default.fileExists(atPath: url.path) ? url : nil
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -222,6 +231,11 @@ struct SourceDetail: View {
                 Button { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(text, forType: .string) } label: { Image(systemName: "doc.on.doc") }
                     .help("Copy text")
                 ShareLink(item: text) { Image(systemName: "square.and.arrow.up") }.help("Share")
+                if let original {
+                    Button { preview = original } label: { Image(systemName: "eye") }.help("Quick Look the original (Space)")
+                        .keyboardShortcut(.space, modifiers: [])
+                    Button { NSWorkspace.shared.activateFileViewerSelecting([original]) } label: { Image(systemName: "folder") }.help("Show the original in the Finder")
+                }
                 SourceOpenButton(key: SourceWindowKey(notebookId: source.notebookId, sourceId: source.id, name: source.name))
                     .labelStyle(.iconOnly).help("Open in Window (⌘↓)")
             }
@@ -235,6 +249,7 @@ struct SourceDetail: View {
             }
         }
         .task { text = await model.library.sourceText(notebook: source.notebookId, sourceId: source.id) }
+        .quickLookPreview($preview)
         .alert("Rename", isPresented: $renaming) {
             TextField("Name", text: $newName)
             Button("Save") { Task {

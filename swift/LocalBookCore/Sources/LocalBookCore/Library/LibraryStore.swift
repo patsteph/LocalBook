@@ -142,6 +142,13 @@ public actor LibraryStore {
         try addColumn("notebooks", "color", "TEXT")
         try addColumn("notebooks", "collapsed", "INTEGER NOT NULL DEFAULT 0")
         try addColumn("sources", "created", "TEXT")          // when the source was added on the Mac (newest-first lists)
+        // The kept original of a source made here: a path under the app's files, or an absolute path inside a watched folder.
+        try addColumn("source_text", "file", "TEXT")
+        for sql in [
+            // Folders this Mac watches for new files (the old app's linked folders): read-only, polled, never twice.
+            "CREATE TABLE IF NOT EXISTS watched_folders (id TEXT PRIMARY KEY, notebook_id TEXT NOT NULL, path TEXT NOT NULL, bookmark BLOB, recursive INTEGER NOT NULL DEFAULT 1, added TEXT NOT NULL, last_scan TEXT, last_report TEXT)",
+            "CREATE TABLE IF NOT EXISTS watched_files (folder_id TEXT NOT NULL, path TEXT NOT NULL, mtime REAL NOT NULL, size INTEGER NOT NULL, source_id TEXT, PRIMARY KEY (folder_id, path))",
+        ] { try exec(sql) }
     }
 
     /// Adds a column to an older store; does nothing (and logs nothing) when it is already there.
@@ -388,7 +395,7 @@ public actor LibraryStore {
     /// A source this device ingested itself (Phase 3): its chunks as the chunker cut them, the summary chunk at -1 when
     /// there is one, its whole text for the reader, and a `sources` row so sync leaves it alone. Local notes are the
     /// ones without a `source_text` row; these have one, so they are listed as sources, not notes.
-    public func addLocalSource(notebook: String, sourceId: String, title: String, format: String, text: String, url: String?, chunks: [LibraryChunk]) throws {
+    public func addLocalSource(notebook: String, sourceId: String, title: String, format: String, text: String, url: String?, chunks: [LibraryChunk], file: String? = nil) throws {
         dropMatrix()
         try exec("BEGIN IMMEDIATE")
         do {
@@ -408,10 +415,12 @@ public actor LibraryStore {
             }
             let s = try statement("INSERT INTO sources(notebook_id, source_id, hash, created) VALUES (?,?,?,?) ON CONFLICT(notebook_id, source_id) DO UPDATE SET hash=excluded.hash")
             bind(s, 1, notebook); bind(s, 2, sourceId); bind(s, 3, "local"); bind(s, 4, ISO8601DateFormatter().string(from: Date())); sqlite3_step(s); sqlite3_finalize(s)
-            let t = try statement("INSERT OR REPLACE INTO source_text(notebook_id, source_id, text, url, format) VALUES (?,?,?,?,?)")
+            let t = try statement("INSERT OR REPLACE INTO source_text(notebook_id, source_id, text, url, format, file) VALUES (?,?,?,?,?,?)")
             bind(t, 1, notebook); bind(t, 2, sourceId); bind(t, 3, text)
             if let url { bind(t, 4, url) } else { sqlite3_bind_null(t, 4) }
-            bind(t, 5, format); sqlite3_step(t); sqlite3_finalize(t)
+            bind(t, 5, format)
+            if let file { bind(t, 6, file) } else { sqlite3_bind_null(t, 6) }
+            sqlite3_step(t); sqlite3_finalize(t)
             try exec("COMMIT")
         } catch { try? exec("ROLLBACK"); throw error }
     }
@@ -462,11 +471,18 @@ public actor LibraryStore {
 
     // MARK: browsing a notebook's sources
 
-    public struct SourceInfo: Sendable, Identifiable { public let id: String; public let notebookId: String; public let name: String; public let type: String; public let pieces: Int; public let characters: Int; public let created: String; public var isLocal: Bool { id.hasPrefix("local:") } }
+    public struct SourceInfo: Sendable, Identifiable {
+        public let id: String; public let notebookId: String; public let name: String; public let type: String
+        public let pieces: Int; public let characters: Int; public let created: String
+        /// The kept original (a path under the app's files, or an absolute path in a watched folder), when there is one.
+        public var file: String? = nil
+        public var isLocal: Bool { id.hasPrefix("local:") }
+    }
 
     public func sources(notebook: String) -> [SourceInfo] {
         guard let s = try? statement("""
-            SELECT c.source_id, MIN(c.filename), MIN(c.source_type), COUNT(*), SUM(LENGTH(c.text)), COALESCE(MAX(r.created), '')
+            SELECT c.source_id, MIN(c.filename), MIN(c.source_type), COUNT(*), SUM(LENGTH(c.text)), COALESCE(MAX(r.created), ''),
+                   (SELECT t.file FROM source_text t WHERE t.notebook_id = c.notebook_id AND t.source_id = c.source_id)
             FROM chunks c LEFT JOIN sources r ON r.notebook_id = c.notebook_id AND r.source_id = c.source_id
             WHERE c.notebook_id=? AND c.summary=0 AND c.chunk_index < \(Self.pictureIndex)
             GROUP BY c.source_id ORDER BY COALESCE(MAX(r.created), '') DESC, MIN(c.filename) COLLATE NOCASE
@@ -475,11 +491,160 @@ public actor LibraryStore {
         bind(s, 1, notebook)
         var out: [SourceInfo] = []
         while sqlite3_step(s) == SQLITE_ROW {
+            let file = sqlite3_column_text(s, 6).map { String(cString: $0) }
             out.append(.init(id: String(cString: sqlite3_column_text(s, 0)), notebookId: notebook, name: String(cString: sqlite3_column_text(s, 1)),
                              type: String(cString: sqlite3_column_text(s, 2)), pieces: Int(sqlite3_column_int64(s, 3)), characters: Int(sqlite3_column_int64(s, 4)),
-                             created: String(cString: sqlite3_column_text(s, 5))))
+                             created: String(cString: sqlite3_column_text(s, 5)), file: file))
         }
         return out
+    }
+
+    // MARK: sources made on this device (library ownership, Phase 3)
+
+    public struct LocalSourceInfo: Sendable {
+        public let notebookId: String, sourceId: String, title: String, format: String, text: String
+        public let url: String?, file: String?
+    }
+
+    /// Every source this device ingested itself (it has the whole text), for re-indexing.
+    public func localSources() -> [LocalSourceInfo] {
+        guard let s = try? statement("""
+            SELECT t.notebook_id, t.source_id, COALESCE((SELECT MIN(filename) FROM chunks c WHERE c.notebook_id = t.notebook_id AND c.source_id = t.source_id), ''),
+                   COALESCE(t.format, ''), t.text, t.url, t.file
+            FROM source_text t WHERE t.source_id LIKE 'local:%' ORDER BY t.notebook_id, t.source_id
+            """) else { return [] }
+        defer { sqlite3_finalize(s) }
+        var out: [LocalSourceInfo] = []
+        while sqlite3_step(s) == SQLITE_ROW {
+            out.append(.init(notebookId: String(cString: sqlite3_column_text(s, 0)), sourceId: String(cString: sqlite3_column_text(s, 1)),
+                             title: String(cString: sqlite3_column_text(s, 2)), format: String(cString: sqlite3_column_text(s, 3)),
+                             text: String(cString: sqlite3_column_text(s, 4)),
+                             url: sqlite3_column_text(s, 5).map { String(cString: $0) }, file: sqlite3_column_text(s, 6).map { String(cString: $0) }))
+        }
+        return out
+    }
+
+    /// Drops a source's passages (the text and the row in `sources` stay), before they are made again.
+    public func removeChunks(notebook: String, sourceId: String) throws {
+        dropMatrix()
+        let s = try statement("DELETE FROM chunks WHERE notebook_id=? AND source_id=?")
+        bind(s, 1, notebook); bind(s, 2, sourceId); sqlite3_step(s); sqlite3_finalize(s)
+    }
+
+    public struct Counts: Sendable { public var notebooks = 0, sources = 0, chunks = 0, localSources = 0, emptyVectors = 0, watchedFolders = 0; public init() {} }
+
+    /// What Settings › Library shows.
+    public func counts() -> Counts {
+        var c = Counts()
+        func one(_ sql: String) -> Int {
+            guard let s = try? statement(sql) else { return 0 }
+            defer { sqlite3_finalize(s) }
+            return sqlite3_step(s) == SQLITE_ROW ? Int(sqlite3_column_int64(s, 0)) : 0
+        }
+        c.notebooks = one("SELECT COUNT(*) FROM notebooks")
+        c.sources = one("SELECT COUNT(*) FROM (SELECT DISTINCT notebook_id, source_id FROM chunks WHERE chunk_index < \(Self.pictureIndex))")
+        c.chunks = one("SELECT COUNT(*) FROM chunks")
+        c.localSources = one("SELECT COUNT(*) FROM source_text WHERE source_id LIKE 'local:%'")
+        c.emptyVectors = one("SELECT COUNT(*) FROM chunks WHERE chunk_index < \(Self.pictureIndex) AND (LENGTH(vector) = 0 OR vector = zeroblob(LENGTH(vector)))")
+        c.watchedFolders = one("SELECT COUNT(*) FROM watched_folders")
+        return c
+    }
+
+    public struct EmptyVector: Sendable { public let notebookId: String, sourceId: String, chunkIndex: Int, text: String }
+
+    /// Passages whose vector is missing or all zeros (a crashed or interrupted embedding), for repair.
+    public func emptyVectors() -> [EmptyVector] {
+        guard let s = try? statement("SELECT notebook_id, source_id, chunk_index, text FROM chunks WHERE chunk_index < \(Self.pictureIndex) AND (LENGTH(vector) = 0 OR vector = zeroblob(LENGTH(vector)))") else { return [] }
+        defer { sqlite3_finalize(s) }
+        var out: [EmptyVector] = []
+        while sqlite3_step(s) == SQLITE_ROW {
+            out.append(.init(notebookId: String(cString: sqlite3_column_text(s, 0)), sourceId: String(cString: sqlite3_column_text(s, 1)),
+                             chunkIndex: Int(sqlite3_column_int64(s, 2)), text: String(cString: sqlite3_column_text(s, 3))))
+        }
+        return out
+    }
+
+    public func setVector(notebook: String, sourceId: String, chunkIndex: Int, vector: Data) throws {
+        dropMatrix()
+        let s = try statement("UPDATE chunks SET vector=? WHERE notebook_id=? AND source_id=? AND chunk_index=?")
+        defer { sqlite3_finalize(s) }
+        _ = vector.withUnsafeBytes { sqlite3_bind_blob(s, 1, $0.baseAddress, Int32($0.count), Self.transient) }
+        bind(s, 2, notebook); bind(s, 3, sourceId); sqlite3_bind_int64(s, 4, Int64(chunkIndex))
+        sqlite3_step(s)
+    }
+
+    // MARK: watched folders
+
+    public struct WatchedFolder: Sendable, Identifiable {
+        public let id: String, notebookId: String, path: String
+        public let bookmark: Data?
+        public let recursive: Bool
+        public let added: String
+        public var lastScan: String?, lastReport: String?
+        public init(id: String, notebookId: String, path: String, bookmark: Data?, recursive: Bool, added: String, lastScan: String? = nil, lastReport: String? = nil) {
+            self.id = id; self.notebookId = notebookId; self.path = path; self.bookmark = bookmark; self.recursive = recursive
+            self.added = added; self.lastScan = lastScan; self.lastReport = lastReport
+        }
+    }
+
+    public func watchedFolders() -> [WatchedFolder] {
+        guard let s = try? statement("SELECT id, notebook_id, path, bookmark, recursive, added, last_scan, last_report FROM watched_folders ORDER BY added") else { return [] }
+        defer { sqlite3_finalize(s) }
+        var out: [WatchedFolder] = []
+        while sqlite3_step(s) == SQLITE_ROW {
+            var bookmark: Data?
+            if let p = sqlite3_column_blob(s, 3) { bookmark = Data(bytes: p, count: Int(sqlite3_column_bytes(s, 3))) }
+            out.append(.init(id: String(cString: sqlite3_column_text(s, 0)), notebookId: String(cString: sqlite3_column_text(s, 1)),
+                             path: String(cString: sqlite3_column_text(s, 2)), bookmark: bookmark, recursive: sqlite3_column_int(s, 4) != 0,
+                             added: String(cString: sqlite3_column_text(s, 5)),
+                             lastScan: sqlite3_column_text(s, 6).map { String(cString: $0) }, lastReport: sqlite3_column_text(s, 7).map { String(cString: $0) }))
+        }
+        return out
+    }
+
+    public func addWatchedFolder(_ f: WatchedFolder) throws {
+        let s = try statement("INSERT OR REPLACE INTO watched_folders(id, notebook_id, path, bookmark, recursive, added) VALUES (?,?,?,?,?,?)")
+        defer { sqlite3_finalize(s) }
+        bind(s, 1, f.id); bind(s, 2, f.notebookId); bind(s, 3, f.path)
+        if let b = f.bookmark { _ = b.withUnsafeBytes { sqlite3_bind_blob(s, 4, $0.baseAddress, Int32($0.count), Self.transient) } } else { sqlite3_bind_null(s, 4) }
+        sqlite3_bind_int(s, 5, f.recursive ? 1 : 0); bind(s, 6, f.added)
+        sqlite3_step(s)
+    }
+
+    /// Stops watching; the sources already made from the folder stay.
+    public func removeWatchedFolder(id: String) throws {
+        for t in ["watched_folders", "watched_files"] {
+            let s = try statement("DELETE FROM \(t) WHERE \(t == "watched_folders" ? "id" : "folder_id")=?")
+            bind(s, 1, id); sqlite3_step(s); sqlite3_finalize(s)
+        }
+    }
+
+    public func setWatchedScan(id: String, at: String, report: String) throws {
+        let s = try statement("UPDATE watched_folders SET last_scan=?, last_report=? WHERE id=?")
+        bind(s, 1, at); bind(s, 2, report); bind(s, 3, id); sqlite3_step(s); sqlite3_finalize(s)
+    }
+
+    public struct WatchedFile: Sendable { public let mtime: Double, size: Int, sourceId: String? }
+
+    /// The ledger: what the folder held at the last scan, by path.
+    public func watchedFiles(folderId: String) -> [String: WatchedFile] {
+        guard let s = try? statement("SELECT path, mtime, size, source_id FROM watched_files WHERE folder_id=?") else { return [:] }
+        defer { sqlite3_finalize(s) }
+        bind(s, 1, folderId)
+        var out: [String: WatchedFile] = [:]
+        while sqlite3_step(s) == SQLITE_ROW {
+            out[String(cString: sqlite3_column_text(s, 0))] = .init(mtime: sqlite3_column_double(s, 1), size: Int(sqlite3_column_int64(s, 2)),
+                                                                    sourceId: sqlite3_column_text(s, 3).map { String(cString: $0) })
+        }
+        return out
+    }
+
+    public func recordWatchedFile(folderId: String, path: String, mtime: Double, size: Int, sourceId: String?) throws {
+        let s = try statement("INSERT OR REPLACE INTO watched_files(folder_id, path, mtime, size, source_id) VALUES (?,?,?,?,?)")
+        defer { sqlite3_finalize(s) }
+        bind(s, 1, folderId); bind(s, 2, path); sqlite3_bind_double(s, 3, mtime); sqlite3_bind_int64(s, 4, Int64(size))
+        if let sourceId { bind(s, 5, sourceId) } else { sqlite3_bind_null(s, 5) }
+        sqlite3_step(s)
     }
 
     /// Records when the Mac added each source (does not touch the chunks or the hash).

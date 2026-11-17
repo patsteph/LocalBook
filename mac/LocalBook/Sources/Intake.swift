@@ -11,7 +11,7 @@ import UniformTypeIdentifiers
 /// - a web address → a source: the page's article, a YouTube transcript, or the document it serves (`ingestLink`);
 ///   when the address cannot be read, a note holding it, so nothing is lost;
 /// - a picture → a picture note, its text read with Vision;
-/// - audio or video → a note with the transcript;
+/// - audio or video → a source holding the transcript, the recording kept beside it;
 /// - PDF, Word, RTF, OpenDocument, HTML → a source made on this Mac (Phase 3): the old app's chunker, a summary and
 ///   questions from the answer model, embedded here; it stays on this Mac until Phase 4 makes this app the host;
 /// - spreadsheets, CSV and PowerPoint → a source the same way, rows as sentences and slides under markers;
@@ -135,7 +135,12 @@ final class IntakeModel {
             defer { try? FileManager.default.removeItem(at: copy) }
             let words = try await MediaTranscriber.shared.transcribe(copy)
             guard !words.isEmpty else { throw LabError.model("no speech was found in \(url.lastPathComponent)") }
-            try await note(words, title: name, notebook: notebook, library: library, report: &report)
+            // The transcript is a source in its own right (summary, questions, citations), with the recording kept beside it.
+            let sourceId = LibraryModel.newSourceId()
+            let kept = try? LibraryModel.keepOriginal(url, notebook: notebook, sourceId: sourceId)
+            try await library.ingestText(words, title: url.lastPathComponent, format: type.conforms(to: .audio) ? "audio" : "video", notebook: notebook, url: nil,
+                                         sourceId: sourceId, file: kept) { [weak self] s in self?.status = s }
+            report.sources += 1
         } else if type.conforms(to: .commaSeparatedText) || ["xlsx", "pptx", "csv", "xls", "ppt", "ods", "epub", "ipynb", "svg"].contains(url.pathExtension.lowercased()) {
             try await library.ingestFile(url, notebook: notebook) { [weak self] s in self?.status = s }
             report.sources += 1

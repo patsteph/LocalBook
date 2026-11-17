@@ -1,3 +1,4 @@
+import AppKit
 import LocalBookCore
 import LocalBookEngines
 import SwiftUI
@@ -10,7 +11,7 @@ struct SettingsView: View {
             Tab("General", systemImage: "gear") { GeneralSettings() }
             Tab("Sync", systemImage: "arrow.triangle.2.circlepath") { SyncSettings() }
             Tab("Models", systemImage: "cpu") { LLMStudioView() }
-            Tab("Library", systemImage: "books.vertical") { SettingsPlaceholder(line: "Re-index, repair, migrate from the previous LocalBook, backups. Phase 3.") }
+            Tab("Library", systemImage: "books.vertical") { LibrarySettings() }
             Tab("Agents", systemImage: "person.2") { SettingsPlaceholder(line: "Curator, Collector, Correspondent, People, schedules and keys for companions. Phases 4 and 5.") }
             Tab("Security", systemImage: "lock") { SettingsPlaceholder(line: "Encrypted volume, recovery phrase, Touch ID, credential locker. Phase 4.") }
             Tab("Diagnostics", systemImage: "stethoscope") { DiagnosticsSettings() }
@@ -140,6 +141,123 @@ struct SyncSettings: View {
         case .failed(let why): "Sync failed: \(why)"
         case .idle: library.lastSyncLine
         }
+    }
+}
+
+/// Settings › Library: what is on this Mac, the folders it watches, and the maintenance commands of the old app.
+struct LibrarySettings: View {
+    @Environment(AppModel.self) private var model
+    @State private var counts = LibraryStore.Counts()
+    @State private var folders: [LibraryStore.WatchedFolder] = []
+    @State private var busy = false
+    @State private var status = ""
+    @State private var rewrite = false
+
+    private var library: LibraryModel { model.library }
+
+    var body: some View {
+        Form {
+            Section("On this Mac") {
+                LabeledContent("Notebooks", value: "\(counts.notebooks)")
+                LabeledContent("Sources", value: "\(counts.sources)")
+                LabeledContent("Passages", value: "\(counts.chunks)")
+                LabeledContent("Sources made here", value: "\(counts.localSources)")
+                HStack {
+                    Text("Data folder").foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([AppFolders.base]) }
+                }
+            }
+            Section {
+                if folders.isEmpty {
+                    Text("No folders yet. A watched folder is read every five minutes; new and changed files become sources of its notebook. Nothing in the folder is ever written.")
+                        .font(.callout).foregroundStyle(.secondary)
+                }
+                ForEach(folders) { f in
+                    HStack(alignment: .firstTextBaseline) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(URL(filePath: f.path).lastPathComponent).fontWeight(.medium)
+                            Text(f.path).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                            Text("→ \(notebookTitle(f.notebookId))\(f.recursive ? ", with subfolders" : "") · \(lastScan(f))")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Button("Scan Now") { run { _ = await library.scan(f) { s in status = s } } }.disabled(busy)
+                        Button("Stop Watching") { run { await library.unwatchFolder(f.id) } }.disabled(busy)
+                    }
+                }
+                HStack {
+                    Spacer()
+                    Button("Add Folder…") { NotificationCenter.default.post(name: .watchFolder, object: nil) }
+                }
+            } header: { Text("Watched folders") }
+            Section {
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Re-index sources made here")
+                        Text("Cuts and embeds the \(counts.localSources) sources this Mac read itself again, with the current search model.").font(.caption).foregroundStyle(.secondary)
+                        Toggle("Also rewrite their summaries and questions (slow)", isOn: $rewrite).font(.caption)
+                    }
+                    Spacer()
+                    Button("Re-index") { run { let r = await library.reindexLocalSources(enrich: rewrite) { s in status = s }; status = done(r) } }
+                        .disabled(busy || counts.localSources == 0)
+                }
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Repair empty vectors")
+                        Text(counts.emptyVectors == 0 ? "Every passage has its vector." : "\(counts.emptyVectors) passages have no vector and cannot be found by meaning.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button("Repair") { run { let r = await library.repairEmptyVectors { s in status = s }; status = done(r) } }
+                        .disabled(busy || counts.emptyVectors == 0)
+                }
+                if busy || !status.isEmpty {
+                    HStack(spacing: 8) {
+                        if busy { ProgressView().controlSize(.small) }
+                        Text(status).font(.callout).foregroundStyle(.secondary)
+                    }
+                }
+            } header: { Text("Maintenance") }
+            Section {
+                HStack {
+                    Text("Moves every notebook, every source's text, your notes and Studio items from the LocalBook already on this Mac. The old app must be running; nothing in it is changed.")
+                        .font(.callout).foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Move My Library Here…") { model.showImport = true }
+                }
+            } header: { Text("From the LocalBook on this Mac") }
+        }
+        .formStyle(.grouped)
+        .task { await reload() }
+        .onReceive(NotificationCenter.default.publisher(for: .librarySynced)) { _ in Task { await reload() } }
+    }
+
+    private func reload() async {
+        guard let store = library.store else { return }
+        counts = await store.counts()
+        folders = await store.watchedFolders()
+    }
+
+    private func run(_ work: @escaping @MainActor () async -> Void) {
+        busy = true
+        Task { @MainActor in
+            await work()
+            busy = false
+            await reload()
+            NotificationCenter.default.post(name: .librarySynced, object: nil)
+        }
+    }
+
+    private func done(_ r: LibraryModel.MaintenanceReport) -> String {
+        r.failed.isEmpty ? "Done: \(r.done)." : "Done: \(r.done); \(r.failed.count) failed. \(r.failed.first ?? "")"
+    }
+
+    private func notebookTitle(_ id: String) -> String { library.notebooks.first { $0.id == id }?.title ?? "a notebook that is gone" }
+
+    private func lastScan(_ f: LibraryStore.WatchedFolder) -> String {
+        guard let at = f.lastScan, let date = ISO8601DateFormatter().date(from: at) else { return "not scanned yet" }
+        return "last scan \(date.formatted(.relative(presentation: .named))): \(f.lastReport ?? "")"
     }
 }
 

@@ -80,6 +80,7 @@ struct MainWindow: View {
         .sheet(isPresented: $model.showImport) { ImportSheet() }
         .sheet(isPresented: Binding(get: { !model.filesToPlace.isEmpty }, set: { if !$0 { model.filesToPlace = [] } })) { PlaceFilesSheet() }
         .sheet(isPresented: Binding(get: { model.linkDraft != nil }, set: { if !$0 { model.linkDraft = nil } })) { AddLinkSheet() }
+        .sheet(isPresented: Binding(get: { model.folderToWatch != nil }, set: { if !$0 { model.folderToWatch = nil } })) { WatchFolderSheet() }
         .sheet(isPresented: $model.showVoiceNote) {
             if let id = model.currentNotebookId { NoteEditor(notebookId: id, startDictating: true).environment(model) }
         }
@@ -93,7 +94,7 @@ struct MainWindow: View {
     @MainActor private static let menuActions = Publishers.MergeMany(
         [Notification.Name.syncNow, .stopAnswer, .pairWithMac, .focusComposer, .showSources, .showStudio, .showMeetings,
          .startMeetingRecording, .newNote, .voiceNote, .toggleInspector, .makeStudio, .askQuestion, .newNotebook, .importLibrary,
-         .addSources, .openFiles, .addWebPage]
+         .addSources, .openFiles, .addWebPage, .watchFolder]
             .map { NotificationCenter.default.publisher(for: $0) }
     )
 
@@ -122,6 +123,7 @@ struct MainWindow: View {
         case .addSources: chooseFiles()
         case .openFiles: if let url = note.object as? URL { model.addFiles([url], ask: true) }
         case .addWebPage: model.linkDraft = ""
+        case .watchFolder: chooseFolder()
         case .makeStudio:
             if let raw = note.object as? String, let kind = StudioItem.Kind(rawValue: raw) { model.make(kind) }
         default: break
@@ -139,6 +141,15 @@ extension MainWindow {
         panel.prompt = "Add"
         guard panel.runModal() == .OK else { return }
         model.addFiles(panel.urls)
+    }
+
+    /// File › Watch Folder…: the standard panel, folders only; the notebook is asked in a sheet after.
+    @MainActor fileprivate func chooseFolder() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false; panel.canChooseDirectories = true; panel.allowsMultipleSelection = false
+        panel.prompt = "Watch"
+        panel.message = "New files in this folder become sources of a notebook. LocalBook only reads the folder."
+        if panel.runModal() == .OK, let url = panel.url { model.folderToWatch = url }
     }
 
     /// ⌘V with files copied in the Finder, or with a web address copied from a browser.
@@ -191,6 +202,42 @@ struct PlaceFilesSheet: View {
             }
         }
         .padding(20).frame(width: 380)
+        .onAppear { notebookId = model.currentNotebookId ?? model.library.notebooks.first?.id ?? "" }
+    }
+}
+
+/// File › Watch Folder…: which notebook the folder feeds, and whether subfolders count.
+struct WatchFolderSheet: View {
+    @Environment(AppModel.self) private var model
+    @State private var notebookId = ""
+    @State private var recursive = true
+    @State private var problem: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Watch “\(model.folderToWatch?.lastPathComponent ?? "")”").font(.headline)
+            Text("Files already there, and every file that lands later, become sources. Changed files are read again. Nothing in the folder is moved or written.")
+                .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            Picker("Notebook", selection: $notebookId) {
+                ForEach(model.sections) { section in
+                    Section(section.name) { ForEach(section.notebooks) { Text($0.title).tag($0.id) } }
+                }
+            }
+            Toggle("Include subfolders", isOn: $recursive)
+            if let problem { Text(problem).font(.footnote).foregroundStyle(.orange) }
+            HStack {
+                Spacer()
+                Button("Cancel") { model.folderToWatch = nil }.keyboardShortcut(.cancelAction)
+                Button("Watch") {
+                    guard let url = model.folderToWatch else { return }
+                    let notebook = notebookId, deep = recursive
+                    model.folderToWatch = nil
+                    Task { if let p = await model.addWatchedFolder(url, notebook: notebook, recursive: deep) { model.prompts.problem = p } }
+                }
+                .keyboardShortcut(.defaultAction).disabled(notebookId.isEmpty)
+            }
+        }
+        .padding(20).frame(width: 420)
         .onAppear { notebookId = model.currentNotebookId ?? model.library.notebooks.first?.id ?? "" }
     }
 }
@@ -286,4 +333,6 @@ extension Notification.Name {
     static let openFiles = Notification.Name("LocalBook.openFiles")
     /// File › Add Web Page… (⇧⌘L).
     static let addWebPage = Notification.Name("LocalBook.addWebPage")
+    /// File › Watch Folder….
+    static let watchFolder = Notification.Name("LocalBook.watchFolder")
 }

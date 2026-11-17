@@ -19,7 +19,7 @@ struct LocalBookCommands: Commands {
             Divider()
             Button("Add Sources…") { NotificationCenter.default.post(name: .addSources, object: nil) }.keyboardShortcut("o")
             Button("Add Web Page…") { NotificationCenter.default.post(name: .addWebPage, object: nil) }.keyboardShortcut("l", modifiers: [.command, .shift])
-            Button("Watch Folder…") {}.disabled(true)
+            Button("Watch Folder…") { NotificationCenter.default.post(name: .watchFolder, object: nil) }
         }
         CommandGroup(after: .importExport) {
             Button("Export Notebook…") {}.keyboardShortcut("e", modifiers: [.command, .shift]).disabled(true) // Phase 3

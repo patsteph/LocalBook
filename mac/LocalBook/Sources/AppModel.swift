@@ -79,6 +79,40 @@ final class AppModel {
     var filesToPlace: [URL] = []
     /// File › Add Web Page… (⇧⌘L), or links pasted with no notebook on screen: the sheet's text, shown when non-nil.
     var linkDraft: String?
+    /// File › Watch Folder…: the folder picked in the open panel, waiting for its notebook in a small sheet.
+    var folderToWatch: URL?
+    /// The last line the folder scan wrote, for Settings › Library.
+    var watchStatus = ""
+
+    /// Starts watching `url` for `notebook` and scans it at once.
+    func addWatchedFolder(_ url: URL, notebook: String, recursive: Bool) async -> String? {
+        do {
+            let folder = try await library.watchFolder(url, notebook: notebook, recursive: recursive)
+            intake.status = "Reading \(url.lastPathComponent)…"
+            let report = await library.scan(folder) { [weak self] s in self?.intake.status = s }
+            intake.status = ""
+            watchStatus = "\(url.lastPathComponent): \(report.line)"
+            NotificationCenter.default.post(name: .librarySynced, object: nil)
+            return nil
+        } catch { return error.localizedDescription }
+    }
+
+    /// Every watched folder, now, then every five minutes while the app runs (the old app's cadence).
+    func startWatching() {
+        guard watchLoop == nil else { return }
+        watchLoop = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                guard let self else { return }
+                let lines = await self.library.scanWatchedFolders()
+                if !lines.isEmpty {
+                    self.watchStatus = lines.joined(separator: " · ")
+                    NotificationCenter.default.post(name: .librarySynced, object: nil)
+                }
+                try? await Task.sleep(for: .seconds(300))
+            }
+        }
+    }
+    private var watchLoop: Task<Void, Never>?
 
     /// Add web addresses to the current notebook, or open the Add Web Page sheet with them when there is none.
     func addLinks(_ urls: [URL]) {
@@ -168,6 +202,7 @@ final class AppModel {
         }()
         async let answers: Void = self.library.prepareAnswerModel()
         _ = await (search, answers)
+        startWatching()
     }
 
     /// The pairing sheet finished: the first notebook is here, the rest keeps copying.
