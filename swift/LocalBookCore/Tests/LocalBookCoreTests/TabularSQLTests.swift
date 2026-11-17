@@ -50,7 +50,8 @@ struct TabularSQLTests {
         #expect(TabularSQL.safeSQL("SELECT * FROM t WHERE 1; DELETE FROM t") == .success("SELECT * FROM t WHERE 1"))
         #expect(TabularSQL.safeSQL("SELECT * FROM t; -- then\nDROP") == .success("SELECT * FROM t"))
         #expect(TabularSQL.safeSQL("select load_extension('x') from pragma_table_info('t')") == .failure(.forbidden))
-        #expect(TabularSQL.safeSQL("I cannot answer that.") == .failure(.noSQL))
+        #expect(TabularSQL.safeSQL("I cannot answer that.") == .failure(.notASelect))   // as the old app says
+        #expect(TabularSQL.safeSQL("") == .failure(.noSQL))
     }
 
     @Test("the prompt lists tables, typed columns and their values")

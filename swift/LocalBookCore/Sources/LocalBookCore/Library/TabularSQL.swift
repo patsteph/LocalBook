@@ -122,7 +122,9 @@ public enum TabularSQL {
 
     // MARK: the model's SQL
 
-    static let forbidden = "\\b(insert|update|delete|drop|alter|create|attach|detach|pragma|replace|truncate|vacuum|reindex|grant|revoke|commit|rollback|begin)\\b"
+    /// The old `_FORBIDDEN` list, plus the SQLite functions that reach the file system (`load_extension`, `readfile`,
+    /// `writefile`, `edit`), which `query_only` does not stop. `pragma_table_info(...)` is a table-valued read and passes.
+    static let forbidden = "\\b(insert|update|delete|drop|alter|create|attach|detach|pragma|replace|truncate|vacuum|reindex|grant|revoke|commit|rollback|begin|load_extension|readfile|writefile|edit)\\b"
 
     /// `_extract_sql`: the statement out of fences and prose, from the first SELECT or WITH, before any `;`.
     public static func extractSQL(_ text: String) -> String {
