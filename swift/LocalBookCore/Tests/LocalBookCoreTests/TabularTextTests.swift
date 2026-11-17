@@ -32,7 +32,7 @@ struct TabularTextTests {
 
     @Test("a workbook lists each sheet under its marker")
     func workbook() {
-        let t = Table(columns: ["A", "B"], rows: [["1", "x"]])
+        let t = TextTable(columns: ["A", "B"], rows: [["1", "x"]])
         let text = TabularText.workbookText([(name: "S1", table: t)])
         #expect(text.hasPrefix("=== Sheet: S1 ===\n\nData from sheet 'S1':"))
         #expect(text.contains("Row 1: A: 1, B: x"))

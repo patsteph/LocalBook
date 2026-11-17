@@ -1,7 +1,7 @@
 import Foundation
 
 /// A sheet, CSV or slide table as the old app saw it through pandas: a header row and string cells.
-public struct Table: Sendable, Equatable {
+public struct TextTable: Sendable, Equatable {
     public var columns: [String]
     public var rows: [[String]]
     public init(columns: [String], rows: [[String]]) { self.columns = columns; self.rows = rows }
@@ -19,13 +19,13 @@ public struct Table: Sendable, Equatable {
     }
 
     /// From raw rows (the first is the header), padded to the widest row as pandas pads with NaN.
-    public static func fromRows(_ raw: [[String]]) -> Table {
-        guard let first = raw.first else { return Table(columns: [], rows: []) }
+    public static func fromRows(_ raw: [[String]]) -> TextTable {
+        guard let first = raw.first else { return TextTable(columns: [], rows: []) }
         let width = raw.map(\.count).max() ?? 0
         var header = first
         if header.count < width { header += Array(repeating: "", count: width - header.count) }
         let rows = raw.dropFirst().map { r in r.count < width ? r + Array(repeating: "", count: width - r.count) : r }
-        return Table(columns: pandasColumns(header), rows: Array(rows))
+        return TextTable(columns: pandasColumns(header), rows: Array(rows))
     }
 }
 
@@ -70,9 +70,8 @@ public enum TabularText {
         kind != .text && !cells.contains { missing.contains($0.trimmingCharacters(in: .whitespaces)) }
     }
 
-    static let valuePattern = try! NSRegularExpression(pattern: "(Q\\s*\\d|FY\\s*\\d|Total|Count|Sum|Amount)", options: [.caseInsensitive])
     static func looksLikeValue(_ name: String) -> Bool {
-        valuePattern.firstMatch(in: name, range: NSRange(location: 0, length: (name as NSString).length)) != nil
+        name.range(of: "(Q\\s*\\d|FY\\s*\\d|Total|Count|Sum|Amount)", options: [.regularExpression, .caseInsensitive]) != nil
     }
 
     static func digitsOnly(_ s: String) -> Bool {
@@ -80,7 +79,7 @@ public enum TabularText {
         return !stripped.isEmpty && stripped.unicodeScalars.allSatisfy { CharacterSet.decimalDigits.contains($0) }
     }
 
-    public static func sentences(_ table: Table, sheet: String) -> String {
+    public static func sentences(_ table: TextTable, sheet: String) -> String {
         let cols = table.columns
         let kinds = cols.indices.map { i in kind(of: table.rows.map { $0[i] }) }
         let cells: [[String]] = table.rows.map { row in row.indices.map { render(row[$0], as: kinds[$0]) } }
@@ -134,7 +133,7 @@ public enum TabularText {
     }
 
     /// `_extract_from_excel`'s shape: each sheet under a marker, then its sentences, then a blank gap.
-    public static func workbookText(_ sheets: [(name: String, table: Table)]) -> String {
+    public static func workbookText(_ sheets: [(name: String, table: TextTable)]) -> String {
         var parts: [String] = []
         for (name, table) in sheets {
             parts.append("=== Sheet: \(name) ===\n")
@@ -178,5 +177,5 @@ public enum CSV {
         return rows
     }
 
-    public static func table(_ text: String) -> Table { Table.fromRows(parse(text)) }
+    public static func table(_ text: String) -> TextTable { TextTable.fromRows(parse(text)) }
 }

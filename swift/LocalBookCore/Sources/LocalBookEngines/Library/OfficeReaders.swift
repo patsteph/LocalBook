@@ -46,7 +46,7 @@ enum OfficePackage {
 /// A workbook as pandas' `read_excel(sheet_name=None)` gave it: every sheet in order, the first row as the header,
 /// cells as text (shared strings resolved, booleans as True/False, dated cells as `yyyy-MM-dd HH:mm:ss`).
 enum XLSXReader {
-    static func read(_ url: URL) throws -> [(name: String, table: Table)] {
+    static func read(_ url: URL) throws -> [(name: String, table: TextTable)] {
         let archive = try Archive(url: url, accessMode: .read)
         guard let wb = try OfficePackage.part(archive, "xl/workbook.xml") else { throw LabError.model("\(url.lastPathComponent) has no workbook inside") }
         let sheets = WorkbookParser(); sheets.parse(wb)
@@ -55,11 +55,11 @@ enum XLSXReader {
         if let ss = try OfficePackage.part(archive, "xl/sharedStrings.xml") { let p = SharedStringsParser(); p.parse(ss); shared = p.strings }
         var dateStyles: Set<Int> = []
         if let st = try OfficePackage.part(archive, "xl/styles.xml") { let p = StylesParser(); p.parse(st); dateStyles = p.dateStyles }
-        var out: [(String, Table)] = []
+        var out: [(String, TextTable)] = []
         for (name, rid) in sheets.sheets {
             guard let path = rels[rid], let data = try OfficePackage.part(archive, path) else { continue }
             let p = SheetParser(shared: shared, dateStyles: dateStyles); p.parse(data)
-            out.append((name, Table.fromRows(p.rows)))
+            out.append((name, TextTable.fromRows(p.rows)))
         }
         return out.map { (name: $0.0, table: $0.1) }
     }
@@ -114,7 +114,7 @@ enum XLSXReader {
         var rows: [[String]] = []
         private var row: [String] = []
         private var column = 0, cellType = "", cellStyle = 0, value = "", inValue = false, inInline = false
-        init(shared: [String], dateStyles: Set<Int>) { self.shared = shared; self.dateStyles = dateStyles }
+        init(shared: [String], dateStyles: Set<Int>) { self.shared = shared; self.dateStyles = dateStyles; super.init() }
         func parse(_ data: Data) { let x = XMLParser(data: data); x.delegate = self; x.shouldProcessNamespaces = true; x.parse() }
 
         static func columnIndex(_ ref: String) -> Int? {
@@ -191,7 +191,7 @@ enum PPTXReader {
                 case .text(let t): if !t.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { slide.append(t) }
                 case .table(let rows):
                     guard !rows.isEmpty else { continue }
-                    let table = rows.count > 1 ? Table.fromRows(rows) : Table(columns: rows[0].indices.map { String($0) }, rows: rows)
+                    let table = rows.count > 1 ? TextTable.fromRows(rows) : TextTable(columns: rows[0].indices.map { String($0) }, rows: rows)
                     slide.append(TabularText.sentences(table, sheet: "Slide Table"))
                 }
             }

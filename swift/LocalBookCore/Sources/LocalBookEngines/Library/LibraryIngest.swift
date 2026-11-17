@@ -25,7 +25,7 @@ extension LibraryModel {
     public func ingestFile(_ url: URL, notebook: String, enrich: Bool = true, progress: (@MainActor (String) -> Void)? = nil) async throws -> IngestReport {
         guard let format = TextExtract.format(for: url) else { throw LabError.model("\(url.lastPathComponent) is a kind of file this Mac cannot read into a source yet") }
         progress?("Reading \(url.lastPathComponent)…")
-        let text = try await TextExtract.text(from: url) { progress?($0) }
+        let text = try await TextExtract.text(from: url) { s in Task { @MainActor in progress?(s) } }
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw LabError.model("No text could be read from \(url.lastPathComponent)") }
         return try await ingestText(text, title: url.lastPathComponent, format: format, notebook: notebook, url: nil, enrich: enrich, progress: progress)
     }

@@ -5,6 +5,9 @@ import Vision
 #if canImport(AppKit)
 import AppKit
 #endif
+#if canImport(UIKit)
+import UIKit
+#endif
 
 /// Text out of a file, with the format name the old app would give it (`DocumentProcessor._extract_text`).
 ///
