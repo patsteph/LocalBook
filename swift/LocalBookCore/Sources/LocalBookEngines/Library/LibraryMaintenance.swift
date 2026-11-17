@@ -104,9 +104,8 @@ extension LibraryModel {
         let keys: [URLResourceKey] = [.isRegularFileKey, .contentModificationDateKey, .fileSizeKey, .nameKey]
         var options: FileManager.DirectoryEnumerationOptions = [.skipsHiddenFiles, .skipsPackageDescendants]
         if !folder.recursive { options.insert(.skipsSubdirectoryDescendants) }
-        guard let walker = FileManager.default.enumerator(at: root, includingPropertiesForKeys: keys, options: options) else { return report }
         let now = Date()
-        for case let url as URL in walker {
+        for url in Self.files(under: root, keys: keys, options: options) {
             guard let values = try? url.resourceValues(forKeys: Set(keys)), values.isRegularFile == true else { continue }
             let name = values.name ?? url.lastPathComponent
             if name.hasPrefix("~$") || name.hasPrefix(".") { continue }
@@ -129,6 +128,15 @@ extension LibraryModel {
         try? await store.setWatchedScan(id: folder.id, at: ISO8601DateFormatter().string(from: Date()), report: report.line)
         if report.added + report.updated > 0 { await refresh() }
         return report
+    }
+
+    /// Every regular file under `root`, listed before the async work starts: the directory enumerator cannot be
+    /// iterated from an async context.
+    nonisolated static func files(under root: URL, keys: [URLResourceKey], options: FileManager.DirectoryEnumerationOptions) -> [URL] {
+        guard let walker = FileManager.default.enumerator(at: root, includingPropertiesForKeys: keys, options: options) else { return [] }
+        var out: [URL] = []
+        for case let url as URL in walker { out.append(url) }
+        return out
     }
 
     /// The folder's URL with its security scope open for the rest of the session (so its files open later too).
