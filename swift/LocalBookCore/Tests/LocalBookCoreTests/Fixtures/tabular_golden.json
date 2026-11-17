@@ -1,0 +1,59 @@
+{
+ "pandas": "2.3.3",
+ "cases": [
+  {
+   "name": "plain rows",
+   "csv": "Name,Score,Team\nAnn,7,Red\nBob,12,Blue\nCy,3,Red\n",
+   "sheet": "CSV Data",
+   "sentences": "Data from sheet 'CSV Data':\n\nComplete row data:\nRow 1: Name: Ann, Score: 7, Team: Red\nRow 2: Name: Bob, Score: 12, Team: Blue\nRow 3: Name: Cy, Score: 3, Team: Red"
+  },
+  {
+   "name": "blanks make floats",
+   "csv": "Name,Score,Team\nAnn,7,Red\nBob,,Blue\nCy,3,\n",
+   "sheet": "CSV Data",
+   "sentences": "Data from sheet 'CSV Data':\n\nComplete row data:\nRow 1: Name: Ann, Score: 7.0, Team: Red\nRow 2: Name: Bob, Team: Blue\nRow 3: Name: Cy, Score: 3.0"
+  },
+  {
+   "name": "empty and duplicate headers",
+   "csv": "Name,Score,Team,,Score\nAnn,7,Red,,1\nBob,,Blue,x,2\n",
+   "sheet": "CSV Data",
+   "sentences": "Data from sheet 'CSV Data':\n\nComplete row data:\nRow 1: Name: Ann, Score: 7.0, Team: Red, Score.1: 1\nRow 2: Name: Bob, Team: Blue, Column4: x, Score.1: 2"
+  },
+  {
+   "name": "pivot by quarter",
+   "csv": "Person,Activity,Q1 FY2025,Q2 FY2025,Total\nAnn,Calls,7,9,16\n,Visits,2,0,2\nBob,Calls,4,5,9\n,Visits,,1,1\n",
+   "sheet": "CSV Data",
+   "sentences": "Data from sheet 'CSV Data':\nAnn - Calls: Q1 FY2025 = 7\nAnn - Calls: Q2 FY2025 = 9\nAnn - Calls: Total = 16\nAnn - Visits: Q1 FY2025 = 2\nAnn - Visits: Total = 2\nBob - Calls: Q1 FY2025 = 4\nBob - Calls: Q2 FY2025 = 5\nBob - Calls: Total = 9\nBob - Visits: Q2 FY2025 = 1\nBob - Visits: Total = 1\n\nComplete row data:\nRow 1: Person: Ann, Activity: Calls, Q1 FY2025: 7.0, Q2 FY2025: 9, Total: 16\nRow 2: Activity: Visits, Q1 FY2025: 2.0, Q2 FY2025: 0, Total: 2\nRow 3: Person: Bob, Activity: Calls, Q1 FY2025: 4.0, Q2 FY2025: 5, Total: 9\nRow 4: Activity: Visits, Q2 FY2025: 1, Total: 1"
+  },
+  {
+   "name": "quoted fields",
+   "csv": "Title,Notes,Count\n\"Smith, J\",\"Said \"\"hello\"\", left\",2\n\"Lee\",\"Line one\nline two\",5\n",
+   "sheet": "CSV Data",
+   "sentences": "Data from sheet 'CSV Data':\nSmith, J - Said \"hello\", left: Count = 2\nLee - Line one\nline two: Count = 5\n\nComplete row data:\nRow 1: Title: Smith, J, Notes: Said \"hello\", left, Count: 2\nRow 2: Title: Lee, Notes: Line one\nline two, Count: 5"
+  },
+  {
+   "name": "decimals and negatives",
+   "csv": "Item,Delta,Ratio\nA,-3,0.5\nB,4,1.25\nC,0,2\n",
+   "sheet": "CSV Data",
+   "sentences": "Data from sheet 'CSV Data':\n\nComplete row data:\nRow 1: Item: A, Delta: -3, Ratio: 0.5\nRow 2: Item: B, Delta: 4, Ratio: 1.25\nRow 3: Item: C, Delta: 0, Ratio: 2.0"
+  },
+  {
+   "name": "numbers with leading zeros",
+   "csv": "Code,Qty\n007,10\n042,20\n",
+   "sheet": "CSV Data",
+   "sentences": "Data from sheet 'CSV Data':\n\nComplete row data:\nRow 1: Code: 7, Qty: 10\nRow 2: Code: 42, Qty: 20"
+  },
+  {
+   "name": "one header only",
+   "csv": "A,B,C\n",
+   "sheet": "CSV Data",
+   "sentences": "Data from sheet 'CSV Data':\n\nComplete row data:"
+  },
+  {
+   "name": "mixed text and numbers",
+   "csv": "Key,Value\nx,1\ny,two\nz,3.5\n",
+   "sheet": "CSV Data",
+   "sentences": "Data from sheet 'CSV Data':\n\nComplete row data:\nRow 1: Key: x, Value: 1\nRow 2: Key: y, Value: two\nRow 3: Key: z, Value: 3.5"
+  }
+ ]
+}

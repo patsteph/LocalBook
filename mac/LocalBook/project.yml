@@ -130,6 +130,8 @@ targets:
               - com.apple.webarchive
               - public.plain-text
               - public.comma-separated-values-text
+              - org.openxmlformats.spreadsheetml.sheet
+              - org.openxmlformats.presentationml.presentation
               - public.json
               - public.image
               - public.audio

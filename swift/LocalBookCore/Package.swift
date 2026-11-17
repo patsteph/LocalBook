@@ -32,6 +32,8 @@ let package = Package(
         .package(url: "https://github.com/ml-explore/mlx-swift-lm", exact: "3.31.4"),
         .package(url: "https://github.com/FluidInference/FluidAudio", from: "0.17.6"),
         .package(url: "https://github.com/huggingface/swift-huggingface", from: "0.9.0"),
+        // Office Open XML (.xlsx, .pptx) is a zip of XML parts; this opens the zip, Foundation parses the parts.
+        .package(url: "https://github.com/weichsel/ZIPFoundation", from: "0.9.19"),
     ],
     targets: [
         .target(
@@ -56,6 +58,7 @@ let package = Package(
                 .product(name: "Hub", package: "swift-transformers"),
                 .product(name: "HuggingFace", package: "swift-huggingface"),
                 .product(name: "FluidAudio", package: "FluidAudio"),
+                .product(name: "ZIPFoundation", package: "ZIPFoundation"),
             ],
             swiftSettings: [
                 .swiftLanguageMode(.v6),

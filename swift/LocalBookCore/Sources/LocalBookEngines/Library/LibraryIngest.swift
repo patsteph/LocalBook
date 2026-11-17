@@ -4,10 +4,6 @@ import HuggingFace
 import MLXHuggingFace
 import Tokenizers
 import MLXLMCommon
-import PDFKit
-#if canImport(AppKit)
-import AppKit
-#endif
 
 /// Phase 3, slice 2: a file becomes a source on this device, the way the old app did it, without the Python Mac.
 /// Text is read from the file, cut with the old app's chunker, kept inside the embedder's token budget, given a
@@ -23,65 +19,13 @@ public struct IngestReport: Sendable {
     public let questioned: Int
 }
 
-/// Text out of a file, with the format name the old app would give it. PDF through PDFKit with the old app's page
-/// markers; Word, RTF, OpenDocument, HTML and web archives through the system document importer (Mac only).
-public enum TextExtract {
-    /// Formats this device can read into a source today. Spreadsheets, PowerPoint, EPUB and notebooks wait in the Inbox.
-    public static func format(for url: URL) -> String? {
-        let ext = url.pathExtension.lowercased()
-        switch ext {
-        case "pdf": return "pdf"
-        case "txt", "md", "markdown", "json", "xml", "py", "js", "ts", "css", "yaml", "yml", "tex", "bib": return ext
-        #if canImport(AppKit)
-        case "docx", "doc", "rtf", "rtfd", "odt", "html", "htm", "webarchive": return ext
-        #endif
-        default: return nil
-        }
-    }
-
-    public static func canRead(_ url: URL) -> Bool { format(for: url) != nil }
-
-    public static func text(from url: URL) throws -> String {
-        guard let format = format(for: url) else { throw LabError.model("\(url.lastPathComponent) is a kind of file this Mac cannot read into a source yet") }
-        switch format {
-        case "pdf":
-            guard let doc = PDFDocument(url: url) else { throw LabError.model("\(url.lastPathComponent) could not be opened as a PDF") }
-            var pages: [String] = []
-            for i in 0..<doc.pageCount {
-                var piece = ["=== Page \(i + 1) ==="]
-                let text = (doc.page(at: i)?.string ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-                if !text.isEmpty { piece.append(text) }
-                pages.append(piece.joined(separator: "\n"))
-            }
-            let text = pages.joined(separator: "\n\n")
-            if doc.pageCount > 0, text.filter({ !$0.isWhitespace && $0 != "=" }).count < 40 {
-                throw LabError.model("\(url.lastPathComponent) has no text layer; scanned PDFs are read in a later slice (Vision)")
-            }
-            return text
-        case "docx", "doc", "rtf", "rtfd", "odt", "html", "htm", "webarchive":
-            #if canImport(AppKit)
-            let attributed = try NSAttributedString(url: url, options: [:], documentAttributes: nil)
-            // python-docx hands paragraphs back one by one, joined by blank lines; the importer gives one string with a
-            // newline per paragraph, so the same shape is rebuilt here.
-            let paragraphs = attributed.string.components(separatedBy: .newlines).map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
-            return paragraphs.joined(separator: "\n\n")
-            #else
-            throw LabError.model("Word and rich-text files are read on the Mac")
-            #endif
-        default:
-            let data = try Data(contentsOf: url)
-            return String(data: data, encoding: .utf8) ?? String(data: data, encoding: .isoLatin1) ?? ""
-        }
-    }
-}
-
 extension LibraryModel {
     /// Read `url` into a new source of `notebook`. `progress` hears each stage in words.
     @discardableResult
     public func ingestFile(_ url: URL, notebook: String, enrich: Bool = true, progress: (@MainActor (String) -> Void)? = nil) async throws -> IngestReport {
         guard let format = TextExtract.format(for: url) else { throw LabError.model("\(url.lastPathComponent) is a kind of file this Mac cannot read into a source yet") }
         progress?("Reading \(url.lastPathComponent)…")
-        let text = try TextExtract.text(from: url)
+        let text = try await TextExtract.text(from: url) { progress?($0) }
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw LabError.model("No text could be read from \(url.lastPathComponent)") }
         return try await ingestText(text, title: url.lastPathComponent, format: format, notebook: notebook, url: nil, enrich: enrich, progress: progress)
     }

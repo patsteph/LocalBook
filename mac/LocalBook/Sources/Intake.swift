@@ -13,7 +13,8 @@ import UniformTypeIdentifiers
 /// - audio or video → a note with the transcript;
 /// - PDF, Word, RTF, OpenDocument, HTML → a source made on this Mac (Phase 3): the old app's chunker, a summary and
 ///   questions from the answer model, embedded here; it stays on this Mac until Phase 4 makes this app the host;
-/// - anything else (spreadsheets, PowerPoint, EPUB…) → the notebook's Inbox, a folder on this Mac, until its reader lands.
+/// - spreadsheets, CSV and PowerPoint → a source the same way, rows as sentences and slides under markers;
+/// - anything else (EPUB, notebooks…) → the notebook's Inbox, a folder on this Mac, until its reader lands.
 ///
 /// Notes still go the phone's note route, so they reach the Python Mac and every other device.
 @MainActor @Observable
@@ -37,7 +38,8 @@ final class IntakeModel {
             .sorted { $0.lastPathComponent < $1.lastPathComponent }
     }
 
-    static let textTypes: [UTType] = [.plainText, .utf8PlainText, .rtf, .commaSeparatedText, .json, .xml, .html, .sourceCode, .yaml]
+    /// Text kinds that become notes (and so reach the Python Mac). CSV is not here: it is a source, read by rows.
+    static let textTypes: [UTType] = [.plainText, .utf8PlainText, .rtf, .json, .xml, .html, .sourceCode, .yaml]
     static let acceptedTypes: [UTType] = [.fileURL, .url, .plainText, .utf8PlainText, .text]
 
     /// Files chosen in an open panel, opened from the Finder or the Dock, or pasted: the same path as a drop.
@@ -123,6 +125,9 @@ final class IntakeModel {
             let words = try await MediaTranscriber.shared.transcribe(copy)
             guard !words.isEmpty else { throw LabError.model("no speech was found in \(url.lastPathComponent)") }
             try await note(words, title: name, notebook: notebook, library: library, report: &report)
+        } else if type.conforms(to: .commaSeparatedText) || ["xlsx", "pptx", "csv"].contains(url.pathExtension.lowercased()) {
+            try await library.ingestFile(url, notebook: notebook) { [weak self] s in self?.status = s }
+            report.sources += 1
         } else if Self.textTypes.contains(where: { type.conforms(to: $0) }) {
             status = "Reading \(url.lastPathComponent)…"
             let text: String
