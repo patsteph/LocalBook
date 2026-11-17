@@ -160,18 +160,20 @@ public final class PageLoader: NSObject, WKNavigationDelegate {
         if let mime = nonHTML { throw NotHTML(mime: mime) }
         try? await Task.sleep(for: settle)          // scripts that fill the page after load
 
-        let result = try await evaluate(Self.script, in: view)
-        guard let dict = result as? [String: Any], let text = dict["text"] as? String else {
+        guard let page = try await evaluate(Self.script, in: view) else {
             throw LabError.model("\(url.host() ?? "The page") could not be read")
         }
-        return WebPage(title: dict["title"] as? String ?? "", author: dict["author"] as? String ?? "", date: dict["date"] as? String ?? "",
-                       text: text, readable: dict["readable"] as? Bool ?? false)
+        return page
     }
 
-    private func evaluate(_ script: String, in view: WKWebView) async throws -> Any? {
-        try await withCheckedThrowingContinuation { cont in
+    /// Runs the reader and turns its object into a `WebPage` inside the completion, so only a Sendable value crosses.
+    private func evaluate(_ script: String, in view: WKWebView) async throws -> WebPage? {
+        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<WebPage?, Error>) in
             view.evaluateJavaScript(script) { value, error in
-                if let error { cont.resume(throwing: error) } else { cont.resume(returning: value) }
+                if let error { cont.resume(throwing: error); return }
+                guard let dict = value as? [String: Any], let text = dict["text"] as? String else { cont.resume(returning: nil); return }
+                cont.resume(returning: WebPage(title: dict["title"] as? String ?? "", author: dict["author"] as? String ?? "",
+                                               date: dict["date"] as? String ?? "", text: text, readable: dict["readable"] as? Bool ?? false))
             }
         }
     }
