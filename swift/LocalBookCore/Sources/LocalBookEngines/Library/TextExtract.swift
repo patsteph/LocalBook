@@ -12,7 +12,8 @@ import UIKit
 /// Text out of a file, with the format name the old app would give it (`DocumentProcessor._extract_text`).
 ///
 /// - PDF: PDFKit's text layer per page under the old app's `=== Page N ===` markers, with headings marked from the
-///   fonts (what pymupdf4llm's Markdown gave the chunker); a page with no text layer is read with Vision instead.
+///   fonts and ruled tables as Markdown tables (what pymupdf4llm's Markdown gave the chunker, `PDFTables`); a page with
+///   no text layer is read with Vision instead.
 /// - Word, RTF, OpenDocument, HTML, web archive: the system document importer (Mac only), paragraphs on blank lines.
 /// - Spreadsheets and CSV: rows as sentences, the old app's shape (`TabularText`).
 /// - PowerPoint: slide markers, shape text, tables and speaker notes (`PPTXReader`).
@@ -103,6 +104,9 @@ public enum TextExtract {
             var text = (page.attributedString.map(markHeadings) ?? page.string ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
             if text.filter({ !$0.isWhitespace }).count < 20 {                 // no text layer: a scan, or a picture page
                 if let read = await recognize(page), !read.isEmpty { text = read; scanned += 1 }
+            } else if Self.readsTables {
+                // Ruled tables become Markdown tables, as pymupdf4llm wrote them; their cells leave the prose.
+                text = PDFTables.merge(text: text, page: page, tables: await PDFTables.find(on: page))
             }
             var piece = ["=== Page \(i + 1) ==="]
             if !text.isEmpty { piece.append(text) }
@@ -115,6 +119,9 @@ public enum TextExtract {
         }
         return text
     }
+
+    /// Whether PDF pages are also read for ruled tables (Vision's document reader, a few hundred milliseconds a page).
+    nonisolated(unsafe) static var readsTables = true
 
     /// Lines set in a larger type than the page's body text become Markdown headings, which is how the old app's PDF
     /// Markdown reached the section-aware chunker. The body size is the size that covers the most characters; a short
