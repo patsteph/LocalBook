@@ -97,7 +97,7 @@ extension LibraryModel {
         }
     }
 
-    nonisolated static var deviceLine: String { "\(DeviceDescription.userName) (\(DeviceDescription.model), \(DeviceDescription.system))" }
+    nonisolated public static var deviceLine: String { "\(DeviceDescription.userName) (\(DeviceDescription.model), \(DeviceDescription.system))" }
 
     nonisolated static func resolveFolder(_ bookmark: Data?) -> URL? {
         guard let bookmark else { return nil }
