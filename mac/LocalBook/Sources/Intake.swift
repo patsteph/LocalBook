@@ -8,7 +8,8 @@ import UniformTypeIdentifiers
 /// What arrives by drag and drop (or an intent) for a notebook, and what becomes of it on this Mac today:
 ///
 /// - text, and text files (txt, md, csv, rtf…) → a note, searchable here at once and sent to the paired Mac;
-/// - a web address → a note holding the address (the page itself is fetched by the Mac from Phase 3);
+/// - a web address → a source: the page's article, a YouTube transcript, or the document it serves (`ingestLink`);
+///   when the address cannot be read, a note holding it, so nothing is lost;
 /// - a picture → a picture note, its text read with Vision;
 /// - audio or video → a note with the transcript;
 /// - PDF, Word, RTF, OpenDocument, HTML → a source made on this Mac (Phase 3): the old app's chunker, a summary and
@@ -56,6 +57,17 @@ final class IntakeModel {
         }
     }
 
+    /// Web addresses typed, pasted or opened for one notebook.
+    func take(links urls: [URL], notebook: String, library: LibraryModel) {
+        guard !urls.isEmpty, !working else { return }
+        working = true; status = "Adding to the notebook…"
+        Task {
+            var report = Report()
+            for url in urls { await link(url, notebook: notebook, library: library, report: &report) }
+            await finish(report, notebook: notebook, library: library)
+        }
+    }
+
     /// Everything the pasteboard offers for one drop, for one notebook.
     func take(_ providers: [NSItemProvider], notebook: String, library: LibraryModel) {
         guard !providers.isEmpty, !working else { return }
@@ -69,12 +81,11 @@ final class IntakeModel {
                         try await file(url, notebook: notebook, library: library, report: &report)
                     } else if provider.hasItemConformingToTypeIdentifier(UTType.url.identifier) {
                         let url = try await Self.loadURL(from: provider, type: .url)
-                        status = "Noting \(url.host() ?? "a link")…"
-                        try await library.addNote(notebook: notebook, title: Self.linkTitle(url), text: url.absoluteString)
-                        report.notes += 1
+                        await link(url, notebook: notebook, library: library, report: &report)
                     } else if provider.hasItemConformingToTypeIdentifier(UTType.plainText.identifier) || provider.hasItemConformingToTypeIdentifier(UTType.text.identifier) {
                         let text = try await Self.loadText(from: provider)
-                        try await note(text, title: nil, notebook: notebook, library: library, report: &report)
+                        if let url = Self.soleLink(in: text) { await link(url, notebook: notebook, library: library, report: &report) }
+                        else { try await note(text, title: nil, notebook: notebook, library: library, report: &report) }
                     }
                 } catch { report.failed.append(error.localizedDescription) }
             }
@@ -151,6 +162,36 @@ final class IntakeModel {
             try FileManager.default.copyItem(at: url, to: dest)
             report.queued += 1
         }
+    }
+
+    /// A web address becomes a source; one this Mac cannot read stays as a note holding the address, and the report says why.
+    private func link(_ url: URL, notebook: String, library: LibraryModel, report: inout Report) async {
+        let host = (url.host() ?? "the link").replacingOccurrences(of: "www.", with: "")
+        status = "Reading \(host)…"
+        do {
+            try await library.ingestLink(url, notebook: notebook) { [weak self] s in self?.status = s }
+            report.sources += 1
+        } catch {
+            do {
+                await library.waitForSearch()
+                try await library.addNote(notebook: notebook, title: Self.linkTitle(url), text: url.absoluteString)
+                report.notes += 1
+                report.failed.append("\(host) could not be read (\(error.localizedDescription)); the address was kept as a note")
+            } catch let noteError { report.failed.append("\(host): \(noteError.localizedDescription)") }
+        }
+    }
+
+    /// Dropped or pasted text that is exactly one web address.
+    static func soleLink(in text: String) -> URL? {
+        let s = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !s.isEmpty, !s.contains(where: \.isWhitespace), let url = URL(string: s), let scheme = url.scheme?.lowercased(),
+              scheme == "http" || scheme == "https", url.host() != nil else { return nil }
+        return url
+    }
+
+    /// Every web address in `text`, one per line or separated by spaces, for the Add Web Page sheet.
+    static func links(in text: String) -> [URL] {
+        text.split(whereSeparator: { $0.isWhitespace || $0 == "," }).compactMap { soleLink(in: String($0)) }
     }
 
     private func note(_ text: String, title: String?, notebook: String, library: LibraryModel, report: inout Report) async throws {

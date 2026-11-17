@@ -77,6 +77,15 @@ final class AppModel {
     /// Files that arrived without a notebook to land in (opened from the Finder or the Dock, or added with no
     /// notebook selected): a small sheet asks which notebook, then they go the drop's way.
     var filesToPlace: [URL] = []
+    /// File › Add Web Page… (⇧⌘L), or links pasted with no notebook on screen: the sheet's text, shown when non-nil.
+    var linkDraft: String?
+
+    /// Add web addresses to the current notebook, or open the Add Web Page sheet with them when there is none.
+    func addLinks(_ urls: [URL]) {
+        guard !urls.isEmpty else { return }
+        if let id = currentNotebookId { intake.take(links: urls, notebook: id, library: library) }
+        else { linkDraft = urls.map(\.absoluteString).joined(separator: "\n") }
+    }
 
     /// Add `urls` to the current notebook, or ask which notebook when there is none (or when `ask` says to).
     func addFiles(_ urls: [URL], ask: Bool = false) {

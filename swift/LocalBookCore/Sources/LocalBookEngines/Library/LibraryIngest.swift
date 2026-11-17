@@ -20,14 +20,30 @@ public struct IngestReport: Sendable {
 }
 
 extension LibraryModel {
-    /// Read `url` into a new source of `notebook`. `progress` hears each stage in words.
+    /// Read `url` into a new source of `notebook`. `progress` hears each stage in words. `title` and `link` stand in
+    /// for the filename and record where a downloaded file came from.
     @discardableResult
-    public func ingestFile(_ url: URL, notebook: String, enrich: Bool = true, progress: (@MainActor (String) -> Void)? = nil) async throws -> IngestReport {
+    public func ingestFile(_ url: URL, notebook: String, title: String? = nil, link: String? = nil, enrich: Bool = true,
+                           progress: (@MainActor (String) -> Void)? = nil) async throws -> IngestReport {
         guard let format = TextExtract.format(for: url) else { throw LabError.model("\(url.lastPathComponent) is a kind of file this Mac cannot read into a source yet") }
         progress?("Reading \(url.lastPathComponent)…")
         let text = try await TextExtract.text(from: url) { s in Task { @MainActor in progress?(s) } }
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw LabError.model("No text could be read from \(url.lastPathComponent)") }
-        return try await ingestText(text, title: url.lastPathComponent, format: format, notebook: notebook, url: nil, enrich: enrich, progress: progress)
+        return try await ingestText(text, title: title ?? url.lastPathComponent, format: format, notebook: notebook, url: link, enrich: enrich, progress: progress)
+    }
+
+    /// Make a web address a source of `notebook`: the page's article, a video's transcript, or the document the
+    /// address serves. The old app's `_scrape_and_ingest_background`, with the same source types ("web", "youtube").
+    @discardableResult
+    public func ingestLink(_ link: URL, notebook: String, enrich: Bool = true, progress: (@MainActor (String) -> Void)? = nil) async throws -> IngestReport {
+        let fetched = try await WebExtract.fetch(link) { s in Task { @MainActor in progress?(s) } }
+        switch fetched {
+        case .file(let file, let name):
+            defer { try? FileManager.default.removeItem(at: file.deletingLastPathComponent()) }
+            return try await ingestFile(file, notebook: notebook, title: name, link: link.absoluteString, enrich: enrich, progress: progress)
+        case .text(let title, let text, let format, _, _):
+            return try await ingestText(text, title: title, format: format, notebook: notebook, url: link.absoluteString, enrich: enrich, progress: progress)
+        }
     }
 
     /// Make `text` a source of `notebook`: chunk, budget, summarise, question, embed, store. The old app's

@@ -60,6 +60,9 @@ let package = Package(
                 .product(name: "FluidAudio", package: "FluidAudio"),
                 .product(name: "ZIPFoundation", package: "ZIPFoundation"),
             ],
+            resources: [
+                .copy("Resources"),
+            ],
             swiftSettings: [
                 .swiftLanguageMode(.v6),
             ]

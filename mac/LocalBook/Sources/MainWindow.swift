@@ -35,7 +35,7 @@ struct MainWindow: View {
             .acceptsDrops(for: model.currentNotebookId)
             // ⌘V with files on the clipboard (copied in the Finder) adds them to the notebook on screen; a text
             // field that has the focus still takes its own paste first.
-            .onPasteCommand(of: [.fileURL]) { providers in pasteFiles(providers) }
+            .onPasteCommand(of: [.fileURL, .url]) { providers in pasteFiles(providers) }
             .overlay(alignment: .bottom) { IntakeBanner().padding(.bottom, 14) }
             .inspector(isPresented: $model.showInspector) {
                 InspectorView()
@@ -79,6 +79,7 @@ struct MainWindow: View {
         .sheet(isPresented: $model.showPairing) { PairingSheet(model: model) }
         .sheet(isPresented: $model.showImport) { ImportSheet() }
         .sheet(isPresented: Binding(get: { !model.filesToPlace.isEmpty }, set: { if !$0 { model.filesToPlace = [] } })) { PlaceFilesSheet() }
+        .sheet(isPresented: Binding(get: { model.linkDraft != nil }, set: { if !$0 { model.linkDraft = nil } })) { AddLinkSheet() }
         .sheet(isPresented: $model.showVoiceNote) {
             if let id = model.currentNotebookId { NoteEditor(notebookId: id, startDictating: true).environment(model) }
         }
@@ -92,7 +93,7 @@ struct MainWindow: View {
     @MainActor private static let menuActions = Publishers.MergeMany(
         [Notification.Name.syncNow, .stopAnswer, .pairWithMac, .focusComposer, .showSources, .showStudio, .showMeetings,
          .startMeetingRecording, .newNote, .voiceNote, .toggleInspector, .makeStudio, .askQuestion, .newNotebook, .importLibrary,
-         .addSources, .openFiles]
+         .addSources, .openFiles, .addWebPage]
             .map { NotificationCenter.default.publisher(for: $0) }
     )
 
@@ -120,6 +121,7 @@ struct MainWindow: View {
         case .toggleInspector: model.showInspector.toggle()
         case .addSources: chooseFiles()
         case .openFiles: if let url = note.object as? URL { model.addFiles([url], ask: true) }
+        case .addWebPage: model.linkDraft = ""
         case .makeStudio:
             if let raw = note.object as? String, let kind = StudioItem.Kind(rawValue: raw) { model.make(kind) }
         default: break
@@ -139,16 +141,22 @@ extension MainWindow {
         model.addFiles(panel.urls)
     }
 
+    /// ⌘V with files copied in the Finder, or with a web address copied from a browser.
     @MainActor fileprivate func pasteFiles(_ providers: [NSItemProvider]) {
         Task {
-            var urls: [URL] = []
+            var files: [URL] = [], links: [URL] = []
             for p in providers {
-                if let item = try? await p.loadItem(forTypeIdentifier: UTType.fileURL.identifier) {
-                    if let url = item as? URL { urls.append(url) }
-                    else if let data = item as? Data, let url = URL(dataRepresentation: data, relativeTo: nil) { urls.append(url) }
-                }
+                let type: UTType = p.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) ? .fileURL : .url
+                guard let item = try? await p.loadItem(forTypeIdentifier: type.identifier) else { continue }
+                var url: URL?
+                if let u = item as? URL { url = u }
+                else if let data = item as? Data { url = URL(dataRepresentation: data, relativeTo: nil) }
+                else if let s = item as? String { url = URL(string: s) }
+                guard let url else { continue }
+                if url.isFileURL { files.append(url) } else if ["http", "https"].contains(url.scheme?.lowercased() ?? "") { links.append(url) }
             }
-            model.addFiles(urls)
+            model.addFiles(files)
+            model.addLinks(links)
         }
     }
 }
@@ -184,6 +192,46 @@ struct PlaceFilesSheet: View {
         }
         .padding(20).frame(width: 380)
         .onAppear { notebookId = model.currentNotebookId ?? model.library.notebooks.first?.id ?? "" }
+    }
+}
+
+/// File › Add Web Page…: one field for web addresses (one per line) and the notebook they go to.
+struct AddLinkSheet: View {
+    @Environment(AppModel.self) private var model
+    @State private var text = ""
+    @State private var notebookId = ""
+    @FocusState private var focused: Bool
+
+    private var links: [URL] { IntakeModel.links(in: text) }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Add a web page").font(.headline)
+            TextField("https://…", text: $text, axis: .vertical)
+                .lineLimit(1...4).textFieldStyle(.roundedBorder).focused($focused)
+            Text("A page, an article, a YouTube video, or a link to a PDF or document. One per line.")
+                .font(.caption).foregroundStyle(.secondary)
+            Picker("Notebook", selection: $notebookId) {
+                ForEach(model.sections) { section in
+                    Section(section.name) { ForEach(section.notebooks) { Text($0.title).tag($0.id) } }
+                }
+            }
+            HStack {
+                Spacer()
+                Button("Cancel") { model.linkDraft = nil }.keyboardShortcut(.cancelAction)
+                Button(links.count > 1 ? "Add \(links.count) Links" : "Add") {
+                    let urls = links; model.linkDraft = nil
+                    model.intake.take(links: urls, notebook: notebookId, library: model.library)
+                }
+                .keyboardShortcut(.defaultAction).disabled(links.isEmpty || notebookId.isEmpty)
+            }
+        }
+        .padding(20).frame(width: 420)
+        .onAppear {
+            text = model.linkDraft ?? ""
+            notebookId = model.currentNotebookId ?? model.library.notebooks.first?.id ?? ""
+            focused = true
+        }
     }
 }
 
@@ -236,4 +284,6 @@ extension Notification.Name {
     static let addSources = Notification.Name("LocalBook.addSources")
     /// A file opened with LocalBook (Finder, Dock icon); `object` is its URL.
     static let openFiles = Notification.Name("LocalBook.openFiles")
+    /// File › Add Web Page… (⇧⌘L).
+    static let addWebPage = Notification.Name("LocalBook.addWebPage")
 }

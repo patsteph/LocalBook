@@ -41,6 +41,10 @@ Patrick ran the parity fixture (500 chunks, 50 questions from the production lib
 
 497 items in 39 s, 0.15 ms per token. The ten top-5 disagreements are order swaps among the same passages (ranks 4 and 5), the same pattern the phone showed. The week of daily use was dropped by Patrick the same day; Phase 2 is CLOSED and the cleanup list he sends replaces it.
 
+## Phase 3, slice 4: web pages and YouTube (2026-11-17, on `dev`, untested on a Mac)
+
+Swift: `WebExtract`, `PageLoader` (WebKit + `Resources/Readability.js` + `Resources/PageText.js`), `YouTubeTranscript` (Engines); `LibraryModel.ingestLink`; the Mac's `IntakeModel.take(links:)`, `AddLinkSheet`, ⌘V with a copied address, File › Add Web Page… (⇧⌘L). Device script: drag a link from Safari's address bar onto a notebook and expect the status capsule to walk through loading, cutting, summarising, questions and embedding, then the page's title under Sources with its text in the reader (one block per line, image captions at the end); ⇧⌘L, paste a YouTube address, Add, and expect the video's real title and a transcript; drop a link to a PDF and expect the file read as a PDF. Add the same page in the old app and compare the passage counts; a gap of more than a few passages is a text diff to explain.
+
 ## Phase 3, slice 3: scanned PDFs, spreadsheets, PowerPoint (2026-11-17, on `dev`, untested on a Mac)
 
 Swift: `TextExtract` (its own file; async; heading pass from fonts; Vision for pages with no text layer), `TabularText` + `CSV` (Core) with `TabularTextTests` against `Fixtures/tabular_golden.json` (written by `scripts/ci/tabular_golden.py` with pandas and the old app's function), `XLSXReader` and `PPTXReader` over ZIPFoundation (Engines). Device script: drop a scanned PDF (a photographed page saved as PDF) and expect text under Sources; drop an .xlsx with two sheets and expect "=== Sheet:" markers and "Row N:" lines in the reader, then ask a question a row answers; drop a .pptx with speaker notes and expect "=== Slide N ===" and "Speaker Notes:" in the reader. For each, drop the same file on the old app and compare the passage counts.

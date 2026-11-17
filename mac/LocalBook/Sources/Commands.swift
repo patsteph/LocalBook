@@ -18,7 +18,7 @@ struct LocalBookCommands: Commands {
                 .keyboardShortcut("n", modifiers: [.command, .shift])
             Divider()
             Button("Add Sources…") { NotificationCenter.default.post(name: .addSources, object: nil) }.keyboardShortcut("o")
-            Button("Add Web Page…") {}.keyboardShortcut("l", modifiers: [.command, .shift]).disabled(true)
+            Button("Add Web Page…") { NotificationCenter.default.post(name: .addWebPage, object: nil) }.keyboardShortcut("l", modifiers: [.command, .shift])
             Button("Watch Folder…") {}.disabled(true)
         }
         CommandGroup(after: .importExport) {
