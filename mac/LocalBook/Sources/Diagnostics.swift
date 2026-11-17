@@ -103,7 +103,9 @@ final class ParityDiagnostics {
 struct DiagnosticsSettings: View {
     @Environment(AppModel.self) private var model
     @State private var parity = ParityDiagnostics()
+    @State private var diff = IngestionDiffDiagnostics()
     @State private var importing = false
+    @State private var importingDiff = false
 
     private var library: LibraryModel { model.library }
 
@@ -114,6 +116,7 @@ struct DiagnosticsSettings: View {
             runSection
             if parity.running || parity.progressTotal > 0 { progressSection }
             if let report = parity.report { ParityReportSection(report: report, url: parity.reportURL) }
+            IngestionDiffSection(diff: diff, library: library, choose: { importingDiff = true })
             Section("Logs") {
                 HStack {
                     Text("The app's event trace (model loads, answers, memory).").font(.callout).foregroundStyle(.secondary)
@@ -125,6 +128,9 @@ struct DiagnosticsSettings: View {
         .formStyle(.grouped)
         .fileImporter(isPresented: $importing, allowedContentTypes: [.json]) { result in
             if case .success(let url) = result { parity.openFixture(at: url) }
+        }
+        .fileImporter(isPresented: $importingDiff, allowedContentTypes: [.json]) { result in
+            if case .success(let url) = result { diff.open(url) }
         }
         .alert("Something went wrong", isPresented: Binding(get: { parity.errorMessage != nil }, set: { if !$0 { parity.errorMessage = nil } })) {
             Button("OK", role: .cancel) {}
@@ -236,4 +242,130 @@ struct ParityReportSection: View {
 
     private func fmt(_ v: Double, digits: Int = 5) -> String { v.isNaN ? "–" : v.formatted(.number.precision(.fractionLength(digits))) }
     private func pct(_ v: Double) -> String { v.isNaN ? "–" : v.formatted(.percent.precision(.fractionLength(0))) }
+}
+
+/// The Phase 3 gate's ingestion diff: the old app's `ingestion-fixture.json` beside a folder of documents, read again
+/// here and compared file by file (`LibraryModel.runIngestionDiff`).
+@MainActor @Observable
+final class IngestionDiffDiagnostics {
+    private(set) var opened: LibraryModel.IngestionDiffFixture?
+    private(set) var running = false
+    private(set) var done = 0
+    private(set) var total = 0
+    private(set) var current = ""
+    private(set) var report: IngestionDiff.Report?
+    private(set) var reportURL: URL?
+    var errorMessage: String?
+    private var task: Task<Void, Never>?
+
+    func open(_ url: URL) {
+        do {
+            opened = try LibraryModel.openIngestionFixture(url)
+            report = nil; reportURL = nil
+        } catch { errorMessage = error.localizedDescription }
+    }
+
+    func run(library: LibraryModel) {
+        guard let opened, !running else { return }
+        running = true; report = nil; done = 0; total = opened.fixture.files.count
+        task = Task { [weak self] in
+            let result = await library.runIngestionDiff(opened) { done, total, name in
+                self?.done = done; self?.total = total; self?.current = name
+            }
+            guard let self, !Task.isCancelled else { self?.running = false; return }
+            report = result
+            let stamp = Int(Date().timeIntervalSince1970)
+            let json = ParityDiagnostics.folder.appending(path: "ingestion-diff-\(stamp).json")
+            let md = ParityDiagnostics.folder.appending(path: "ingestion-diff-\(stamp).md")
+            try? result.json().write(to: json)
+            try? result.markdown().data(using: .utf8)?.write(to: md)
+            reportURL = md
+            running = false
+        }
+    }
+
+    func stop() { task?.cancel(); running = false }
+}
+
+struct IngestionDiffSection: View {
+    let diff: IngestionDiffDiagnostics
+    let library: LibraryModel
+    let choose: () -> Void
+
+    var body: some View {
+        Section {
+            if let o = diff.opened {
+                LabeledContent("Folder", value: o.folder.lastPathComponent)
+                LabeledContent("Files", value: "\(o.fixture.files.count)")
+                LabeledContent("Old app's token counter", value: o.fixture.tokenCounter)
+                LabeledContent("Made", value: o.fixture.createdAt)
+            }
+            HStack {
+                Button(diff.opened == nil ? "Open fixture…" : "Open a different fixture…", action: choose)
+                if diff.opened != nil {
+                    Button(diff.running ? "Running…" : "Compare now") { diff.run(library: library) }.disabled(diff.running)
+                    if diff.running { Button("Stop", role: .destructive) { diff.stop() } }
+                }
+            }
+            if diff.running {
+                ProgressView(value: Double(diff.done), total: Double(max(1, diff.total))) { Text(diff.current).lineLimit(1) }
+            }
+        } header: { Text("Ingestion diff · fixture from the Python Mac") } footer: {
+            Text("Made by scripts/ingestion_diff_export.py over a folder of documents on the Mac that runs the old app. This Mac reads the same files from the same folder, cuts them as it would for a notebook, and compares text and chunks. Nothing is added to the library.")
+        }
+        if let r = diff.report {
+            Section {
+                let s = r.summary
+                verdictRow("Identical chunks", value: "\(s.identical) of \(s.files)", ok: s.identical == s.files - s.failed - s.missing - s.unreadable)
+                if s.sameText > 0 { LabeledContent("Same text, cut differently", value: "\(s.sameText)") }
+                if s.close > 0 { LabeledContent("Close (≥ 95 % of lines)", value: "\(s.close)") }
+                if s.differs > 0 { LabeledContent("Differ", value: "\(s.differs)").foregroundStyle(.red) }
+                if s.failed > 0 { LabeledContent("Failed on one side", value: "\(s.failed)").foregroundStyle(.orange) }
+                if s.missing > 0 { LabeledContent("Not beside the fixture", value: "\(s.missing)") }
+                if s.unreadable > 0 { LabeledContent("No reader here yet", value: "\(s.unreadable)") }
+                if !s.identicalRate.isNaN { LabeledContent("Identical rate", value: s.identicalRate.formatted(.percent.precision(.fractionLength(0)))) }
+            } header: {
+                Label(allIdentical(r) ? "Every file identical" : "Differences to explain", systemImage: allIdentical(r) ? "checkmark.seal.fill" : "doc.text.magnifyingglass")
+                    .foregroundStyle(allIdentical(r) ? .green : .orange)
+            }
+            Section("Files, worst first") {
+                ForEach(r.files.prefix(12)) { f in
+                    LabeledContent {
+                        Text(line(f)).font(.caption).monospacedDigit().foregroundStyle(f.verdict == .identical ? .secondary : .primary)
+                    } label: { Text(f.name).lineLimit(1) }
+                }
+                if r.files.count > 12 { Text("…and \(r.files.count - 12) more in the report.").font(.caption).foregroundStyle(.secondary) }
+                if let url = diff.reportURL {
+                    HStack {
+                        Button("Open report") { NSWorkspace.shared.open(url) }
+                        Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([url]) }
+                        ShareLink("Share", item: url)
+                    }
+                }
+            }
+        }
+    }
+
+    private func allIdentical(_ r: IngestionDiff.Report) -> Bool { r.summary.identical == r.summary.files }
+
+    private func line(_ f: IngestionDiff.FileResult) -> String {
+        switch f.verdict {
+        case .identical: return "identical · \(f.pythonChunks) chunks"
+        case .sameText: return "same text · \(f.pythonChunks) vs \(f.swiftChunks) chunks"
+        case .close, .differs: return "\(f.textScore.formatted(.percent.precision(.fractionLength(0)))) lines · \(f.chunksMatched) of \(f.pythonChunks) chunks"
+        case .failedHere: return "failed here"
+        case .failedThere: return "failed in the old app"
+        case .missing: return "file missing"
+        case .unreadable: return "no reader here"
+        }
+    }
+
+    private func verdictRow(_ label: String, value: String, ok: Bool) -> some View {
+        LabeledContent {
+            HStack(spacing: 6) {
+                Text(value).monospacedDigit()
+                Image(systemName: ok ? "checkmark.circle.fill" : "xmark.circle.fill").foregroundStyle(ok ? .green : .orange)
+            }
+        } label: { Text(label) }
+    }
 }
