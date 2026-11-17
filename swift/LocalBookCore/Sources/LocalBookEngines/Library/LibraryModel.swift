@@ -76,6 +76,8 @@ public final class LibraryModel {
     }
 
     public var store: LibraryStore?
+    /// Spreadsheet and CSV sources as tables, for questions that want a count or a sum (`TabularSQL`).
+    public var tabular: TabularStore?
     public var flushingNotes = false
     public var vision: VisionEncoder?
     public enum VisionState: Equatable { case none, downloading(Double), ready, failed(String) }
@@ -102,6 +104,7 @@ public final class LibraryModel {
                 let s = try LibraryStore()
                 try await s.prepare()
                 self.store = s
+                if let t = try? TabularStore() { try? await t.prepare(); self.tabular = t }
                 await self.refresh()
             } catch { self.syncState = .failed(error.localizedDescription) }
         }
@@ -709,6 +712,18 @@ public final class LibraryModel {
         query = ""                                        // the field is empty again once the question is on its way
         defer { answering = false }
         do {
+            // A count, a sum, a comparison or a list over a spreadsheet is answered by SQL over its tables, as the
+            // old app did; anything that fails there falls through to the passages.
+            if TabularSQL.wantsStructured(question), let tabular, await tabular.hasTables(notebook: scope) {
+                answerStatus = "Asking the spreadsheet…"
+                if let table = await answerFromTables(question: question, notebook: scope) {
+                    answerText = table.answer
+                    hits = [table.hit]; answerSources = [table.hit]
+                    sourceScoreIsRelevance = false
+                    answerStatus = "Computed from \(table.hit.filename) · \(table.sql)"
+                    return
+                }
+            }
             answerStatus = "Searching notebook…"
             let t0 = Date()
             var result = try await Signpost.measure("retrieve passages") { try await retrieve(question: question, notebook: scope) }

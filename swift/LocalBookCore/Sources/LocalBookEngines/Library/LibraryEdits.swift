@@ -27,6 +27,7 @@ extension LibraryModel {
                 catch { return "The Mac couldn't delete it, so it stays. (\(error.localizedDescription))" }
             }
             try? await store.removeLocalNote(notebook: source.notebookId, sourceId: source.id)
+            try? await tabular?.delete(sourceId: source.id)
         } else {
             do { _ = try await mac("/phone/library/source/delete", ["notebook_id": source.notebookId, "source_id": source.id]) }
             catch { return "The Mac couldn't delete it, so it stays. (\(error.localizedDescription))" }

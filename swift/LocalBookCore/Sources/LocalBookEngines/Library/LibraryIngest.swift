@@ -45,8 +45,10 @@ extension LibraryModel {
         case .reference: file = url.path(percentEncoded: false)
         case .none: file = nil
         }
-        return try await ingestText(text, title: title ?? url.lastPathComponent, format: format, notebook: notebook, url: link, enrich: enrich,
-                                    sourceId: sourceId, file: file, progress: progress)
+        let report = try await ingestText(text, title: title ?? url.lastPathComponent, format: format, notebook: notebook, url: link, enrich: enrich,
+                                          sourceId: sourceId, file: file, progress: progress)
+        await indexTables(url, format: format, notebook: notebook, sourceId: sourceId, filename: title ?? url.lastPathComponent)
+        return report
     }
 
     public static func newSourceId() -> String { LibraryStore.localNotePrefix + "file-" + UUID().uuidString.lowercased() }
