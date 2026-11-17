@@ -70,7 +70,7 @@ extension LibraryModel {
             }
         }
         guard !chunks.isEmpty else { throw LibraryError.badResponse("Nothing to save: picture search isn't installed and the photo had no text.") }
-        try await store.addLocalNote(notebook: notebook, sourceId: id, title: name, kind: kind, chunks: chunks, hash: "local")
+        try await store.addLocalNote(notebook: notebook, sourceId: id, title: name, kind: kind, chunks: chunks, hash: "local", text: body)
         await refresh()
         Task { await flushNotes() }
     }

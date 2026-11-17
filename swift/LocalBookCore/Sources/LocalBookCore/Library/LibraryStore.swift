@@ -148,6 +148,8 @@ public actor LibraryStore {
             // Folders this Mac watches for new files (the old app's linked folders): read-only, polled, never twice.
             "CREATE TABLE IF NOT EXISTS watched_folders (id TEXT PRIMARY KEY, notebook_id TEXT NOT NULL, path TEXT NOT NULL, bookmark BLOB, recursive INTEGER NOT NULL DEFAULT 1, added TEXT NOT NULL, last_scan TEXT, last_report TEXT)",
             "CREATE TABLE IF NOT EXISTS watched_files (folder_id TEXT NOT NULL, path TEXT NOT NULL, mtime REAL NOT NULL, size INTEGER NOT NULL, source_id TEXT, PRIMARY KEY (folder_id, path))",
+            // A note's text as written (Markdown), kept beside its chunks so the editor opens exactly what was saved.
+            "CREATE TABLE IF NOT EXISTS note_text (notebook_id TEXT NOT NULL, source_id TEXT NOT NULL, text TEXT NOT NULL, PRIMARY KEY (notebook_id, source_id))",
         ] { try exec(sql) }
     }
 
@@ -368,10 +370,14 @@ public actor LibraryStore {
 
     public struct LocalNote: Sendable, Identifiable { public let id: String; public let notebookId: String; public let title: String; public let text: String; public let kind: String; public var hasPicture = false }
 
-    public func addLocalNote(notebook: String, sourceId: String, title: String, kind: String, chunks: [LibraryChunk], hash: String) throws {
+    public func addLocalNote(notebook: String, sourceId: String, title: String, kind: String, chunks: [LibraryChunk], hash: String, text: String? = nil) throws {
         dropMatrix()
         try exec("BEGIN IMMEDIATE")
         do {
+            if let text {
+                let t = try statement("INSERT OR REPLACE INTO note_text(notebook_id, source_id, text) VALUES (?,?,?)")
+                bind(t, 1, notebook); bind(t, 2, sourceId); bind(t, 3, text); sqlite3_step(t); sqlite3_finalize(t)
+            }
             let insert = try statement("""
                 INSERT OR REPLACE INTO chunks(notebook_id, source_id, chunk_index, text, summary, filename, source_type, vector)
                 VALUES (?,?,?,?,?,?,?,?)
@@ -430,13 +436,16 @@ public actor LibraryStore {
 
     public func localNotes() -> [LocalNote] {
         guard let s = try? statement("""
-            SELECT notebook_id, source_id, filename,
-                   COALESCE(GROUP_CONCAT(CASE WHEN chunk_index < \(Self.pictureIndex) THEN text END, char(10)), ''),
-                   MIN(source_type), MAX(chunk_index >= \(Self.pictureIndex))
-            FROM (SELECT * FROM chunks c WHERE c.source_id LIKE 'local:%'
-                    AND NOT EXISTS (SELECT 1 FROM source_text t WHERE t.notebook_id = c.notebook_id AND t.source_id = c.source_id)
-                  ORDER BY notebook_id, source_id, chunk_index)
-            GROUP BY notebook_id, source_id ORDER BY source_id DESC
+            SELECT n.notebook_id, n.source_id, n.filename, COALESCE(w.text, n.joined), n.kind, n.pic
+            FROM (SELECT notebook_id, source_id, filename,
+                         COALESCE(GROUP_CONCAT(CASE WHEN chunk_index < \(Self.pictureIndex) THEN text END, char(10)), '') AS joined,
+                         MIN(source_type) AS kind, MAX(chunk_index >= \(Self.pictureIndex)) AS pic
+                  FROM (SELECT * FROM chunks c WHERE c.source_id LIKE 'local:%'
+                          AND NOT EXISTS (SELECT 1 FROM source_text t WHERE t.notebook_id = c.notebook_id AND t.source_id = c.source_id)
+                        ORDER BY notebook_id, source_id, chunk_index)
+                  GROUP BY notebook_id, source_id) n
+            LEFT JOIN note_text w ON w.notebook_id = n.notebook_id AND w.source_id = n.source_id
+            ORDER BY n.source_id DESC
             """) else { return [] }
         defer { sqlite3_finalize(s) }
         var out: [LocalNote] = []
@@ -453,11 +462,13 @@ public actor LibraryStore {
         dropMatrix()
         let s = try statement("DELETE FROM chunks WHERE notebook_id=? AND source_id=? AND chunk_index < ?")
         bind(s, 1, notebook); bind(s, 2, sourceId); sqlite3_bind_int64(s, 3, Int64(Self.pictureIndex)); sqlite3_step(s); sqlite3_finalize(s)
+        let w = try statement("DELETE FROM note_text WHERE notebook_id=? AND source_id=?")
+        bind(w, 1, notebook); bind(w, 2, sourceId); sqlite3_step(w); sqlite3_finalize(w)
     }
 
     public func removeLocalNote(notebook: String, sourceId: String) throws {
         dropMatrix()
-        for t in ["chunks", "sources", "source_text"] {
+        for t in ["chunks", "sources", "source_text", "note_text"] {
             let s = try statement("DELETE FROM \(t) WHERE notebook_id=? AND source_id=?")
             bind(s, 1, notebook); bind(s, 2, sourceId); sqlite3_step(s); sqlite3_finalize(s)
         }
@@ -699,7 +710,7 @@ public actor LibraryStore {
 
     public func wipe() throws {
         dropMatrix()
-        for t in ["chunks", "sources", "notebooks", "source_text", "imported_notes", "topics"] { try exec("DELETE FROM \(t)") }
+        for t in ["chunks", "sources", "notebooks", "source_text", "note_text", "imported_notes", "topics"] { try exec("DELETE FROM \(t)") }
         try exec("DELETE FROM meta WHERE key LIKE 'personal:%'")        // profile, memory, entities: all of it goes
         try exec("DELETE FROM meta WHERE key LIKE 'imported:%'")
         try exec("DELETE FROM meta WHERE key LIKE 'untagged:%'")

@@ -172,15 +172,20 @@ extension NSImage {
 }
 
 /// Write, dictate, or add a picture or a recording to a note in a notebook. File › New Note (⇧⌘N); Record › Voice
-/// Note (⇧⌘V) opens it with dictation already listening.
+/// Note (⇧⌘V) opens it with dictation already listening. With `editing`, the same sheet rewrites a note made here.
+///
+/// The text is Markdown, styled in place by `NoteTextView` (what the old app's BlockNote editor saved for search), with
+/// a formatting bar and the usual shortcuts; what is saved is exactly what was typed.
 struct NoteEditor: View {
     let notebookId: String
     var startDictating = false
     var startText = ""
+    var editing: LibraryStore.LocalNote? = nil
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
     @State private var title = ""
     @State private var text = ""
+    @State private var bridge = NoteEditorBridge()
     @State private var dictation = Dictation()
     @State private var dictationBase = ""
     @State private var reading = false
@@ -194,41 +199,19 @@ struct NoteEditor: View {
 
     private var library: LibraryModel { model.library }
     private var notebookTitle: String { library.notebooks.first { $0.id == notebookId }?.title ?? "Notebook" }
+    private var words: Int { MarkdownEdit.wordCount(text) }
 
     var body: some View {
         VStack(spacing: 0) {
-            Form {
-                TextField("Title (optional)", text: $title)
-                TextEditor(text: $text).frame(minHeight: 220).font(.body)
-                    .overlay(alignment: .topLeading) {
-                        if text.isEmpty { Text("Write, dictate, or add a picture or a recording…").foregroundStyle(.tertiary).padding(.top, 8).padding(.leading, 5).allowsHitTesting(false) }
-                    }
-                Text("Saved in “\(notebookTitle)” and searchable straight away. It is sent to your paired Mac when it is reachable and comes back through sync.")
-                    .font(.footnote).foregroundStyle(.secondary)
-                if let photo {
-                    HStack(spacing: 12) {
-                        Image(decorative: photo.image, scale: 1).resizable().scaledToFill().frame(width: 64, height: 64).clipShape(RoundedRectangle(cornerRadius: 8))
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Picture attached").font(.subheadline)
-                            Text(library.vision != nil ? "Searchable by what it shows." : "Turn on picture search in Settings › Models to find it by what it shows.")
-                                .font(.caption).foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                        Button("Remove", role: .destructive) { self.photo = nil }.font(.footnote)
-                    }
-                }
-                if reading { HStack { ProgressView().controlSize(.small); Text("Reading the picture…").font(.footnote) } }
-                if transcriber.busy {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text(transcriber.status).font(.footnote)
-                        ProgressView(value: min(1, max(0.02, transcriber.progress)))
-                        Button("Stop", role: .cancel) { transcriber.cancel() }.font(.footnote)
-                    }
-                }
-                if let msg = error ?? dictation.failure { Text(msg).font(.footnote).foregroundStyle(.orange) }
-            }
-            .formStyle(.grouped)
+            TextField("Title (optional)", text: $title)
+                .textFieldStyle(.plain).font(.title2.weight(.semibold))
+                .padding(.horizontal, 20).padding(.top, 16).padding(.bottom, 10)
+            formatBar
             Divider()
+            NoteTextView(text: $text, bridge: bridge, placeholder: "Write, dictate, or add a picture or a recording…")
+                .frame(minHeight: 240, maxHeight: .infinity)
+            Divider()
+            extras
             HStack(spacing: 10) {
                 Button {
                     dictationBase = text.isEmpty ? "" : text + "\n"
@@ -238,14 +221,15 @@ struct NoteEditor: View {
                 Button { dictation.stop(); pickPicture = true } label: { Label("Picture…", systemImage: "photo") }
                 Button { pickMedia = true } label: { Label("Audio or Video…", systemImage: "waveform") }.disabled(transcriber.busy)
                 Spacer()
+                Text("\(words) \(words == 1 ? "word" : "words")").font(.footnote).foregroundStyle(.secondary).monospacedDigit()
                 Button("Cancel") { dictation.stop(); dismiss() }.keyboardShortcut(.cancelAction)
-                Button("Save") { Task { await save() } }
+                Button(editing == nil ? "Save" : "Save Changes") { Task { await save() } }
                     .buttonStyle(.borderedProminent).keyboardShortcut("s", modifiers: .command)
                     .disabled(saving || (text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && photo == nil))
             }
             .padding(12)
         }
-        .frame(width: 620, height: 520)
+        .frame(minWidth: 660, idealWidth: 760, minHeight: 560, idealHeight: 680)
         .fileImporter(isPresented: $pickMedia, allowedContentTypes: [.audio, .movie]) { result in
             guard case .success(let picked) = result else { return }
             let scoped = picked.startAccessingSecurityScopedResource()
@@ -268,8 +252,75 @@ struct NoteEditor: View {
                 if !found.isEmpty { text = text.isEmpty ? found : text + "\n\n" + found }
             }
         }
-        .task { text = startText; if startDictating { dictation.toggle { spoken in text = spoken } } }
+        .task {
+            if let editing { title = editing.title; text = editing.text } else { text = startText }
+            if startDictating { dictation.toggle { spoken in text = spoken } }
+        }
         .onDisappear { dictation.stop() }
+    }
+
+    /// Headings, emphasis, lists, quote, code and link. Shortcuts as the common editors have them: ⌘B, ⌘I, ⌘K,
+    /// ⇧⌘7 numbered, ⇧⌘8 bulleted, ⇧⌘9 checklist.
+    private var formatBar: some View {
+        HStack(spacing: 2) {
+            Menu {
+                Button("Heading 1") { bridge.perform(.heading(1)) }
+                Button("Heading 2") { bridge.perform(.heading(2)) }
+                Button("Heading 3") { bridge.perform(.heading(3)) }
+                Divider()
+                Button("Paragraph") { bridge.perform(.heading(0)) }
+            } label: { Image(systemName: "textformat.size") }
+                .menuStyle(.borderlessButton).frame(width: 44).help("Heading")
+            formatButton("bold", "Bold (⌘B)") { bridge.perform(.bold) }.keyboardShortcut("b", modifiers: .command)
+            formatButton("italic", "Italic (⌘I)") { bridge.perform(.italic) }.keyboardShortcut("i", modifiers: .command)
+            formatButton("chevron.left.forwardslash.chevron.right", "Code") { bridge.perform(.code) }
+            Divider().frame(height: 16).padding(.horizontal, 4)
+            formatButton("list.bullet", "Bulleted list (⇧⌘8)") { bridge.perform(.bullets) }.keyboardShortcut("8", modifiers: [.command, .shift])
+            formatButton("list.number", "Numbered list (⇧⌘7)") { bridge.perform(.numbers) }.keyboardShortcut("7", modifiers: [.command, .shift])
+            formatButton("checklist", "Checklist (⇧⌘9)") { bridge.perform(.checklist) }.keyboardShortcut("9", modifiers: [.command, .shift])
+            formatButton("text.quote", "Quote") { bridge.perform(.quote) }
+            Divider().frame(height: 16).padding(.horizontal, 4)
+            formatButton("link", "Link (⌘K)") { bridge.link() }.keyboardShortcut("k", modifiers: .command)
+            Spacer()
+            Text(notebookTitle).font(.footnote).foregroundStyle(.secondary).lineLimit(1)
+        }
+        .buttonStyle(.borderless)
+        .padding(.horizontal, 14).padding(.bottom, 8)
+    }
+
+    private func formatButton(_ symbol: String, _ help: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) { Image(systemName: symbol).frame(width: 26, height: 22) }.help(help)
+    }
+
+    @ViewBuilder private var extras: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if let photo {
+                HStack(spacing: 12) {
+                    Image(decorative: photo.image, scale: 1).resizable().scaledToFill().frame(width: 48, height: 48).clipShape(RoundedRectangle(cornerRadius: 8))
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Picture attached").font(.subheadline)
+                        Text(library.vision != nil ? "Searchable by what it shows." : "Turn on picture search in Settings › Models to find it by what it shows.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button("Remove", role: .destructive) { self.photo = nil }.font(.footnote)
+                }
+            }
+            if reading { HStack { ProgressView().controlSize(.small); Text("Reading the picture…").font(.footnote) } }
+            if transcriber.busy {
+                HStack {
+                    Text(transcriber.status).font(.footnote)
+                    ProgressView(value: min(1, max(0.02, transcriber.progress)))
+                    Button("Stop", role: .cancel) { transcriber.cancel() }.font(.footnote)
+                }
+            }
+            if let msg = error ?? dictation.failure { Text(msg).font(.footnote).foregroundStyle(.orange) }
+            if editing == nil {
+                Text("Saved in “\(notebookTitle)” and searchable straight away. It is sent to your paired Mac when it is reachable and comes back through sync.")
+                    .font(.footnote).foregroundStyle(.secondary)
+            }
+        }
+        .padding(.horizontal, 14).padding(.vertical, 8)
     }
 
     private func transcribe(_ url: URL, label: String) async {
@@ -288,8 +339,9 @@ struct NoteEditor: View {
     private func save() async {
         dictation.stop(); saving = true; defer { saving = false }
         do {
-            try await library.addNote(notebook: notebookId, title: title, text: text, kind: fromPhoto ? "image" : "note",
-                                      photo: photo.map { ($0.image, $0.jpeg) })
+            let kind = editing?.kind ?? (fromPhoto ? "image" : "note")
+            try await library.addNote(notebook: notebookId, title: title, text: text, kind: kind,
+                                      photo: photo.map { ($0.image, $0.jpeg) }, replacing: editing?.id)
             NotificationCenter.default.post(name: .librarySynced, object: nil)
             dismiss()
         } catch { self.error = "Couldn't save: \(error.localizedDescription)" }
@@ -304,6 +356,8 @@ struct NotesPane: View {
     @State private var sent: Set<String> = []
     @State private var selected: String?
     @State private var writing = false
+    @State private var editingNote: LibraryStore.LocalNote?
+    @State private var filter = ""
     @State private var startText = ""
     @State private var confirmDelete: LibraryStore.LocalNote?
     /// The old app's Canvas notes for the current notebook, moved over by the import. Read here, kept as they were.
@@ -311,6 +365,14 @@ struct NotesPane: View {
 
     private var library: LibraryModel { model.library }
     private var opened: LibraryStore.LocalNote? { notes.first { $0.id == selected } }
+    private var shown: [LibraryStore.LocalNote] {
+        let q = filter.trimmingCharacters(in: .whitespaces)
+        return q.isEmpty ? notes : notes.filter { $0.title.localizedCaseInsensitiveContains(q) || $0.text.localizedCaseInsensitiveContains(q) }
+    }
+    private var shownImported: [LibraryStore.ImportedNote] {
+        let q = filter.trimmingCharacters(in: .whitespaces)
+        return q.isEmpty ? imported : imported.filter { $0.title.localizedCaseInsensitiveContains(q) || $0.text.localizedCaseInsensitiveContains(q) }
+    }
     private var openedImported: LibraryStore.ImportedNote? { imported.first { $0.id == selected } }
 
     var body: some View {
@@ -330,6 +392,7 @@ struct NotesPane: View {
         .sheet(isPresented: $writing) {
             if let id = library.scopeToNotebook { NoteEditor(notebookId: id, startText: startText).environment(model) }
         }
+        .sheet(item: $editingNote) { n in NoteEditor(notebookId: n.notebookId, editing: n).environment(model) }
         .confirmationDialog("Delete this note?", isPresented: Binding(get: { confirmDelete != nil }, set: { if !$0 { confirmDelete = nil } }), titleVisibility: .visible) {
             Button("Delete", role: .destructive) {
                 if let n = confirmDelete { Task { await library.removeNote(n); await load() } }
@@ -348,11 +411,18 @@ struct NotesPane: View {
                     .help("New note in the current notebook (⇧⌘N)")
             }
             .padding(12)
+            HStack(spacing: 6) {
+                Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                TextField("Filter notes", text: $filter).textFieldStyle(.plain)
+                if !filter.isEmpty { Button { filter = "" } label: { Image(systemName: "xmark.circle.fill") }.buttonStyle(.borderless).foregroundStyle(.secondary) }
+            }
+            .padding(.horizontal, 12).padding(.bottom, 8)
             Divider()
             List(selection: $selected) {
                 if let why = library.noteSendProblem { Label(why, systemImage: "wifi.slash").font(.footnote).foregroundStyle(.orange) }
                 if notes.isEmpty { Text("No notes yet. Click New Note, or press ⇧⌘N.").font(.callout).foregroundStyle(.secondary) }
-                ForEach(notes) { n in
+                else if shown.isEmpty, shownImported.isEmpty { Text("Nothing matches “\(filter)”.").font(.callout).foregroundStyle(.secondary) }
+                ForEach(shown) { n in
                     HStack(alignment: .top, spacing: 10) {
                         if n.hasPicture, let image = NSImage(contentsOfFile: LibraryModel.photoURL(n.id).path) {
                             Image(nsImage: image).resizable().scaledToFill().frame(width: 40, height: 40).clipShape(RoundedRectangle(cornerRadius: 6))
@@ -366,11 +436,14 @@ struct NotesPane: View {
                         }
                     }
                     .tag(n.id)
-                    .contextMenu { Button("Delete…", role: .destructive) { confirmDelete = n } }
+                    .contextMenu {
+                        Button("Edit…") { editingNote = n }.disabled(sent.contains(n.id))
+                        Button("Delete…", role: .destructive) { confirmDelete = n }
+                    }
                 }
-                if !imported.isEmpty {
+                if !shownImported.isEmpty {
                     Section("From the LocalBook on this Mac") {
-                        ForEach(imported) { n in
+                        ForEach(shownImported) { n in
                             HStack(alignment: .top, spacing: 10) {
                                 Image(systemName: "note.text").foregroundStyle(.secondary).frame(width: 22)
                                 VStack(alignment: .leading, spacing: 2) {
@@ -397,6 +470,9 @@ struct NotesPane: View {
                         Text(library.notebooks.first { $0.id == n.notebookId }?.title ?? "").font(.caption).foregroundStyle(.secondary)
                     }
                     Spacer()
+                    Button { editingNote = n } label: { Image(systemName: "pencil") }
+                        .help(sent.contains(n.id) ? "This note is on your paired Mac now; edit it there." : "Edit (⌘E)")
+                        .disabled(sent.contains(n.id)).keyboardShortcut("e", modifiers: .command)
                     Button { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(n.text, forType: .string) } label: { Image(systemName: "doc.on.doc") }.help("Copy text")
                     ShareLink(item: n.text) { Image(systemName: "square.and.arrow.up") }.help("Share")
                 }
@@ -408,7 +484,7 @@ struct NotesPane: View {
                         if n.hasPicture, let image = NSImage(contentsOfFile: LibraryModel.photoURL(n.id).path) {
                             Image(nsImage: image).resizable().scaledToFit().frame(maxHeight: 360).clipShape(RoundedRectangle(cornerRadius: 10))
                         }
-                        Text(n.text).textSelection(.enabled).lineSpacing(3)
+                        Text(AnswerText.render(n.text)).textSelection(.enabled).lineSpacing(3)
                     }
                     .frame(maxWidth: 760, alignment: .leading).padding(20).frame(maxWidth: .infinity)
                 }
