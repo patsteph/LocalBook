@@ -311,7 +311,7 @@ struct IngestionDiffSection: View {
                 ProgressView(value: Double(diff.done), total: Double(max(1, diff.total))) { Text(diff.current).lineLimit(1) }
             }
         } header: { Text("Ingestion diff · fixture from the Python Mac") } footer: {
-            Text("Made by scripts/ingestion_diff_export.py over a folder of documents on the Mac that runs the old app. This Mac reads the same files from the same folder, cuts them as it would for a notebook, and compares text and chunks. Nothing is added to the library.")
+            Text("Made by scripts/ingestion_diff_export.py on the Mac that runs the old app, over a folder of documents or a list of web addresses. This Mac reads the same files from the same folder (or the same addresses), cuts them as it would for a notebook, and compares text and chunks. Nothing is added to the library.")
         }
         if let r = diff.report {
             Section {

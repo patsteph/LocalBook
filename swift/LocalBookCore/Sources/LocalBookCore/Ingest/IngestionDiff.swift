@@ -30,6 +30,9 @@ public enum IngestionDiff {
             public let text: String?
             public let chunks: [String]?
             public let error: String?
+            /// Set for the web diff: the address the old app read, and the title it chunked under.
+            public var url: String? = nil
+            public var title: String? = nil
         }
 
         public static func load(_ data: Data) throws -> Fixture {

@@ -49,7 +49,20 @@ extension LibraryModel {
             progress?(i, total, file.name)
             let url = folder.appending(path: file.name)
             let here: IngestionDiff.Here
-            if !FileManager.default.fileExists(atPath: url.path) {
+            if let address = file.url, let link = URL(string: address) {
+                // The web diff: the address is read here as `ingestLink` would, and chunked as the old app chunked
+                // web sources (type "web" or "youtube", the title as the filename).
+                do {
+                    let (title, text) = try await Self.webText(link)
+                    let raw = Chunker.chunks(text: text, sourceType: file.format, filename: title)
+                    let chunks = TokenBudget.enforce(raw, budget: opened.fixture.tokenBudget, count: count)
+                    here = .read(text: text, chunks: chunks)
+                } catch is CancellationError {
+                    break
+                } catch {
+                    here = .failed(error.localizedDescription)
+                }
+            } else if !FileManager.default.fileExists(atPath: url.path) {
                 here = .missing
             } else if !TextExtract.canRead(url) {
                 here = .unreadable
@@ -71,6 +84,17 @@ extension LibraryModel {
         }
         progress?(total, total, "")
         return IngestionDiff.Report(fixture: opened.fixture, files: results, swiftTokenCounter: counterName, device: Self.deviceLine)
+    }
+
+    /// A web address as text: the page or transcript, or the downloaded document read by `TextExtract`.
+    nonisolated static func webText(_ link: URL) async throws -> (title: String, text: String) {
+        switch try await WebExtract.fetch(link) {
+        case .text(let title, let text, _, _, _):
+            return (title, text)
+        case .file(let file, let name):
+            defer { try? FileManager.default.removeItem(at: file.deletingLastPathComponent()) }
+            return (name, try await TextExtract.text(from: file))
+        }
     }
 
     nonisolated static var deviceLine: String { "\(DeviceDescription.userName) (\(DeviceDescription.model), \(DeviceDescription.system))" }

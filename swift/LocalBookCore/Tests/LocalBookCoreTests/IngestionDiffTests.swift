@@ -13,14 +13,18 @@ struct IngestionDiffTests {
     {"format": "localbook-ingestion-fixture/1", "created_at": "2026-11-17T12:00:00+00:00", "folder": "set", "recursive": false,
      "python": "3.12.1", "token_counter": "tokenizer", "token_budget": 400,
      "files": [{"name": "a.txt", "format": "txt", "bytes": 5, "sha256": "x", "text": "Hello", "chunks": ["Hello"]},
-               {"name": "b.pdf", "format": "pdf", "bytes": 9, "sha256": "y", "error": "ValueError: no text"}]}
+               {"name": "b.pdf", "format": "pdf", "bytes": 9, "sha256": "y", "error": "ValueError: no text"},
+               {"name": "https://x.y/p", "url": "https://x.y/p", "title": "P", "format": "web", "bytes": 2, "sha256": "z", "text": "Hi", "chunks": ["Hi"]}]}
     """
 
     @Test("the fixture the Python script writes decodes, and another format is refused")
     func decode() throws {
         let f = try IngestionDiff.Fixture.load(Data(Self.fixtureJSON.utf8))
-        #expect(f.files.count == 2)
+        #expect(f.files.count == 3)
         #expect(f.files[0].chunks == ["Hello"])
+        #expect(f.files[0].url == nil)
+        #expect(f.files[2].url == "https://x.y/p")
+        #expect(f.files[2].title == "P")
         #expect(f.files[1].error?.hasPrefix("ValueError") == true)
         #expect(f.tokenBudget == 400)
         let other = Self.fixtureJSON.replacingOccurrences(of: "ingestion-fixture/1", with: "parity-fixture/1")

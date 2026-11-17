@@ -15,6 +15,14 @@ Nothing is written anywhere but that one fixture file, no notebook is touched an
 budget uses the embedder's tokenizer when it is in the local Hugging Face cache, the character estimate otherwise;
 the fixture says which). Audio, video and pictures are skipped: their text comes from models, not readers, and the
 diff is about the readers.
+
+The 30-URL web diff uses the same fixture. Point the script at a text file of addresses (one per line, ``#`` starts
+a comment) and it reads each with the old app's scraper (Playwright + trafilatura, YouTube transcripts, remote
+documents), chunks the text as a web source, and writes the fixture beside the list::
+
+    python ../scripts/ingestion_diff_export.py ~/Documents/LocalBook-diff-set/urls.txt
+
+The Swift Mac opens that fixture the same way and reads each address itself.
 """
 import asyncio
 import datetime as dt
@@ -89,16 +97,59 @@ async def read_folder(folder: Path, recursive: bool) -> dict:
     }
 
 
+async def read_urls(listing: Path) -> dict:
+    from services.web_scraper import WebScraper
+    urls = [ln.strip() for ln in listing.read_text(encoding="utf-8").splitlines()]
+    urls = [u for u in urls if u and not u.startswith("#")]
+    scraper = WebScraper()
+    files = []
+    for url in urls:                                       # one at a time, so the old app's rate limits are not tripped
+        print(f"[ingestion-diff] {url}")
+        result = (await scraper.scrape_urls([url]))[0]
+        source_type = "youtube" if scraper._is_youtube_url(url) else "web"
+        entry = {"name": url, "url": url, "format": source_type, "bytes": 0, "sha256": ""}
+        if result.get("success") and (result.get("text") or "").strip():
+            text = result["text"]
+            title = result.get("title") or url
+            entry.update({
+                "title": title,
+                "bytes": len(text.encode("utf-8")),
+                "sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+                "text": text,
+                "chunks": rag_chunking.chunk_text_smart(text, source_type, title),
+            })
+            print(f"[ingestion-diff]   {title!r}: {len(text):,} characters, {len(entry['chunks'])} chunks")
+        else:
+            entry["error"] = result.get("error") or "no text"
+            print(f"[ingestion-diff]   failed: {entry['error']}")
+        files.append(entry)
+    return {
+        "format": FORMAT,
+        "created_at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
+        "folder": listing.parent.name,
+        "recursive": False,
+        "python": platform.python_version(),
+        "token_counter": token_counter_name(),
+        "token_budget": max(32, 512 - token_budget.ENRICHMENT_RESERVE_TOKENS),
+        "files": files,
+    }
+
+
 def main() -> int:
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     if len(args) != 1:
         print(__doc__)
         return 2
-    folder = Path(os.path.expanduser(args[0])).resolve()
-    if not folder.is_dir():
-        print(f"{folder} is not a folder")
+    target = Path(os.path.expanduser(args[0])).resolve()
+    if target.is_file():
+        fixture = asyncio.run(read_urls(target))
+        folder = target.parent
+    elif target.is_dir():
+        folder = target
+        fixture = asyncio.run(read_folder(folder, recursive="--recursive" in sys.argv))
+    else:
+        print(f"{target} is neither a folder nor a list of addresses")
         return 2
-    fixture = asyncio.run(read_folder(folder, recursive="--recursive" in sys.argv))
     out = folder / FIXTURE_NAME
     with open(out, "w", encoding="utf-8") as f:
         json.dump(fixture, f, indent=1, ensure_ascii=False)
