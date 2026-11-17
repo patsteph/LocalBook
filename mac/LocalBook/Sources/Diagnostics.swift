@@ -105,6 +105,8 @@ struct DiagnosticsSettings: View {
     @State private var parity = ParityDiagnostics()
     @State private var diff = IngestionDiffDiagnostics()
     @State private var golden = VisualGoldenDiagnostics()
+    @State private var gate = CitationGateDiagnostics()
+    @State private var importingGate = false
     @State private var importing = false
     @State private var importingDiff = false
 
@@ -118,6 +120,7 @@ struct DiagnosticsSettings: View {
             if parity.running || parity.progressTotal > 0 { progressSection }
             if let report = parity.report { ParityReportSection(report: report, url: parity.reportURL) }
             IngestionDiffSection(diff: diff, library: library, choose: { importingDiff = true })
+            CitationGateSection(gate: gate, library: library, choose: { importingGate = true })
             VisualGoldenSection(golden: golden, library: library)
             Section("Logs") {
                 HStack {
@@ -134,6 +137,12 @@ struct DiagnosticsSettings: View {
         .fileImporter(isPresented: $importingDiff, allowedContentTypes: [.json]) { result in
             if case .success(let url) = result { diff.open(url) }
         }
+        .fileImporter(isPresented: $importingGate, allowedContentTypes: [.json]) { result in
+            if case .success(let url) = result { gate.open(url) }
+        }
+        .alert("Citation gate", isPresented: Binding(get: { gate.errorMessage != nil }, set: { if !$0 { gate.errorMessage = nil } })) {
+            Button("OK", role: .cancel) {}
+        } message: { Text(gate.errorMessage ?? "") }
         .alert("Something went wrong", isPresented: Binding(get: { parity.errorMessage != nil }, set: { if !$0 { parity.errorMessage = nil } })) {
             Button("OK", role: .cancel) {}
         } message: { Text(parity.errorMessage ?? "") }
