@@ -139,5 +139,5 @@ extension Data {
     func i16(_ at: Int) -> Int16 { Int16(bitPattern: u16(at)) }
     func u32(_ at: Int) -> UInt32 { UInt32(u16(at)) | UInt32(u16(at + 2)) << 16 }
     func f64(_ at: Int) -> Double { Double(bitPattern: UInt64(u32(at)) | UInt64(u32(at + 4)) << 32) }
-    func sub(_ at: Int, _ count: Int) -> Data { Data(self[(startIndex + at)..<(startIndex + min(at + count, self.count))]) }
+    func sub(_ at: Int, _ count: Int) -> Data { Data(self[(startIndex + at)..<(startIndex + Swift.min(at + count, self.count))]) }
 }
