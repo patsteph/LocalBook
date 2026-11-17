@@ -37,20 +37,29 @@ public enum TabularText {
     /// Strings pandas reads as missing.
     static let missing: Set<String> = ["", "#N/A", "#N/A N/A", "#NA", "-1.#IND", "-1.#QNAN", "-NaN", "-nan", "1.#IND", "1.#QNAN", "<NA>", "N/A", "NA", "NULL", "NaN", "None", "n/a", "nan", "null"]
 
-    enum Kind { case integer, float, text }
+    /// `typed` is a column pandas held as bool or datetime (an xls date cell, a True/False cell): neither a label nor a
+    /// value in the sentences, printed as it came in the rows.
+    enum Kind { case integer, float, text, typed }
 
     /// pandas' dtype for a column of CSV cells: int64 when every cell is a whole number, float64 when every present cell
     /// is a number and at least one is missing or has a fraction, object otherwise.
     static func kind(of cells: [String]) -> Kind {
-        var anyMissing = false, anyFraction = false
+        var anyMissing = false, anyFraction = false, anyNumber = false, anyTyped = false
         for c in cells {
             let t = c.trimmingCharacters(in: .whitespaces)
             if missing.contains(t) { anyMissing = true; continue }
-            if Int64(t) != nil { continue }
-            if let d = Double(t), d.isFinite { anyFraction = true; continue }
+            if Int64(t) != nil { anyNumber = true; continue }
+            if let d = Double(t), d.isFinite { anyNumber = true; anyFraction = true; continue }
+            if t == "True" || t == "False" || isDateTime(t) { anyTyped = true; continue }
             return .text
         }
+        if anyTyped { return anyNumber ? .text : .typed }                 // numbers mixed with bools or dates: object
         return (anyMissing || anyFraction) ? .float : .integer
+    }
+
+    /// The shape `XLSReader` gives a date cell, which pandas read as a Timestamp.
+    static func isDateTime(_ t: String) -> Bool {
+        t.range(of: "^\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}$", options: .regularExpression) != nil
     }
 
     /// `str(cell)` as pandas would have held it.
@@ -60,14 +69,14 @@ public enum TabularText {
         switch kind {
         case .integer: return Int64(t).map { String($0) } ?? t
         case .float: return Double(t).map { "\($0)" } ?? t
-        case .text: return cell
+        case .text, .typed: return cell
         }
     }
 
     /// Numeric when the frame's column would be int64 or float64 *after* `fillna('')`: a column with a missing cell
     /// became object there, so only a complete numeric column counts.
     static func numericDtype(_ cells: [String], kind: Kind) -> Bool {
-        kind != .text && !cells.contains { missing.contains($0.trimmingCharacters(in: .whitespaces)) }
+        (kind == .integer || kind == .float) && !cells.contains { missing.contains($0.trimmingCharacters(in: .whitespaces)) }
     }
 
     static func looksLikeValue(_ name: String) -> Bool {

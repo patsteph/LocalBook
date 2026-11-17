@@ -23,7 +23,7 @@ final class IntakeModel {
     struct Report: Equatable { var notes = 0; var sources = 0; var queued = 0; var failed: [String] = [] }
 
     private(set) var working = false
-    private(set) var status = ""
+    var status = ""                                  // set by the folder scan too
     private(set) var lastReport: Report?
     private(set) var reportShownAt = Date.distantPast
 

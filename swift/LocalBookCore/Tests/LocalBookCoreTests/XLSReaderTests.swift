@@ -22,8 +22,8 @@ struct XLSReaderTests {
     }
 
     @Test func rkNumbers() {
-        #expect(XLSReader.Reader.rk(0x0000_001C) == 7)              // 7 << 2 | int flag
-        #expect(XLSReader.Reader.rk(0x0000_001D) == 0.07)           // same, divided by 100
+        #expect(XLSReader.Reader.rk(0x0000_001E) == 7)              // 7 << 2 | int flag
+        #expect(XLSReader.Reader.rk(0x0000_001F) == 0.07)           // same, divided by 100
         #expect(XLSReader.Reader.rk(0x3FF8_0000) == 1.5)            // top of the double 1.5
         #expect(XLSReader.Reader.rk(UInt32(bitPattern: -4 | 2)) == -1)
     }
