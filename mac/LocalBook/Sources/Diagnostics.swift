@@ -104,6 +104,7 @@ struct DiagnosticsSettings: View {
     @Environment(AppModel.self) private var model
     @State private var parity = ParityDiagnostics()
     @State private var diff = IngestionDiffDiagnostics()
+    @State private var golden = VisualGoldenDiagnostics()
     @State private var importing = false
     @State private var importingDiff = false
 
@@ -117,6 +118,7 @@ struct DiagnosticsSettings: View {
             if parity.running || parity.progressTotal > 0 { progressSection }
             if let report = parity.report { ParityReportSection(report: report, url: parity.reportURL) }
             IngestionDiffSection(diff: diff, library: library, choose: { importingDiff = true })
+            VisualGoldenSection(golden: golden, library: library)
             Section("Logs") {
                 HStack {
                     Text("The app's event trace (model loads, answers, memory).").font(.callout).foregroundStyle(.secondary)
@@ -135,6 +137,9 @@ struct DiagnosticsSettings: View {
         .alert("Something went wrong", isPresented: Binding(get: { parity.errorMessage != nil }, set: { if !$0 { parity.errorMessage = nil } })) {
             Button("OK", role: .cancel) {}
         } message: { Text(parity.errorMessage ?? "") }
+        .alert("Visual golden set", isPresented: Binding(get: { golden.errorMessage != nil }, set: { if !$0 { golden.errorMessage = nil } })) {
+            Button("OK", role: .cancel) {}
+        } message: { Text(golden.errorMessage ?? "") }
     }
 
     private var fixtureSection: some View {
