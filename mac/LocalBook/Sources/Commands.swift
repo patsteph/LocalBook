@@ -20,6 +20,7 @@ struct LocalBookCommands: Commands {
             Button("Add Sources…") { NotificationCenter.default.post(name: .addSources, object: nil) }.keyboardShortcut("o")
             Button("Add Web Page…") { NotificationCenter.default.post(name: .addWebPage, object: nil) }.keyboardShortcut("l", modifiers: [.command, .shift])
             Button("Watch Folder…") { NotificationCenter.default.post(name: .watchFolder, object: nil) }
+            Button("Find Sources on the Web…") { NotificationCenter.default.post(name: .findSources, object: nil) }.keyboardShortcut("f", modifiers: [.command, .shift])
         }
         CommandGroup(after: .importExport) {
             Button("Export Notebook…") { NotificationCenter.default.post(name: .exportNotebook, object: nil) }.keyboardShortcut("e", modifiers: [.command, .shift])

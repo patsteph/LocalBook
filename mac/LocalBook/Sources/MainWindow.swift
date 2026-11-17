@@ -78,6 +78,7 @@ struct MainWindow: View {
         .modifier(EditPromptsHost())
         .sheet(isPresented: $model.showPairing) { PairingSheet(model: model) }
         .sheet(isPresented: $model.showImport) { ImportSheet() }
+        .sheet(isPresented: $model.showFindSources) { FindSourcesSheet() }
         .sheet(isPresented: Binding(get: { !model.filesToPlace.isEmpty }, set: { if !$0 { model.filesToPlace = [] } })) { PlaceFilesSheet() }
         .sheet(isPresented: Binding(get: { model.linkDraft != nil }, set: { if !$0 { model.linkDraft = nil } })) { AddLinkSheet() }
         .sheet(isPresented: Binding(get: { model.folderToWatch != nil }, set: { if !$0 { model.folderToWatch = nil } })) { WatchFolderSheet() }
@@ -94,7 +95,7 @@ struct MainWindow: View {
     @MainActor private static let menuActions = Publishers.MergeMany(
         [Notification.Name.syncNow, .stopAnswer, .pairWithMac, .focusComposer, .showSources, .showStudio, .showMeetings,
          .startMeetingRecording, .newNote, .voiceNote, .toggleInspector, .makeStudio, .askQuestion, .newNotebook, .importLibrary,
-         .addSources, .openFiles, .addWebPage, .watchFolder, .exportNotebook]
+         .addSources, .openFiles, .addWebPage, .watchFolder, .exportNotebook, .findSources]
             .map { NotificationCenter.default.publisher(for: $0) }
     )
 
@@ -123,6 +124,7 @@ struct MainWindow: View {
         case .addSources: chooseFiles()
         case .openFiles: if let url = note.object as? URL { model.addFiles([url], ask: true) }
         case .addWebPage: model.linkDraft = ""
+        case .findSources: model.showFindSources = true
         case .watchFolder: chooseFolder()
         case .exportNotebook:
             if let nb = model.selectedNotebook { Task { if let problem = await Exporter.exportNotebook(nb, library: model.library) { model.prompts.problem = problem } } }
@@ -335,6 +337,7 @@ extension Notification.Name {
     static let openFiles = Notification.Name("LocalBook.openFiles")
     /// File › Add Web Page… (⇧⌘L).
     static let addWebPage = Notification.Name("LocalBook.addWebPage")
+    static let findSources = Notification.Name("LocalBook.findSources")
     /// File › Watch Folder….
     static let watchFolder = Notification.Name("LocalBook.watchFolder")
     /// File › Export Notebook… (⇧⌘E).
