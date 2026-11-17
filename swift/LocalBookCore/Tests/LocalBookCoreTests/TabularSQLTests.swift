@@ -42,7 +42,7 @@ struct TabularSQLTests {
     }
 
     @Test("one read-only SELECT passes; prose, fences and anything else is handled or refused")
-    func safety() {
+    func safety() throws {
         #expect(TabularSQL.extractSQL("Sure! ```sql\nSELECT COUNT(*) FROM t WHERE state = 'Texas';\n```") == "SELECT COUNT(*) FROM t WHERE state = 'Texas'")
         #expect(TabularSQL.extractSQL("The query is select a from t; select b from t") == "select a from t")
         #expect(try TabularSQL.safeSQL("WITH x AS (SELECT 1) SELECT * FROM x").get() == "WITH x AS (SELECT 1) SELECT * FROM x")
