@@ -143,7 +143,7 @@ struct SourcesPane: View {
                             }
                         }
                     } header: { Text("Inbox · waiting to become sources") } footer: {
-                        Text("Dropped files this Mac cannot read yet (EPUB, Jupyter notebooks, legacy .xls and .ppt). Each becomes a source as soon as its reader lands.").font(.caption)
+                        Text("Dropped files this Mac cannot read yet. Each becomes a source as soon as its reader lands.").font(.caption)
                     }
                 }
             }

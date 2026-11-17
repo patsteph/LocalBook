@@ -15,7 +15,7 @@ import UniformTypeIdentifiers
 /// - PDF, Word, RTF, OpenDocument, HTML → a source made on this Mac (Phase 3): the old app's chunker, a summary and
 ///   questions from the answer model, embedded here; it stays on this Mac until Phase 4 makes this app the host;
 /// - spreadsheets, CSV and PowerPoint → a source the same way, rows as sentences and slides under markers;
-/// - anything else (EPUB, notebooks…) → the notebook's Inbox, a folder on this Mac, until its reader lands.
+/// - anything else → the notebook's Inbox, a folder on this Mac, until its reader lands.
 ///
 /// Notes still go the phone's note route, so they reach the Python Mac and every other device.
 @MainActor @Observable
@@ -136,7 +136,7 @@ final class IntakeModel {
             let words = try await MediaTranscriber.shared.transcribe(copy)
             guard !words.isEmpty else { throw LabError.model("no speech was found in \(url.lastPathComponent)") }
             try await note(words, title: name, notebook: notebook, library: library, report: &report)
-        } else if type.conforms(to: .commaSeparatedText) || ["xlsx", "pptx", "csv"].contains(url.pathExtension.lowercased()) {
+        } else if type.conforms(to: .commaSeparatedText) || ["xlsx", "pptx", "csv", "xls", "ppt", "ods", "epub", "ipynb", "svg"].contains(url.pathExtension.lowercased()) {
             try await library.ingestFile(url, notebook: notebook) { [weak self] s in self?.status = s }
             report.sources += 1
         } else if Self.textTypes.contains(where: { type.conforms(to: $0) }) {

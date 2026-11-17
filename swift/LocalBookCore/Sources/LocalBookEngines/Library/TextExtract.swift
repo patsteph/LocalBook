@@ -16,13 +16,15 @@ import UIKit
 /// - Word, RTF, OpenDocument, HTML, web archive: the system document importer (Mac only), paragraphs on blank lines.
 /// - Spreadsheets and CSV: rows as sentences, the old app's shape (`TabularText`).
 /// - PowerPoint: slide markers, shape text, tables and speaker notes (`PPTXReader`).
+/// - Excel 97-2003, PowerPoint 97-2003, OpenDocument spreadsheets: own readers (`XLSReader`, `PPTLegacyReader`, `ODSReader`).
+/// - EPUB: spine order with headings (`EPUBReader`); Jupyter notebooks: cells and outputs (`JupyterText`); SVG: its words.
 /// - Plain text kinds: the bytes as UTF-8 (Latin-1 if not).
 public enum TextExtract {
-    /// Formats this device can read into a source today. EPUB and notebooks wait in the Inbox.
+    /// Formats this device can read into a source today.
     public static func format(for url: URL) -> String? {
         let ext = url.pathExtension.lowercased()
         switch ext {
-        case "pdf", "xlsx", "csv", "pptx": return ext
+        case "pdf", "xlsx", "csv", "pptx", "xls", "ppt", "ods", "epub", "ipynb", "svg": return ext
         case "txt", "md", "markdown", "json", "xml", "py", "js", "ts", "css", "yaml", "yml", "tex", "bib": return ext
         #if canImport(AppKit)
         case "docx", "doc", "rtf", "rtfd", "odt", "html", "htm", "webarchive": return ext
@@ -53,6 +55,22 @@ public enum TextExtract {
             return table.rows.isEmpty ? raw : sentences
         case "pptx":
             return try await Task.detached(priority: .userInitiated) { try PPTXReader.read(url) }.value
+        case "xls":
+            return try await Task.detached(priority: .userInitiated) {
+                let sheets = try XLSReader.read(try Data(contentsOf: url))
+                guard !sheets.isEmpty else { throw LabError.model("\(name) has no sheets") }
+                return TabularText.workbookText(sheets)
+            }.value
+        case "ppt":
+            return try await Task.detached(priority: .userInitiated) { try PPTLegacyReader.read(try Data(contentsOf: url)) }.value
+        case "ods":
+            return try await Task.detached(priority: .userInitiated) { try ODSReader.read(url) }.value
+        case "epub":
+            return try await Task.detached(priority: .userInitiated) { try EPUBReader.read(url) }.value
+        case "ipynb":
+            return try JupyterText.text(try Data(contentsOf: url))
+        case "svg":
+            return SVGText.read(try Data(contentsOf: url))
         case "docx", "doc", "rtf", "rtfd", "odt", "html", "htm", "webarchive":
             #if canImport(AppKit)
             let attributed = try NSAttributedString(url: url, options: [:], documentAttributes: nil)

@@ -41,6 +41,10 @@ Patrick ran the parity fixture (500 chunks, 50 questions from the production lib
 
 497 items in 39 s, 0.15 ms per token. The ten top-5 disagreements are order swaps among the same passages (ranks 4 and 5), the same pattern the phone showed. The week of daily use was dropped by Patrick the same day; Phase 2 is CLOSED and the cleanup list he sends replaces it.
 
+## Phase 3, slice 5: the remaining readers (2026-11-17, on `dev`, no device gate by Patrick's choice)
+
+Swift: `OLE2`, `XLSReader`, `PPTLegacyReader`, `JupyterText` (Core) with `XLSReaderTests` (`Fixtures/xls_golden.json` from `scripts/ci/xls_golden.py`) and `JupyterTextTests` (`Fixtures/jupyter_golden.json` from `scripts/ci/jupyter_golden.py`); `EPUBReader`, `XHTMLText`, `ODSReader`, `SVGText` (Engines). When Patrick gets to it: drop an .xls, a .ppt, an .epub, an .ipynb, an .ods and an .svg on a notebook; each should become a source rather than wait in the Inbox, and the .xls should read like the same book saved as .xlsx.
+
 ## Phase 3, slice 4: web pages and YouTube (2026-11-17, on `dev`, untested on a Mac)
 
 Swift: `WebExtract`, `PageLoader` (WebKit + `Resources/Readability.js` + `Resources/PageText.js`), `YouTubeTranscript` (Engines); `LibraryModel.ingestLink`; the Mac's `IntakeModel.take(links:)`, `AddLinkSheet`, ⌘V with a copied address, File › Add Web Page… (⇧⌘L). Device script: drag a link from Safari's address bar onto a notebook and expect the status capsule to walk through loading, cutting, summarising, questions and embedding, then the page's title under Sources with its text in the reader (one block per line, image captions at the end); ⇧⌘L, paste a YouTube address, Add, and expect the video's real title and a transcript; drop a link to a PDF and expect the file read as a PDF. Add the same page in the old app and compare the passage counts; a gap of more than a few passages is a text diff to explain.

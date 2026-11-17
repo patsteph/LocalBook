@@ -1,0 +1,29 @@
+{
+ "cases": [
+  {
+   "name": "markdown and code",
+   "notebook": "{\n \"nbformat\": 4,\n \"nbformat_minor\": 5,\n \"metadata\": {\n  \"kernelspec\": {\n   \"name\": \"python3\",\n   \"display_name\": \"Python 3\"\n  }\n },\n \"cells\": [\n  {\n   \"cell_type\": \"markdown\",\n   \"metadata\": {},\n   \"source\": \"# Title\\n\\nSome *words*.\"\n  },\n  {\n   \"cell_type\": \"code\",\n   \"metadata\": {},\n   \"execution_count\": 1,\n   \"source\": \"x = 1\\nprint(x)\",\n   \"outputs\": [\n    {\n     \"output_type\": \"stream\",\n     \"name\": \"stdout\",\n     \"text\": \"1\\n\"\n    }\n   ]\n  }\n ]\n}",
+   "text": "[Markdown Cell 1]\n# Title\n\nSome *words*.\n\n[Code Cell 2]\n```python\nx = 1\nprint(x)\n```\nOutput: 1\n\n"
+  },
+  {
+   "name": "sources as line lists",
+   "notebook": "{\n \"nbformat\": 4,\n \"nbformat_minor\": 5,\n \"metadata\": {\n  \"kernelspec\": {\n   \"name\": \"python3\",\n   \"display_name\": \"Python 3\"\n  }\n },\n \"cells\": [\n  {\n   \"cell_type\": \"markdown\",\n   \"metadata\": {},\n   \"source\": [\n    \"# Heading\\n\",\n    \"\\n\",\n    \"Second line.\"\n   ]\n  },\n  {\n   \"cell_type\": \"code\",\n   \"metadata\": {},\n   \"execution_count\": 1,\n   \"source\": [\n    \"import math\\n\",\n    \"math.pi\"\n   ],\n   \"outputs\": [\n    {\n     \"output_type\": \"execute_result\",\n     \"execution_count\": 1,\n     \"data\": {\n      \"text/plain\": [\n       \"3.141592653589793\"\n      ]\n     },\n     \"metadata\": {}\n    }\n   ]\n  }\n ]\n}",
+   "text": "[Markdown Cell 1]\n# Heading\n\nSecond line.\n\n[Code Cell 2]\n```python\nimport math\nmath.pi\n```\nResult: 3.141592653589793\n"
+  },
+  {
+   "name": "outputs of every kind",
+   "notebook": "{\n \"nbformat\": 4,\n \"nbformat_minor\": 5,\n \"metadata\": {\n  \"kernelspec\": {\n   \"name\": \"python3\",\n   \"display_name\": \"Python 3\"\n  }\n },\n \"cells\": [\n  {\n   \"cell_type\": \"code\",\n   \"metadata\": {},\n   \"execution_count\": 1,\n   \"source\": \"run()\",\n   \"outputs\": [\n    {\n     \"output_type\": \"stream\",\n     \"name\": \"stderr\",\n     \"text\": [\n      \"warning line 1\\n\",\n      \"warning line 2\\n\"\n     ]\n    },\n    {\n     \"output_type\": \"display_data\",\n     \"data\": {\n      \"image/png\": \"iVBOR\",\n      \"text/plain\": \"<Figure>\"\n     },\n     \"metadata\": {}\n    },\n    {\n     \"output_type\": \"execute_result\",\n     \"execution_count\": 2,\n     \"data\": {\n      \"text/html\": \"<b>x</b>\",\n      \"text/plain\": \"42\"\n     },\n     \"metadata\": {}\n    },\n    {\n     \"output_type\": \"error\",\n     \"ename\": \"ValueError\",\n     \"evalue\": \"bad\",\n     \"traceback\": [\n      \"Traceback\"\n     ]\n    }\n   ]\n  }\n ]\n}",
+   "text": "[Code Cell 1]\n```python\nrun()\n```\nOutput: warning line 1\nwarning line 2\n\nResult: 42\n"
+  },
+  {
+   "name": "raw and empty cells",
+   "notebook": "{\n \"nbformat\": 4,\n \"nbformat_minor\": 5,\n \"metadata\": {\n  \"kernelspec\": {\n   \"name\": \"python3\",\n   \"display_name\": \"Python 3\"\n  }\n },\n \"cells\": [\n  {\n   \"cell_type\": \"raw\",\n   \"metadata\": {},\n   \"source\": \"raw text\"\n  },\n  {\n   \"cell_type\": \"markdown\",\n   \"metadata\": {},\n   \"source\": \"\"\n  },\n  {\n   \"cell_type\": \"code\",\n   \"metadata\": {},\n   \"execution_count\": 1,\n   \"source\": \"\",\n   \"outputs\": []\n  },\n  {\n   \"cell_type\": \"markdown\",\n   \"metadata\": {},\n   \"source\": \"Last.\"\n  }\n ]\n}",
+   "text": "\n[Markdown Cell 2]\n\n\n[Code Cell 3]\n```python\n\n```\n\n[Markdown Cell 4]\nLast.\n"
+  },
+  {
+   "name": "unicode and quotes",
+   "notebook": "{\n \"nbformat\": 4,\n \"nbformat_minor\": 5,\n \"metadata\": {\n  \"kernelspec\": {\n   \"name\": \"python3\",\n   \"display_name\": \"Python 3\"\n  }\n },\n \"cells\": [\n  {\n   \"cell_type\": \"markdown\",\n   \"metadata\": {},\n   \"source\": \"Caf\\u00e9 \\u2014 \\u201cquotes\\u201d \\u65e5\\u672c\\u8a9e\"\n  },\n  {\n   \"cell_type\": \"code\",\n   \"metadata\": {},\n   \"execution_count\": 1,\n   \"source\": \"s = 'it''s'\\nprint(s)\",\n   \"outputs\": [\n    {\n     \"output_type\": \"stream\",\n     \"name\": \"stdout\",\n     \"text\": \"its\\n\"\n    }\n   ]\n  }\n ]\n}",
+   "text": "[Markdown Cell 1]\nCafé — “quotes” 日本語\n\n[Code Cell 2]\n```python\ns = 'it''s'\nprint(s)\n```\nOutput: its\n\n"
+  }
+ ]
+}
