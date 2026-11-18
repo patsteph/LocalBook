@@ -9,6 +9,8 @@ final class EditPrompts {
     var renameSource: LibraryStore.SourceInfo?
     var deleteSource: LibraryStore.SourceInfo?
     var newNotebook = false
+    /// The section a new notebook goes into: set by the section header's menu and a notebook's menu, nil elsewhere.
+    var newNotebookSection: String?
     var renameNotebook: LibraryNotebookInfo?
     var deleteNotebook: LibraryNotebookInfo?
     var newSection = false
@@ -63,7 +65,7 @@ struct NotebookContextMenu: View {
         Button("Show Sources") { model.selection = .notebook(notebook.id); model.selection = .sources }
         Button("Export…") { Task { if let p = await Exporter.exportNotebook(notebook, library: model.library) { model.prompts.problem = p } } }
         Divider()
-        Button("New Notebook…") { model.prompts.text = ""; model.prompts.newNotebook = true }
+        Button("New Notebook…") { model.prompts.text = ""; model.prompts.newNotebookSection = notebook.section; model.prompts.newNotebook = true }
         Button("Rename…") { model.prompts.text = notebook.title; model.prompts.renameNotebook = notebook }
         Menu("Color") {
             ForEach(NotebookColors.all, id: \.hex) { c in
@@ -111,16 +113,20 @@ struct EditPromptsHost: ViewModifier {
             .alert("New Notebook", isPresented: $prompts.newNotebook) {
                 TextField("Title", text: $prompts.text)
                 Button("Create") {
-                    let t = prompts.text
+                    let t = prompts.text, section = prompts.newNotebookSection
+                    prompts.newNotebookSection = nil
                     model.edit {
                         var made: String?
                         let problem = await library.editNotebooks("create", ["title": t]) { made = $0["id"] as? String }
-                        if let made { model.selection = .notebook(made) }
+                        if let made {
+                            if let section, !section.isEmpty { _ = await library.editNotebooks("section", ["notebook_id": made, "section": section]) }
+                            model.selection = .notebook(made)
+                        }
                         return problem
                     }
                 }
                 Button("Cancel", role: .cancel) {}
-            } message: { Text(model.paired ? "Made on this Mac now; your paired Mac gets it when it can be reached." : "Drop files or links on it to add sources.") }
+            } message: { Text((prompts.newNotebookSection.map { "In “\($0)”. " } ?? "") + (model.paired ? "Made on this Mac now; your paired Mac gets it when it can be reached." : "Drop files or links on it to add sources.")) }
             .alert("Rename Notebook", isPresented: isSet($prompts.renameNotebook)) {
                 TextField("Title", text: $prompts.text)
                 Button("Save") { if let nb = prompts.renameNotebook { let t = prompts.text; model.edit { await library.editNotebooks("rename", ["notebook_id": nb.id, "title": t]) } } }

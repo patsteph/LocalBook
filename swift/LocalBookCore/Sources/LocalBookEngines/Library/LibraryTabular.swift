@@ -38,20 +38,29 @@ extension LibraryModel {
         guard let tabular else { return nil }
         let schema = await tabular.schema(notebook: notebook)
         guard !schema.isEmpty else { return nil }
-        let prompt = TabularSQL.prompt(question: question, schema: schema)
-        let raw: String
-        do { raw = try await generateText(prompt, maxTokens: 400) } catch {
-            SoakTrace.log("tabular-sql: model error: \(error.localizedDescription)"); return nil
+        // One try, then one more with SQLite's complaint in the prompt (the old app's retry): a small model's first
+        // SELECT over two tables sometimes carries prose ("assuming t1.state = t2.state") that SQLite refuses.
+        var failure: (sql: String, error: String)?
+        var sql = ""
+        var rows: TabularStore.Rows?
+        for attempt in 1...2 {
+            let prompt = TabularSQL.prompt(question: question, schema: schema, after: failure)
+            let raw: String
+            do { raw = try await generateText(prompt, maxTokens: 400) } catch {
+                SoakTrace.log("tabular-sql: model error: \(error.localizedDescription)"); return nil
+            }
+            switch TabularSQL.safeSQL(raw) {
+            case .success(let s): sql = s
+            case .failure(let why):
+                SoakTrace.log("tabular-sql: no valid SQL on try \(attempt) (\(why)): \(raw.prefix(150))")
+                failure = (String(raw.prefix(300)), why.description); continue
+            }
+            do { rows = try await tabular.execute(sql); break } catch {
+                SoakTrace.log("tabular-sql: execution error on try \(attempt): \(error.localizedDescription) for \(sql)")
+                failure = (sql, error.localizedDescription)
+            }
         }
-        let sql: String
-        switch TabularSQL.safeSQL(raw) {
-        case .success(let s): sql = s
-        case .failure(let why): SoakTrace.log("tabular-sql: no valid SQL (\(why)): \(raw.prefix(150))"); return nil
-        }
-        let rows: TabularStore.Rows
-        do { rows = try await tabular.execute(sql) } catch {
-            SoakTrace.log("tabular-sql: execution error: \(error.localizedDescription) for \(sql)"); return nil
-        }
+        guard let rows else { return nil }
         SoakTrace.log("tabular-sql: \(sql) → \(rows.rows.count) rows")
         let first = schema[0]
         let title = notebooks.first { $0.id == notebook }?.title ?? notebook

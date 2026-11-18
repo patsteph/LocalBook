@@ -36,7 +36,7 @@ struct MainWindow: View {
             // ⌘V with files on the clipboard (copied in the Finder) adds them to the notebook on screen; a text
             // field that has the focus still takes its own paste first.
             .onPasteCommand(of: [.fileURL, .url]) { providers in pasteFiles(providers) }
-            .overlay(alignment: .bottom) { IntakeBanner().padding(.bottom, 14) }
+            .safeAreaInset(edge: .bottom, spacing: 0) { IntakeStrip() }      // below the pane, never over the Ask field
             .inspector(isPresented: $model.showInspector) {
                 InspectorView()
                     .inspectorColumnWidth(min: 220, ideal: 280, max: 400)
@@ -102,7 +102,7 @@ struct MainWindow: View {
     private func handle(_ note: Notification) {
         switch note.name {
         case .syncNow: model.syncNow()
-        case .newNotebook: model.prompts.text = ""; model.prompts.newNotebook = true
+        case .newNotebook: model.prompts.text = ""; model.prompts.newNotebookSection = nil; model.prompts.newNotebook = true
         case .notebookRenumbered:
             if let from = note.userInfo?["from"] as? String, let to = note.userInfo?["to"] as? String { model.notebookRenumbered(from: from, to: to) }
         case .stopAnswer: model.library.stopAnswer()
@@ -189,6 +189,7 @@ struct PlaceFilesSheet: View {
             Text(model.filesToPlace.count == 1 ? "Add “\(model.filesToPlace.first?.lastPathComponent ?? "")” to" : "Add \(model.filesToPlace.count) files to")
                 .font(.headline)
             Picker("Notebook", selection: $notebookId) {
+                if notebookId.isEmpty { Text("Choose a notebook").tag("") }     // the first frame, before onAppear picks one
                 ForEach(model.sections) { section in
                     Section(section.name) { ForEach(section.notebooks) { Text($0.title).tag($0.id) } }
                 }
@@ -225,6 +226,7 @@ struct WatchFolderSheet: View {
             Text("Files already there, and every file that lands later, become sources. Changed files are read again. Nothing in the folder is moved or written.")
                 .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             Picker("Notebook", selection: $notebookId) {
+                if notebookId.isEmpty { Text("Choose a notebook").tag("") }     // the first frame, before onAppear picks one
                 ForEach(model.sections) { section in
                     Section(section.name) { ForEach(section.notebooks) { Text($0.title).tag($0.id) } }
                 }
@@ -265,6 +267,7 @@ struct AddLinkSheet: View {
             Text("A page, an article, a YouTube video, or a link to a PDF or document. One per line.")
                 .font(.caption).foregroundStyle(.secondary)
             Picker("Notebook", selection: $notebookId) {
+                if notebookId.isEmpty { Text("Choose a notebook").tag("") }     // the first frame, before onAppear picks one
                 ForEach(model.sections) { section in
                     Section(section.name) { ForEach(section.notebooks) { Text($0.title).tag($0.id) } }
                 }

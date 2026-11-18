@@ -26,6 +26,16 @@ final class IntakeModel {
     var status = ""                                  // set by the folder scan too
     private(set) var lastReport: Report?
     private(set) var reportShownAt = Date.distantPast
+    /// How far along a batch is: items finished of items taken, and the notebook they go to (for the activity strip).
+    private(set) var done = 0
+    private(set) var total = 0
+    private(set) var notebookId = ""
+    private(set) var reportNotebookId = ""
+
+    private func start(_ count: Int, notebook: String) { working = true; status = "Adding to the notebook…"; done = 0; total = count; notebookId = notebook }
+
+    /// Takes the finished report off the screen before its time is up.
+    func dismissReport() { lastReport = nil }
 
     static func inbox(_ notebookId: String) -> URL {
         let url = AppFolders.userFiles.appending(path: "Inbox", directoryHint: .isDirectory).appending(path: notebookId, directoryHint: .isDirectory)
@@ -46,12 +56,13 @@ final class IntakeModel {
     /// Files chosen in an open panel, opened from the Finder or the Dock, or pasted: the same path as a drop.
     func take(files urls: [URL], notebook: String, library: LibraryModel) {
         guard !urls.isEmpty, !working else { return }
-        working = true; status = "Adding to the notebook…"
+        start(urls.count, notebook: notebook)
         Task {
             var report = Report()
             for url in urls {
                 do { try await file(url, notebook: notebook, library: library, report: &report) }
                 catch { report.failed.append(error.localizedDescription) }
+                done += 1
             }
             await finish(report, notebook: notebook, library: library)
         }
@@ -60,10 +71,10 @@ final class IntakeModel {
     /// Web addresses typed, pasted or opened for one notebook.
     func take(links urls: [URL], notebook: String, library: LibraryModel) {
         guard !urls.isEmpty, !working else { return }
-        working = true; status = "Adding to the notebook…"
+        start(urls.count, notebook: notebook)
         Task {
             var report = Report()
-            for url in urls { await link(url, notebook: notebook, library: library, report: &report) }
+            for url in urls { await link(url, notebook: notebook, library: library, report: &report); done += 1 }
             await finish(report, notebook: notebook, library: library)
         }
     }
@@ -71,10 +82,11 @@ final class IntakeModel {
     /// Everything the pasteboard offers for one drop, for one notebook.
     func take(_ providers: [NSItemProvider], notebook: String, library: LibraryModel) {
         guard !providers.isEmpty, !working else { return }
-        working = true; status = "Adding to the notebook…"
+        start(providers.count, notebook: notebook)
         Task {
             var report = Report()
             for provider in providers {
+                defer { done += 1 }
                 let types = provider.registeredTypeIdentifiers
                 SoakTrace.log("drop: \(types.joined(separator: ", "))")
                 do {
@@ -110,7 +122,7 @@ final class IntakeModel {
             } catch { report.failed.append(error.localizedDescription) }
         }
         working = false; status = ""
-        lastReport = report; reportShownAt = Date()
+        lastReport = report; reportShownAt = Date(); reportNotebookId = notebook
         NotificationCenter.default.post(name: .librarySynced, object: nil)
     }
 
@@ -332,28 +344,104 @@ extension View {
 }
 
 /// A line at the bottom of the window while a drop is being added, and the result for a few seconds after.
-struct IntakeBanner: View {
+/// What the intake is doing, docked under the content as a slim strip (never over the Ask field): the stage in words,
+/// how many items of the batch are done, and a thin bar. When the batch ends, the strip turns into the result for a
+/// few seconds (green when everything went in, orange when something could not be read, with the reason) and offers
+/// the notebook's sources. Quiet otherwise: the strip is not there at all.
+struct IntakeStrip: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         let intake = model.intake
-        if intake.working {
-            HStack(spacing: 8) { ProgressView().controlSize(.small); Text(intake.status).font(.callout) }
-                .padding(.horizontal, 14).padding(.vertical, 8).background(.regularMaterial, in: Capsule())
-        } else if let r = intake.lastReport, Date().timeIntervalSince(intake.reportShownAt) < (r.failed.isEmpty ? 6 : 15) {
-            TimelineView(.periodic(from: intake.reportShownAt, by: r.failed.isEmpty ? 6 : 15)) { _ in
-                Text(Self.words(r)).font(.callout).lineLimit(2).padding(.horizontal, 14).padding(.vertical, 8).background(.regularMaterial, in: Capsule())
-                    .help(r.failed.joined(separator: "\n"))
+        Group {
+            if intake.working {
+                working(intake)
+            } else if let r = intake.lastReport, Date().timeIntervalSince(intake.reportShownAt) < (r.failed.isEmpty ? 8 : 20) {
+                TimelineView(.periodic(from: intake.reportShownAt, by: r.failed.isEmpty ? 8 : 20)) { _ in
+                    result(r, notebook: intake.reportNotebookId)
+                }
             }
         }
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: intake.working)
     }
 
-    static func words(_ r: IntakeModel.Report) -> String {
-        var parts: [String] = []
-        if r.notes > 0 { parts.append("\(r.notes) note\(r.notes == 1 ? "" : "s") added") }
-        if r.sources > 0 { parts.append("\(r.sources) source\(r.sources == 1 ? "" : "s") added") }
-        if r.queued > 0 { parts.append("\(r.queued) file\(r.queued == 1 ? "" : "s") kept in the Inbox until this Mac can read them") }
-        if let first = r.failed.first { parts.append(r.failed.count == 1 ? first : "\(r.failed.count) could not be read: \(first)") }
-        return parts.isEmpty ? "Nothing to add" : parts.joined(separator: " · ")
+    private func title(_ id: String) -> String { model.library.notebooks.first { $0.id == id }?.title ?? "the notebook" }
+
+    private func working(_ intake: IntakeModel) -> some View {
+        VStack(spacing: 0) {
+            Divider()
+            HStack(spacing: 10) {
+                Image(systemName: "tray.and.arrow.down").foregroundStyle(.tint)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Adding to \(title(intake.notebookId))").font(.callout.weight(.semibold))
+                    Text(intake.status).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                        .contentTransition(.opacity)
+                }
+                Spacer(minLength: 12)
+                if intake.total > 1 {
+                    Text("\(min(intake.done + 1, intake.total)) of \(intake.total)").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                }
+                ProgressView().controlSize(.small)
+            }
+            .padding(.horizontal, 16).padding(.vertical, 8)
+            ProgressView(value: intake.total > 1 ? Double(intake.done) / Double(intake.total) : nil)
+                .progressViewStyle(.linear).controlSize(.mini)
+                .padding(.horizontal, 16).padding(.bottom, 6)
+        }
+        .background(.bar)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Adding to \(title(intake.notebookId)): \(intake.status)")
     }
+
+    private func result(_ r: IntakeModel.Report, notebook: String) -> some View {
+        let ok = r.failed.isEmpty
+        return VStack(spacing: 0) {
+            Divider()
+            HStack(spacing: 10) {
+                Image(systemName: ok ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                    .foregroundStyle(ok ? Color.green : Color.orange)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(Self.headline(r, notebook: title(notebook))).font(.callout.weight(.semibold))
+                    if let detail = Self.detail(r) { Text(detail).font(.caption).foregroundStyle(.secondary).lineLimit(2) }
+                }
+                .help(r.failed.joined(separator: "\n"))
+                Spacer(minLength: 12)
+                if r.sources + r.notes > 0 {
+                    Button("Show Sources") { model.selection = .notebook(notebook); model.selection = .sources; model.intake.dismissReport() }
+                        .controlSize(.small)
+                }
+                Button { model.intake.dismissReport() } label: { Image(systemName: "xmark").font(.caption.weight(.semibold)) }
+                    .buttonStyle(.borderless).foregroundStyle(.secondary).help("Dismiss")
+            }
+            .padding(.horizontal, 16).padding(.vertical, 8)
+        }
+        .background(.bar)
+        .overlay(alignment: .leading) { Rectangle().fill(ok ? Color.green : Color.orange).frame(width: 3) }
+        .accessibilityElement(children: .combine)
+    }
+
+    /// "Added 8 sources and 4 notes to Harbor Lights", or what went wrong.
+    static func headline(_ r: IntakeModel.Report, notebook: String) -> String {
+        var parts: [String] = []
+        if r.sources > 0 { parts.append("\(r.sources) source\(r.sources == 1 ? "" : "s")") }
+        if r.notes > 0 { parts.append("\(r.notes) note\(r.notes == 1 ? "" : "s")") }
+        if parts.isEmpty {
+            if r.queued > 0 { return "\(r.queued) file\(r.queued == 1 ? "" : "s") kept in the Inbox for \(notebook)" }
+            if let first = r.failed.first { return r.failed.count == 1 ? "Couldn't add that: \(first)" : "\(r.failed.count) items could not be added" }
+            return "Nothing to add"
+        }
+        let added = "Added " + parts.joined(separator: " and ") + " to \(notebook)"
+        return r.failed.isEmpty ? added : added + ", \(r.failed.count) could not be read"
+    }
+
+    static func detail(_ r: IntakeModel.Report) -> String? {
+        var parts: [String] = []
+        if r.queued > 0, r.sources + r.notes > 0 { parts.append("\(r.queued) file\(r.queued == 1 ? "" : "s") kept in the Inbox until this Mac can read \(r.queued == 1 ? "it" : "them")") }
+        if let first = r.failed.first, r.sources + r.notes > 0 || r.failed.count > 1 { parts.append(first) }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
+    /// One line for logs and tests.
+    static func words(_ r: IntakeModel.Report) -> String { headline(r, notebook: "the notebook") }
 }

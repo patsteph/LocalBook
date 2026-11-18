@@ -24,7 +24,7 @@ struct Sidebar: View {
                             .font(.callout)
                             .foregroundStyle(.secondary)
                             .padding(.vertical, 4)
-                        Button("New Notebook…") { model.prompts.text = ""; model.prompts.newNotebook = true }.buttonStyle(.link).font(.callout)
+                        Button("New Notebook…") { model.prompts.text = ""; model.prompts.newNotebookSection = nil; model.prompts.newNotebook = true }.buttonStyle(.link).font(.callout)
                         if !model.paired {
                             Button("Move my library here…") { model.showImport = true }.buttonStyle(.link).font(.callout)
                         }
@@ -116,7 +116,11 @@ struct Sidebar: View {
             Divider()
         }
         Button("New Section…") { model.prompts.text = ""; model.prompts.newSection = true }
-        Button("New Notebook…") { model.prompts.text = ""; model.prompts.newNotebook = true }
+        Button("New Notebook…") {
+            model.prompts.text = ""
+            model.prompts.newNotebookSection = section.name == "Notebooks" ? nil : section.name     // "Notebooks" is the group with no section
+            model.prompts.newNotebook = true
+        }
     }
 }
 

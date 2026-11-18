@@ -163,7 +163,7 @@ public enum TabularSQL {
     }
 
     /// `_build_prompt`, less the value directives (state names), which the Mac app had for its sales notebooks.
-    public static func prompt(question: String, schema: [Table]) -> String {
+    public static func prompt(question: String, schema: [Table], after failure: (sql: String, error: String)? = nil) -> String {
         var lines: [String] = []
         for t in schema {
             lines.append("Table \"\(t.tableName)\" (from file \"\(t.filename)\", sheet \"\(t.sheetName)\", \(t.rowCount) rows):")
@@ -189,10 +189,11 @@ public enum TabularSQL {
         - Add a WHERE condition ONLY for a constraint the question explicitly states. NEVER invent an extra filter on a column the question does not mention — do NOT add clauses like account = '...', person IN (...), etc. unless the question asks for them.
         - For case-insensitive matching on OTHER text columns, compare LOWER(col) = LOWER('value').
         - "how many" / "number of" -> SELECT COUNT(*). Totals -> SUM(...). Averages -> AVG(...).
+        - Use ONE table unless the question needs a column that only another table has; then write a real JOIN ... ON ... with table aliases. Never write words such as "assuming" or "where applicable": only valid SQLite.
         - A single read-only SELECT only. Never modify data.
 
         Question: \(question)
-        SQL:
+        \(failure.map { "Your previous SQL failed. SQLite said: \($0.error)\nThat SQL was: \($0.sql)\nWrite a corrected SELECT.\n" } ?? "")SQL:
         """
     }
 

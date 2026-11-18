@@ -20,6 +20,9 @@ struct AskView: View {
     private var library: LibraryModel { model.library }
     private var ready: Bool { model.ready }
     private var currentTitle: String { model.selectedNotebook?.title ?? "Notebook" }
+    /// This notebook's own conversation: a turn stays with the notebook it was asked in, and switching notebooks shows
+    /// that notebook's turns only (the old app's rule).
+    private var turns: [AskTurn] { library.history.filter { $0.notebookId == library.scopeToNotebook } }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -65,7 +68,7 @@ struct AskView: View {
             send()
         }
         .onReceive(NotificationCenter.default.publisher(for: .readAnswerAloud)) { _ in
-            let latest = library.answerText.isEmpty ? (library.history.last?.answer ?? "") : library.answerText
+            let latest = library.answerText.isEmpty ? (turns.last?.answer ?? "") : library.answerText
             if !latest.isEmpty { reader.toggle(latest) }
         }
         .onDisappear { reader.stop() }
@@ -94,15 +97,10 @@ struct AskView: View {
                     }
                     .font(.footnote).padding(12).background(.quaternary, in: RoundedRectangle(cornerRadius: 10))
                 }
-                ForEach(Array(library.history.enumerated()), id: \.element.id) { i, turn in
-                    pastTurn(turn, previous: i > 0 ? library.history[i - 1].notebookId : nil)
-                }
-                if !library.shownQuestion.isEmpty, let nb = library.liveNotebookId, nb != (library.history.last?.notebookId ?? nb) {
-                    notebookTag(library.notebooks.first { $0.id == nb }?.title ?? "Notebook")
-                }
+                ForEach(turns) { turn in pastTurn(turn) }
                 if library.answering || !library.answerText.isEmpty || !library.answerStatus.isEmpty, !library.shownQuestion.isEmpty {
                     questionBubble(library.shownQuestion)
-                } else if queued == nil && library.history.isEmpty {
+                } else if queued == nil && turns.isEmpty {
                     intro
                 }
                 if library.answering && library.answerText.isEmpty {
@@ -160,7 +158,7 @@ struct AskView: View {
                 Text("Make a notebook and drop files on it, or pair with the Mac that holds your notebooks. Everything stays on your devices.")
                     .foregroundStyle(.secondary)
                 HStack {
-                    Button("New Notebook…") { model.prompts.text = ""; model.prompts.newNotebook = true }.buttonStyle(.borderedProminent)
+                    Button("New Notebook…") { model.prompts.text = ""; model.prompts.newNotebookSection = nil; model.prompts.newNotebook = true }.buttonStyle(.borderedProminent)
                     Button("Pair with a Mac…") { model.showPairing = true }
                 }
             }
@@ -185,12 +183,6 @@ struct AskView: View {
         .padding(.top, 40)
     }
 
-    /// The notebook a run of turns was asked in, shown where the conversation moves to another notebook.
-    private func notebookTag(_ title: String) -> some View {
-        Label(title, systemImage: "book.closed").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-            .padding(.top, 6).frame(maxWidth: .infinity, alignment: .center)
-    }
-
     private func questionBubble(_ q: String) -> some View {
         Text(q).font(.body.weight(.medium)).textSelection(.enabled)
             .padding(.horizontal, 12).padding(.vertical, 8)
@@ -213,8 +205,7 @@ struct AskView: View {
     }
 
     /// A finished turn higher up in the conversation.
-    @ViewBuilder private func pastTurn(_ turn: AskTurn, previous: String?) -> some View {
-        if turn.notebookId != previous { notebookTag(turn.notebookTitle) }
+    @ViewBuilder private func pastTurn(_ turn: AskTurn) -> some View {
         questionBubble(turn.question)
         if turn.answer.isEmpty {
             if !turn.status.isEmpty { Text(turn.status).font(.footnote).foregroundStyle(.orange) }

@@ -527,6 +527,7 @@ struct MeetingsPane: View {
                 Section {
                     TextField("Title (optional)", text: $title)
                     Picker("Save in", selection: Binding(get: { target ?? "" }, set: { destination = $0 })) {
+                        if target == nil { Text("Choose a notebook").tag("") }
                         ForEach(library.notebooks) { n in Text(n.title).tag(n.id) }
                     }
                 }
