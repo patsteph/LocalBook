@@ -1,0 +1,53 @@
+# 30 web addresses for the web-page diff (part 2 test plan, check 29; part 3 check 47 points here too).
+# One per line; '#' starts a comment. Chosen to be stable between the two reads (reference pages, documentation,
+# essays, papers), with a spread of page shapes: long articles, docs with sidebars and code, a table-heavy page,
+# a PDF link, two arXiv abstracts (the old scraper takes the PDF), two YouTube videos with captions, a GitHub
+# README, a government page, a scholarly article, a company filing. Avoid front pages and feeds.
+#
+# On the Mac with the old app:
+#   cd ~/path/to/LocalBook/backend && .venv/bin/python ../scripts/ingestion_diff_export.py ~/path/to/web-diff-urls.txt
+# Then Swift app: Settings › Diagnostics › Ingestion diff › Open fixture… (ingestion-fixture.json beside this file).
+
+# Encyclopedic (long articles, infoboxes, tables)
+https://en.wikipedia.org/wiki/Retrieval-augmented_generation
+https://en.wikipedia.org/wiki/Swift_(programming_language)
+https://en.wikipedia.org/wiki/Melatonin
+https://en.wikipedia.org/wiki/Costco
+https://plato.stanford.edu/entries/turing-machine/
+
+# Documentation (sidebars, code blocks, tables)
+https://docs.swift.org/swift-book/documentation/the-swift-programming-language/concurrency/
+https://developer.apple.com/documentation/swift/sendable
+https://docs.python.org/3/library/asyncio-task.html
+https://docs.python.org/3/tutorial/classes.html
+https://sqlite.org/lang_select.html
+https://sqlite.org/wal.html
+https://developer.mozilla.org/en-US/docs/Web/API/Fetch_API/Using_Fetch
+https://www.rfc-editor.org/rfc/rfc9110.html
+
+# Essays and articles (prose, few distractions)
+https://www.paulgraham.com/ds.html
+https://www.paulgraham.com/greatwork.html
+https://martinfowler.com/articles/microservices.html
+https://www.joelonsoftware.com/2000/08/09/the-joel-test-12-steps-to-better-code/
+https://www.anthropic.com/research/building-effective-agents
+
+# News and magazine pages (navigation, related-story blocks, comment sections)
+https://www.nature.com/articles/d41586-023-00816-5
+https://www.bbc.co.uk/news/science-environment-56837908
+https://www.nasa.gov/history/apollo-11-mission-overview/
+
+# Scholarly and official (abstracts, references, tables)
+https://arxiv.org/abs/1706.03762
+https://arxiv.org/abs/2005.11401
+https://pubmed.ncbi.nlm.nih.gov/32651705/
+https://www.nist.gov/itl/ai-risk-management-framework
+https://www.sec.gov/Archives/edgar/data/909832/000090983225000012/cost-20250831.htm
+
+# A README and a document link
+https://github.com/ml-explore/mlx/blob/main/README.md
+https://www.w3.org/TR/WCAG21/
+
+# YouTube (captions available; the transcript is compared, not the page)
+https://www.youtube.com/watch?v=aircAruvnKk
+https://www.youtube.com/watch?v=kCc8FmEb1nY
