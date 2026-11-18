@@ -183,6 +183,9 @@ public actor LibraryStore {
         }
     }
 
+    /// SQLite's last error text, for throwing from an extension (the handle itself stays private).
+    var lastError: String { String(cString: sqlite3_errmsg(db)) }
+
     func statement(_ sql: String) throws -> OpaquePointer {
         var stmt: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK, let stmt else {

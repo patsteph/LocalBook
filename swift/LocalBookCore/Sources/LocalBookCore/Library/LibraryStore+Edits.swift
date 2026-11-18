@@ -32,7 +32,7 @@ extension LibraryStore {
         let s = try statement("INSERT INTO pending_edits(kind, body, created) VALUES (?,?,?)")
         defer { sqlite3_finalize(s) }
         bind(s, 1, kind); bind(s, 2, String(decoding: data, as: UTF8.self)); bind(s, 3, ISO8601DateFormatter().string(from: Date()))
-        guard sqlite3_step(s) == SQLITE_DONE else { throw LibraryError.sqlite(String(cString: sqlite3_errmsg(db))) }
+        guard sqlite3_step(s) == SQLITE_DONE else { throw LibraryError.sqlite(lastError) }
     }
 
     public func pendingEdits() -> [PendingEdit] {
@@ -93,7 +93,7 @@ extension LibraryStore {
         defer { sqlite3_finalize(s) }
         bind(s, 1, id); bind(s, 2, title); bind(s, 3, "local"); sqlite3_bind_int64(s, 4, position)
         if let color { bind(s, 5, color) } else { sqlite3_bind_null(s, 5) }
-        guard sqlite3_step(s) == SQLITE_DONE else { throw LibraryError.sqlite(String(cString: sqlite3_errmsg(db))) }
+        guard sqlite3_step(s) == SQLITE_DONE else { throw LibraryError.sqlite(lastError) }
         try setMeta(Self.localNotebookPrefix + id, "1")
     }
 
