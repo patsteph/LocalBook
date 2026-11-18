@@ -123,6 +123,26 @@ public enum MacLink {
         return "\(error.localizedDescription) [\(ns.domain) \(ns.code)] — \(t)"
     }
 
+    /// Whether the paired Mac answers at all, within a few seconds: a signed hello with a short timeout. Asked before
+    /// a sync or a flush of queued changes, so that away from that Mac the app knows in seconds, not after the
+    /// two-minute timeout a real call allows for a slow notebook.
+    public static func reachable(_ mac: PairedMac, timeout: TimeInterval = 5) async -> Bool {
+        do { _ = try await signedCall(mac, path: "/phone/hello", body: Data("{}".utf8), timeout: timeout); return true }
+        catch MacLinkError.http { return true }                 // it answered, even if it did not like the hello
+        catch { return false }
+    }
+
+    /// A connection-level failure (no route, refused, timed out, offline), as against a reply the Mac gave.
+    public static func isUnreachable(_ error: Error) -> Bool {
+        if case MacLinkError.detail(let text) = error {
+            // `describe` writes "[NSURLErrorDomain <code>]"; these codes mean the Mac was not reached.
+            return [-1001, -1003, -1004, -1005, -1009, -1200].contains { text.contains("[NSURLErrorDomain \($0)]") }
+        }
+        let e = error as NSError
+        guard e.domain == NSURLErrorDomain else { return false }
+        return [NSURLErrorTimedOut, NSURLErrorCannotConnectToHost, NSURLErrorCannotFindHost, NSURLErrorNetworkConnectionLost, NSURLErrorNotConnectedToInternet].contains(e.code)
+    }
+
     /// A signed JSON call to the Mac's phone link; returns the raw response body.
     public static func signedCall(_ mac: PairedMac, path: String, json: [String: Any] = [:],
                            timeout: TimeInterval = 60) async throws -> Data {

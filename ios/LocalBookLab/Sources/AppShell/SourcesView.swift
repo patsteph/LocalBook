@@ -171,10 +171,9 @@ private struct SourceDetail: View {
 
     private func load() async {
         text = await library.sourceText(notebook: source.notebookId, sourceId: source.id)
-        // Only notes still waiting on this phone can be changed here; once the Mac has them they live there.
-        var unsent = false
-        if source.isLocal { unsent = await library.noteSentSourceId(source.id) == nil }
-        canEdit = unsent
+        // Notes made on this phone can be changed here, sent or not: an edit to one the Mac already has becomes a
+        // fresh note and the Mac's copy of the old one is queued for deletion (offline-first).
+        canEdit = source.isLocal
     }
 }
 
@@ -214,7 +213,7 @@ private struct SourceEditor: View {
     private func save() async {
         saving = true; defer { saving = false }
         do {
-            try await library.addNote(notebook: source.notebookId, title: title, text: text, kind: source.type.isEmpty ? "note" : source.type, replacing: source.id)
+            try await library.saveNoteEdit(notebook: source.notebookId, title: title, text: text, kind: source.type.isEmpty ? "note" : source.type, replacing: source.id)
             dismiss()
         } catch { self.error = "Couldn't save: \(error.localizedDescription)" }
     }

@@ -49,6 +49,8 @@ public struct LibraryNotebookInfo: Sendable, Identifiable {
     public var section: String? = nil       // the desktop's section for it, if any
     public var color: String? = nil         // the desktop's notebook color (hex)
     public var sectionCollapsed = false     // whether the desktop shows its section folded
+    /// False for a notebook made on this device that the paired Mac has not created yet (no Mac, or not reachable).
+    public var onMac = true
 }
 
 public enum LibraryError: LocalizedError, Sendable {
@@ -76,7 +78,7 @@ public actor LibraryStore {
     private var rowKeys: [(src: String, idx: Int)] = []
     private var loadedNotebook: String?
 
-    private func dropMatrix() { matrix = []; rowKeys = []; loadedNotebook = nil; bm25 = [:] }
+    func dropMatrix() { matrix = []; rowKeys = []; loadedNotebook = nil; bm25 = [:] }
 
     private func loadMatrix(_ notebook: String) throws {
         if loadedNotebook == notebook { return }
@@ -151,6 +153,7 @@ public actor LibraryStore {
             // A note's text as written (Markdown), kept beside its chunks so the editor opens exactly what was saved.
             "CREATE TABLE IF NOT EXISTS note_text (notebook_id TEXT NOT NULL, source_id TEXT NOT NULL, text TEXT NOT NULL, PRIMARY KEY (notebook_id, source_id))",
         ] { try exec(sql) }
+        try prepareEdits()
     }
 
     /// Adds a column to an older store; does nothing (and logs nothing) when it is already there.
@@ -171,7 +174,7 @@ public actor LibraryStore {
 
     // MARK: basics
 
-    private func exec(_ sql: String) throws {
+    func exec(_ sql: String) throws {
         var err: UnsafeMutablePointer<CChar>?
         guard sqlite3_exec(db, sql, nil, nil, &err) == SQLITE_OK else {
             let m = err.map { String(cString: $0) } ?? "unknown"
@@ -180,7 +183,7 @@ public actor LibraryStore {
         }
     }
 
-    private func statement(_ sql: String) throws -> OpaquePointer {
+    func statement(_ sql: String) throws -> OpaquePointer {
         var stmt: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK, let stmt else {
             throw LibraryError.sqlite(String(cString: sqlite3_errmsg(db)))
@@ -190,7 +193,7 @@ public actor LibraryStore {
 
     private static let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 
-    private func bind(_ stmt: OpaquePointer, _ index: Int32, _ value: String) {
+    func bind(_ stmt: OpaquePointer, _ index: Int32, _ value: String) {
         sqlite3_bind_text(stmt, index, value, -1, Self.transient)
     }
 
@@ -324,7 +327,8 @@ public actor LibraryStore {
 
     public func notebooks() -> [LibraryNotebookInfo] {
         guard let s = try? statement("""
-            SELECT n.id, n.title, n.digest, (SELECT COUNT(*) FROM chunks c WHERE c.notebook_id = n.id), n.section, n.color, n.collapsed
+            SELECT n.id, n.title, n.digest, (SELECT COUNT(*) FROM chunks c WHERE c.notebook_id = n.id), n.section, n.color, n.collapsed,
+                   EXISTS (SELECT 1 FROM meta m WHERE m.key = 'local_notebook:' || n.id)
             FROM notebooks n ORDER BY n.position, n.title COLLATE NOCASE
             """) else { return [] }
         defer { sqlite3_finalize(s) }
@@ -334,7 +338,7 @@ public actor LibraryStore {
             out.append(.init(id: String(cString: sqlite3_column_text(s, 0)), title: String(cString: sqlite3_column_text(s, 1)),
                              digest: String(cString: sqlite3_column_text(s, 2)), chunks: Int(sqlite3_column_int64(s, 3)), section: section,
                              color: sqlite3_column_type(s, 5) == SQLITE_NULL ? nil : String(cString: sqlite3_column_text(s, 5)),
-                             sectionCollapsed: sqlite3_column_int(s, 6) != 0))
+                             sectionCollapsed: sqlite3_column_int(s, 6) != 0, onMac: sqlite3_column_int(s, 7) == 0))
         }
         return out
     }

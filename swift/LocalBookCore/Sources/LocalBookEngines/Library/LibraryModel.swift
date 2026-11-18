@@ -79,6 +79,10 @@ public final class LibraryModel {
     /// Spreadsheet and CSV sources as tables, for questions that want a count or a sum (`TabularSQL`).
     public var tabular: TabularStore?
     public var flushingNotes = false
+    /// The queue of changes made here that the paired Mac has not heard about yet (see LibraryEdits) is being sent.
+    public var flushingEdits = false
+    /// The last change the paired Mac refused, for a settings line; nil when every change went through.
+    public var editProblem: String?
     public var vision: VisionEncoder?
     public enum VisionState: Equatable { case none, downloading(Double), ready, failed(String) }
     public var visionState: VisionState = EmbeddingModelStore.visionInstalled ? .ready : .none
@@ -157,6 +161,12 @@ public final class LibraryModel {
 
     public func sync() async {
         guard let store else { return }
+        guard let mac = MacLink.paired else { syncState = .failed(LibraryError.notPaired.localizedDescription); return }
+        // Away from that Mac the answer comes in seconds (a short hello), not after the long timeout a slow notebook
+        // is allowed; and the changes made here go first, so the Mac's list already carries them when it comes back.
+        syncState = .syncing("Looking for \(mac.name)…")
+        guard await MacLink.reachable(mac) else { syncState = .failed(Self.problemMacAway); return }
+        if await flushEdits() > 0 { syncState = .failed(Self.problemMacAway); return }
         syncState = .syncing("Starting…")
         do {
             let summary = try await LibrarySync.run(store: store, onNotebook: {
@@ -169,7 +179,7 @@ public final class LibraryModel {
             syncState = .idle
             await flushNotes()
             if let call = try? LibrarySync.pairedMacCall() {
-                let ids = notebooks.map(\.id)
+                let ids = notebooks.filter(\.onMac).map(\.id)              // a notebook made here that the Mac has not created yet has no topics there
                 topicProblems = await TopicsPull.pull(call: call, root: "/phone/library", store: store, notebooks: ids)
                 if !topicProblems.isEmpty { SoakTrace.log("topics: \(topicProblems.count) of \(ids.count) notebooks failed: \(topicProblems.values.first ?? "")") }
                 topicsVersion += 1

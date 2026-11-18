@@ -83,6 +83,7 @@ struct SyncSettings: View {
     @State private var showPairing = false
 
     private var library: LibraryModel { model.library }
+    @State private var pending = 0
 
     var body: some View {
         Form {
@@ -113,6 +114,11 @@ struct SyncSettings: View {
                         Spacer()
                         Button("Sync Now") { model.syncNow() }.disabled(isSyncing)
                     }
+                    if pending > 0 {
+                        Text("\(pending) change\(pending == 1 ? "" : "s") made here \(pending == 1 ? "is" : "are") waiting for your paired Mac; \(pending == 1 ? "it goes" : "they go") over the next time it can be reached.")
+                            .font(.callout).foregroundStyle(.secondary)
+                    }
+                    if let problem = library.editProblem { Text(problem).font(.callout).foregroundStyle(.orange) }
                 }
                 Section {
                     Button("Remove this Mac and delete the library from this Mac…", role: .destructive) {
@@ -125,6 +131,7 @@ struct SyncSettings: View {
             }
         }
         .formStyle(.grouped)
+        .task(id: library.syncState) { pending = await library.pendingEditCount() }
         .sheet(isPresented: $showPairing) { PairingSheet(model: model) }
         .confirmationDialog("Remove this Mac?", isPresented: $confirmForget, titleVisibility: .visible) {
             Button("Remove and delete library", role: .destructive) { Task { await model.forgetMac() } }

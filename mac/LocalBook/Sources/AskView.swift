@@ -157,9 +157,12 @@ struct AskView: View {
                     Button("Try again") { model.syncNow() }
                 }
             } else {
-                Text("Pair with the Mac that holds your notebooks, then ask anything. Everything stays on your devices.")
+                Text("Make a notebook and drop files on it, or pair with the Mac that holds your notebooks. Everything stays on your devices.")
                     .foregroundStyle(.secondary)
-                Button("Pair with a Mac…") { model.showPairing = true }.buttonStyle(.borderedProminent)
+                HStack {
+                    Button("New Notebook…") { model.prompts.text = ""; model.prompts.newNotebook = true }.buttonStyle(.borderedProminent)
+                    Button("Pair with a Mac…") { model.showPairing = true }
+                }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -310,7 +313,7 @@ struct AskView: View {
     }
 
     private var placeholder: String {
-        if library.notebooks.isEmpty { return model.paired ? "Your notebooks are on their way" : "Pair with a Mac to ask" }
+        if library.notebooks.isEmpty { return model.paired ? "Your notebooks are on their way" : "Make a notebook to ask" }
         return ready ? "Ask \(currentTitle)…" : "Ask now, the answer starts when ready"
     }
 

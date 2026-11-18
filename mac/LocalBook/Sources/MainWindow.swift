@@ -94,7 +94,7 @@ struct MainWindow: View {
     /// Every menu item speaks through one notification stream, so the body stays a short modifier chain.
     @MainActor private static let menuActions = Publishers.MergeMany(
         [Notification.Name.syncNow, .stopAnswer, .pairWithMac, .focusComposer, .showSources, .showStudio, .showMeetings,
-         .startMeetingRecording, .newNote, .voiceNote, .toggleInspector, .makeStudio, .askQuestion, .newNotebook, .importLibrary,
+         .startMeetingRecording, .newNote, .voiceNote, .toggleInspector, .makeStudio, .askQuestion, .newNotebook, .notebookRenumbered, .importLibrary,
          .addSources, .openFiles, .addWebPage, .watchFolder, .exportNotebook, .findSources]
             .map { NotificationCenter.default.publisher(for: $0) }
     )
@@ -102,7 +102,9 @@ struct MainWindow: View {
     private func handle(_ note: Notification) {
         switch note.name {
         case .syncNow: model.syncNow()
-        case .newNotebook: if model.paired { model.prompts.text = ""; model.prompts.newNotebook = true }
+        case .newNotebook: model.prompts.text = ""; model.prompts.newNotebook = true
+        case .notebookRenumbered:
+            if let from = note.userInfo?["from"] as? String, let to = note.userInfo?["to"] as? String { model.notebookRenumbered(from: from, to: to) }
         case .stopAnswer: model.library.stopAnswer()
         case .pairWithMac: model.showPairing = true
         case .importLibrary: model.showImport = true

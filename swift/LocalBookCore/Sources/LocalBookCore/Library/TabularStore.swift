@@ -93,6 +93,22 @@ public actor TabularStore {
         _ = sqlite3_step(d)
     }
 
+    /// The source moved to another notebook here: its catalog rows follow (the tables are named after the source).
+    public func moveSource(sourceId: String, to notebook: String) throws {
+        let s = try statement("UPDATE \(Self.catalog) SET notebook_id=? WHERE source_id=?")
+        defer { sqlite3_finalize(s) }
+        bind(s, 1, notebook); bind(s, 2, sourceId)
+        _ = sqlite3_step(s)
+    }
+
+    /// A notebook made here was created on the paired Mac under another id.
+    public func renumberNotebook(from old: String, to new: String) throws {
+        let s = try statement("UPDATE \(Self.catalog) SET notebook_id=? WHERE notebook_id=?")
+        defer { sqlite3_finalize(s) }
+        bind(s, 1, new); bind(s, 2, old)
+        _ = sqlite3_step(s)
+    }
+
     // MARK: reading
 
     public func hasTables(notebook: String) -> Bool { !schema(notebook: notebook).isEmpty }
@@ -152,17 +168,17 @@ public actor TabularStore {
     private static let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
     private var message: String { String(cString: sqlite3_errmsg(db)) }
 
-    private func exec(_ sql: String) throws {
+    func exec(_ sql: String) throws {
         guard sqlite3_exec(db, sql, nil, nil, nil) == SQLITE_OK else { throw LibraryError.sqlite("\(message) in \(sql.prefix(80))") }
     }
 
-    private func statement(_ sql: String) throws -> OpaquePointer {
+    func statement(_ sql: String) throws -> OpaquePointer {
         var s: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &s, nil) == SQLITE_OK, let s else { throw LibraryError.sqlite("\(message) in \(sql.prefix(120))") }
         return s
     }
 
-    private func bind(_ s: OpaquePointer, _ index: Int32, _ value: String) {
+    func bind(_ s: OpaquePointer, _ index: Int32, _ value: String) {
         sqlite3_bind_text(s, index, value, -1, Self.transient)
     }
 }

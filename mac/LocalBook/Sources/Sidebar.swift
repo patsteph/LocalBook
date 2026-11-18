@@ -3,7 +3,7 @@ import LocalBookEngines
 import SwiftUI
 
 /// Notebooks in the desktop app's order with its sections and colors, then the three cross-notebook places. Every
-/// action the desktop sidebar has is in the context menus; each goes through the paired Mac (the system of record
+/// action the desktop sidebar has is in the context menus; each is made here at once and queued for the paired Mac (the system of record
 /// until Phase 3) and syncs back. Sources live behind the toolbar's Sources button, not here.
 struct Sidebar: View {
     @Environment(AppModel.self) private var model
@@ -20,10 +20,11 @@ struct Sidebar: View {
             List(selection: $selection) {
                 if model.library.notebooks.isEmpty {
                     Section("Notebooks") {
-                        Text(model.paired ? "Syncing notebooks…" : "Pair with your Mac to bring your notebooks here.")
+                        Text(model.paired ? "Syncing notebooks…" : "Make a notebook and drop files on it, pair with your Mac, or move your library here.")
                             .font(.callout)
                             .foregroundStyle(.secondary)
                             .padding(.vertical, 4)
+                        Button("New Notebook…") { model.prompts.text = ""; model.prompts.newNotebook = true }.buttonStyle(.link).font(.callout)
                         if !model.paired {
                             Button("Move my library here…") { model.showImport = true }.buttonStyle(.link).font(.callout)
                         }

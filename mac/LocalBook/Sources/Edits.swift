@@ -41,7 +41,6 @@ struct SourceContextMenu: View {
                 Button(nb.title) { model.edit { await model.library.moveSource(source, to: nb.id) } }
             }
         }
-        .disabled(!model.paired)
         Divider()
         Button("Export Text…") { Task { if let p = await Exporter.exportSource(source, original: false, library: model.library) { model.prompts.problem = p } } }
         if let file = source.file, FileManager.default.fileExists(atPath: LibraryModel.originalURL(file).path) {
@@ -52,7 +51,8 @@ struct SourceContextMenu: View {
     }
 }
 
-/// Every action on a notebook: the desktop sidebar's menu, through the paired Mac.
+/// Every action on a notebook: the desktop sidebar's menu. Each is made on this Mac at once and queued for the
+/// paired Mac, if there is one (see LibraryEdits).
 struct NotebookContextMenu: View {
     let notebook: LibraryNotebookInfo
     @Environment(AppModel.self) private var model
@@ -75,14 +75,14 @@ struct NotebookContextMenu: View {
             }
         }
         Menu("Move to Section") {
-            Button("None") { model.edit { await model.library.editNotebooks("section", ["notebook_id": notebook.id, "section_id": NSNull()]) } }
+            Button("None") { model.edit { await model.library.editNotebooks("section", ["notebook_id": notebook.id, "section": ""]) } }
                 .disabled(notebook.section == nil)
             ForEach(model.macSections) { s in
-                Button(s.name) { model.edit { await model.library.editNotebooks("section", ["notebook_id": notebook.id, "section_id": s.id]) } }
+                Button(s.name) { model.edit { await model.library.editNotebooks("section", ["notebook_id": notebook.id, "section": s.name]) } }
                     .disabled(notebook.section == s.name)
             }
             if model.macSections.isEmpty {
-                Button(model.sectionsProblem.map { "Couldn't list the Mac's sections: \($0)" } ?? "No sections on the Mac yet") {}.disabled(true)
+                Button("No sections yet") {}.disabled(true)
             }
             Divider()
             Button("New Section…") { model.prompts.text = ""; model.prompts.newSection = true }
@@ -107,7 +107,7 @@ struct EditPromptsHost: ViewModifier {
             }
             .confirmationDialog("Delete “\(prompts.deleteSource?.name ?? "")”?", isPresented: isSet($prompts.deleteSource), titleVisibility: .visible) {
                 Button("Delete", role: .destructive) { if let s = prompts.deleteSource { model.edit { await library.deleteSource(s) } } }
-            } message: { Text("It is removed from the paired Mac too. This cannot be undone.") }
+            } message: { Text(model.paired ? "It is removed from this Mac now, and from your paired Mac when it can be reached. This cannot be undone." : "This cannot be undone.") }
             .alert("New Notebook", isPresented: $prompts.newNotebook) {
                 TextField("Title", text: $prompts.text)
                 Button("Create") {
@@ -120,7 +120,7 @@ struct EditPromptsHost: ViewModifier {
                     }
                 }
                 Button("Cancel", role: .cancel) {}
-            } message: { Text("Made on the paired Mac and synced here. Add sources to it there, or drop them on it here.") }
+            } message: { Text(model.paired ? "Made on this Mac now; your paired Mac gets it when it can be reached." : "Drop files or links on it to add sources.") }
             .alert("Rename Notebook", isPresented: isSet($prompts.renameNotebook)) {
                 TextField("Title", text: $prompts.text)
                 Button("Save") { if let nb = prompts.renameNotebook { let t = prompts.text; model.edit { await library.editNotebooks("rename", ["notebook_id": nb.id, "title": t]) } } }
@@ -136,7 +136,7 @@ struct EditPromptsHost: ViewModifier {
                         }
                     }
                 }
-            } message: { Text("Its sources, notes and Studio items are deleted on the paired Mac and here. This cannot be undone.") }
+            } message: { Text(model.paired ? "Its sources, notes and Studio items are deleted on this Mac now, and on your paired Mac when it can be reached. This cannot be undone." : "Its sources, notes and Studio items are deleted. This cannot be undone.") }
             .alert("New Section", isPresented: $prompts.newSection) {
                 TextField("Name", text: $prompts.text)
                 Button("Create") { let t = prompts.text; model.edit { await library.editNotebooks("section_create", ["name": t]) } }

@@ -41,17 +41,10 @@ final class AppModel {
     /// The rename, new and delete prompts the sidebar's menus open; one host at the window root shows them.
     let prompts = EditPrompts()
 
-    /// Why the last section list failed, for the Move to Section menu; nil once it works.
-    var sectionsProblem: String?
-    func loadSections() async {
-        // Away from the Mac (the last sync could not reach it), the list is not asked for again: each try would wait
-        // the whole timeout. Sync Now, or the next change, asks again.
-        if case .failed = library.syncState { sectionsProblem = LibraryModel.problemMacAway; return }
-        do { macSections = try await library.sectionsFromMac(); sectionsProblem = nil }
-        catch { sectionsProblem = error.localizedDescription }
-    }
+    /// The section names in use on this Mac (nothing is asked of the paired Mac).
+    func loadSections() async { macSections = await library.sections() }
 
-    /// Runs one change through the Mac, shows its problem if any, then tells open lists to reload.
+    /// Runs one change (made here at once, queued for the paired Mac), shows its problem if any, then tells open lists to reload.
     func edit(_ work: @escaping @MainActor () async -> String?) {
         prompts.busy = true
         Task { @MainActor in
@@ -60,6 +53,7 @@ final class AppModel {
             if let problem { prompts.problem = problem }
             NotificationCenter.default.post(name: .librarySynced, object: nil)
             await loadSections()
+            if !library.notebooks.isEmpty { await startModels() }      // the first notebook made on an unpaired Mac: warm the models now
         }
     }
 
@@ -187,6 +181,12 @@ final class AppModel {
         if paired { Task { await runSync(); await loadSections() } }
         // A library moved over from the old app answers without a pairing; the models warm for it too.
         if paired || !library.notebooks.isEmpty { await startModels() }
+    }
+
+    /// A notebook made here was created on the paired Mac under its own id: the selection follows it.
+    func notebookRenumbered(from old: String, to new: String) {
+        if case .notebook(let id) = selection, id == old { selection = .notebook(new) }
+        NotificationCenter.default.post(name: .librarySynced, object: nil)
     }
 
     /// The import finished: the sidebar reloads and the models warm if they have not.

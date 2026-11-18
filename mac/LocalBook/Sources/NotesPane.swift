@@ -340,8 +340,8 @@ struct NoteEditor: View {
         dictation.stop(); saving = true; defer { saving = false }
         do {
             let kind = editing?.kind ?? (fromPhoto ? "image" : "note")
-            try await library.addNote(notebook: notebookId, title: title, text: text, kind: kind,
-                                      photo: photo.map { ($0.image, $0.jpeg) }, replacing: editing?.id)
+            try await library.saveNoteEdit(notebook: notebookId, title: title, text: text, kind: kind,
+                                           photo: photo.map { ($0.image, $0.jpeg) }, replacing: editing?.id)
             NotificationCenter.default.post(name: .librarySynced, object: nil)
             dismiss()
         } catch { self.error = "Couldn't save: \(error.localizedDescription)" }
@@ -437,7 +437,7 @@ struct NotesPane: View {
                     }
                     .tag(n.id)
                     .contextMenu {
-                        Button("Edit…") { editingNote = n }.disabled(sent.contains(n.id))
+                        Button("Edit…") { editingNote = n }
                         Button("Delete…", role: .destructive) { confirmDelete = n }
                     }
                 }
@@ -471,8 +471,8 @@ struct NotesPane: View {
                     }
                     Spacer()
                     Button { editingNote = n } label: { Image(systemName: "pencil") }
-                        .help(sent.contains(n.id) ? "This note is on your paired Mac now; edit it there." : "Edit (⌘E)")
-                        .disabled(sent.contains(n.id)).keyboardShortcut("e", modifiers: .command)
+                        .help("Edit (⌘E)")
+                        .keyboardShortcut("e", modifiers: .command)
                     Button { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(n.text, forType: .string) } label: { Image(systemName: "doc.on.doc") }.help("Copy text")
                     ShareLink(item: n.text) { Image(systemName: "square.and.arrow.up") }.help("Share")
                 }

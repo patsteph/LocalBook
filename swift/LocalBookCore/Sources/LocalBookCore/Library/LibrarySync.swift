@@ -113,8 +113,10 @@ public enum LibrarySync {
         case .pairedMac:
             // Notebooks the old app moved over but keeps on that Mac only are not in the link's manifest; they stay.
             // One the link does list is the link's to manage from now on.
+            // Notebooks made on this device that the Mac has not created yet (it was out of reach) are not its to remove either.
             let imported = Set(await store.metaKeys(prefix: importedPrefix).map { String($0.dropFirst(importedPrefix.count)) })
-            try await store.removeNotebooks(except: listed.union(imported))
+            let madeHere = await store.localNotebookIds()
+            try await store.removeNotebooks(except: listed.union(imported).union(madeHere))
             for id in listed where imported.contains(id) { try await store.deleteMeta(importedPrefix + id) }
         case .oldAppOnThisMac:
             for id in listed { try await store.setMeta(importedPrefix + id, "1") }

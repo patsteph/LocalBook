@@ -110,24 +110,36 @@ extension LibraryModel {
     public func sourceText(notebook: String, sourceId: String) async -> String { await store?.sourceText(notebook: notebook, sourceId: sourceId) ?? "" }
     public func sourceURL(notebook: String, sourceId: String) async -> String? { await store?.sourceURL(notebook: notebook, sourceId: sourceId) }
 
-    /// Renames a saved item. Items the Mac knows about are renamed there first so it stays the same everywhere.
+    /// Renames a saved item here at once; if the paired Mac has the item, the rename is queued for it.
     /// Returns an error message, or nil when done.
     public func renameSource(_ source: LibraryStore.SourceInfo, to newTitle: String) async -> String? {
         let title = newTitle.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !title.isEmpty, let store else { return "Give it a name first." }
-        var macId: String? = source.isLocal ? await noteSentSourceId(source.id) : source.id
-        if source.isLocal, macId == nil { macId = nil }
-        if let macId, let mac = MacLink.paired {
-            do {
-                _ = try await MacLink.signedCall(mac, path: "/phone/library/source/rename",
-                                                 json: ["notebook_id": source.notebookId, "source_id": macId, "title": title], timeout: 60)
-            } catch { return "The Mac couldn't be reached, so the name wasn't changed. (\(error.localizedDescription))" }
-        } else if macId != nil {
-            return "Connect to the Mac to rename this item."
-        }
-        try? await store.renameSource(notebook: source.notebookId, sourceId: source.id, title: title)
+        let macId: String? = source.isLocal ? await noteSentSourceId(source.id) : source.id
+        do { try await store.renameSource(notebook: source.notebookId, sourceId: source.id, title: title) }
+        catch { return "Couldn't rename it here: \(error.localizedDescription)" }
+        if let macId { try? await store.enqueueEdit("source_rename", ["notebook_id": source.notebookId, "source_id": macId, "title": title]) }
         await refresh()
+        kickFlush()
         return nil
+    }
+
+    /// Saves an edited note. A note the Mac already has is replaced: the new text becomes a fresh note here (sent as
+    /// such, since the Mac keeps the first version it saw of a note id) and the Mac's copy of the old one is queued
+    /// for deletion. A note still waiting here is simply rewritten in place.
+    public func saveNoteEdit(notebook: String, title: String, text: String, kind: String = "note",
+                             photo: (image: CGImage, jpeg: Data)? = nil, replacing old: String?) async throws {
+        guard let old, let store, let macId = await noteSentSourceId(old) else {
+            try await addNote(notebook: notebook, title: title, text: text, kind: kind, photo: photo, replacing: old)
+            return
+        }
+        try await addNote(notebook: notebook, title: title, text: text, kind: kind, photo: photo, replacing: nil)
+        try? await store.removeLocalNote(notebook: notebook, sourceId: old)
+        try? FileManager.default.removeItem(at: Self.photoURL(old))
+        try? await store.setMeta(Self.sentKey(old), "")
+        try? await store.enqueueEdit("source_delete", ["notebook_id": notebook, "source_id": macId])
+        await refresh()
+        kickFlush()
     }
 
     public func removeNote(_ note: LibraryStore.LocalNote) async {
@@ -165,6 +177,7 @@ extension LibraryModel {
             var sentAny = false
             for note in await store.localNotes() where await noteSentSourceId(note.id) == nil {
                 if note.text.isEmpty { continue }                       // a picture with no text has nothing to send yet
+                if await store.isLocalNotebook(note.notebookId) { continue }   // its notebook is not on the Mac yet: the note goes once it is
                 var sid: String?
                 var attempt = 0
                 while sid == nil {
@@ -196,6 +209,7 @@ extension LibraryModel {
             var pending = 0                                             // sent, but the Mac has not finished indexing it yet
             var unsent = 0
             for note in await store.localNotes() where !note.text.isEmpty {
+                if await store.isLocalNotebook(note.notebookId) { continue }
                 guard let sid = await noteSentSourceId(note.id) else { unsent += 1; continue }
                 if await store.sourceHashes(notebook: note.notebookId)[sid] != nil {
                     if note.hasPicture { try? await store.removeLocalNoteText(notebook: note.notebookId, sourceId: note.id) }   // keep the picture
