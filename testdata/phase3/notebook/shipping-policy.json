@@ -1,0 +1,15 @@
+{
+  "policy": "shipping",
+  "revised": "2025-03-03",
+  "same_day_cutoff": "12:00 America/Chicago",
+  "late_definition_days": 2,
+  "late_credit_percent": 5,
+  "packaging": "nitrogen-flushed bag with roast date",
+  "contacts": {
+    "south": "Dana Whitfield",
+    "midwest": "Luis Ortega",
+    "mountain": "Priya Raman",
+    "northeast": "Tom Beckett",
+    "west": "Aiko Tanaka"
+  }
+}

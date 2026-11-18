@@ -1,0 +1,23 @@
+{
+  "rows": 240,
+  "texas_count": 103,
+  "arr_by_state": {
+    "Texas": 772200,
+    "Ohio": 473300,
+    "Colorado": 214800,
+    "Maine": 188200,
+    "Oregon": 130800
+  },
+  "total_arr": 1779300,
+  "enterprise_count": 30,
+  "renewing_2026": 126,
+  "avg_seats_pro": 44.4,
+  "inactive": 24,
+  "largest_account": "Pine Roasters",
+  "founder": "Rosa Alvarez",
+  "founded": "2014, Portland, Maine",
+  "late_credit": "5 percent",
+  "colorado_manager": "Priya Raman",
+  "employees": 63,
+  "caffeine_cutoff": "2 am"
+}

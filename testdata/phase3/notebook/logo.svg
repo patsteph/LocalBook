@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="400" height="200" viewBox="0 0 400 200">
+  <rect width="400" height="200" fill="#1b365d"/>
+  <circle cx="70" cy="100" r="40" fill="#f2b134"/>
+  <text x="130" y="90" font-family="Helvetica" font-size="32" fill="#ffffff">Harbor Lights Coffee</text>
+  <text x="130" y="130" font-family="Helvetica" font-size="18" fill="#f2b134">Roasted in Austin since 2019</text>
+</svg>

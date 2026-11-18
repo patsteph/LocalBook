@@ -1,0 +1,39 @@
+# Harbor Lights Coffee: Company Handbook
+
+## 1. Who we are
+
+Harbor Lights Coffee roasts and ships coffee to 240 wholesale accounts in five states. The company was founded in Portland, Maine in 2014 by Rosa Alvarez and moved its roastery to Austin, Texas in 2019. Texas is the largest market by account count and by annual recurring revenue (ARR). Every account is on one of three plans: Basic, Pro or Enterprise.
+
+## 2. Plans
+
+The Basic plan is for a single cafe with up to ten seats and ships one roast a month. The Pro plan serves small chains with up to eighty seats and ships weekly. The Enterprise plan has no seat limit, a named account manager and a service credit when a shipment is late by more than two days. Enterprise accounts renew on a calendar basis, in January or July.
+
+## 3. Regional managers
+
+Each state has one regional manager who owns renewals. Dana Whitfield runs the South (Texas). Luis Ortega runs the Midwest (Ohio). Priya Raman runs the Mountain region (Colorado). Tom Beckett runs the Northeast (Maine). Aiko Tanaka runs the West (Oregon). Managers meet on the first Monday of each month.
+
+## 4. Shipping policy
+
+Orders placed before noon Central time ship the same day. Roasts are packed in nitrogen-flushed bags with a roast date. A late shipment is one that arrives more than two days after the promised date; the customer receives a credit of five percent of that order. The policy was last revised on 3 March 2025.
+
+## 5. Melatonin and the night shift
+
+The roastery runs a night shift from 10 pm to 6 am. Staff on the night shift are offered a sleep consultation. The consultation covers light exposure, caffeine cut-off times (no coffee after 2 am on shift) and, where a clinician recommends it, low-dose melatonin taken 30 minutes before the day sleep period. Melatonin is not provided by the company.
+
+## 6. Key numbers
+
+| Metric | Value | As of |
+|---|---|---|
+| Wholesale accounts | 240 | Nov 2026 |
+| States served | 5 | Nov 2026 |
+| Roastery capacity | 1,800 kg per week | Oct 2026 |
+| Average lead time | 2.1 days | Q3 2026 |
+| Late shipment rate | 1.4 percent | Q3 2026 |
+| Employees | 63 | Nov 2026 |
+
+## 7. Reminders
+
+- Roast dates are printed on every bag.
+- No coffee after 2 am on the night shift.
+- Enterprise renewals fall in January or July.
+- Managers meet on the first Monday of the month.

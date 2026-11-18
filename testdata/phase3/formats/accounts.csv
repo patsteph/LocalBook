@@ -1,0 +1,241 @@
+Account,State,Plan,ARR,Seats,Renewal Date,Active
+Maple Logistics,Texas,Pro,7800,64,2025-06-19,TRUE
+Harbor Clinic,Oregon,Basic,600,6,2026-06-15,TRUE
+Pine Clinic,Ohio,Basic,1900,8,2025-09-19,TRUE
+Pine Studio,Maine,Pro,3700,53,2026-11-27,TRUE
+Pine Studio 97,Texas,Pro,4400,45,2026-04-28,TRUE
+Pine Outfitters,Texas,Enterprise,31300,627,2025-01-30,TRUE
+Willow Supply,Ohio,Pro,3500,43,2026-07-11,TRUE
+Maple Supply,Maine,Basic,600,8,2025-05-29,TRUE
+Delta Labs,Texas,Pro,6800,33,2026-12-09,TRUE
+Falcon Roasters,Maine,Enterprise,35800,233,2025-08-25,TRUE
+Anchor Bakery,Colorado,Pro,11100,70,2025-05-31,TRUE
+Juniper Outfitters,Maine,Pro,6400,34,2025-11-14,TRUE
+Copper Roasters,Texas,Basic,1300,3,2026-08-28,TRUE
+Delta Clinic,Texas,Basic,2500,7,2026-11-29,TRUE
+Canyon Partners,Texas,Basic,1500,9,2026-08-17,TRUE
+Copper Logistics,Oregon,Pro,11400,25,2026-07-03,TRUE
+Cedar Labs,Texas,Pro,11900,19,2025-01-18,TRUE
+Granite Roasters,Texas,Basic,1700,3,2025-03-07,TRUE
+Pine Studio 97,Texas,Enterprise,31400,302,2025-05-16,TRUE
+Falcon Logistics,Ohio,Enterprise,15700,801,2025-03-25,TRUE
+Beacon Bakery,Texas,Basic,1300,2,2026-06-14,TRUE
+Lantern Supply,Texas,Basic,1900,7,2025-05-07,FALSE
+Birch Labs,Maine,Basic,2800,3,2026-08-07,TRUE
+Canyon Supply,Ohio,Basic,2500,5,2025-06-30,TRUE
+Coastal Studio,Texas,Pro,5500,41,2025-06-18,FALSE
+Pine Supply,Ohio,Enterprise,16600,569,2026-01-05,TRUE
+Birch Partners,Ohio,Pro,10300,46,2025-03-31,TRUE
+Falcon Labs,Ohio,Basic,1200,8,2025-07-25,TRUE
+Birch Roasters,Maine,Pro,7800,44,2026-06-27,TRUE
+Harbor Bakery,Texas,Basic,2800,5,2026-11-07,TRUE
+Anchor Roasters,Texas,Enterprise,41200,376,2025-01-22,TRUE
+Beacon Roasters,Texas,Basic,2700,10,2026-11-22,TRUE
+Juniper Logistics,Texas,Basic,1000,7,2026-12-18,TRUE
+Granite Supply,Colorado,Basic,1900,6,2026-06-06,TRUE
+Granite Outfitters,Texas,Pro,8500,62,2026-09-27,TRUE
+Prairie Logistics,Texas,Pro,5600,28,2026-12-07,TRUE
+Prairie Labs,Ohio,Enterprise,54300,513,2025-07-05,TRUE
+Copper Clinic,Oregon,Basic,2200,5,2026-09-14,TRUE
+Canyon Outfitters,Oregon,Pro,10800,20,2025-11-16,FALSE
+Birch Studio,Ohio,Basic,1900,4,2026-02-06,TRUE
+Falcon Clinic,Texas,Basic,1000,4,2026-10-13,TRUE
+Juniper Roasters,Ohio,Basic,2700,10,2026-05-08,TRUE
+Birch Supply,Texas,Basic,1100,6,2026-09-14,TRUE
+Birch Outfitters,Ohio,Basic,2700,1,2025-11-15,TRUE
+Maple Studio,Ohio,Basic,1900,10,2026-10-22,TRUE
+Harbor Logistics,Texas,Pro,9600,79,2026-02-27,TRUE
+Pine Labs,Ohio,Pro,5200,22,2026-10-05,TRUE
+Canyon Supply 15,Ohio,Basic,2400,6,2025-02-21,TRUE
+Prairie Dental,Texas,Pro,7000,63,2026-03-19,TRUE
+Juniper Labs,Texas,Pro,3100,53,2026-10-20,TRUE
+Juniper Dental,Colorado,Basic,1700,6,2025-05-15,TRUE
+Granite Supply 72,Maine,Basic,900,8,2026-04-19,TRUE
+Anchor Supply,Colorado,Basic,1800,7,2025-05-08,TRUE
+Juniper Labs 9,Maine,Pro,6200,17,2025-12-27,TRUE
+Pine Supply 93,Ohio,Basic,2400,1,2025-10-11,TRUE
+Summit Bakery,Ohio,Basic,2600,3,2026-10-07,TRUE
+Canyon Logistics,Colorado,Pro,7900,33,2026-07-14,TRUE
+Delta Labs 31,Texas,Enterprise,13300,354,2025-11-03,TRUE
+Beacon Studio,Ohio,Basic,1300,9,2025-02-03,TRUE
+Birch Outfitters 66,Maine,Pro,10400,40,2026-05-22,FALSE
+Harbor Partners,Oregon,Basic,2700,5,2026-05-04,TRUE
+Maple Bakery,Ohio,Enterprise,19800,108,2025-09-28,TRUE
+Summit Outfitters,Ohio,Pro,10800,12,2025-01-13,TRUE
+Glacier Labs,Colorado,Basic,2000,1,2026-08-18,FALSE
+Maple Dental,Texas,Pro,5800,66,2026-01-05,FALSE
+Summit Supply,Ohio,Pro,9700,64,2026-06-19,TRUE
+Summit Partners,Maine,Pro,10300,22,2025-09-12,FALSE
+Juniper Roasters 81,Texas,Basic,2200,6,2026-09-29,TRUE
+Copper Studio,Oregon,Basic,1400,1,2025-12-23,TRUE
+Glacier Partners,Oregon,Basic,1600,4,2026-02-03,TRUE
+Falcon Dental,Texas,Enterprise,51300,861,2025-09-27,TRUE
+Copper Supply,Oregon,Basic,1500,3,2025-05-23,FALSE
+Juniper Roasters 88,Texas,Enterprise,14300,447,2026-10-16,TRUE
+Anchor Supply 15,Colorado,Basic,1700,7,2025-01-30,TRUE
+Copper Dental,Texas,Basic,1100,8,2025-11-07,TRUE
+Lantern Dental,Texas,Pro,6900,71,2026-10-01,TRUE
+Glacier Partners 47,Texas,Pro,5000,62,2025-11-15,TRUE
+Birch Bakery,Texas,Pro,7500,48,2025-07-31,TRUE
+Juniper Outfitters 55,Ohio,Basic,2500,7,2026-01-31,TRUE
+Anchor Logistics,Texas,Pro,11100,58,2026-12-30,TRUE
+Pine Dental,Texas,Pro,5600,41,2026-11-27,FALSE
+Coastal Logistics,Texas,Basic,2500,4,2025-12-22,TRUE
+Ember Partners,Texas,Pro,10000,35,2025-03-25,TRUE
+Summit Studio,Texas,Pro,6300,38,2026-10-08,FALSE
+Ember Outfitters,Texas,Basic,2400,7,2026-10-22,TRUE
+Ember Labs,Oregon,Basic,700,9,2026-06-15,TRUE
+Granite Clinic,Ohio,Basic,700,1,2025-07-14,FALSE
+Copper Logistics 91,Maine,Pro,8100,16,2025-01-22,FALSE
+Maple Labs,Maine,Enterprise,29100,683,2026-02-04,TRUE
+Cedar Labs 64,Ohio,Pro,7800,54,2025-02-15,TRUE
+Birch Clinic,Texas,Basic,2300,4,2025-08-08,TRUE
+Summit Supply 65,Texas,Basic,3000,10,2025-10-17,TRUE
+Lantern Partners,Maine,Pro,9300,64,2025-10-12,TRUE
+Anchor Outfitters,Texas,Basic,700,7,2026-10-01,TRUE
+Glacier Bakery,Ohio,Basic,2800,4,2026-03-06,TRUE
+Maple Clinic,Ohio,Pro,3000,73,2025-12-30,TRUE
+Glacier Dental,Colorado,Basic,2500,2,2026-02-09,TRUE
+Ember Clinic,Maine,Pro,3900,29,2025-04-22,FALSE
+Pine Roasters,Ohio,Enterprise,58800,266,2025-01-23,TRUE
+Glacier Labs 55,Texas,Basic,1200,9,2026-09-30,TRUE
+Maple Studio 72,Colorado,Pro,11000,11,2025-12-15,TRUE
+Falcon Studio,Maine,Basic,2500,2,2026-07-03,TRUE
+Cedar Labs 27,Oregon,Pro,9900,46,2026-10-28,TRUE
+Copper Dental 34,Ohio,Pro,6100,43,2025-10-04,TRUE
+Canyon Logistics 15,Colorado,Pro,10600,34,2025-12-17,TRUE
+Falcon Bakery,Texas,Basic,2400,2,2026-12-20,TRUE
+Pine Studio 74,Texas,Pro,4400,14,2026-06-20,TRUE
+Maple Dental 84,Texas,Basic,2400,3,2026-12-17,FALSE
+Willow Supply 74,Oregon,Basic,600,2,2025-02-08,TRUE
+Lantern Outfitters,Texas,Basic,3000,5,2025-08-19,TRUE
+Copper Clinic 36,Texas,Pro,3200,20,2026-09-14,TRUE
+Falcon Studio 53,Texas,Basic,3000,3,2026-10-18,TRUE
+Lantern Bakery,Colorado,Enterprise,43200,801,2026-07-30,TRUE
+Birch Dental,Maine,Basic,1800,7,2026-10-07,TRUE
+Pine Labs 57,Texas,Basic,1100,1,2026-01-17,TRUE
+Birch Partners 67,Texas,Enterprise,13200,202,2025-09-10,TRUE
+Willow Supply 19,Texas,Basic,2700,8,2025-09-22,FALSE
+Willow Studio,Maine,Basic,2400,7,2026-10-31,TRUE
+Cedar Studio,Ohio,Pro,8200,17,2026-08-18,TRUE
+Canyon Dental,Texas,Pro,10100,16,2026-05-23,TRUE
+Falcon Logistics 85,Texas,Basic,1300,5,2025-01-04,TRUE
+Glacier Clinic,Texas,Enterprise,20100,805,2025-10-20,TRUE
+Summit Bakery 49,Maine,Basic,2700,10,2026-02-12,TRUE
+Ember Studio,Texas,Pro,11600,51,2026-09-21,TRUE
+Falcon Outfitters,Ohio,Basic,600,5,2026-10-28,TRUE
+Pine Supply 63,Ohio,Pro,7300,72,2025-05-30,TRUE
+Juniper Studio,Ohio,Enterprise,17600,811,2026-09-21,TRUE
+Maple Studio 67,Ohio,Basic,1200,7,2025-04-14,TRUE
+Harbor Bakery 98,Texas,Basic,700,2,2025-02-24,TRUE
+Summit Logistics,Texas,Enterprise,34600,827,2025-04-04,TRUE
+Harbor Roasters,Ohio,Basic,2800,1,2026-01-30,TRUE
+Beacon Outfitters,Texas,Pro,11200,29,2025-09-09,TRUE
+Copper Supply 19,Ohio,Basic,1500,3,2025-02-03,FALSE
+Falcon Outfitters 46,Texas,Pro,11200,78,2025-11-21,TRUE
+Delta Outfitters,Ohio,Basic,3000,4,2026-07-25,TRUE
+Pine Roasters 6,Colorado,Basic,1900,6,2025-08-28,TRUE
+Copper Roasters 82,Colorado,Pro,7200,36,2026-06-23,TRUE
+Prairie Bakery,Maine,Basic,1100,2,2026-03-31,TRUE
+Prairie Supply,Ohio,Pro,4400,69,2026-03-14,TRUE
+Falcon Logistics 83,Colorado,Enterprise,15600,852,2026-05-01,TRUE
+Juniper Outfitters 22,Texas,Basic,800,2,2026-12-07,TRUE
+Delta Labs 79,Texas,Basic,2200,9,2025-05-18,TRUE
+Pine Dental 3,Texas,Basic,1600,4,2026-07-17,TRUE
+Glacier Roasters,Texas,Enterprise,21000,652,2025-09-20,TRUE
+Ember Roasters,Texas,Basic,2800,2,2026-01-16,TRUE
+Birch Bakery 55,Ohio,Pro,4700,13,2025-08-01,TRUE
+Cedar Partners,Ohio,Pro,5500,30,2025-05-12,TRUE
+Copper Dental 47,Texas,Pro,6800,14,2026-02-10,TRUE
+Falcon Roasters 73,Texas,Basic,1100,10,2025-03-02,TRUE
+Pine Logistics,Maine,Pro,3800,70,2026-03-02,TRUE
+Summit Outfitters 58,Ohio,Enterprise,18700,229,2025-04-04,TRUE
+Beacon Partners,Texas,Pro,4200,57,2025-08-12,TRUE
+Maple Bakery 78,Texas,Pro,10600,49,2026-02-16,TRUE
+Juniper Outfitters 14,Texas,Basic,1300,10,2026-08-02,FALSE
+Copper Roasters 21,Oregon,Basic,2000,2,2025-07-16,FALSE
+Prairie Roasters,Colorado,Basic,2100,9,2026-11-05,TRUE
+Birch Partners 41,Texas,Pro,6700,24,2025-12-03,TRUE
+Glacier Roasters 3,Texas,Basic,1300,6,2025-01-06,TRUE
+Granite Studio,Colorado,Basic,2200,9,2025-05-24,TRUE
+Birch Outfitters 74,Colorado,Enterprise,17800,665,2026-10-08,TRUE
+Prairie Logistics 89,Maine,Basic,2400,10,2025-03-24,FALSE
+Maple Partners,Texas,Pro,9000,21,2026-02-10,TRUE
+Harbor Roasters 20,Colorado,Pro,8200,64,2025-11-10,TRUE
+Glacier Logistics,Ohio,Pro,5900,24,2026-06-04,TRUE
+Delta Logistics,Ohio,Basic,900,1,2026-03-22,TRUE
+Pine Outfitters 16,Ohio,Basic,2200,6,2025-02-02,TRUE
+Prairie Outfitters,Texas,Enterprise,36800,839,2025-10-26,TRUE
+Birch Studio 72,Ohio,Basic,1200,2,2025-01-01,TRUE
+Lantern Bakery 6,Texas,Pro,9100,33,2025-07-24,TRUE
+Delta Studio,Oregon,Enterprise,15000,270,2025-07-04,FALSE
+Juniper Studio 39,Ohio,Basic,2400,3,2026-05-10,FALSE
+Canyon Labs,Oregon,Pro,8700,45,2026-02-14,TRUE
+Canyon Roasters,Ohio,Pro,4900,15,2025-12-06,TRUE
+Anchor Studio,Texas,Basic,1200,10,2026-12-06,TRUE
+Copper Outfitters,Oregon,Basic,1000,1,2026-05-22,TRUE
+Anchor Labs,Colorado,Pro,3800,38,2026-11-01,TRUE
+Lantern Roasters,Texas,Basic,700,5,2026-07-02,FALSE
+Copper Logistics 72,Oregon,Enterprise,34200,265,2026-08-28,TRUE
+Maple Supply 64,Colorado,Pro,9700,27,2025-01-04,TRUE
+Falcon Clinic 82,Maine,Pro,9900,70,2026-10-02,TRUE
+Granite Partners,Colorado,Pro,11200,73,2026-08-02,TRUE
+Cedar Supply,Texas,Basic,1700,5,2026-10-06,TRUE
+Maple Supply 58,Texas,Basic,2000,10,2026-06-15,TRUE
+Maple Roasters,Ohio,Basic,600,7,2025-07-10,TRUE
+Coastal Partners,Ohio,Basic,2600,2,2025-01-08,TRUE
+Pine Roasters 68,Texas,Basic,800,2,2025-08-27,TRUE
+Maple Outfitters,Texas,Pro,5000,49,2025-04-30,TRUE
+Summit Clinic,Colorado,Pro,8100,61,2026-08-09,TRUE
+Coastal Outfitters,Texas,Basic,2200,3,2025-05-18,TRUE
+Ember Labs 83,Texas,Pro,10200,34,2025-08-14,TRUE
+Coastal Studio 74,Ohio,Basic,1900,6,2025-08-30,TRUE
+Copper Studio 31,Maine,Pro,5500,80,2026-05-21,TRUE
+Granite Partners 30,Maine,Pro,11600,48,2026-05-12,TRUE
+Juniper Logistics 74,Texas,Enterprise,20300,173,2026-08-13,TRUE
+Prairie Bakery 93,Oregon,Pro,9700,25,2026-06-29,TRUE
+Harbor Roasters 49,Maine,Basic,900,1,2026-04-10,TRUE
+Granite Bakery,Maine,Basic,2700,8,2026-10-02,TRUE
+Glacier Studio,Ohio,Enterprise,43200,229,2025-01-17,TRUE
+Canyon Roasters 19,Ohio,Basic,2600,7,2026-03-09,TRUE
+Falcon Logistics 94,Colorado,Pro,10000,62,2025-12-12,TRUE
+Granite Clinic 81,Ohio,Basic,1900,4,2025-07-11,TRUE
+Copper Partners,Ohio,Pro,4300,16,2026-05-15,TRUE
+Beacon Logistics,Oregon,Pro,5900,51,2026-01-31,TRUE
+Beacon Studio 77,Oregon,Pro,4700,68,2025-10-07,TRUE
+Willow Studio 15,Texas,Basic,2500,7,2025-02-13,TRUE
+Juniper Supply,Texas,Pro,4400,52,2026-01-13,TRUE
+Canyon Partners 53,Ohio,Pro,10000,53,2025-04-08,TRUE
+Willow Dental,Texas,Basic,800,3,2025-03-03,TRUE
+Granite Outfitters 14,Oregon,Basic,2300,7,2025-09-25,TRUE
+Prairie Roasters 64,Colorado,Basic,2000,1,2026-09-05,TRUE
+Coastal Labs,Ohio,Enterprise,34500,648,2026-04-08,TRUE
+Beacon Outfitters 27,Texas,Pro,3100,66,2025-12-13,TRUE
+Harbor Logistics 28,Oregon,Basic,3000,2,2026-10-04,TRUE
+Maple Clinic 8,Texas,Pro,5500,43,2026-10-10,TRUE
+Anchor Partners,Maine,Basic,1100,10,2025-09-18,TRUE
+Birch Bakery 86,Texas,Pro,6700,25,2026-01-08,TRUE
+Falcon Logistics 45,Texas,Basic,2300,2,2025-04-15,TRUE
+Cedar Labs 52,Texas,Basic,1800,2,2025-04-05,TRUE
+Lantern Bakery 74,Colorado,Pro,9400,80,2026-09-20,TRUE
+Pine Roasters 23,Texas,Basic,1100,3,2025-03-19,TRUE
+Granite Supply 76,Colorado,Pro,5900,78,2026-12-05,TRUE
+Ember Outfitters 24,Texas,Basic,1600,9,2026-03-28,TRUE
+Anchor Partners 85,Texas,Pro,4200,56,2025-02-18,TRUE
+Lantern Roasters 68,Texas,Basic,800,9,2025-02-15,TRUE
+Lantern Dental 81,Maine,Basic,2800,8,2026-11-16,TRUE
+Juniper Outfitters 5,Texas,Basic,800,4,2025-07-13,TRUE
+Beacon Bakery 32,Texas,Basic,800,1,2025-05-01,TRUE
+Beacon Partners 13,Ohio,Pro,11100,66,2025-06-08,TRUE
+Anchor Roasters 32,Ohio,Pro,10100,62,2025-03-14,FALSE
+Falcon Logistics 84,Oregon,Basic,900,6,2026-04-14,TRUE
+Anchor Partners 96,Colorado,Basic,2200,3,2026-03-25,TRUE
+Lantern Dental 95,Maine,Basic,1700,5,2026-03-21,TRUE
+Maple Logistics 15,Colorado,Basic,2100,10,2026-08-31,TRUE
+Maple Roasters 55,Ohio,Pro,3700,64,2026-01-26,TRUE
+Lantern Partners 19,Texas,Basic,800,8,2025-11-03,TRUE
+Birch Supply 69,Texas,Basic,3000,6,2026-05-15,TRUE
+Maple Studio 36,Texas,Enterprise,47800,566,2026-01-09,TRUE
+Birch Outfitters 50,Texas,Enterprise,35200,678,2025-11-05,FALSE
+Cedar Dental,Texas,Pro,8000,15,2025-04-21,TRUE
+Harbor Clinic 45,Ohio,Basic,2700,1,2026-04-18,TRUE

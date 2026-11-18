@@ -1,0 +1,17 @@
+# Weekly roast schedule, Austin roastery
+week_starts: Monday
+shifts:
+  day: "06:00-14:00"
+  evening: "14:00-22:00"
+  night: "22:00-06:00"
+roasts:
+  - name: Harbor Light Blend
+    days: [Monday, Wednesday, Friday]
+    kilos_per_batch: 60
+  - name: Night Watch Dark
+    days: [Tuesday, Thursday]
+    kilos_per_batch: 45
+  - name: Single Origin Rotating
+    days: [Saturday]
+    kilos_per_batch: 30
+capacity_kg_per_week: 1800
