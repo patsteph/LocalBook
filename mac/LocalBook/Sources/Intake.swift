@@ -75,17 +75,22 @@ final class IntakeModel {
         Task {
             var report = Report()
             for provider in providers {
+                let types = provider.registeredTypeIdentifiers
+                SoakTrace.log("drop: \(types.joined(separator: ", "))")
                 do {
-                    if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
+                    if Self.offers(provider, .fileURL) {
                         let url = try await Self.loadURL(from: provider, type: .fileURL)
                         try await file(url, notebook: notebook, library: library, report: &report)
-                    } else if provider.hasItemConformingToTypeIdentifier(UTType.url.identifier) {
-                        let url = try await Self.loadURL(from: provider, type: .url)
+                    } else if let url = await Self.webAddress(from: provider) {
+                        // A link dragged from a browser: Safari and Chrome offer it as public.url, as text, and (Safari) as a
+                        // promised .webloc file; whichever of those loads first is the address.
                         await link(url, notebook: notebook, library: library, report: &report)
-                    } else if provider.hasItemConformingToTypeIdentifier(UTType.plainText.identifier) || provider.hasItemConformingToTypeIdentifier(UTType.text.identifier) {
+                    } else if Self.offers(provider, .plainText) || Self.offers(provider, .text) || Self.offers(provider, .html) || Self.offers(provider, .rtf) {
                         let text = try await Self.loadText(from: provider)
                         if let url = Self.soleLink(in: text) { await link(url, notebook: notebook, library: library, report: &report) }
                         else { try await note(text, title: nil, notebook: notebook, library: library, report: &report) }
+                    } else {
+                        report.failed.append("The drop offered nothing this app can add (\(types.isEmpty ? "no types" : types.prefix(4).joined(separator: ", ")))")
                     }
                 } catch { report.failed.append(error.localizedDescription) }
             }
@@ -187,7 +192,7 @@ final class IntakeModel {
     }
 
     /// Dropped or pasted text that is exactly one web address.
-    static func soleLink(in text: String) -> URL? {
+    nonisolated static func soleLink(in text: String) -> URL? {
         let s = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !s.isEmpty, !s.contains(where: \.isWhitespace), let url = URL(string: s), let scheme = url.scheme?.lowercased(),
               scheme == "http" || scheme == "https", url.host() != nil else { return nil }
@@ -195,7 +200,7 @@ final class IntakeModel {
     }
 
     /// Every web address in `text`, one per line or separated by spaces, for the Add Web Page sheet.
-    static func links(in text: String) -> [URL] {
+    nonisolated static func links(in text: String) -> [URL] {
         text.split(whereSeparator: { $0.isWhitespace || $0 == "," }).compactMap { soleLink(in: String($0)) }
     }
 
@@ -218,27 +223,85 @@ final class IntakeModel {
     // MARK: pasteboard loading
 
     /// A file URL or a web address; the pasteboard hands either as a URL or as its bytes.
+    /// Whether the provider carries `type`, by conformance or by name (some drags register a type SwiftUI does not
+    /// resolve to a UTType, so the identifier itself is checked too).
+    static func offers(_ provider: NSItemProvider, _ type: UTType) -> Bool {
+        provider.hasItemConformingToTypeIdentifier(type.identifier) || provider.registeredTypeIdentifiers.contains(type.identifier)
+    }
+
+    /// The web address a dropped link carries, tried every way a browser offers it: `public.url`, then any other
+    /// registered type whose name says url (Safari's `public.url-name`, Chrome's dynamic types), then an HTML anchor,
+    /// then the text form. Nil when the drop is not a link.
+    static func webAddress(from provider: NSItemProvider) async -> URL? {
+        let registered = provider.registeredTypeIdentifiers
+        var candidates = registered.filter { $0 == UTType.url.identifier }
+        if candidates.isEmpty, provider.hasItemConformingToTypeIdentifier(UTType.url.identifier) { candidates.append(UTType.url.identifier) }
+        candidates += registered.filter { $0 != UTType.url.identifier && $0 != UTType.fileURL.identifier && $0.lowercased().contains("url") }
+        for id in candidates {
+            if let url = try? await loadURL(from: provider, typeIdentifier: id), isWeb(url) { return url }
+        }
+        if offers(provider, .html), let html = try? await loadRaw(from: provider, typeIdentifier: UTType.html.identifier),
+           let r = html.range(of: "href=[\"']([^\"']+)[\"']", options: .regularExpression) {
+            let href = String(html[r]).replacingOccurrences(of: "^href=[\"']|[\"']$", with: "", options: .regularExpression)
+            if let url = URL(string: href), isWeb(url) { return url }
+        }
+        for type in [UTType.utf8PlainText, .plainText, .text] where offers(provider, type) {
+            if let text = try? await loadRaw(from: provider, typeIdentifier: type.identifier), let url = soleLink(in: text) { return url }
+        }
+        return nil
+    }
+
+    nonisolated static func isWeb(_ url: URL) -> Bool {
+        let scheme = url.scheme?.lowercased() ?? ""
+        return (scheme == "http" || scheme == "https") && url.host() != nil
+    }
+
     private static func loadURL(from provider: NSItemProvider, type: UTType) async throws -> URL {
+        try await loadURL(from: provider, typeIdentifier: type.identifier)
+    }
+
+    private static func loadURL(from provider: NSItemProvider, typeIdentifier: String) async throws -> URL {
         try await withCheckedThrowingContinuation { cont in
-            provider.loadItem(forTypeIdentifier: type.identifier) { item, error in
+            provider.loadItem(forTypeIdentifier: typeIdentifier) { item, error in
                 if let url = item as? URL { cont.resume(returning: url); return }
                 if let url = item as? NSURL { cont.resume(returning: url as URL); return }
-                if let data = item as? Data, let url = URL(dataRepresentation: data, relativeTo: nil) { cont.resume(returning: url); return }
-                if let s = item as? String, let url = URL(string: s) { cont.resume(returning: url); return }
+                if let data = item as? Data {
+                    if let url = URL(dataRepresentation: data, relativeTo: nil) { cont.resume(returning: url); return }
+                    if let s = String(data: data, encoding: .utf8), let url = soleLink(in: s) { cont.resume(returning: url); return }
+                }
+                if let s = item as? String, let url = URL(string: s.trimmingCharacters(in: .whitespacesAndNewlines)) { cont.resume(returning: url); return }
                 cont.resume(throwing: error ?? LabError.model("the dropped item could not be read"))
             }
         }
     }
 
-    private static func loadText(from provider: NSItemProvider) async throws -> String {
+    /// One registered type as a string, however the provider hands it over.
+    private static func loadRaw(from provider: NSItemProvider, typeIdentifier: String) async throws -> String {
         try await withCheckedThrowingContinuation { cont in
-            provider.loadItem(forTypeIdentifier: UTType.plainText.identifier) { item, error in
+            provider.loadItem(forTypeIdentifier: typeIdentifier) { item, error in
                 if let s = item as? String { cont.resume(returning: s); return }
-                if let d = item as? Data, let s = String(data: d, encoding: .utf8) { cont.resume(returning: s); return }
                 if let a = item as? NSAttributedString { cont.resume(returning: a.string); return }
+                if let url = item as? URL { cont.resume(returning: url.absoluteString); return }
+                if let d = item as? Data, let s = String(data: d, encoding: .utf8) ?? String(data: d, encoding: .utf16) { cont.resume(returning: s); return }
                 cont.resume(throwing: error ?? LabError.model("the dropped text could not be read"))
             }
         }
+    }
+
+    /// Dropped text as plain words: plain text as it is, RTF through its attributed string, HTML with its tags removed.
+    private static func loadText(from provider: NSItemProvider) async throws -> String {
+        let type = [UTType.utf8PlainText, .plainText, .text, .rtf, .html].first { offers(provider, $0) } ?? .plainText
+        let raw = try await loadRaw(from: provider, typeIdentifier: type.identifier)
+        if type == .rtf, let a = try? NSAttributedString(data: Data(raw.utf8), options: [.documentType: NSAttributedString.DocumentType.rtf], documentAttributes: nil) {
+            return a.string
+        }
+        if type == .html {
+            return raw.replacingOccurrences(of: "<[^>]+>", with: " ", options: .regularExpression)
+                .replacingOccurrences(of: "&nbsp;", with: " ").replacingOccurrences(of: "&amp;", with: "&")
+                .replacingOccurrences(of: "&lt;", with: "<").replacingOccurrences(of: "&gt;", with: ">")
+                .replacingOccurrences(of: "[ \\t]+", with: " ", options: .regularExpression)
+        }
+        return raw
     }
 }
 
@@ -276,9 +339,10 @@ struct IntakeBanner: View {
         if intake.working {
             HStack(spacing: 8) { ProgressView().controlSize(.small); Text(intake.status).font(.callout) }
                 .padding(.horizontal, 14).padding(.vertical, 8).background(.regularMaterial, in: Capsule())
-        } else if let r = intake.lastReport, Date().timeIntervalSince(intake.reportShownAt) < 6 {
-            TimelineView(.periodic(from: intake.reportShownAt, by: 6)) { _ in
-                Text(Self.words(r)).font(.callout).padding(.horizontal, 14).padding(.vertical, 8).background(.regularMaterial, in: Capsule())
+        } else if let r = intake.lastReport, Date().timeIntervalSince(intake.reportShownAt) < (r.failed.isEmpty ? 6 : 15) {
+            TimelineView(.periodic(from: intake.reportShownAt, by: r.failed.isEmpty ? 6 : 15)) { _ in
+                Text(Self.words(r)).font(.callout).lineLimit(2).padding(.horizontal, 14).padding(.vertical, 8).background(.regularMaterial, in: Capsule())
+                    .help(r.failed.joined(separator: "\n"))
             }
         }
     }
@@ -288,7 +352,7 @@ struct IntakeBanner: View {
         if r.notes > 0 { parts.append("\(r.notes) note\(r.notes == 1 ? "" : "s") added") }
         if r.sources > 0 { parts.append("\(r.sources) source\(r.sources == 1 ? "" : "s") added") }
         if r.queued > 0 { parts.append("\(r.queued) file\(r.queued == 1 ? "" : "s") kept in the Inbox until this Mac can read them") }
-        if !r.failed.isEmpty { parts.append("\(r.failed.count) could not be read") }
+        if let first = r.failed.first { parts.append(r.failed.count == 1 ? first : "\(r.failed.count) could not be read: \(first)") }
         return parts.isEmpty ? "Nothing to add" : parts.joined(separator: " · ")
     }
 }
