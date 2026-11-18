@@ -78,8 +78,9 @@ final class IntakeModel {
                 let types = provider.registeredTypeIdentifiers
                 SoakTrace.log("drop: \(types.joined(separator: ", "))")
                 do {
-                    if Self.offers(provider, .fileURL) {
-                        let url = try await Self.loadURL(from: provider, type: .fileURL)
+                    // Safari's address bar drags a promised .webloc beside the address, which can look like a file
+                    // without being one; only a real file URL is a file.
+                    if Self.offers(provider, .fileURL), let url = try? await Self.loadURL(from: provider, type: .fileURL), url.isFileURL {
                         try await file(url, notebook: notebook, library: library, report: &report)
                     } else if let url = await Self.webAddress(from: provider) {
                         // A link dragged from a browser: Safari and Chrome offer it as public.url, as text, and (Safari) as a
