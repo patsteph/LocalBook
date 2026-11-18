@@ -42,18 +42,14 @@ struct AskView: View {
                             }
                             .font(.footnote).padding(12).background(.quaternary, in: RoundedRectangle(cornerRadius: 12))
                         }
-                        ForEach(Array(library.history.enumerated()), id: \.element.id) { i, turn in
-                            pastTurn(turn, previous: i > 0 ? library.history[i - 1].notebookId : nil)
-                        }
-                        if !library.shownQuestion.isEmpty, let nb = library.liveNotebookId, nb != (library.history.last?.notebookId ?? nb) {
-                            notebookTag(library.notebooks.first { $0.id == nb }?.title ?? "Notebook")
-                        }
+                        // One conversation per notebook (the Mac's rule too): only the turns asked in the notebook on screen.
+                        ForEach(turns) { turn in pastTurn(turn) }
                         if library.answering || !library.answerText.isEmpty || !library.answerStatus.isEmpty, !library.shownQuestion.isEmpty {
                             Text(library.shownQuestion).font(.subheadline.weight(.medium))
                                 .padding(.horizontal, 12).padding(.vertical, 8)
                                 .background(.tint.opacity(0.15), in: RoundedRectangle(cornerRadius: 14))
                                 .frame(maxWidth: .infinity, alignment: .trailing)
-                        } else if queued == nil && library.history.isEmpty {
+                        } else if queued == nil && turns.isEmpty {
                             intro
                         }
                         if library.answering && library.answerText.isEmpty {
@@ -170,15 +166,11 @@ struct AskView: View {
         }
     }
 
-    /// The notebook a run of turns was asked in, shown where the conversation moves to another notebook.
-    private func notebookTag(_ title: String) -> some View {
-        Label(title, systemImage: "book.closed").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-            .padding(.top, 6).frame(maxWidth: .infinity, alignment: .center)
-    }
+    /// This notebook's own turns; switching notebooks shows that notebook's conversation, and switching back brings this one.
+    private var turns: [AskTurn] { library.history.filter { $0.notebookId == library.scopeToNotebook } }
 
     /// A finished turn higher up in the conversation.
-    @ViewBuilder private func pastTurn(_ turn: AskTurn, previous: String?) -> some View {
-        if turn.notebookId != previous { notebookTag(turn.notebookTitle) }
+    @ViewBuilder private func pastTurn(_ turn: AskTurn) -> some View {
         Text(turn.question).font(.subheadline.weight(.medium))
             .padding(.horizontal, 12).padding(.vertical, 8)
             .background(.tint.opacity(0.15), in: RoundedRectangle(cornerRadius: 14))
