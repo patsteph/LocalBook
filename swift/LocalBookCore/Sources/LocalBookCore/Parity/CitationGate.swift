@@ -39,6 +39,8 @@ public enum CitationGate {
         public let createdAt: String
         public let mac: MacSide
         public let questions: [Question]
+        /// The old app's sources per notebook, so sources added on this Mac since the move are left out of the compare.
+        public var notebookSources: [String: [String]]? = nil
 
         public static let supportedFormat = "localbook-citation-fixture/1"
 
@@ -111,10 +113,12 @@ public enum CitationGate {
         public let recipe: String
         public let summary: Summary
         public let results: [Result]
+        /// Sources this Mac has that the old app's library did not (notebook title → count); they were not searched.
+        public var leftOut: [String: Int] = [:]
 
-        public init(fixture: Fixture, results: [Result], device: String, recipe: String) {
+        public init(fixture: Fixture, results: [Result], device: String, recipe: String, leftOut: [String: Int] = [:]) {
             createdAt = ISO8601DateFormatter().string(from: Date())
-            fixtureMade = fixture.createdAt; theirMac = fixture.mac; self.device = device; self.recipe = recipe
+            fixtureMade = fixture.createdAt; theirMac = fixture.mac; self.device = device; self.recipe = recipe; self.leftOut = leftOut
             var s = Summary(); s.questions = results.count
             for r in results {
                 switch r.verdict {
@@ -151,6 +155,11 @@ public enum CitationGate {
             out.append("|---|---|---|---|---|---|---|")
             out.append("| \(summary.questions) | \(summary.identical) | \(summary.sameSet) | \(summary.overlap) | \(summary.different) | \(summary.missing) | \(summary.failed) |")
             out.append("")
+            if !leftOut.isEmpty {
+                let parts = leftOut.sorted { $0.key < $1.key }.map { "\($0.key) \($0.value)" }
+                out.append("Sources added on this Mac that the old app's library does not have were left out of the search: \(parts.joined(separator: ", ")).")
+                out.append("")
+            }
             func line(_ c: Citation) -> String { "\(c.filename ?? c.sourceId) #\(c.chunkIndex)" + (c.confidence.map { " (\(Int(($0 * 100).rounded())) %)" } ?? "") }
             let worth = results.filter { $0.verdict != .identical && $0.verdict != .sameSet }
             if !worth.isEmpty {

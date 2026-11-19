@@ -872,7 +872,7 @@ public actor LibraryStore {
     }
 
     /// The `limit` best documents for the query: (document index within the notebook, score), best first.
-    private func bm25Top(_ index: BM25Index, query: String, k1: Double, b: Double, limit: Int) -> [(doc: Int, score: Double)] {
+    private func bm25Top(_ index: BM25Index, query: String, k1: Double, b: Double, limit: Int, allowed: [Bool]? = nil) -> [(doc: Int, score: Double)] {
         var scores: [Int32: Double] = [:]
         for term in query.lowercased().split(whereSeparator: \.isWhitespace).map(String.init) {
             guard let idf = index.idf[term], let list = index.postings[term] else { continue }
@@ -882,7 +882,8 @@ public actor LibraryStore {
                 scores[doc, default: 0] += idf * (f * (k1 + 1) / norm)
             }
         }
-        return scores.sorted { $0.value != $1.value ? $0.value > $1.value : $0.key < $1.key }.prefix(limit).map { (Int($0.key), $0.value) }
+        return scores.filter { allowed?[Int($0.key)] ?? true }
+            .sorted { $0.value != $1.value ? $0.value > $1.value : $0.key < $1.key }.prefix(limit).map { (Int($0.key), $0.value) }
     }
 
     public struct SearchParams: Sendable {
@@ -902,9 +903,10 @@ public actor LibraryStore {
 
     /// Hybrid retrieval exactly as the Mac's `hybrid_search`: the nearest vectors and the best BM25 documents
     /// (each `…Candidates` long), fused by Reciprocal Rank Fusion (0-based ranks, `missingRank` when absent), the
-    /// best `hybridK` returned. `queryText` nil means vectors only (used to find a question's notebook).
-    public func search(query: [Float], queryText: String? = nil, params: SearchParams = SearchParams(), notebook: String? = nil)
-        throws -> (hits: [LibraryHit], scanned: Int, seconds: Double) {
+    /// best `hybridK` returned. `queryText` nil means vectors only (used to find a question's notebook). Rows of
+    /// `excludingSources` take part in neither ranking (the citation gate leaves out sources the old app never had).
+    public func search(query: [Float], queryText: String? = nil, params: SearchParams = SearchParams(), notebook: String? = nil,
+                       excludingSources: Set<String> = []) throws -> (hits: [LibraryHit], scanned: Int, seconds: Double) {
         let started = Date()
         guard let notebook else { return ([], 0, 0) }          // one notebook at a time (see closestNotebook for "which one")
         try loadMatrix(notebook)
@@ -915,13 +917,14 @@ public actor LibraryStore {
         matrix.withUnsafeBufferPointer { m in
             vDSP_mmul(m.baseAddress! + range.lowerBound * Self.dims, 1, query, 1, &scores, 1, vDSP_Length(rows), 1, vDSP_Length(Self.dims))
         }
-        let order = (0..<rows).sorted { scores[$0] > scores[$1] }
+        let allowed: [Bool]? = excludingSources.isEmpty ? nil : rowKeys.map { !excludingSources.contains($0.src) }
+        let order = (0..<rows).filter { allowed?[$0] ?? true }.sorted { scores[$0] > scores[$1] }
         var vectorRank: [Int: Double] = [:]
         for (rank, row) in order.prefix(params.vectorCandidates).enumerated() { vectorRank[row] = Double(rank) }
         var keywordRank: [Int: Double] = [:]
         if let queryText {
             let index = try bm25Index(for: notebook, epsilon: params.epsilon)
-            for (rank, hit) in bm25Top(index, query: queryText, k1: params.k1, b: params.b, limit: params.bm25Candidates).enumerated() {
+            for (rank, hit) in bm25Top(index, query: queryText, k1: params.k1, b: params.b, limit: params.bm25Candidates, allowed: allowed).enumerated() {
                 keywordRank[hit.doc] = Double(rank)
             }
         }

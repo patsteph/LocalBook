@@ -127,14 +127,18 @@ async def main() -> int:
     titles = phone_library.notebook_titles()
     wanted = [n for n in args.notebooks.split(",") if n] or sorted(titles, key=lambda i: titles[i].lower())
     conn = sqlite3.connect(f"file:{os.path.join(str(settings.data_dir), 'localbook.db')}?mode=ro", uri=True)
-    items, t0 = [], time.time()
+    items, notebook_sources, t0 = [], {}, time.time()
     for nid in wanted:
         if nid not in titles:
             print(f"  ⚠️ no notebook {nid}")
             continue
         qs = questions_for(conn, nid, args.per_notebook)
-        if not qs or phone_library._table(nid) is None:
+        table = phone_library._table(nid)
+        if not qs or table is None:
             continue
+        # Which sources this library holds, so the Swift Mac can leave out sources added there since the move
+        # (the second run on 2026-11-19 cited six such sources in nine of its fifteen differing rows).
+        notebook_sources[nid] = sorted(set(table.to_arrow().column("source_id").to_pylist()))
         print(f"{titles[nid]}: {len(qs)} questions")
         for q in qs:
             try:
@@ -153,6 +157,7 @@ async def main() -> int:
         "mac": {"device": platform.node(), "embedder": settings.embedding_model,
                 "reranker": f"{settings.reranker_type}/{getattr(settings, 'reranker_precision', '')}" if settings.use_reranker else "off",
                 "analysis": "fallback", "search": "hybrid", "top_k": 4, "overcollect": int(settings.retrieval_overcollect)},
+        "notebook_sources": notebook_sources,
         "questions": items,
     }
     os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)

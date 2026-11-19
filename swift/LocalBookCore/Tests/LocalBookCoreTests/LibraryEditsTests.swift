@@ -141,6 +141,22 @@ struct LibraryEditsTests {
         #expect(Set(await store.notebooks().map(\.id)) == ["mac-a", "here"])
     }
 
+    @Test("a search can leave out sources the old app never had: they take part in neither ranking")
+    func searchExcludingSources() async throws {
+        let store = try await freshStore()
+        try await store.createNotebook(id: "nb", title: "N", color: nil)
+        try await store.addLocalSource(notebook: "nb", sourceId: "old", title: "old.txt", format: "txt", text: "harbor lights",
+                                       url: nil, chunks: [chunk("nb", "old", "harbor lights at dusk")])
+        try await store.addLocalSource(notebook: "nb", sourceId: "new", title: "new.txt", format: "txt", text: "harbor",
+                                       url: nil, chunks: [chunk("nb", "new", "harbor lights at dawn")])
+        let query = [Float](repeating: 0, count: LibraryStore.dims)
+        let all = try await store.search(query: query, queryText: "harbor lights", notebook: "nb")
+        #expect(Set(all.hits.map(\.sourceId)) == ["old", "new"])
+        let some = try await store.search(query: query, queryText: "harbor lights", notebook: "nb", excludingSources: ["new"])
+        #expect(some.hits.map(\.sourceId) == ["old"])
+        #expect(some.scanned == 2)
+    }
+
     @Test("a connection failure is told apart from a refusal the Mac answered")
     func unreachable() {
         #expect(MacLink.isUnreachable(MacLinkError.detail("The request timed out. [NSURLErrorDomain -1001] — no TLS challenge reached the app")))
