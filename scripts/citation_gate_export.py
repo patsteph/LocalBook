@@ -4,8 +4,9 @@ Phase 3's gate (docs/swift-migration/00-decision.md) asks for the personal libra
 citations on a fixture, every difference explained. This script is the Python half. For each notebook it takes the
 questions the user actually asked there (``exploration_queries``, newest first) and runs the old app's own
 retrieval, step for step as ``rag_engine.query`` does up to the point where the answer model would start: the
-rule-based query analysis and expansion, the embedding through the production engine, ``adaptive_search`` (hybrid
-vector + BM25), the reranker, the entity and source-type boosts, and ``build_citations_and_context``. What that
+rule-based query analysis and expansion, the embedding through the production engine, ``hybrid_search`` (vector +
+BM25, the first strategy of ``adaptive_search``; see ``cite`` for why the other three stay out), the reranker, the
+entity and source-type boosts, and ``build_citations_and_context``. What that
 step would have handed the answer model as [1]…[n] is written down: ``source_id``, ``chunk_index``, filename,
 confidence. The Swift Mac then opens the fixture in Settings › Diagnostics › Citation gate after "Move my library
 here", asks the same questions of its own copy, and compares citation by citation.
@@ -64,7 +65,16 @@ async def cite(engine, notebook_id: str, question: str, top_k: int = 4) -> dict:
     query_embedding = engine.encode(basic_expanded, is_query=True)[0].tolist()
     table = rag_storage.get_table(notebook_id)
     overcollect_k = settings.retrieval_overcollect if settings.use_reranker else top_k
-    results = await engine._adaptive_search(table, question, query_embedding, analysis, overcollect_k)
+    # Strategy 1 of rag_search.adaptive_search only: hybrid vector + BM25 over the keyword query the Mac builds
+    # (the question plus any quarter it names; the synonym expansions reach the embedding only). Strategies 2-4 are
+    # left out on purpose. With the rule-based analysis every capitalised word is an "entity" ("What", "How"), so
+    # for most questions they declared the hybrid results a failure and replaced half of the reranker's candidates
+    # with rows that merely contain that word (the first 400 such rows in table order, BM25-ranked). The Swift Mac
+    # has no such pass, and the real Mac reaches it only when the phi4 analysis names entities the top passages
+    # lack. `adaptive_went_further` says whether the full path would have gone on, so the report can count those.
+    keyword_query = rag_query_analyzer.build_search_query(analysis, question)
+    results = rag_search.hybrid_search(keyword_query, table, query_embedding, k=overcollect_k * 2)
+    strategy1_ok, _reason = rag_query_analyzer.verify_retrieval_quality(results, analysis)
     candidates = len(results)
     if settings.use_reranker and len(results) > top_k:
         results = rag_search.rerank(question, results, top_k=top_k + 1)
@@ -74,6 +84,7 @@ async def cite(engine, notebook_id: str, question: str, top_k: int = 4) -> dict:
     return {
         "question": question,
         "candidates": candidates,
+        "adaptive_went_further": not strategy1_ok,
         "low_confidence": bool(low),
         "citations": [{"source_id": c["source_id"], "chunk_index": int(c.get("chunk_index") or 0),
                        "filename": c.get("filename", ""), "confidence": float(c.get("confidence", 0))} for c in citations],
@@ -127,7 +138,7 @@ async def main() -> int:
         "created_at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
         "mac": {"device": platform.node(), "embedder": settings.embedding_model,
                 "reranker": f"{settings.reranker_type}/{getattr(settings, 'reranker_precision', '')}" if settings.use_reranker else "off",
-                "analysis": "fallback", "top_k": 4, "overcollect": int(settings.retrieval_overcollect)},
+                "analysis": "fallback", "search": "hybrid", "top_k": 4, "overcollect": int(settings.retrieval_overcollect)},
         "questions": items,
     }
     os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)

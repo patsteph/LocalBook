@@ -138,6 +138,17 @@ public struct AnswerRecipe: Codable, Sendable {
         return expanded
     }
 
+    /// The text the Mac's BM25 ranks against (rag_query_analyzer.build_search_query over the rule-based analysis):
+    /// the question itself, plus any quarter it names as "Q n FY yyyy". The synonym expansions reach the embedding only.
+    public func keywordQuery(_ question: String) -> String {
+        let q = question.lowercased()
+        guard let re = try? NSRegularExpression(pattern: #"q([1-4])\s*(?:fy)?\s*(\d{4})?"#),
+              let m = re.firstMatch(in: q, range: NSRange(q.startIndex..., in: q)),
+              let quarter = Range(m.range(at: 1), in: q) else { return question }
+        let year = Range(m.range(at: 2), in: q).map { String(q[$0]) } ?? "2026"
+        return question + " Q \(q[quarter]) FY \(year)"
+    }
+
     /// Confidence of a reranked passage as the Mac computes it (rag_context.build_citations_and_context).
     public func confidence(rerank: Double, rrfNormalised: Double) -> Double {
         let c = citations

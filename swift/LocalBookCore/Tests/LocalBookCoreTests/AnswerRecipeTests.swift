@@ -36,6 +36,15 @@ struct AnswerRecipeTests {
         #expect(r.fixCitations("Words [see 2] and [1-3] stay.", count: 5) == "Words [see 2] and [1-3] stay.")
     }
 
+    @Test("BM25 sees the question and its quarter, while the synonym expansions go to the embedding only")
+    func keywordQuery() throws {
+        let r = try Self.load()
+        #expect(r.keywordQuery("How many demos in Q1 2026?") == "How many demos in Q1 2026? Q 1 FY 2026")
+        #expect(r.keywordQuery("Q3 pipeline?") == "Q3 pipeline? Q 3 FY 2026")
+        #expect(r.keywordQuery("How many demos last year?") == "How many demos last year?")
+        #expect(r.expand("How many demos last year?") != "How many demos last year?")
+    }
+
     @Test("retrieval numbers keep the Mac's ratios")
     func retrieval() throws {
         let r = try Self.load()

@@ -41,6 +41,16 @@ Patrick ran the parity fixture (500 chunks, 50 questions from the production lib
 
 497 items in 39 s, 0.15 ms per token. The ten top-5 disagreements are order swaps among the same passages (ranks 4 and 5), the same pattern the phone showed. The week of daily use was dropped by Patrick the same day; Phase 2 is CLOSED and the cleanup list he sends replaces it.
 
+## Phase 3, sitting C findings (2026-11-19, on `dev`)
+
+C1–C3 ran. The citation gate came back at 15 % (identical order 8 of 61, same set 1, overlap 37, different 15) against the 95 % bar. This was the gate's first run: Phase 2's five bars were the cortex parity (embedder, tokenizer, reranker), not citations. Causes, from the code on both sides:
+
+1. **The old app's extra search passes.** `adaptive_search` runs hybrid search, then `verify_retrieval_quality` checks that an "entity" from the query analysis appears in the top four passages. The gate uses the rule-based analysis, whose entities are every capitalised word (`What`, `How`, `Summarize`), so for most questions the check failed and strategy 2 replaced 12 of the 24 reranker candidates with rows that merely contain that word (the first 400 such rows in table order, BM25-ranked). The Swift Mac runs hybrid search only, so the two sides reranked different pools; that is where the 15 "different" and most of the 37 "overlap" rows come from. The real Mac reaches those passes only when the phi4 analysis names entities the top passages lack.
+2. **BM25 query text.** The Swift side ranked BM25 against the synonym-expanded question; the Mac expands for the embedding only and gives BM25 the question plus any quarter it names (`build_search_query`). The 39 expansion terms (demo, trial, first names…) shifted keyword ranks.
+3. **Ties.** The Mac's RRF ties fall in Python set order (random per process) and its BM25 ranks come from an unstable argsort; the Swift side is deterministic. A candidate at the pool's edge can differ between two runs of the old app itself; this is small and cannot be matched.
+
+Changes: `scripts/citation_gate_export.py` now measures what both sides implement (strategy 1, the Mac's keyword query) and records `adaptive_went_further` per question so the report can count how many questions the old app's full path would have gone on from; `AnswerRecipe.keywordQuery` gives BM25 the Mac's text (`AnswerRecipeTests`). Step 1 (export) and step 3 (Compare) are to be run again; the "To explain" rows that remain are then reranker numerics at the boundary and ties.
+
 ## Phase 3, sitting B findings (2026-11-19, on `dev`)
 
 B2 (Add Web Page: YouTube and arXiv), B3 (Find Sources) and the diff export passed. B1 failed again: a Safari address-bar drop reached the intake as a provider with no registered types at all ("The drop offered nothing this app can add (no types)"), so the earlier fix, which read every type the provider offered, had nothing to read. The drop handler now reads the drag pasteboard itself first (`NSPasteboard(name: .drag)`: file URLs, `public.url`, text), which always carries the types, and logs them; the providers are the fallback. B4's fixture is written beside the list file (`testdata/phase3/ingestion-fixture.json`); the plan now says so and the script prints the path.

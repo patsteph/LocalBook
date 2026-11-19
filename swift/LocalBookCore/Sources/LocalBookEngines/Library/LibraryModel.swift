@@ -292,7 +292,9 @@ public final class LibraryModel {
             params = .init(vectorCandidates: r.vectorCandidates, bm25Candidates: r.bm25Candidates, hybridK: r.hybridK,
                            rrfK: Double(r.rrfK), missingRank: Double(r.rrfMissingRank), k1: r.bm25.k1, b: r.bm25.b, epsilon: r.bm25.epsilon)
         }
-        let found = try await store.search(query: vector, queryText: expanded, params: params, notebook: notebook)
+        // BM25 ranks against the Mac's keyword query (the question and its quarter), not the synonym-expanded text.
+        let keywords = recipe?.keywordQuery(question) ?? question
+        let found = try await store.search(query: vector, queryText: keywords, params: params, notebook: notebook)
         var ranked: [(hit: LibraryHit, rerank: Double)] = found.hits.map { ($0, 0) }
         var didRerank = false
         if let reranker, found.hits.count > 1 {
