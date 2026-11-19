@@ -9,14 +9,21 @@ extension LibraryModel {
         let known = Set(notebooks.map(\.id))
         var results: [CitationGate.Result] = []
         // Sources this Mac holds that the old app's library did not (added here since the move) are left out, so
-        // the compare stays about the migrated copy. Reported in the page.
-        var excluded: [String: Set<String>] = [:], leftOut: [String: Int] = [:]
+        // the compare stays about the migrated copy; so are sources the old app cannot find at all, and its BM25's
+        // blind spot (rows beyond its first 10,000) is mirrored in the keyword ranking. All reported in the page.
+        var excluded: [String: Set<String>] = [:], keywordExcluded: [String: Set<String>] = [:]
+        var leftOut: [String: Int] = [:], unsearchable: [String: Int] = [:], bm25Blind: [String: Int] = [:]
         if let theirs = fixture.notebookSources, let store {
             for q in fixture.questions where excluded[q.notebookId] == nil && known.contains(q.notebookId) {
                 let mine = Set(await store.sources(notebook: q.notebookId).map(\.id))
                 let extra = mine.subtracting(theirs[q.notebookId] ?? [])
-                excluded[q.notebookId] = extra
+                let gone = Set(fixture.unsearchable?[q.notebookId] ?? []).intersection(mine)
+                let blind = Set(fixture.bm25Blind?[q.notebookId] ?? []).intersection(mine).subtracting(extra).subtracting(gone)
+                excluded[q.notebookId] = extra.union(gone)
+                keywordExcluded[q.notebookId] = blind
                 if !extra.isEmpty { leftOut[q.notebookTitle] = extra.count }
+                if !gone.isEmpty { unsearchable[q.notebookTitle] = gone.count }
+                if !blind.isEmpty { bm25Blind[q.notebookTitle] = blind.count }
             }
         }
         for (i, q) in fixture.questions.enumerated() {
@@ -27,7 +34,7 @@ extension LibraryModel {
             }
             let t0 = Date()
             do {
-                let found = try await retrieve(question: q.question, notebook: q.notebookId, excludingSources: excluded[q.notebookId] ?? [])
+                let found = try await retrieve(question: q.question, notebook: q.notebookId, excludingSources: excluded[q.notebookId] ?? [], bm25ExcludingSources: keywordExcluded[q.notebookId] ?? [])
                 let ours = found.hits.map { CitationGate.Citation(sourceId: $0.sourceId, chunkIndex: $0.chunkIndex, filename: $0.filename, confidence: Double($0.score)) }
                 results.append(CitationGate.Result(q, ours: ours, seconds: Date().timeIntervalSince(t0)))
             } catch {
@@ -36,6 +43,6 @@ extension LibraryModel {
         }
         progress?(fixture.questions.count, fixture.questions.count, "")
         let recipeLine = recipe.map { "recipe \($0.recipeVersion), reranker \(reranker == nil ? "off" : "on")" } ?? "no recipe (fused order, no boosts)"
-        return CitationGate.Report(fixture: fixture, results: results, device: Self.deviceLine, recipe: recipeLine, leftOut: leftOut)
+        return CitationGate.Report(fixture: fixture, results: results, device: Self.deviceLine, recipe: recipeLine, leftOut: leftOut, bm25Blind: bm25Blind, unsearchable: unsearchable)
     }
 }

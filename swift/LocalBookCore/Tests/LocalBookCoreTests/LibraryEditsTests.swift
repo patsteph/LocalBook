@@ -155,6 +155,9 @@ struct LibraryEditsTests {
         let some = try await store.search(query: query, queryText: "harbor lights", notebook: "nb", excludingSources: ["new"])
         #expect(some.hits.map(\.sourceId) == ["old"])
         #expect(some.scanned == 2)
+        // kept out of the keyword ranking only: still found by vector, but behind the row BM25 does see
+        let blind = try await store.search(query: query, queryText: "harbor lights", notebook: "nb", bm25ExcludingSources: ["new"])
+        #expect(blind.hits.map(\.sourceId) == ["old", "new"])
     }
 
     @Test("a connection failure is told apart from a refusal the Mac answered")

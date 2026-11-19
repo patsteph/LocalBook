@@ -904,9 +904,10 @@ public actor LibraryStore {
     /// Hybrid retrieval exactly as the Mac's `hybrid_search`: the nearest vectors and the best BM25 documents
     /// (each `…Candidates` long), fused by Reciprocal Rank Fusion (0-based ranks, `missingRank` when absent), the
     /// best `hybridK` returned. `queryText` nil means vectors only (used to find a question's notebook). Rows of
-    /// `excludingSources` take part in neither ranking (the citation gate leaves out sources the old app never had).
+    /// `excludingSources` take part in neither ranking (the citation gate leaves out sources the old app never had);
+    /// rows of `bm25ExcludingSources` are ranked by vector only (the old app's BM25 reads only its first 10,000 rows).
     public func search(query: [Float], queryText: String? = nil, params: SearchParams = SearchParams(), notebook: String? = nil,
-                       excludingSources: Set<String> = []) throws -> (hits: [LibraryHit], scanned: Int, seconds: Double) {
+                       excludingSources: Set<String> = [], bm25ExcludingSources: Set<String> = []) throws -> (hits: [LibraryHit], scanned: Int, seconds: Double) {
         let started = Date()
         guard let notebook else { return ([], 0, 0) }          // one notebook at a time (see closestNotebook for "which one")
         try loadMatrix(notebook)
@@ -918,13 +919,15 @@ public actor LibraryStore {
             vDSP_mmul(m.baseAddress! + range.lowerBound * Self.dims, 1, query, 1, &scores, 1, vDSP_Length(rows), 1, vDSP_Length(Self.dims))
         }
         let allowed: [Bool]? = excludingSources.isEmpty ? nil : rowKeys.map { !excludingSources.contains($0.src) }
+        let keywordAllowed: [Bool]? = excludingSources.isEmpty && bm25ExcludingSources.isEmpty ? nil
+            : rowKeys.map { !excludingSources.contains($0.src) && !bm25ExcludingSources.contains($0.src) }
         let order = (0..<rows).filter { allowed?[$0] ?? true }.sorted { scores[$0] > scores[$1] }
         var vectorRank: [Int: Double] = [:]
         for (rank, row) in order.prefix(params.vectorCandidates).enumerated() { vectorRank[row] = Double(rank) }
         var keywordRank: [Int: Double] = [:]
         if let queryText {
             let index = try bm25Index(for: notebook, epsilon: params.epsilon)
-            for (rank, hit) in bm25Top(index, query: queryText, k1: params.k1, b: params.b, limit: params.bm25Candidates, allowed: allowed).enumerated() {
+            for (rank, hit) in bm25Top(index, query: queryText, k1: params.k1, b: params.b, limit: params.bm25Candidates, allowed: keywordAllowed).enumerated() {
                 keywordRank[hit.doc] = Double(rank)
             }
         }

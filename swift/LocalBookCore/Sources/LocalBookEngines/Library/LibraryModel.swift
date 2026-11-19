@@ -278,7 +278,7 @@ public final class LibraryModel {
     /// fuse the nearest vectors and BM25 into `hybridK` candidates, rerank them with the cross-encoder (against the
     /// ORIGINAL question), keep `rerankKeep`, turn each into a citation with the Mac's confidence and drop the weak
     /// ones. Without the reranker, the fused order is used.
-    public func retrieve(question: String, notebook: String?, excludingSources: Set<String> = []) async throws -> Retrieval {
+    public func retrieve(question: String, notebook: String?, excludingSources: Set<String> = [], bm25ExcludingSources: Set<String> = []) async throws -> Retrieval {
         guard let store, let engine, let tokenizer else { throw LibraryError.badResponse("search model not ready") }
         let t0 = Date()
         let expanded = recipe?.expand(question) ?? question
@@ -294,7 +294,7 @@ public final class LibraryModel {
         }
         // BM25 ranks against the Mac's keyword query (the question and its quarter), not the synonym-expanded text.
         let keywords = recipe?.keywordQuery(question) ?? question
-        let found = try await store.search(query: vector, queryText: keywords, params: params, notebook: notebook, excludingSources: excludingSources)
+        let found = try await store.search(query: vector, queryText: keywords, params: params, notebook: notebook, excludingSources: excludingSources, bm25ExcludingSources: bm25ExcludingSources)
         var ranked: [(hit: LibraryHit, rerank: Double)] = found.hits.map { ($0, 0) }
         var didRerank = false
         if let reranker, found.hits.count > 1 {

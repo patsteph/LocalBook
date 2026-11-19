@@ -14,7 +14,7 @@ here", asks the same questions of its own copy, and compares citation by citatio
 Run from ``backend/`` with the old app's Python, the old app closed (both would hold the embedder)::
 
     LOCALBOOK_USE_PRODUCTION_DATA=1 .venv/bin/python ../scripts/citation_gate_export.py \
-        [--per-notebook 10] [--notebooks id,id] [--out ~/Desktop/localbook-parity/citation-fixture.json]
+        [--per-notebook 10] [--notebooks id,id] [--skip "Title,Title"] [--out ~/Desktop/localbook-parity/citation-fixture.json]
 
 READ-ONLY on user data: it reads localbook.db and the LanceDB tables, loads the embedder and the reranker in this
 process, and writes the one fixture file. No metrics row, no answer cache, no memory. The query analysis is the
@@ -36,6 +36,7 @@ import time
 sys.path.insert(0, ".")
 
 FORMAT = "localbook-citation-fixture/1"
+BM25_WINDOW = 10000          # rag_search._get_bm25_index: table.search().limit(10000)
 
 
 def questions_for(conn: sqlite3.Connection, notebook_id: str, n: int) -> list[str]:
@@ -100,6 +101,7 @@ async def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--per-notebook", type=int, default=10)
     ap.add_argument("--notebooks", default="", help="comma-separated notebook ids; default every notebook with questions")
+    ap.add_argument("--skip", default="", help="comma-separated notebook titles or ids to leave out (case-insensitive)")
     ap.add_argument("--out", default=os.path.expanduser("~/Desktop/localbook-parity/citation-fixture.json"))
     args = ap.parse_args()
 
@@ -126,8 +128,13 @@ async def main() -> int:
 
     titles = phone_library.notebook_titles()
     wanted = [n for n in args.notebooks.split(",") if n] or sorted(titles, key=lambda i: titles[i].lower())
+    skip = {t.strip().lower() for t in args.skip.split(",") if t.strip()}
+    if skip:
+        left = [n for n in wanted if n.lower() in skip or titles.get(n, "").lower() in skip]
+        wanted = [n for n in wanted if n not in left]
+        print("Left out: " + ", ".join(titles.get(n, n) for n in left) if left else "⚠️ --skip matched no notebook")
     conn = sqlite3.connect(f"file:{os.path.join(str(settings.data_dir), 'localbook.db')}?mode=ro", uri=True)
-    items, notebook_sources, t0 = [], {}, time.time()
+    items, notebook_sources, bm25_blind, unsearchable, t0 = [], {}, {}, {}, time.time()
     for nid in wanted:
         if nid not in titles:
             print(f"  ⚠️ no notebook {nid}")
@@ -136,9 +143,27 @@ async def main() -> int:
         table = phone_library._table(nid)
         if not qs or table is None:
             continue
-        # Which sources this library holds, so the Swift Mac can leave out sources added there since the move
-        # (the second run on 2026-11-19 cited six such sources in nine of its fifteen differing rows).
-        notebook_sources[nid] = sorted(set(table.to_arrow().column("source_id").to_pylist()))
+        # Which sources this library holds, so the Swift Mac can leave out sources added there since the move, and
+        # which of them the old app cannot search: rag_search._get_bm25_index reads only the first BM25_WINDOW rows
+        # of a table, so a source whose rows all come after that (the newest ones in a big notebook) is invisible
+        # to BM25 here, and one whose vectors are all zero as well is invisible to this app altogether. The Swift
+        # Mac has no such window; the compare mirrors the old app's blind spots and says so in the report.
+        arrow = table.to_arrow()
+        sids = arrow.column("source_id").to_pylist()
+        notebook_sources[nid] = sorted(set(sids))
+        in_window = set(sids[:BM25_WINDOW])
+        blind = sorted(s for s in notebook_sources[nid] if s not in in_window)
+        nonzero = set()
+        if blind:
+            vecs = arrow.column("vector").combine_chunks().flatten().to_numpy(zero_copy_only=False).reshape(len(sids), -1)
+            for s, row in zip(sids, vecs):
+                if s in blind and row.any():
+                    nonzero.add(s)
+        bm25_blind[nid] = [s for s in blind if s in nonzero]
+        unsearchable[nid] = [s for s in blind if s not in nonzero]
+        if blind:
+            print(f"  ⚠️ {len(sids)} rows: {len(blind)} source(s) lie beyond the old app's {BM25_WINDOW}-row BM25 window"
+                  f" ({len(unsearchable[nid])} of them with no vectors either, so unsearchable here)")
         print(f"{titles[nid]}: {len(qs)} questions")
         for q in qs:
             try:
@@ -158,6 +183,8 @@ async def main() -> int:
                 "reranker": f"{settings.reranker_type}/{getattr(settings, 'reranker_precision', '')}" if settings.use_reranker else "off",
                 "analysis": "fallback", "search": "hybrid", "top_k": 4, "overcollect": int(settings.retrieval_overcollect)},
         "notebook_sources": notebook_sources,
+        "bm25_blind": {k: v for k, v in bm25_blind.items() if v},
+        "unsearchable": {k: v for k, v in unsearchable.items() if v},
         "questions": items,
     }
     os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
