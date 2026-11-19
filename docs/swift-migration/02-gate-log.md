@@ -41,6 +41,10 @@ Patrick ran the parity fixture (500 chunks, 50 questions from the production lib
 
 497 items in 39 s, 0.15 ms per token. The ten top-5 disagreements are order swaps among the same passages (ranks 4 and 5), the same pattern the phone showed. The week of daily use was dropped by Patrick the same day; Phase 2 is CLOSED and the cleanup list he sends replaces it.
 
+## Phase 3, sitting B findings (2026-11-19, on `dev`)
+
+B2 (Add Web Page: YouTube and arXiv), B3 (Find Sources) and the diff export passed. B1 failed again: a Safari address-bar drop reached the intake as a provider with no registered types at all ("The drop offered nothing this app can add (no types)"), so the earlier fix, which read every type the provider offered, had nothing to read. The drop handler now reads the drag pasteboard itself first (`NSPasteboard(name: .drag)`: file URLs, `public.url`, text), which always carries the types, and logs them; the providers are the fallback. B4's fixture is written beside the list file (`testdata/phase3/ingestion-fixture.json`); the plan now says so and the script prints the path.
+
 ## Phase 3, sitting A findings (2026-11-18, on `dev`)
 
 Patrick ran sitting A of the condensed plan away from his paired Mac: files, questions, notes and export all passed; four things to fix, done in one batch:

@@ -79,6 +79,42 @@ final class IntakeModel {
         }
     }
 
+    /// The drag pasteboard of a drop, read directly: file URLs, web addresses (Safari and Chrome put the address under
+    /// `public.url`, with a promised .webloc beside it that is ignored) and text. Returns false when it holds nothing
+    /// this app can add, so the caller can try the providers.
+    @discardableResult
+    func take(pasteboard: NSPasteboard, notebook: String, library: LibraryModel) -> Bool {
+        guard !working, let items = pasteboard.pasteboardItems, !items.isEmpty else { return false }
+        SoakTrace.log("drop pasteboard: " + items.map { $0.types.map(\.rawValue).joined(separator: ", ") }.joined(separator: " | "))
+        var files: [URL] = [], links: [URL] = [], texts: [String] = []
+        let urlType = NSPasteboard.PasteboardType("public.url")
+        for item in items {
+            if let s = item.string(forType: .fileURL), let u = URL(string: s), u.isFileURL { files.append(u.standardizedFileURL); continue }
+            if let s = item.string(forType: .URL) ?? item.string(forType: urlType), let u = URL(string: s.trimmingCharacters(in: .whitespacesAndNewlines)), Self.isWeb(u) { links.append(u); continue }
+            if let s = item.string(forType: .string) {
+                if let u = Self.soleLink(in: s) { links.append(u) } else if !s.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { texts.append(s) }
+            }
+        }
+        guard !files.isEmpty || !links.isEmpty || !texts.isEmpty else { return false }
+        start(files.count + links.count + texts.count, notebook: notebook)
+        Task {
+            var report = Report()
+            for url in files {
+                do { try await file(url, notebook: notebook, library: library, report: &report) }
+                catch { report.failed.append(error.localizedDescription) }
+                done += 1
+            }
+            for url in links { await link(url, notebook: notebook, library: library, report: &report); done += 1 }
+            for text in texts {
+                do { try await note(text, title: nil, notebook: notebook, library: library, report: &report) }
+                catch { report.failed.append(error.localizedDescription) }
+                done += 1
+            }
+            await finish(report, notebook: notebook, library: library)
+        }
+        return true
+    }
+
     /// Everything the pasteboard offers for one drop, for one notebook.
     func take(_ providers: [NSItemProvider], notebook: String, library: LibraryModel) {
         guard !providers.isEmpty, !working else { return }
@@ -328,7 +364,11 @@ struct NotebookDrop: ViewModifier {
         content
             .onDrop(of: IntakeModel.acceptedTypes, isTargeted: $targeted) { providers in
                 guard let notebookId else { return false }
-                model.intake.take(providers, notebook: notebookId, library: model.library)
+                // The drag pasteboard itself is read first: SwiftUI's providers for a browser's address-bar drag can
+                // arrive with no types at all (seen on macOS 26 with Safari), while the pasteboard always has them.
+                if !model.intake.take(pasteboard: NSPasteboard(name: .drag), notebook: notebookId, library: model.library) {
+                    model.intake.take(providers, notebook: notebookId, library: model.library)
+                }
                 return true
             }
             .overlay {
