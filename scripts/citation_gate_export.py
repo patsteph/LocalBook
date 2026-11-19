@@ -63,7 +63,12 @@ async def cite(engine, notebook_id: str, question: str, top_k: int = 4) -> dict:
     analysis = rag_query_analyzer.fallback_query_analysis(question)
     basic_expanded = engine._expand_query(question)
     query_embedding = engine.encode(basic_expanded, is_query=True)[0].tolist()
+    if not any(query_embedding):
+        raise RuntimeError(f"the query vector is all zeros ({len(query_embedding)} dims): embedding_dim does not match "
+                           f"{settings.embedding_model}; the fixture would be junk")
     table = rag_storage.get_table(notebook_id)
+    # hybrid_search swallows a failed vector search and uses the first rows of the table instead; fail loudly here.
+    table.search(query_embedding).limit(1).to_list()
     overcollect_k = settings.retrieval_overcollect if settings.use_reranker else top_k
     # Strategy 1 of rag_search.adaptive_search only: hybrid vector + BM25 over the keyword query the Mac builds
     # (the question plus any quarter it names; the synonym expansions reach the embedding only). Strategies 2-4 are
@@ -107,6 +112,15 @@ async def main() -> int:
                 settings.embedding_model = m
         except Exception as e:  # noqa: BLE001
             print(f"(could not read {prefs}: {e})")
+    # The app derives embedding_dim from the model's profile at startup (main.py, SafeStart). Without this, a
+    # 768-dim model runs against the 1024 default, every query vector is zero-filled, LanceDB refuses the
+    # vector, hybrid_search quietly falls back to the first rows of the table, and the fixture records junk
+    # with no error. That is what the first run on 2026-11-19 recorded.
+    from services.embedding_profile import for_model
+    dims = for_model(settings.embedding_model).dims
+    if dims and dims != settings.embedding_dim:
+        print(f"embedding_dim {settings.embedding_dim} → {dims} (from {settings.embedding_model}'s profile)")
+        settings.embedding_dim = dims
     from services.rag_engine import rag_engine
     from services.sync import phone_library
 
