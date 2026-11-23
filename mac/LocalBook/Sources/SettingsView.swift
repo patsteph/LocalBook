@@ -154,6 +154,7 @@ struct SyncSettings: View {
 /// Settings › Library: what is on this Mac, the folders it watches, and the maintenance commands of the old app.
 struct LibrarySettings: View {
     @Environment(AppModel.self) private var model
+    @AppStorage(StudioEngine.criticKey) private var visualCritic = false
     @State private var counts = LibraryStore.Counts()
     @State private var folders: [LibraryStore.WatchedFolder] = []
     @State private var busy = false
@@ -226,6 +227,13 @@ struct LibrarySettings: View {
                     }
                 }
             } header: { Text("Maintenance") }
+            Section {
+                Toggle("Have the answer model look over each visual", isOn: $visualCritic)
+                Text(library.answerModelSeesImages
+                     ? "After a visual is drawn, the model looks at the picture and scores it; one below the bar is filled once more with its note. Adds a few seconds per visual."
+                     : "Needs an answer model with vision; the one loaded now cannot look at pictures.")
+                    .font(.callout).foregroundStyle(.secondary)
+            } header: { Text("Studio visuals") }
             Section {
                 HStack {
                     Text("Moves every notebook, every source's text, your notes and Studio items from the LocalBook already on this Mac. The old app must be running; nothing in it is changed.")

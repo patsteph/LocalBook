@@ -41,13 +41,22 @@ public enum VisualGoldenSet {
         public var lint: [String]
         /// The form the engine chose, when the run let it choose instead of taking the prompt's.
         public var chosen: VisualSpec.Layout?
-        public init(prompt: Prompt, file: String? = nil, problem: String? = nil, seconds: Double? = nil, lint: [String] = [], chosen: VisualSpec.Layout? = nil) {
-            self.prompt = prompt; self.file = file; self.problem = problem; self.seconds = seconds; self.lint = lint; self.chosen = chosen
+        /// The critic's verdict line, when it looked.
+        public var critique: String?
+        /// Extra fills the picture took (a lint defect or the critic's verdict each buy one).
+        public var retries: Int
+        public init(prompt: Prompt, file: String? = nil, problem: String? = nil, seconds: Double? = nil, lint: [String] = [], chosen: VisualSpec.Layout? = nil, critique: String? = nil, retries: Int = 0) {
+            self.prompt = prompt; self.file = file; self.problem = problem; self.seconds = seconds; self.lint = lint; self.chosen = chosen; self.critique = critique; self.retries = retries
         }
         var time: String { seconds.map { String(format: "%.0f s", $0) } ?? "" }
         /// The prompt's form, or "Mind map → Cycle" when the engine chose.
         var form: String { chosen.map { "\(prompt.layout.label) → \($0.label)" } ?? prompt.layout.label }
-        var checks: String { lint.isEmpty ? (file == nil ? "" : "clean") : lint.joined(separator: "; ") }
+        var checks: String {
+            var parts = [lint.isEmpty ? (file == nil ? "" : "clean") : lint.joined(separator: "; ")]
+            if retries > 0 { parts.append("\(retries) extra fill\(retries == 1 ? "" : "s")") }
+            if let critique { parts.append("critic \(critique)") }
+            return parts.filter { !$0.isEmpty }.joined(separator: " · ")
+        }
     }
 
     /// `index.md` beside the pictures: the notebook, the device, then one row per prompt with its picture's name,

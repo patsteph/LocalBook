@@ -15,6 +15,8 @@ final class VisualGoldenDiagnostics {
     var chooseForm = false
     /// The theme the 15 are drawn in.
     var theme = VisualTheme.clean.id
+    /// Have the critic look at each one (needs the Mac's model with vision); the index records its verdicts.
+    var critic = false
     private(set) var running = false
     private(set) var done = 0
     private(set) var current = ""
@@ -39,17 +41,19 @@ final class VisualGoldenDiagnostics {
                 let started = Date()
                 let choose = chooseForm
                 let item = await engine.make(.visual, in: notebook, topic: prompt.topic, count: 0, notebookOnly: true,
-                                             layout: choose ? nil : prompt.layout, detail: prompt.detail, theme: theme, library: library)
+                                             layout: choose ? nil : prompt.layout, detail: prompt.detail, theme: theme, critic: critic, library: library)
                 let seconds = Date().timeIntervalSince(started)
                 if let item, let spec = try? JSONDecoder().decode(VisualSpec.self, from: Data(item.body.utf8)) {
                     StudioStore.delete(item)
                     let name = prompt.id + ".png"
                     let lint = VisualLint.check(VisualLayout.scene(for: spec)).map(\.description)
                     let chosen: VisualSpec.Layout? = choose ? spec.layout : nil
+                    let said = engine.lastCritique?.line
+                    let retries = engine.lastRetries
                     if Self.write(spec, to: out.appending(path: name)) {
-                        made.append(.init(prompt: prompt, file: name, seconds: seconds, lint: lint, chosen: chosen)); drawn += 1
+                        made.append(.init(prompt: prompt, file: name, seconds: seconds, lint: lint, chosen: chosen, critique: said, retries: retries)); drawn += 1
                     } else {
-                        made.append(.init(prompt: prompt, problem: "the picture could not be written", seconds: seconds, lint: lint, chosen: chosen))
+                        made.append(.init(prompt: prompt, problem: "the picture could not be written", seconds: seconds, lint: lint, chosen: chosen, critique: said, retries: retries))
                     }
                     try? JSONEncoder().encode(spec).write(to: out.appending(path: prompt.id + ".json"))
                     try? VisualSlide.svg(for: spec).data(using: .utf8)?.write(to: out.appending(path: prompt.id + ".svg"))
@@ -93,6 +97,7 @@ struct VisualGoldenSection: View {
             }
             Toggle("Let the engine choose each form", isOn: Bindable(golden).chooseForm).disabled(golden.running)
             VisualThemePicker(theme: Bindable(golden).theme).pickerStyle(.segmented).disabled(golden.running)
+            Toggle("Have the model look over each picture", isOn: Bindable(golden).critic).disabled(golden.running || !library.answerModelSeesImages)
             HStack {
                 Button(golden.running ? "Drawing…" : "Draw the 15") { golden.run(library: library) }
                     .disabled(golden.running || golden.notebookId == nil)
