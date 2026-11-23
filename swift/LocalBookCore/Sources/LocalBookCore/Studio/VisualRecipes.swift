@@ -45,9 +45,10 @@ extension Builder {
     mutating func cycle(top: CGFloat) -> CGFloat {
         let n = spec.items.count
         guard n > 0 else { return top }
-        let cardW = 250 * s
+        let cardW = 290 * s
         var cards: [(title: VisualTextBlock?, detail: VisualTextBlock?, height: CGFloat)] = []
-        for item in spec.items { cards.append(cardContent(title: item.title, detail: item.detail, width: cardW, detailLines: 2)) }
+        // Whole sentences: a card grows to its words and the shrink loop keeps the ring inside the frame.
+        for item in spec.items { cards.append(cardContent(title: item.title, detail: item.detail, width: cardW)) }
         let cardH = cards.map(\.height).max() ?? 0
         let centre = CGPoint(x: W / 2, y: top + (H - pad - top) / 2)
         let rx = W / 2 - pad - cardW / 2, ry = (H - pad - top) / 2 - cardH / 2
