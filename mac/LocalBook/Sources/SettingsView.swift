@@ -155,7 +155,7 @@ struct SyncSettings: View {
 struct LibrarySettings: View {
     @Environment(AppModel.self) private var model
     @AppStorage(StudioEngine.criticKey) private var visualCritic = false
-    @AppStorage(AppModel.imageModelKey) private var imageModel = "none"
+    @AppStorage(AppModel.imageModelKey) private var imageModel = AppModel.imageModelChoice
     @AppStorage(StudioEngine.pictureQualityKey) private var pictureQuality = "best"
     @State private var counts = LibraryStore.Counts()
     @State private var folders: [LibraryStore.WatchedFolder] = []
@@ -165,12 +165,15 @@ struct LibrarySettings: View {
 
     private var library: LibraryModel { model.library }
 
+    /// The chosen image model, if one is.
+    private var chosenImagery: (any VisualImagery)? { model.imagery }
+
     /// What Settings says about the chosen image model.
     private var imageryLine: String {
-        switch model.klein.state {
-        case .absent: "The weights (about 6 GB) download after the answer model is ready."
+        switch chosenImagery?.state ?? .absent {
+        case .absent: "The weights (about \(imageModel == "klein" ? 6 : 10) GB) download after the answer model is ready."
         case .downloading(let p, let part): "Downloading, \(Int(p * 100)) % (\(part))."
-        case .ready: "Ready. Value propositions and infographics get a painted backdrop under their title; the first takes about a minute while the model loads."
+        case .ready: "Ready. Value propositions and infographics get a painted backdrop under their title; the first takes a minute or two while the model loads."
         case .failed(let why): "The download failed (\(why))."
         }
     }
@@ -246,17 +249,18 @@ struct LibrarySettings: View {
                      : "Needs an answer model with vision; the one loaded now cannot look at pictures.")
                     .font(.callout).foregroundStyle(.secondary)
                 Picker("Image model for backdrops", selection: $imageModel) {
-                    Text("None").tag("none")
+                    Text("FLUX.1 schnell").tag("schnell")
                     Text("FLUX.2 Klein 4B").tag("klein")
+                    Text("None").tag("none")
                 }
                 .onChange(of: imageModel) { _, _ in model.applyImageModel() }
-                if imageModel == "klein" {
-                    Text(KleinImagery.note).font(.callout).foregroundStyle(.secondary)
+                if let chosen = chosenImagery {
+                    Text(imageModel == "klein" ? KleinImagery.note : SchnellImagery.note).font(.callout).foregroundStyle(.secondary)
                     HStack(spacing: 8) {
-                        if case .downloading = model.klein.state { ProgressView().controlSize(.small) }
+                        if case .downloading = chosen.state { ProgressView().controlSize(.small) }
                         Text(imageryLine).font(.callout).foregroundStyle(.secondary)
                         Spacer()
-                        if case .failed = model.klein.state { Button("Try again") { Task { await model.klein.prepare() } } }
+                        if case .failed = chosen.state { Button("Try again") { Task { await chosen.prepare() } } }
                     }
                     Picker("Picture quality", selection: $pictureQuality) {
                         Text("Best: two passes").tag("best")
@@ -265,11 +269,13 @@ struct LibrarySettings: View {
                     Text("Best paints the backdrop, then paints it again from itself for finer detail; about twice the time. Either way the answer model writes the art direction first, and the diagram's colours follow the picture.")
                         .font(.callout).foregroundStyle(.secondary)
                 } else {
-                    HStack {
-                        Text("No image model: these forms draw a coloured band instead. Nothing is downloaded.").font(.callout).foregroundStyle(.secondary)
-                        Spacer()
-                        if KleinImagery.anythingOnDisk { Button("Remove Klein weights") { model.klein.deleteWeights() } }
-                    }
+                    Text("No image model: these forms draw a coloured band instead. Nothing is downloaded.").font(.callout).foregroundStyle(.secondary)
+                }
+                if imageModel != "klein", KleinImagery.anythingOnDisk {
+                    HStack { Spacer(); Button("Remove Klein weights") { model.klein.deleteWeights() } }
+                }
+                if imageModel != "schnell", SchnellImagery.anythingOnDisk {
+                    HStack { Spacer(); Button("Remove schnell weights") { model.schnell.deleteWeights() } }
                 }
             } header: { Text("Studio visuals") }
             Section {

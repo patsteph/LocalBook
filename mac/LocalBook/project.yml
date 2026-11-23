@@ -68,6 +68,8 @@ targets:
         product: LocalBookCore
       - package: LocalBookCore
         product: LocalBookEngines
+      - package: LocalBookCore
+        product: FluxSchnell
       - package: FluidAudio
         product: FluidAudio
       - package: Flux2Swift

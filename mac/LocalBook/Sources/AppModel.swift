@@ -8,12 +8,25 @@ import LocalBookEngines
 @Observable @MainActor
 final class AppModel {
     let library = LibraryModel()
-    /// Paints the backdrops of visuals: FLUX.2 Klein, fetched after launch like the other models.
-    /// Settings key: which image model paints backdrops. "none" (the default: nothing downloads) or "klein".
+    /// Paints the backdrops of visuals, fetched after launch like the other models. Two to choose from by
+    /// machine: FLUX.1 schnell (nothing from outside the FLUX checkpoint; the default) and FLUX.2 Klein 4B (its
+    /// Qwen3 text encoder rules it out on managed work Macs).
+    /// Settings key: "schnell", "klein" or "none".
     static let imageModelKey = "studio.imageModel"
     let klein = KleinImagery()
+    let schnell = SchnellImagery()
+    /// The setting as it stands: a Mac that already carries Klein from before the choice existed keeps it.
+    nonisolated static var imageModelChoice: String {
+        UserDefaults.standard.string(forKey: imageModelKey) ?? (KleinImagery.downloaded ? "klein" : "schnell")
+    }
     /// The image model the setting names, or nil for none.
-    var imagery: (any VisualImagery)? { UserDefaults.standard.string(forKey: Self.imageModelKey) == "klein" ? klein : nil }
+    var imagery: (any VisualImagery)? {
+        switch Self.imageModelChoice {
+        case "klein": klein
+        case "schnell": schnell
+        default: nil
+        }
+    }
     /// Drops and intents that add to a notebook.
     let intake = IntakeModel()
 

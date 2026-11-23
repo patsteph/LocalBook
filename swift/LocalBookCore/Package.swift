@@ -21,6 +21,8 @@ let package = Package(
     products: [
         .library(name: "LocalBookCore", targets: ["LocalBookCore"]),
         .library(name: "LocalBookEngines", targets: ["LocalBookEngines"]),
+        // FLUX.1 schnell in Swift on MLX, for the Mac's painted backdrops; the phone never links it.
+        .library(name: "FluxSchnell", targets: ["FluxSchnell"]),
     ],
     dependencies: [
         // 1.7.x needs -enable-experimental-feature BorrowingSequence; keep to the stable line.
@@ -63,6 +65,20 @@ let package = Package(
             ],
             resources: [
                 .copy("Resources"),
+            ],
+            swiftSettings: [
+                .swiftLanguageMode(.v6),
+            ]
+        ),
+        .target(
+            name: "FluxSchnell",
+            dependencies: [
+                .product(name: "MLX", package: "mlx-swift"),
+                .product(name: "MLXNN", package: "mlx-swift"),
+                .product(name: "MLXFast", package: "mlx-swift"),
+                .product(name: "MLXRandom", package: "mlx-swift"),
+                .product(name: "Tokenizers", package: "swift-transformers"),
+                .product(name: "Hub", package: "swift-transformers"),
             ],
             swiftSettings: [
                 .swiftLanguageMode(.v6),

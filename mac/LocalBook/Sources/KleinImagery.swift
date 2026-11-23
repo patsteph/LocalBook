@@ -46,7 +46,7 @@ final class KleinImagery: VisualImagery {
     }
 
     /// Every part is on disk.
-    static var downloaded: Bool {
+    nonisolated static var downloaded: Bool {
         Flux2ModelDownloader.isDownloaded(.transformer(.klein4B_8bit))
             && Flux2ModelDownloader.isDownloaded(.vae(.smallDecoder))
             && TextEncoderModelDownloader.isQwen3ModelDownloaded(variant: .qwen3_4B_4bit)
