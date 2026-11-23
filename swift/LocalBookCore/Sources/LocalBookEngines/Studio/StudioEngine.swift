@@ -140,8 +140,15 @@ public final class StudioEngine {
 
         if kind == .visual {
             lastCritique = nil; lastRetries = 0
-            guard var spec = VisualSpec.parseAnyShape(raw, preferring: form) else {
-                SoakTrace.log("studio visual: nothing to draw as \(form.rawValue) in “\(raw.prefix(300).replacingOccurrences(of: "\n", with: " "))”")
+            var drawn = VisualSpec.parseAnyShape(raw, preferring: form)
+            if drawn == nil {
+                // The reply was prose or JSON of another shape: ask once more, pointing at the schema, before giving up.
+                SoakTrace.log("studio visual: nothing to draw as \(form.rawValue) in “\(raw.prefix(300).replacingOccurrences(of: "\n", with: " "))”; asking again")
+                status = "Drawing again…"
+                let again = "Passages:\n\n\(numbered(passages))\n\n\(request)\n\nYour previous reply could not be drawn. Reply with ONLY the JSON object described, exactly those keys, no prose, no apology. If the notes are thin, still fill every list from what they do say."
+                if let out = await run(again, instructions: instructions, tokens: tokens) { drawn = VisualSpec.parseAnyShape(out, preferring: form); lastRetries = 1 }
+            }
+            guard var spec = drawn else {
                 error = "The model's answer couldn't be drawn as a \(form.label.lowercased()). Try again, or pick the form yourself."; return nil
             }
             if spec.layout != form { SoakTrace.log("studio visual: the reply fitted \(spec.layout.rawValue), not \(form.rawValue); drawn as that") }

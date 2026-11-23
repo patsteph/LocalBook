@@ -258,45 +258,50 @@ extension Builder {
         return y - laneGap
     }
 
-    // MARK: decision tree — a question, its outcomes to the right, the next question below
+    // MARK: decision tree — a question card with a diamond mark, its outcomes to the right, the next question below
 
     mutating func decisionTree(top: CGFloat) -> CGFloat {
-        let qW = 420 * s, qGap = 60 * s
+        let qW = 440 * s, qGap = 64 * s, mark = 26 * s
         let outW = W - pad - (pad + qW + qGap)
         var y = top
         for (i, q) in spec.items.enumerated() {
-            let question = block(q.title, VisualTextStyle(size: 21 * s, weight: .semibold, align: .center), x: pad + 60 * s, y: 0, width: qW - 120 * s, maxLines: 3)
-            let qH = max(100 * s, (question?.frame.height ?? 0) + 56 * s)
+            // A rounded card, not a rhombus: three lines of question fit a card, where a flat diamond cut their ends off.
+            let question = block(q.title, VisualTextStyle(size: 21 * s, weight: .semibold), x: pad + inner + mark + 14 * s, y: 0, width: qW - 2 * inner - mark - 14 * s, maxLines: 3)
+            let qH = max(88 * s, (question?.frame.height ?? 0) + 2 * inner)
             // Outcomes first, to know the height.
-            var outcomes: [(label: String, block: VisualTextBlock?)] = []
+            var outcomes: [(label: String, block: VisualTextBlock?, lead: CGFloat)] = []
             var oy = y
             for child in q.children {
                 let parts = child.split(separator: ":", maxSplits: 1).map { $0.trimmingCharacters(in: .whitespaces) }
                 let label = parts.count == 2 ? parts[0] : ""
                 let text = parts.count == 2 ? parts[1] : child
-                let b = block(text, VisualTextStyle(size: 19 * s), x: pad + qW + qGap + inner, y: oy + 12 * s, width: outW - 2 * inner, maxLines: 2)
-                outcomes.append((label, b))
-                oy += (b?.frame.height ?? 0) + 24 * s + 10 * s
+                let lead = (label.isEmpty ? 12 : 30) * s      // room for the choice word above the outcome
+                let b = block(text, VisualTextStyle(size: 19 * s), x: pad + qW + qGap + inner, y: oy + lead, width: outW - 2 * inner, maxLines: 2)
+                outcomes.append((label, b, lead))
+                oy += (b?.frame.height ?? 0) + lead + 12 * s + 10 * s
             }
             let blockH = max(qH, oy - y - 10 * s)
             let cx = pad + qW / 2, cy = y + blockH / 2
-            scene.add(.fill([CGPoint(x: cx, y: cy - qH / 2), CGPoint(x: cx + qW / 2, y: cy), CGPoint(x: cx, y: cy + qH / 2), CGPoint(x: cx - qW / 2, y: cy)], role: .tint(i)))
-            scene.add(.stroke([.move(CGPoint(x: cx, y: cy - qH / 2)), .line(CGPoint(x: cx + qW / 2, y: cy)), .line(CGPoint(x: cx, y: cy + qH / 2)), .line(CGPoint(x: cx - qW / 2, y: cy)), .line(CGPoint(x: cx, y: cy - qH / 2))], role: .accent(i), width: 2 * s, dashed: false))
+            scene.add(.card(CGRect(x: pad, y: cy - qH / 2, width: qW, height: qH), fill: .tint(i), stroke: .accent(i), radius: radius, hit: nil))
+            let mx = pad + inner + mark / 2
+            scene.add(.fill([CGPoint(x: mx, y: cy - mark / 2), CGPoint(x: mx + mark / 2, y: cy), CGPoint(x: mx, y: cy + mark / 2), CGPoint(x: mx - mark / 2, y: cy)], role: .accent(i)))
             if var qb = question { qb.frame.origin.y = cy - qb.frame.height / 2; scene.add(.text(qb)) }
             for o in outcomes {
                 guard let b = o.block else { continue }
-                let frame = CGRect(x: pad + qW + qGap, y: b.frame.minY - 12 * s, width: outW, height: b.frame.height + 24 * s)
+                let frame = CGRect(x: pad + qW + qGap, y: b.frame.minY - o.lead, width: outW, height: b.frame.height + o.lead + 12 * s)
                 scene.add(.card(frame, fill: .surface, stroke: nil, radius: 12 * s, hit: nil))
                 scene.add(.text(b))
-                let from = CGPoint(x: cx + qW / 2, y: cy), to = CGPoint(x: frame.minX, y: frame.midY)
+                let from = CGPoint(x: pad + qW, y: cy), to = CGPoint(x: frame.minX, y: frame.midY)
                 let midX = from.x + qGap / 2
                 scene.add(.stroke([.move(from), .line(CGPoint(x: midX, y: from.y)), .line(CGPoint(x: midX, y: to.y)), .line(CGPoint(x: to.x - 10 * s, y: to.y))], role: .rule, width: 2 * s, dashed: false))
                 head(at: to, direction: CGPoint(x: 1, y: 0), role: .rule)
-                if !o.label.isEmpty, let l = block(o.label, VisualTextStyle(size: 15 * s, weight: .semibold, role: .accent(i), align: .center), x: midX - 40 * s, y: to.y - 22 * s, width: 80 * s, maxLines: 1) { scene.add(.text(l)) }
+                // The choice ("Yes", "No") sits inside the outcome card's left edge, where it cannot cross the connector.
+                if !o.label.isEmpty, let l = block(o.label.uppercased(), VisualTextStyle(size: 13 * s, weight: .bold, role: .accent(i)), x: frame.minX + 12 * s, y: frame.minY + 6 * s, width: outW - 24 * s, maxLines: 1) { scene.add(.text(l)) }
             }
             if i < spec.items.count - 1 {
                 let next = y + blockH + 36 * s
-                scene.add(.stroke([.move(CGPoint(x: cx, y: cy + qH / 2)), .line(CGPoint(x: cx, y: next + (max(100 * s, 56 * s) / 2) - 10 * s))], role: .rule, width: 2 * s, dashed: true))
+                scene.add(.stroke([.move(CGPoint(x: cx, y: cy + qH / 2)), .line(CGPoint(x: cx, y: next + 44 * s - 10 * s))], role: .rule, width: 2 * s, dashed: true))
+                head(at: CGPoint(x: cx, y: next + 44 * s - 10 * s), direction: CGPoint(x: 0, y: 1), role: .rule)
             }
             y += blockH + 36 * s
         }

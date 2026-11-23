@@ -80,4 +80,23 @@ struct VisualSpecTests {
         let w = Double(image.size.width), h = Double(image.size.height)
         #expect(abs(w / h - 16.0 / 9.0) < 0.01)
     }
+
+    @Test("renamed keys still draw: phases with names, decisions with outcomes, axes as an object with word positions")
+    func renamedKeys() throws {
+        let cycle = #"{"title": "Loop", "phases": [{"name": "Train", "description": "fit"}, {"name": "Evaluate"}, {"name": "Tune"}]}"#
+        let c = try #require(VisualSpec.parse(cycle, layout: .cycle))
+        #expect(c.items.map(\.title) == ["Train", "Evaluate", "Tune"] && c.items[0].detail == "fit")
+
+        let tree = #"{"title": "Fine-tune?", "decisions": [{"question": "Enough labelled data?", "outcomes": ["Yes: fine-tune", "No: use retrieval"]}]}"#
+        let d = try #require(VisualSpec.parse(tree, layout: .decisionTree))
+        #expect(d.items.first?.title == "Enough labelled data?" && d.items.first?.children.count == 2)
+
+        let quad = #"{"title": "Techniques", "axes": {"x": "Effort", "y": "Impact"}, "items": [{"title": "RAG", "x": "low", "y": "high"}, {"title": "Pretraining", "x": 5, "y": 4}]}"#
+        let q = try #require(VisualSpec.parse(quad, layout: .quadrant))
+        #expect(q.columns == ["Effort", "Impact"])
+        #expect(q.items[0].value == "1.5,4.5" && q.items[1].value == "5.0,4.0")
+
+        let unnamed = #"{"items": [{"title": "A", "position": {"x": 2, "y": 3}}]}"#
+        #expect(VisualSpec.parse(unnamed, layout: .quadrant)?.columns == ["Horizontal", "Vertical"])
+    }
 }

@@ -163,22 +163,47 @@ public struct VisualSpec: Codable, Hashable, Sendable {
         func text(_ v: Any?) -> String { (v as? String ?? (v as? NSNumber).map { "\($0)" } ?? "").trimmingCharacters(in: .whitespacesAndNewlines) }
         func objects(_ key: String) -> [[String: Any]] { o[key] as? [[String: Any]] ?? [] }
         func strings(_ v: Any?) -> [String] { (v as? [Any] ?? []).map(text).filter { !$0.isEmpty } }
+        // Models rename keys freely ("name" for "title", "phases" for "items"): read the usual aliases, then any list of objects.
+        func titled(_ e: [String: Any]) -> String { text(e["title"] ?? e["name"] ?? e["label"] ?? e["step"] ?? e["stage"] ?? e["question"]) }
+        func detailed(_ e: [String: Any]) -> String { text(e["detail"] ?? e["description"] ?? e["text"] ?? e["summary"]) }
+        func anyList(_ keys: [String]) -> [[String: Any]] {
+            if let l = keys.map(objects).first(where: { !$0.isEmpty }) { return l }
+            return o.values.compactMap { $0 as? [[String: Any]] }.first { l in l.contains { !titled($0).isEmpty } } ?? []
+        }
+        /// "x": 4, "x": "4", "x": "high" or "x": "low" all place an item.
+        func position(_ v: Any?) -> String {
+            let t = text(v).lowercased()
+            if let n = Double(t) { return "\(n)" }
+            if t.hasPrefix("very h") { return "5" }; if t.hasPrefix("h") { return "4.5" }
+            if t.hasPrefix("very l") { return "1" }; if t.hasPrefix("l") { return "1.5" }
+            if t.hasPrefix("m") { return "3" }
+            return "3"
+        }
         var spec = VisualSpec(layout: layout, title: text(o["title"]))
         switch layout.shape {
         case .sequence:
-            let list = ["items", "steps", "events", "stages", "groups"].map(objects).first { !$0.isEmpty } ?? []
-            spec.items = list.map { Item(title: text($0["title"]), detail: text($0["detail"]), value: text($0["when"] ?? $0["value"])) }
+            let list = anyList(["items", "steps", "events", "stages", "phases", "groups"])
+            spec.items = list.map { Item(title: titled($0), detail: detailed($0), value: text($0["when"] ?? $0["value"] ?? $0["date"])) }
         case .groups:
             // Models often write "items" whatever the prompt calls them: take the first list whose entries have children.
-            let lists = ["groups", "branches", "items", "steps"].map(objects).filter { !$0.isEmpty }
-            let list = lists.first { l in l.contains { $0["children"] != nil } } ?? lists.first ?? []
-            spec.items = list.map { Item(title: text($0["title"]), detail: text($0["detail"]), children: strings($0["children"])) }
+            let lists = ["groups", "branches", "items", "steps", "decisions", "nodes"].map(objects).filter { !$0.isEmpty }
+            let list = lists.first { l in l.contains { $0["children"] != nil } } ?? lists.first ?? anyList([])
+            spec.items = list.map { Item(title: titled($0), detail: detailed($0), children: strings($0["children"] ?? $0["points"] ?? $0["outcomes"] ?? $0["options"] ?? $0["items"])) }
         case .quadrant:
-            spec.columns = strings(o["axes"] ?? o["columns"])
-            spec.items = objects("items").map { Item(title: text($0["title"]), detail: text($0["detail"]), value: "\(text($0["x"])),\(text($0["y"]))") }
+            var axes = strings(o["axes"] ?? o["columns"])
+            if axes.count < 2, let a = o["axes"] as? [String: Any] { axes = [text(a["x"] ?? a["horizontal"]), text(a["y"] ?? a["vertical"])].filter { !$0.isEmpty } }
+            if axes.count < 2 { axes = [text(o["x_axis"] ?? o["xAxis"] ?? o["x"]), text(o["y_axis"] ?? o["yAxis"] ?? o["y"])].filter { !$0.isEmpty } }
+            let placed = anyList(["items", "points", "techniques"]).filter { $0["x"] != nil || $0["position"] != nil }
+            // Items placed but the axes unnamed: draw them anyway with plain axis names rather than nothing.
+            if axes.count < 2, !placed.isEmpty { axes = ["Horizontal", "Vertical"] }
+            spec.columns = axes
+            spec.items = placed.map { e in
+                let pos = e["position"] as? [String: Any] ?? e
+                return Item(title: titled(e), detail: detailed(e), value: "\(position(pos["x"])),\(position(pos["y"]))")
+            }
         case .figures:
-            spec.stats = objects("stats").map { Item(title: text($0["label"]), value: text($0["value"])) }
-            spec.items = objects("points").map { Item(title: text($0["title"]), detail: text($0["detail"])) }
+            spec.stats = anyList(["stats", "numbers", "figures"]).map { Item(title: text($0["label"] ?? $0["title"] ?? $0["name"]), value: text($0["value"] ?? $0["number"] ?? $0["figure"])) }
+            spec.items = objects("points").map { Item(title: titled($0), detail: detailed($0)) }
         case .matrix:
             spec.columns = strings(o["columns"])
             spec.rows = objects("rows").map { Row(label: text($0["label"]), cells: ($0["cells"] as? [Any] ?? []).map(text)) }
