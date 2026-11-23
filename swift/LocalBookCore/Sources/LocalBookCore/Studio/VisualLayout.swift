@@ -63,8 +63,20 @@ struct Builder {
         case .flowchart: bottom = flowchart(top: y)
         case .timeline: bottom = timeline(top: y)
         case .comparison: bottom = comparison(top: y)
-        case .infographic: bottom = infographic(top: y)
+        case .infographic: bottom = infographic(top: y, big: false)
+        case .statCallouts: bottom = infographic(top: y, big: true)
         case .mindmap: bottom = mindmap()
+        case .cycle: bottom = cycle(top: y)
+        case .pyramid: bottom = pyramid(top: y)
+        case .rankedList: bottom = rankedList(top: y)
+        case .tree: bottom = tree(top: y)
+        case .clusters: bottom = clusters(top: y)
+        case .swimlane: bottom = swimlane(top: y)
+        case .decisionTree: bottom = decisionTree(top: y)
+        case .prosCons: bottom = twoColumns(top: y, marks: ("checkmark.circle.fill", "xmark.circle.fill"), arrow: false)
+        case .beforeAfter: bottom = twoColumns(top: y, marks: ("circle.fill", "circle.fill"), arrow: true)
+        case .valueProposition: bottom = valueProposition(top: y)
+        case .quadrant: bottom = quadrant(top: y)
         }
         fits = fits && bottom <= H - pad
     }
@@ -230,14 +242,14 @@ struct Builder {
 
     // MARK: infographic — figures in a grid of cards, then the points in two columns
 
-    mutating func infographic(top: CGFloat) -> CGFloat {
+    mutating func infographic(top: CGFloat, big: Bool) -> CGFloat {
         var y = top
         if !spec.stats.isEmpty {
-            let rows = VisualLayout.rows(spec.stats.count, maxPerRow: 4)
+            let rows = VisualLayout.rows(spec.stats.count, maxPerRow: big ? 3 : 4)
             let per = max(2, rows.first?.count ?? 1)
             let cardW = (W - 2 * pad - CGFloat(per - 1) * gap) / CGFloat(per)
-            let valueStyle = VisualTextStyle(size: 52 * s, weight: .bold, rounded: true)
-            let labelStyle = VisualTextStyle(size: 18 * s, role: .quiet)
+            let valueStyle = VisualTextStyle(size: (big ? 84 : 52) * s, weight: .bold, rounded: true, align: big ? .center : .leading)
+            let labelStyle = VisualTextStyle(size: (big ? 22 : 18) * s, role: .quiet, align: big ? .center : .leading)
             for row in rows {
                 var cards: [(i: Int, value: VisualTextBlock?, label: VisualTextBlock?, height: CGFloat)] = []
                 for i in row {
@@ -246,7 +258,7 @@ struct Builder {
                     let l = block(spec.stats[i].title, labelStyle, x: 0, y: 0, width: cardW - 2 * inner)
                     cards.append((i, v, l, inner + (v?.frame.height ?? 0) + 6 * s + (l?.frame.height ?? 0) + inner))
                 }
-                let h = max(cards.map(\.height).max() ?? 0, 110 * s)
+                let h = max(cards.map(\.height).max() ?? 0, (big ? 200 : 110) * s)
                 var x = pad
                 for c in cards {
                     scene.add(.card(CGRect(x: x, y: y, width: cardW, height: h), fill: .tint(c.i), stroke: nil, radius: radius, hit: nil))

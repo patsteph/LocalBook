@@ -25,8 +25,9 @@ public final class StudioEngine {
 
     public func stop() { stopped = true; task?.cancel() }
 
-    /// Returns the saved item, or nil (with `error` set) when it could not be made.
-    public func make(_ kind: StudioItem.Kind, in notebook: LibraryNotebookInfo, topic: String, count: Int, notebookOnly: Bool, style: AudioStyle = .casual, videoStyle: VideoStyle = .clean, accent: AudioAccent = .british, layout: VisualSpec.Layout = .mindmap, detail: VisualSpec.Detail = .standard, library: LibraryModel) async -> StudioItem? {
+    /// Returns the saved item, or nil (with `error` set) when it could not be made. A visual with no `layout` has its
+    /// form chosen by the engine (`VisualPick`): the words of the ask first, the model only when they name no form.
+    public func make(_ kind: StudioItem.Kind, in notebook: LibraryNotebookInfo, topic: String, count: Int, notebookOnly: Bool, style: AudioStyle = .casual, videoStyle: VideoStyle = .clean, accent: AudioAccent = .british, layout: VisualSpec.Layout? = nil, detail: VisualSpec.Detail = .standard, library: LibraryModel) async -> StudioItem? {
         guard !working else { return nil }
         working = true; error = nil; preview = ""; progress = 0; caption = ""; stopped = false
         try? await Task.sleep(for: .milliseconds(200))              // let the making screen appear before the heavy work starts
@@ -59,10 +60,8 @@ public final class StudioEngine {
         func numbered(_ list: [LibraryHit]) -> String {
             list.enumerated().map { i, h in "[\(i + 1)] (\(h.filename))\n\(String(h.text.prefix(900)))" }.joined(separator: "\n\n")
         }
-        let (instructions, request, tokens) = Self.prompt(kind, notebookTitle: notebook.title, topic: topic, count: count, notebookOnly: notebookOnly, layout: layout, detail: detail)
-
         /// Streams one request to the model; returns its text, or nil if it was stopped.
-        func run(_ prompt: String, tokens: Int) async -> String? {
+        func run(_ prompt: String, instructions: String, tokens: Int) async -> String? {
             preview = ""
             let runStart = Date()
             let session = ChatSession(gemma, instructions: instructions, generateParameters: GenerateParameters(maxTokens: tokens))
@@ -86,6 +85,24 @@ public final class StudioEngine {
         let awake = KeepAwake.begin(reason: "Making a Studio item")
         defer { awake.end() }
 
+        // The form of a visual, when it is left to the engine.
+        var form = layout ?? .mindmap
+        if kind == .visual, layout == nil {
+            if let named = VisualPick.rule(for: topic) {
+                form = named
+                SoakTrace.log("studio visual: the ask names \(form.rawValue)")
+            } else {
+                status = "Choosing the form…"
+                let about = topic.isEmpty ? "the notebook “\(notebook.title)”" : "“\(topic)” in the notebook “\(notebook.title)”"
+                let pickStart = Date()
+                guard let out = await run(VisualPick.prompt(about: about, passages: passages.map(\.text)), instructions: VisualPick.instructions, tokens: VisualPick.replyTokens) else { error = "Stopped."; return nil }
+                form = VisualPick.parse(out) ?? .mindmap
+                SoakTrace.log("studio visual: the model chose \(form.rawValue) in \(String(format: "%.1f", Date().timeIntervalSince(pickStart))) s from “\(out.prefix(40))”")
+                progress = 0
+            }
+        }
+        let (instructions, request, tokens) = Self.prompt(kind, notebookTitle: notebook.title, topic: topic, count: count, notebookOnly: notebookOnly, layout: form, detail: detail)
+
         var raw = ""
         if kind == .quiz {
             // Built in small batches, each from a different part of the notebook, until there are enough questions.
@@ -100,7 +117,7 @@ public final class StudioEngine {
                 let slice = (0..<min(window, passages.count)).map { passages[(start + $0) % passages.count] }
                 let avoid = made.isEmpty ? "" : "\n\nQuestions already written (do not repeat them or their topics):\n" + made.map { "- " + $0 }.joined(separator: "\n")
                 let (_, req, toks) = Self.prompt(.quiz, notebookTitle: notebook.title, topic: topic, count: want, notebookOnly: notebookOnly)
-                guard let out = await run("Passages:\n\n\(numbered(slice))\n\n\(req)\(avoid)", tokens: toks) else { error = "Stopped."; return nil }
+                guard let out = await run("Passages:\n\n\(numbered(slice))\n\n\(req)\(avoid)", instructions: instructions, tokens: toks) else { error = "Stopped."; return nil }
                 let fresh = Self.jsonObjects(in: out).compactMap { $0["question"] as? String }.filter { q in !made.contains { $0.lowercased() == q.lowercased() } }
                 if fresh.isEmpty { misses += 1 } else { misses = 0 }
                 made += fresh
@@ -109,16 +126,16 @@ public final class StudioEngine {
             }
         } else {
             status = kind == .doc ? "Writing…" : (kind == .visual ? "Drawing…" : "Making the cards…")
-            guard let out = await run("Passages:\n\n\(numbered(passages))\n\n\(request)", tokens: tokens) else { error = "Stopped."; return nil }
+            guard let out = await run("Passages:\n\n\(numbered(passages))\n\n\(request)", instructions: instructions, tokens: tokens) else { error = "Stopped."; return nil }
             raw = out
         }
 
         if kind == .visual {
-            guard let spec = VisualSpec.parse(raw, layout: layout), let data = try? JSONEncoder().encode(spec) else {
+            guard let spec = VisualSpec.parse(raw, layout: form), let data = try? JSONEncoder().encode(spec) else {
                 error = "The model's answer couldn't be drawn. Try again."; return nil
             }
             let item = StudioItem(id: UUID().uuidString, notebookId: notebook.id, kind: .visual,
-                                  title: spec.title.isEmpty ? "\(layout.label): \(notebook.title)" : "\(layout.label): \(spec.title)",
+                                  title: VisualSpec.itemTitle(spec, notebook: notebook.title),
                                   created: Date(), body: String(decoding: data, as: UTF8.self))
             StudioStore.save(item)
             return item

@@ -2,56 +2,166 @@ import SwiftUI
 
 /// A visual: the structure the answer model wrote (not a picture). `VisualLayout` places it as a `VisualScene`, which
 /// `VisualSceneView` draws natively (crisp, light and dark), `VisualSlide.image` saves as a PNG and `VisualSVG` writes as
-/// a vector file.
+/// a vector file. The form (`Layout`) is an idiom from the catalogue; idioms sharing a `Shape` fill the same fields, so
+/// the same content can be drawn as any of them without asking the model again.
 public struct VisualSpec: Codable, Hashable, Sendable {
+    /// What the model is asked to fill: the fields an idiom draws from.
+    public enum Shape: Sendable {
+        /// `items` in order, each with a title, a detail and (timelines) a `value` for when.
+        case sequence
+        /// `items` with children: a title per group and short phrases under it.
+        case groups
+        /// `columns` and `rows`.
+        case matrix
+        /// `columns` = the two axes; `items` with `value` "x,y" from 1 to 5.
+        case quadrant
+        /// `stats` (value + label) and `items` (point + detail).
+        case figures
+    }
+    public enum Family: String, CaseIterable, Sendable {
+        case process, structure, comparison, data
+        public var label: String { switch self { case .process: "Process"; case .structure: "Structure"; case .comparison: "Comparison"; case .data: "Facts and figures" } }
+    }
+
+    /// The catalogue of forms. The raw values are stored in saved items, so they never change.
     public enum Layout: String, Codable, CaseIterable, Identifiable, Sendable {
-        case mindmap, flowchart, comparison, timeline, infographic
+        // Process
+        case flowchart, timeline, cycle, swimlane, decisionTree = "decision_tree"
+        // Structure
+        case mindmap, tree, clusters, pyramid, valueProposition = "value_proposition"
+        // Comparison
+        case comparison, prosCons = "pros_cons", beforeAfter = "before_after", quadrant, rankedList = "ranked_list"
+        // Facts and figures
+        case infographic, statCallouts = "stat_callouts"
+
         public var id: String { rawValue }
         public var label: String {
-            switch self { case .mindmap: "Mind map"; case .flowchart: "Flowchart"; case .comparison: "Comparison"; case .timeline: "Timeline"; case .infographic: "Infographic" }
+            switch self {
+            case .mindmap: "Mind map"; case .flowchart: "Flowchart"; case .comparison: "Comparison"; case .timeline: "Timeline"; case .infographic: "Infographic"
+            case .cycle: "Cycle"; case .swimlane: "Swimlanes"; case .decisionTree: "Decision tree"; case .tree: "Hierarchy"; case .clusters: "Concept clusters"
+            case .pyramid: "Layers"; case .valueProposition: "Value proposition"; case .prosCons: "Pros and cons"; case .beforeAfter: "Before and after"
+            case .quadrant: "2×2 matrix"; case .rankedList: "Ranked list"; case .statCallouts: "Key numbers"
+            }
         }
         public var symbol: String {
-            switch self { case .mindmap: "point.3.connected.trianglepath.dotted"; case .flowchart: "arrow.triangle.branch"; case .comparison: "tablecells"; case .timeline: "clock.arrow.circlepath"; case .infographic: "chart.bar.doc.horizontal" }
+            switch self {
+            case .mindmap: "point.3.connected.trianglepath.dotted"; case .flowchart: "arrow.triangle.branch"; case .comparison: "tablecells"
+            case .timeline: "clock.arrow.circlepath"; case .infographic: "chart.bar.doc.horizontal"; case .cycle: "arrow.triangle.2.circlepath"
+            case .swimlane: "rectangle.split.1x2"; case .decisionTree: "arrow.triangle.branch"; case .tree: "list.bullet.indent"; case .clusters: "square.grid.2x2"
+            case .pyramid: "triangle"; case .valueProposition: "star.square"; case .prosCons: "plus.forwardslash.minus"; case .beforeAfter: "arrow.left.arrow.right"
+            case .quadrant: "squareshape.split.2x2"; case .rankedList: "list.number"; case .statCallouts: "number"
+            }
         }
+        public var family: Family {
+            switch self {
+            case .flowchart, .timeline, .cycle, .swimlane, .decisionTree: .process
+            case .mindmap, .tree, .clusters, .pyramid, .valueProposition: .structure
+            case .comparison, .prosCons, .beforeAfter, .quadrant, .rankedList: .comparison
+            case .infographic, .statCallouts: .data
+            }
+        }
+        public var shape: Shape {
+            switch self {
+            case .flowchart, .timeline, .cycle, .pyramid, .rankedList: .sequence
+            case .mindmap, .tree, .clusters, .swimlane, .decisionTree, .prosCons, .beforeAfter, .valueProposition: .groups
+            case .comparison: .matrix
+            case .quadrant: .quadrant
+            case .infographic, .statCallouts: .figures
+            }
+        }
+        /// When the engine should choose this form, for the pick prompt and the rules.
+        public var useWhen: String {
+            switch self {
+            case .flowchart: "steps of a process in order"
+            case .timeline: "events with dates, a history, how something developed"
+            case .cycle: "a loop that repeats: stages that lead back to the start"
+            case .swimlane: "a process where several people or teams each own some steps"
+            case .decisionTree: "decisions with branches: if this, then that"
+            case .mindmap: "the main ideas of a subject and the points under each"
+            case .tree: "a hierarchy: parts within parts, an org chart, a taxonomy"
+            case .clusters: "concepts grouped by theme"
+            case .pyramid: "layers or levels that build on one another, from base to top"
+            case .valueProposition: "one offer or idea and the few benefits that support it"
+            case .comparison: "two or more options compared on several criteria"
+            case .prosCons: "the arguments for and against one thing"
+            case .beforeAfter: "a change: how it was and how it is now"
+            case .quadrant: "items placed on two axes, such as effort against impact"
+            case .rankedList: "an ordered ranking with a reason for each place"
+            case .infographic: "key figures with a few points to remember"
+            case .statCallouts: "the numbers that matter most, nothing else"
+            }
+        }
+        /// `useWhen` as a sentence for the picker's footnote.
+        public var hint: String { useWhen.prefix(1).uppercased() + String(useWhen.dropFirst()) + "." }
+        /// The other forms the same filled content can be drawn as, without asking the model again.
+        public var alternatives: [Layout] { Layout.allCases.filter { $0 != self && $0.shape == shape } }
     }
     public struct Item: Codable, Hashable, Sendable {
         public var title: String
         public var detail: String = ""
         public var value: String = ""
         public var children: [String] = []
+        public init(title: String, detail: String = "", value: String = "", children: [String] = []) {
+            self.title = title; self.detail = detail; self.value = value; self.children = children
+        }
     }
     public struct Row: Codable, Hashable, Sendable { public var label: String; public var cells: [String] }
 
     public var layout: Layout
     public var title: String
-    public var items: [Item] = []          // branches, steps, events or key points
-    public var stats: [Item] = []          // infographic figures (value + title as the label)
-    public var columns: [String] = []      // comparison
+    public var items: [Item] = []          // branches, steps, events, groups or key points
+    public var stats: [Item] = []          // figures (value + title as the label)
+    public var columns: [String] = []      // comparison: the options; quadrant: the two axes
     public var rows: [Row] = []            // comparison
+
+    public init(layout: Layout, title: String, items: [Item] = [], stats: [Item] = [], columns: [String] = [], rows: [Row] = []) {
+        self.layout = layout; self.title = title; self.items = items; self.stats = stats; self.columns = columns; self.rows = rows
+    }
+
+    /// The same content as another form of the same shape.
+    public func drawn(as other: Layout) -> VisualSpec { var s = self; s.layout = other; return s }
+
+    /// The Studio item's title for a spec: the form, then the picture's own title (or the notebook's).
+    public static func itemTitle(_ spec: VisualSpec, notebook: String) -> String {
+        "\(spec.layout.label): \(spec.title.isEmpty ? notebook : spec.title)"
+    }
+
+    /// `title` with its form prefix swapped for `layout`'s, when the item was redrawn as another form.
+    public static func retitle(_ title: String, from old: Layout, to new: Layout) -> String {
+        title.hasPrefix(old.label + ": ") ? new.label + ": " + String(title.dropFirst(old.label.count + 2)) : title
+    }
 
     /// Reads the model's JSON object leniently. nil when there is nothing usable to draw.
     public static func parse(_ raw: String, layout: Layout) -> VisualSpec? {
         guard let o = JSONObjects.scan(in: raw).first else { return nil }
         func text(_ v: Any?) -> String { (v as? String ?? (v as? NSNumber).map { "\($0)" } ?? "").trimmingCharacters(in: .whitespacesAndNewlines) }
         func objects(_ key: String) -> [[String: Any]] { o[key] as? [[String: Any]] ?? [] }
+        func strings(_ v: Any?) -> [String] { (v as? [Any] ?? []).map(text).filter { !$0.isEmpty } }
         var spec = VisualSpec(layout: layout, title: text(o["title"]))
-        switch layout {
-        case .mindmap:
-            spec.items = objects("branches").map { b in Item(title: text(b["title"]), children: (b["children"] as? [Any] ?? []).map(text).filter { !$0.isEmpty }) }
-        case .flowchart:
-            spec.items = objects("steps").map { Item(title: text($0["title"]), detail: text($0["detail"])) }
-        case .timeline:
-            spec.items = objects("events").map { Item(title: text($0["title"]), detail: text($0["detail"]), value: text($0["when"])) }
-        case .infographic:
+        switch layout.shape {
+        case .sequence:
+            let list = ["items", "steps", "events"].map(objects).first { !$0.isEmpty } ?? []
+            spec.items = list.map { Item(title: text($0["title"]), detail: text($0["detail"]), value: text($0["when"] ?? $0["value"])) }
+        case .groups:
+            let list = ["groups", "branches"].map(objects).first { !$0.isEmpty } ?? []
+            spec.items = list.map { Item(title: text($0["title"]), detail: text($0["detail"]), children: strings($0["children"])) }
+        case .quadrant:
+            spec.columns = strings(o["axes"])
+            spec.items = objects("items").map { Item(title: text($0["title"]), detail: text($0["detail"]), value: "\(text($0["x"])),\(text($0["y"]))") }
+        case .figures:
             spec.stats = objects("stats").map { Item(title: text($0["label"]), value: text($0["value"])) }
             spec.items = objects("points").map { Item(title: text($0["title"]), detail: text($0["detail"])) }
-        case .comparison:
-            spec.columns = (o["columns"] as? [Any] ?? []).map(text).filter { !$0.isEmpty }
+        case .matrix:
+            spec.columns = strings(o["columns"])
             spec.rows = objects("rows").map { Row(label: text($0["label"]), cells: ($0["cells"] as? [Any] ?? []).map(text)) }
         }
         spec.items.removeAll { $0.title.isEmpty }; spec.stats.removeAll { $0.value.isEmpty }
         spec.rows.removeAll { $0.label.isEmpty }
-        let usable = layout == .comparison ? (!spec.rows.isEmpty && !spec.columns.isEmpty) : (!spec.items.isEmpty || !spec.stats.isEmpty)
+        let usable: Bool = switch layout.shape {
+        case .matrix: !spec.rows.isEmpty && !spec.columns.isEmpty
+        case .quadrant: !spec.items.isEmpty && spec.columns.count >= 2
+        default: !spec.items.isEmpty || !spec.stats.isEmpty
+        }
         return usable ? spec : nil
     }
 
@@ -67,29 +177,261 @@ public struct VisualSpec: Codable, Hashable, Sendable {
         fileprivate func pick(_ a: String, _ b: String, _ c: String) -> String { switch self { case .overview: a; case .standard: b; case .deep: c } }
     }
 
-    /// The JSON shape each layout is asked for.
+    /// The JSON shape each form is asked for: one schema per shape, with the form's own words for what the items are.
     public static func request(_ layout: Layout, about: String, detail: Detail = .standard) -> String {
         let d = detail
+        let sentence = d.pick("a few words", "one short sentence", "one or two sentences")
+        let n = d.pick("4 or 5", "5 to 8", "8 to 12")
+        let lead = "Reply with ONLY a JSON object:"
         switch layout {
-        case .mindmap:
-            let n = d.pick("4 or 5", "5 or 6", "7 or 8"), k = d.pick("1 or 2", "2 to 4", "4 to 6"), w = d.pick("6", "8", "12")
-            return "Make a mind map of \(about). Reply with ONLY a JSON object: {\"title\": the central topic in at most 6 words, \"branches\": [\(n) items {\"title\": 1 to 4 words, \"children\": [\(k) short phrases of at most \(w) words]}]}."
         case .flowchart:
-            let n = d.pick("4 or 5", "5 to 8", "8 to 12"), s = d.pick("a few words", "one short sentence", "one or two sentences")
-            return "Make a flowchart of the main process or sequence in \(about). Reply with ONLY a JSON object: {\"title\": at most 6 words, \"steps\": [\(n) items {\"title\": at most 6 words, \"detail\": \(s)}]}."
-        case .comparison:
-            let n = d.pick("3 or 4", "4 to 6", "7 to 10")
-            return "Make a comparison table for \(about). Reply with ONLY a JSON object: {\"title\": at most 6 words, \"columns\": [2 or 3 names of the things compared], \"rows\": [\(n) items {\"label\": the aspect compared, \"cells\": [one short phrase per column, in column order]}]}."
+            return "Make a flowchart of the main process or sequence in \(about). \(lead) {\"title\": at most 6 words, \"items\": [\(n) steps in order {\"title\": at most 6 words, \"detail\": \(sentence)}]}."
         case .timeline:
-            let n = d.pick("4 or 5", "5 to 8", "8 to 12"), s = d.pick("a few words", "one short sentence", "one or two sentences")
-            return "Make a timeline for \(about). Reply with ONLY a JSON object: {\"title\": at most 6 words, \"events\": [\(n) items in order {\"when\": the date or stage, \"title\": at most 6 words, \"detail\": \(s)}]}."
+            return "Make a timeline for \(about). \(lead) {\"title\": at most 6 words, \"items\": [\(n) events in order {\"when\": the date or stage, \"title\": at most 6 words, \"detail\": \(sentence)}]}."
+        case .cycle:
+            let k = d.pick("4", "5 or 6", "6 to 8")
+            return "Show the repeating cycle in \(about). \(lead) {\"title\": at most 6 words, \"items\": [\(k) stages in order, the last leading back to the first {\"title\": at most 5 words, \"detail\": \(sentence)}]}."
+        case .pyramid:
+            let k = d.pick("3 or 4", "4 or 5", "5 to 7")
+            return "Show the layers or levels in \(about), from the foundation up. \(lead) {\"title\": at most 6 words, \"items\": [\(k) layers from the base to the top {\"title\": at most 5 words, \"detail\": \(sentence)}]}."
+        case .rankedList:
+            return "Rank the most important things in \(about). \(lead) {\"title\": at most 6 words, \"items\": [\(n) entries from first to last {\"title\": at most 6 words, \"value\": a score, figure or one-word rating if the passages give one, \"detail\": why it ranks here, \(sentence)}]}."
+        case .mindmap:
+            let g = d.pick("4 or 5", "5 or 6", "7 or 8"), k = d.pick("1 or 2", "2 to 4", "4 to 6"), w = d.pick("6", "8", "12")
+            return "Make a mind map of \(about). \(lead) {\"title\": the central topic in at most 6 words, \"groups\": [\(g) branches {\"title\": 1 to 4 words, \"children\": [\(k) short phrases of at most \(w) words]}]}."
+        case .tree:
+            let g = d.pick("3 or 4", "4 or 5", "5 to 7"), k = d.pick("2 or 3", "2 to 4", "3 to 5")
+            return "Show the hierarchy in \(about): the parts and what each contains. \(lead) {\"title\": the whole, at most 5 words, \"groups\": [\(g) parts {\"title\": at most 4 words, \"children\": [\(k) sub-parts of at most 5 words each]}]}."
+        case .clusters:
+            let g = d.pick("3 or 4", "4 to 6", "6 to 8"), k = d.pick("2 or 3", "3 or 4", "4 to 6")
+            return "Group the concepts in \(about) by theme. \(lead) {\"title\": at most 6 words, \"groups\": [\(g) themes {\"title\": at most 4 words, \"children\": [\(k) concepts of at most 6 words each]}]}."
+        case .swimlane:
+            let g = d.pick("2 or 3", "3 or 4", "4 or 5"), k = d.pick("2 or 3", "3 or 4", "4 to 6")
+            return "Show who does what in the process in \(about). \(lead) {\"title\": at most 6 words, \"groups\": [\(g) people, teams or systems {\"title\": the actor, at most 3 words, \"children\": [\(k) steps that actor does, in order, at most 7 words each]}]}."
+        case .decisionTree:
+            let g = d.pick("2 or 3", "3 or 4", "4 to 6")
+            return "Show the decisions in \(about) and what follows from each. \(lead) {\"title\": at most 6 words, \"groups\": [\(g) decisions in order {\"title\": the question, at most 8 words, \"children\": [2 or 3 outcomes, each starting with the choice then a colon, such as \"Yes: ship it\"]}]}."
+        case .prosCons:
+            let k = d.pick("2 or 3", "3 or 4", "4 to 6")
+            return "Weigh \(about). \(lead) {\"title\": the thing weighed, at most 6 words, \"groups\": [exactly 2 groups: {\"title\": \"Pros\", \"children\": [\(k) arguments for, at most 10 words each]}, {\"title\": \"Cons\", \"children\": [\(k) arguments against, at most 10 words each]}]}."
+        case .beforeAfter:
+            let k = d.pick("2 or 3", "3 or 4", "4 to 6")
+            return "Show the change in \(about). \(lead) {\"title\": at most 6 words, \"groups\": [exactly 2 groups: {\"title\": \"Before\", \"children\": [\(k) points about how it was, at most 10 words each]}, {\"title\": \"After\", \"children\": [\(k) matching points about how it is now, at most 10 words each]}]}."
+        case .valueProposition:
+            let k = d.pick("1 or 2", "2 or 3", "3 or 4")
+            return "State the central offer or idea in \(about) and what supports it. \(lead) {\"title\": the offer in at most 8 words, \"groups\": [3 benefits {\"title\": at most 4 words, \"children\": [\(k) supporting facts of at most 10 words each]}]}."
+        case .comparison:
+            let r = d.pick("3 or 4", "4 to 6", "7 to 10")
+            return "Make a comparison table for \(about). \(lead) {\"title\": at most 6 words, \"columns\": [2 or 3 names of the things compared], \"rows\": [\(r) items {\"label\": the aspect compared, \"cells\": [one short phrase per column, in column order]}]}."
+        case .quadrant:
+            let k = d.pick("4 to 6", "6 to 9", "9 to 14")
+            return "Place the items in \(about) on two axes. \(lead) {\"title\": at most 6 words, \"axes\": [the horizontal axis, the vertical axis, each at most 3 words, low to high], \"items\": [\(k) items {\"title\": at most 4 words, \"x\": 1 to 5, \"y\": 1 to 5}]}."
         case .infographic:
-            let st = d.pick("3", "3 or 4", "4 to 6"), p = d.pick("2 or 3", "3 to 5", "5 to 8"), s = d.pick("a few words", "one short sentence", "one or two sentences")
-            return "Make an infographic for \(about). Reply with ONLY a JSON object: {\"title\": a punchy headline of at most 8 words, \"stats\": [\(st) items {\"value\": a figure, number or short fact taken from the passages, \"label\": at most 5 words}], \"points\": [\(p) items {\"title\": at most 5 words, \"detail\": \(s)}]}."
+            let st = d.pick("3", "3 or 4", "4 to 6"), p = d.pick("2 or 3", "3 to 5", "5 to 8")
+            return "Make an infographic for \(about). \(lead) {\"title\": a punchy headline of at most 8 words, \"stats\": [\(st) items {\"value\": a figure, number or short fact taken from the passages, \"label\": at most 5 words}], \"points\": [\(p) items {\"title\": at most 5 words, \"detail\": \(sentence)}]}."
+        case .statCallouts:
+            let st = d.pick("3 or 4", "4 to 6", "6 to 8")
+            return "Pull out the numbers that matter most in \(about). \(lead) {\"title\": a punchy headline of at most 8 words, \"stats\": [\(st) items {\"value\": the figure as written in the passages, \"label\": what it measures, at most 6 words}], \"points\": []}."
         }
     }
 }
 
+/// The form of a visual: "Choose for me" first, then the catalogue by family.
+public struct VisualFormPicker: View {
+    @Binding var layout: VisualSpec.Layout?
+    public init(layout: Binding<VisualSpec.Layout?>) { _layout = layout }
+
+    public var body: some View {
+        Picker("Form", selection: $layout) {
+            Label("Choose for me", systemImage: "wand.and.sparkles").tag(VisualSpec.Layout?.none)
+            ForEach(VisualSpec.Family.allCases, id: \.self) { family in
+                Section(family.label) {
+                    ForEach(VisualSpec.Layout.allCases.filter { $0.family == family }) { Label($0.label, systemImage: $0.symbol).tag(Optional($0)) }
+                }
+            }
+        }
+    }
+}
+
+/// Plays an audio overview on this Mac and tells the transcript which line is being spoken.
+@MainActor @Observable
+final class AudioOverviewPlayer {
+    private(set) var playing = false
+    private(set) var time = 0.0
+    private(set) var duration = 0.0
+    private(set) var current = 0
+
+    private var player: AVAudioPlayer?
+    private var script: AudioScript?
+    private var ticker: Task<Void, Never>?
+
+    func load(_ script: AudioScript) {
+        stop()
+        self.script = script
+        // Opened on the main actor: a local file opens in milliseconds, and AVAudioPlayer is not Sendable, so it
+        // cannot come back from another task under strict concurrency.
+        guard let p = try? AVAudioPlayer(contentsOf: StudioStore.audioURL(script.file)) else { return }
+        player = p; duration = p.duration; time = 0; current = 0
+    }
+
+    func toggle() { playing ? pause() : play() }
+
+    func play() {
+        guard let player else { return }
+        if time >= duration - 0.2 { player.currentTime = 0 }
+        player.play(); playing = true
+        ticker?.cancel()
+        ticker = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(250))
+                self?.tick()
+            }
+        }
+    }
+
+    func pause() { player?.pause(); playing = false }
+
+    func seek(to t: Double) {
+        guard let player else { return }
+        player.currentTime = max(0, min(duration, t)); tick()
+    }
+
+    func skip(_ seconds: Double) { seek(to: time + seconds) }
+
+    func stop() {
+        ticker?.cancel(); ticker = nil
+        player?.stop(); player = nil; playing = false
+    }
+
+    private func tick() {
+        guard let player else { return }
+        time = player.currentTime
+        if let script, let i = script.lines.lastIndex(where: { $0.start <= time + 0.05 }) { current = i }
+        if playing && !player.isPlaying { playing = false }
+    }
+}
+
+/// The audio overview: a transcript that follows the voices, and playback controls.
+struct AudioOverviewView: View {
+    let script: AudioScript
+    let title: String
+    @State private var player = AudioOverviewPlayer()
+
+    private func clock(_ t: Double) -> String { String(format: "%d:%02d", Int(t) / 60, Int(t) % 60) }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 14) {
+                        ForEach(script.lines.indices, id: \.self) { i in
+                            let line = script.lines[i]
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(StudioEngine.hostNames[line.host]).font(.caption.bold()).foregroundStyle(line.host == 0 ? Color.orange : Color.teal)
+                                Text(line.text).font(.body)
+                            }
+                            .opacity(i == player.current ? 1 : 0.5)
+                            .id(i)
+                            .onTapGesture { player.seek(to: line.start); if !player.playing { player.play() } }
+                            .accessibilityElement(children: .combine).accessibilityAddTraits(.isButton).accessibilityHint("Plays from here")
+                        }
+                    }
+                    .frame(maxWidth: 680).padding(20).frame(maxWidth: .infinity)
+                }
+                .onChange(of: player.current) { _, i in withAnimation { proxy.scrollTo(i, anchor: .center) } }
+            }
+            Divider()
+            VStack(spacing: 8) {
+                Slider(value: Binding(get: { player.time }, set: { player.seek(to: $0) }), in: 0...max(1, player.duration))
+                HStack { Text(clock(player.time)); Spacer(); Text(clock(player.duration)) }.font(.caption).monospacedDigit().foregroundStyle(.secondary)
+                HStack(spacing: 28) {
+                    Button { player.skip(-15) } label: { Image(systemName: "gobackward.15").font(.title3) }.accessibilityLabel("Back 15 seconds")
+                    Button { player.toggle() } label: { Image(systemName: player.playing ? "pause.circle.fill" : "play.circle.fill").font(.system(size: 40)) }
+                        .accessibilityLabel(player.playing ? "Pause" : "Play").keyboardShortcut(.space, modifiers: [])
+                    Button { player.skip(15) } label: { Image(systemName: "goforward.15").font(.title3) }.accessibilityLabel("Forward 15 seconds")
+                }
+                .buttonStyle(.borderless)
+            }
+            .padding(12).frame(maxWidth: 680).frame(maxWidth: .infinity).background(.bar)
+        }
+        .onAppear { player.load(script) }
+        .onDisappear { player.stop() }
+    }
+}
+
+// MARK: - sharing
+
+/// What an item turns into when shared: a file for audio and video, readable text for the rest. Visuals share from their own view.
+enum StudioShare {
+    static func fileURL(_ item: StudioItem) -> URL? {
+        let name: String?
+        switch item.kind {
+        case .audio: name = (try? JSONDecoder().decode(AudioScript.self, from: Data(item.body.utf8)))?.file
+        case .video: name = (try? JSONDecoder().decode(VideoInfo.self, from: Data(item.body.utf8)))?.file
+        default: name = nil
+        }
+        guard let name else { return nil }
+        let url = StudioStore.audioURL(name)
+        return FileManager.default.fileExists(atPath: url.path) ? url : nil
+    }
+
+    static func text(_ item: StudioItem) -> String? {
+        switch item.kind {
+        case .doc: return item.body
+        case .quiz:
+            let qs = (try? JSONDecoder().decode([StudioQuestion].self, from: Data(item.body.utf8))) ?? []
+            guard !qs.isEmpty else { return nil }
+            let body = qs.enumerated().map { i, q in
+                let choices = q.choices.enumerated().map { "   \(["A", "B", "C", "D", "E", "F"][min($0.offset, 5)]). \($0.element)" }.joined(separator: "\n")
+                let answer = q.choices.indices.contains(q.answer) ? "Answer: \(q.choices[q.answer])" : ""
+                return "\(i + 1). \(q.question)\n\(choices)\n   \(answer)" + (q.why.map { "\n   \($0)" } ?? "")
+            }.joined(separator: "\n\n")
+            return item.title + "\n\n" + body
+        case .cards:
+            let cs = (try? JSONDecoder().decode([StudioCard].self, from: Data(item.body.utf8))) ?? []
+            guard !cs.isEmpty else { return nil }
+            return item.title + "\n\n" + cs.map { "\($0.front)\n   \($0.back)" }.joined(separator: "\n\n")
+        case .audio:
+            guard let s = try? JSONDecoder().decode(AudioScript.self, from: Data(item.body.utf8)) else { return nil }
+            return item.title + "\n\n" + s.lines.map { "\(StudioEngine.hostNames[$0.host]): \($0.text)" }.joined(separator: "\n\n")
+        case .visual, .video: return nil
+        }
+    }
+}
+
+struct StudioShareButton: View {
+    let item: StudioItem
+    var body: some View {
+        if let url = StudioShare.fileURL(item) {
+            ShareLink(item: url) { Label("Share", systemImage: "square.and.arrow.up") }
+        } else if let text = StudioShare.text(item) {
+            ShareLink(item: text, subject: Text(item.title)) { Label("Share", systemImage: "square.and.arrow.up") }
+        }
+    }
+}
+
+/// A Studio item in its own window (Open in Window, ⇧⌘D).
+struct StudioWindowKey: Codable, Hashable {
+    let notebookId: String
+    let itemId: String
+    let title: String
+}
+
+struct StudioWindow: View {
+    let key: StudioWindowKey
+
+    var body: some View {
+        Group {
+            if let item = StudioStore.all(notebook: key.notebookId).first(where: { $0.id == key.itemId }) {
+                StudioItemDetail(item: item)
+            } else {
+                ContentUnavailableView("This item is gone", systemImage: "sparkles", description: Text("It was deleted from this Mac."))
+            }
+        }
+        .frame(minWidth: 480, minHeight: 360)
+        .navigationTitle(key.title)
+    }
+}
 
 /// Draws a scene with SwiftUI's `Canvas`, scaled to whatever frame it is given, in the theme's colours for the current
 /// appearance. Cards that carry a `hit` get an invisible button over them (mind-map branches open in place).

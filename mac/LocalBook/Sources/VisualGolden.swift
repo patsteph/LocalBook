@@ -11,6 +11,8 @@ import SwiftUI
 @MainActor @Observable
 final class VisualGoldenDiagnostics {
     var notebookId: String?
+    /// Let the engine choose each picture's form from the ask (the pick), instead of the prompt's fixed form.
+    var chooseForm = false
     private(set) var running = false
     private(set) var done = 0
     private(set) var current = ""
@@ -33,17 +35,19 @@ final class VisualGoldenDiagnostics {
                 guard let self, !Task.isCancelled else { break }
                 current = "\(prompt.layout.label) · \(prompt.detail.label)"
                 let started = Date()
+                let choose = chooseForm
                 let item = await engine.make(.visual, in: notebook, topic: prompt.topic, count: 0, notebookOnly: true,
-                                             layout: prompt.layout, detail: prompt.detail, library: library)
+                                             layout: choose ? nil : prompt.layout, detail: prompt.detail, library: library)
                 let seconds = Date().timeIntervalSince(started)
                 if let item, let spec = try? JSONDecoder().decode(VisualSpec.self, from: Data(item.body.utf8)) {
                     StudioStore.delete(item)
                     let name = prompt.id + ".png"
                     let lint = VisualLint.check(VisualLayout.scene(for: spec)).map(\.description)
+                    let chosen: VisualSpec.Layout? = choose ? spec.layout : nil
                     if Self.write(spec, to: out.appending(path: name)) {
-                        made.append(.init(prompt: prompt, file: name, seconds: seconds, lint: lint)); drawn += 1
+                        made.append(.init(prompt: prompt, file: name, seconds: seconds, lint: lint, chosen: chosen)); drawn += 1
                     } else {
-                        made.append(.init(prompt: prompt, problem: "the picture could not be written", seconds: seconds, lint: lint))
+                        made.append(.init(prompt: prompt, problem: "the picture could not be written", seconds: seconds, lint: lint, chosen: chosen))
                     }
                     try? JSONEncoder().encode(spec).write(to: out.appending(path: prompt.id + ".json"))
                     try? VisualSlide.svg(for: spec).data(using: .utf8)?.write(to: out.appending(path: prompt.id + ".svg"))
@@ -84,6 +88,7 @@ struct VisualGoldenSection: View {
                 Text("Choose…").tag(String?.none)
                 ForEach(library.notebooks) { nb in Text(nb.title).tag(Optional(nb.id)) }
             }
+            Toggle("Let the engine choose each form", isOn: Bindable(golden).chooseForm).disabled(golden.running)
             HStack {
                 Button(golden.running ? "Drawing…" : "Draw the 15") { golden.run(library: library) }
                     .disabled(golden.running || golden.notebookId == nil)
@@ -99,7 +104,7 @@ struct VisualGoldenSection: View {
                 LabeledContent("Drawn", value: "\(golden.drawn) of 15")
             }
         } header: { Text("Visual golden set · side by side with the old app") } footer: {
-            Text("Draws the same 15 asks (three per layout, at each depth) from the chosen notebook with this app's Studio engine and saves the pictures with an index. On the Mac that runs the old app, scripts/visual_golden_export.py draws them there; judge the pairs. Each drawing takes as long as one Visual in Studio.")
+            Text("Draws the same 15 asks (three per layout, at each depth) from the chosen notebook with this app's Studio engine and saves the pictures with an index. With the engine choosing, each ask is drawn in the form the pick settles on, and the index shows which. On the Mac that runs the old app, scripts/visual_golden_export.py draws them there; judge the pairs. Each drawing takes as long as one Visual in Studio.")
         }
     }
 }

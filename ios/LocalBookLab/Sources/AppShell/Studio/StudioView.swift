@@ -192,7 +192,7 @@ private struct MakeSheet: View {
     @State private var videoStyle: VideoStyle = .clean
     @State private var accent: AudioAccent = .british
     @State private var notebookOnly = true
-    @State private var layout: VisualSpec.Layout = .mindmap
+    @State private var layout: VisualSpec.Layout? = nil           // nil: the engine chooses the form
     @State private var detail: VisualSpec.Detail = .standard
     @FocusState private var typing: Bool
 
@@ -216,8 +216,10 @@ private struct MakeSheet: View {
                             TextField("Subject (optional)", text: $topic).focused($typing).submitLabel(.done).onSubmit { typing = false }
                         } footer: { Text("Leave empty to cover the whole notebook, or name what to focus on.") }
                         if kind == .visual {
-                            Section("Layout") {
-                                Picker("Layout", selection: $layout) { ForEach(VisualSpec.Layout.allCases) { Label($0.label, systemImage: $0.symbol).tag($0) } }.pickerStyle(.menu)
+                            Section {
+                                VisualFormPicker(layout: $layout).pickerStyle(.menu)
+                            } header: { Text("Form") } footer: {
+                                Text(layout?.hint ?? "The engine picks the form that fits the ask and the notes.")
                             }
                             Section {
                                 Picker("Detail", selection: $detail) { ForEach(VisualSpec.Detail.allCases) { Text($0.label).tag($0) } }.pickerStyle(.segmented)
@@ -335,7 +337,7 @@ struct StudioItemView: View {
                 case .video: if let info = try? JSONDecoder().decode(VideoInfo.self, from: Data(item.body.utf8)) { MediaGate(item: item) { VideoItemView(info: info) } } else { Text("This video can't be opened.") }
                 case .visual:
                     if item.body.contains("<svg") { SVGItemView(svg: item.body) }
-                    else if let spec = try? JSONDecoder().decode(VisualSpec.self, from: Data(item.body.utf8)) { VisualItemView(spec: spec, title: item.title) } else { Text("This visual can't be opened.") }
+                    else if let spec = try? JSONDecoder().decode(VisualSpec.self, from: Data(item.body.utf8)) { VisualItemView(spec: spec, title: item.title, item: item) } else { Text("This visual can't be opened.") }
                 case .cards: CardRun(cards: (try? JSONDecoder().decode([StudioCard].self, from: Data(item.body.utf8))) ?? [])
                 }
             }

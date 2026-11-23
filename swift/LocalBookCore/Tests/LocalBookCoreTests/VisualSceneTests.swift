@@ -73,6 +73,47 @@ struct VisualSceneTests {
         }
     }
 
+    @Test("every form in the catalogue draws a realistic fill inside the frame with no overlap")
+    func catalogue() throws {
+        let seq = (1...6).map { #"{"title": "Stage \#($0) of the work", "value": "\#($0 * 10) %", "detail": "What this stage does, said in one sentence that wraps once."}"# }.joined(separator: ",")
+        let groups = (1...4).map { g in "{\"title\": \"Group \(g) name\", \"children\": [" + (1...3).map { "\"Yes \($0): a short phrase for group \(g)\"" }.joined(separator: ",") + "]}" }.joined(separator: ",")
+        let two = #"{"title": "Pros", "children": ["Fast to set up", "Cheap to run for small teams", "Well documented"]}, {"title": "Cons", "children": ["Slower at scale", "Fewer integrations"]}"#
+        let items = (1...8).map { #"{"title": "Item \#($0)", "x": \#($0 % 5 + 1), "y": \#(($0 * 2) % 5 + 1)}"# }.joined(separator: ",")
+        for layout in VisualSpec.Layout.allCases {
+            let json: String = switch layout.shape {
+            case .sequence: #"{"title": "The subject", "items": [\#(seq)]}"#
+            case .groups: layout == .prosCons || layout == .beforeAfter ? #"{"title": "The subject", "groups": [\#(two)]}"# : #"{"title": "The subject", "groups": [\#(groups)]}"#
+            case .matrix: #"{"title": "The subject", "columns": ["A", "B"], "rows": [{"label": "Cost", "cells": ["low", "high"]}, {"label": "Speed", "cells": ["slow", "fast"]}]}"#
+            case .quadrant: #"{"title": "The subject", "axes": ["Effort", "Impact"], "items": [\#(items)]}"#
+            case .figures: #"{"title": "The subject", "stats": [{"value": "42 %", "label": "share"}, {"value": "1,200", "label": "items"}, {"value": "3×", "label": "faster"}], "points": [{"title": "One", "detail": "First point."}, {"title": "Two", "detail": "Second point."}]}"#
+            }
+            let s = try spec(json, layout)
+            #expect(s.layout == layout)
+            let scene = VisualLayout.scene(for: s)
+            let bad = VisualLint.check(scene).filter { $0.kind == .offSlide || $0.kind == .overlap || $0.kind == .cut || $0.kind == .empty }
+            #expect(bad.isEmpty, "\(layout): \(bad)")
+            #expect(scene.scale >= 0.7, "\(layout) had to shrink to \(scene.scale)")
+            #expect(texts(scene).count >= 3, "\(layout) says too little")
+            for other in layout.alternatives {
+                #expect(other.shape == layout.shape)
+                #expect(!VisualLayout.scene(for: s.drawn(as: other)).nodes.isEmpty, "\(layout) drawn as \(other)")
+            }
+        }
+    }
+
+    @Test("a decision tree labels its branches and a quadrant places every item")
+    func decisionsAndQuadrant() throws {
+        let d = try spec(#"{"title": "Ship it?", "groups": [{"title": "Do the tests pass?", "children": ["Yes: ship it", "No: fix first"]}, {"title": "Is it Friday?", "children": ["Yes: wait for Monday", "No: deploy now"]}]}"#, .decisionTree)
+        let ds = VisualLayout.scene(for: d)
+        let words = texts(ds).flatMap(\.lines)
+        #expect(words.contains("Yes") && words.contains("No") && words.contains("ship it"))
+        let q = try spec(#"{"title": "Where to spend", "axes": ["Effort", "Impact"], "items": [{"title": "Search", "x": 1, "y": 5}, {"title": "Themes", "x": 5, "y": 1}]}"#, .quadrant)
+        let qs = VisualLayout.scene(for: q)
+        let dots = qs.nodes.filter { if case .dot = $0 { true } else { false } }
+        #expect(dots.count == 2)
+        #expect(texts(qs).flatMap(\.lines).contains { $0.contains("Effort") })
+    }
+
     @Test("the SVG names every line, escapes markup and carries the theme's colours")
     func svg() throws {
         let s = try spec(#"{"title": "Cats & dogs", "steps": [{"title": "<Feed>", "detail": "twice a day"}]}"#, .flowchart)

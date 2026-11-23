@@ -10,7 +10,9 @@ struct VisualGoldenSetTests {
         let p = VisualGoldenSet.prompts
         #expect(p.count == 15)
         #expect(Set(p.map(\.id)).count == 15)
-        for layout in VisualSpec.Layout.allCases {
+        let five: [VisualSpec.Layout] = [.mindmap, .flowchart, .comparison, .timeline, .infographic]
+        #expect(Set(p.map(\.layout)) == Set(five), "the golden set stays the five forms the old app was judged on")
+        for layout in five {
             let mine = p.filter { $0.layout == layout }
             #expect(mine.count == 3, "\(layout) has \(mine.count)")
             #expect(Set(mine.map(\.detail)) == Set(VisualSpec.Detail.allCases), "\(layout) misses a depth")
@@ -25,6 +27,9 @@ struct VisualGoldenSetTests {
                                        made: [.init(prompt: p[0], file: "01-mindmap-overview.png", seconds: 41.4), .init(prompt: p[1], problem: "model stopped")])
         #expect(md.hasPrefix("# Visual golden set: Trip"))
         #expect(md.contains("| 1 | Mind map | Overview | (the whole notebook) | [01-mindmap-overview.png](01-mindmap-overview.png) | 41 s | clean |"))
+        let chosen = VisualGoldenSet.index(notebook: "Trip", device: "MBP", date: Date(timeIntervalSince1970: 1_700_000_000),
+                                           made: [.init(prompt: p[3], file: "04-flow-overview.png", seconds: 30, chosen: .cycle)])
+        #expect(chosen.contains("| 1 | Flowchart → Cycle | Overview |"))
         #expect(md.contains("| 2 | Mind map | Standard | the main ideas and how they connect | failed: model stopped |  |  |"))
         let html = VisualGoldenSet.indexHTML(notebook: "Trip & co", device: "MBP", date: Date(timeIntervalSince1970: 1_700_000_000),
                                              made: [.init(prompt: p[0], file: "01-mindmap-overview.png", seconds: 41.4, lint: ["cut: “x” lost lines"]), .init(prompt: p[1], problem: "model <stopped>")])

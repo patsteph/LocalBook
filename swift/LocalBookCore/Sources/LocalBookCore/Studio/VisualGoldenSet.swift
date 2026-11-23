@@ -39,10 +39,14 @@ public enum VisualGoldenSet {
         public var problem: String?
         public var seconds: Double?
         public var lint: [String]
-        public init(prompt: Prompt, file: String? = nil, problem: String? = nil, seconds: Double? = nil, lint: [String] = []) {
-            self.prompt = prompt; self.file = file; self.problem = problem; self.seconds = seconds; self.lint = lint
+        /// The form the engine chose, when the run let it choose instead of taking the prompt's.
+        public var chosen: VisualSpec.Layout?
+        public init(prompt: Prompt, file: String? = nil, problem: String? = nil, seconds: Double? = nil, lint: [String] = [], chosen: VisualSpec.Layout? = nil) {
+            self.prompt = prompt; self.file = file; self.problem = problem; self.seconds = seconds; self.lint = lint; self.chosen = chosen
         }
         var time: String { seconds.map { String(format: "%.0f s", $0) } ?? "" }
+        /// The prompt's form, or "Mind map → Cycle" when the engine chose.
+        var form: String { chosen.map { "\(prompt.layout.label) → \($0.label)" } ?? prompt.layout.label }
         var checks: String { lint.isEmpty ? (file == nil ? "" : "clean") : lint.joined(separator: "; ") }
     }
 
@@ -54,11 +58,11 @@ public enum VisualGoldenSet {
         f.dateFormat = "yyyy-MM-dd HH:mm"
         var lines = ["# Visual golden set: \(notebook)", "", "Drawn by the Swift Mac app on \(device), \(f.string(from: date)).", "",
                      "Open the old app's `old-app-visuals.html` for the same notebook beside this folder and judge each pair: does the Swift drawing say what the old one said, as clearly?", "",
-                     "| # | Layout | Detail | Ask | Swift picture | Time | Lint |", "|---|---|---|---|---|---|---|"]
+                     "| # | Form | Detail | Ask | Swift picture | Time | Lint |", "|---|---|---|---|---|---|---|"]
         for (i, m) in made.enumerated() {
             let ask = m.prompt.topic.isEmpty ? "(the whole notebook)" : m.prompt.topic
             let got = m.file.map { "[\($0)](\($0))" } ?? "failed: \(m.problem ?? "unknown")"
-            lines.append("| \(i + 1) | \(m.prompt.layout.label) | \(m.prompt.detail.label) | \(ask) | \(got) | \(m.time) | \(m.checks) |")
+            lines.append("| \(i + 1) | \(m.form) | \(m.prompt.detail.label) | \(ask) | \(got) | \(m.time) | \(m.checks) |")
         }
         lines += ["", "Judgement (fill in): ___ of 15 pairs where the Swift drawing is as good or better."]
         return lines.joined(separator: "\n")
@@ -82,7 +86,7 @@ public enum VisualGoldenSet {
         for (i, m) in made.enumerated() {
             let ask = m.prompt.topic.isEmpty ? "(the whole notebook)" : m.prompt.topic
             let facts = [m.time, m.checks].filter { !$0.isEmpty }.joined(separator: " · ")
-            out.append("<section><h2>\(i + 1). \(esc(m.prompt.layout.label)) · \(esc(m.prompt.detail.label))</h2><p class='meta'>\(esc(ask))\(facts.isEmpty ? "" : " · " + esc(facts))</p>")
+            out.append("<section><h2>\(i + 1). \(esc(m.form)) · \(esc(m.prompt.detail.label))</h2><p class='meta'>\(esc(ask))\(facts.isEmpty ? "" : " · " + esc(facts))</p>")
             if let file = m.file { out.append("<img src='\(esc(file))' alt='\(esc(m.prompt.id))'>") }
             else { out.append("<p class='err'>failed: \(esc(m.problem ?? "unknown"))</p>") }
             out.append("</section>")
