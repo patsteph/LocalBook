@@ -122,6 +122,8 @@ public struct VisualSpec: Codable, Hashable, Sendable {
     public var rows: [Row] = []            // comparison
     /// The theme's id (`VisualTheme.all`); nil, and ids from a later version, draw as Clean.
     public var theme: String? = nil
+    /// The file of the painted backdrop (`VisualHero`), beside the item; nil, or a file not on this device, draws a band.
+    public var hero: String? = nil
 
     public init(layout: Layout, title: String, items: [Item] = [], stats: [Item] = [], columns: [String] = [], rows: [Row] = [], theme: String? = nil) {
         self.layout = layout; self.title = title; self.items = items; self.stats = stats; self.columns = columns; self.rows = rows; self.theme = theme
@@ -137,6 +139,7 @@ public struct VisualSpec: Codable, Hashable, Sendable {
         columns = try c.decodeIfPresent([String].self, forKey: .columns) ?? []
         rows = try c.decodeIfPresent([Row].self, forKey: .rows) ?? []
         theme = try c.decodeIfPresent(String.self, forKey: .theme)
+        hero = try c.decodeIfPresent(String.self, forKey: .hero)
     }
 
     /// The same content as another form of the same shape.
@@ -307,11 +310,13 @@ public struct VisualThemePicker: View {
 public struct VisualSceneView: View {
     public let scene: VisualScene
     public var theme: VisualTheme = .clean
+    /// The painted backdrop the scene's `.image` node shows, when the item has one on this device.
+    public var hero: CGImage? = nil
     public var hit: ((Int) -> Void)? = nil
     @Environment(\.colorScheme) private var colorScheme
 
-    public init(scene: VisualScene, theme: VisualTheme = .clean, hit: ((Int) -> Void)? = nil) {
-        self.scene = scene; self.theme = theme; self.hit = hit
+    public init(scene: VisualScene, theme: VisualTheme = .clean, hero: CGImage? = nil, hit: ((Int) -> Void)? = nil) {
+        self.scene = scene; self.theme = theme; self.hero = hero; self.hit = hit
     }
 
     private func color(_ role: VisualRole) -> Color {
@@ -380,6 +385,20 @@ public struct VisualSceneView: View {
                         var image = ctx.resolve(Image(systemName: theme.symbol(for: icon)))
                         image.shading = .color(color(role))
                         ctx.draw(image, in: r)
+                    case .image(let r, let radius):
+                        let p = Path(roundedRect: r, cornerRadius: radius)
+                        if let hero {
+                            // Fill the box, cropping the long side, so the picture never letterboxes.
+                            let k = max(r.width / CGFloat(hero.width), r.height / CGFloat(hero.height))
+                            let w = CGFloat(hero.width) * k, h = CGFloat(hero.height) * k
+                            let fit = CGRect(x: r.midX - w / 2, y: r.midY - h / 2, width: w, height: h)
+                            ctx.drawLayer { layer in
+                                layer.clip(to: p)
+                                layer.draw(Image(decorative: hero, scale: 1), in: fit)
+                            }
+                        } else {
+                            ctx.fill(p, with: .color(color(.accent(4))))
+                        }
                     }
                 }
             }
@@ -417,7 +436,7 @@ public struct VisualSlide: View {
     }
 
     public var body: some View {
-        VisualSceneView(scene: VisualLayout.scene(for: spec, expanded: expanded.wrappedValue), theme: VisualTheme.named(spec.theme)) { i in
+        VisualSceneView(scene: VisualLayout.scene(for: spec, expanded: expanded.wrappedValue), theme: VisualTheme.named(spec.theme), hero: VisualHero.image(named: spec.hero)) { i in
             withAnimation(.snappy) {
                 if expanded.wrappedValue.contains(i) { expanded.wrappedValue.remove(i) } else { expanded.wrappedValue.insert(i) }
             }
@@ -437,6 +456,6 @@ public struct VisualSlide: View {
 
     /// The vector file of the same picture, in light appearance.
     public static func svg(for spec: VisualSpec, expanded: Set<Int> = []) -> String {
-        VisualSVG.render(VisualLayout.scene(for: spec, expanded: expanded), theme: VisualTheme.named(spec.theme))
+        VisualSVG.render(VisualLayout.scene(for: spec, expanded: expanded), theme: VisualTheme.named(spec.theme), hero: VisualHero.data(named: spec.hero))
     }
 }

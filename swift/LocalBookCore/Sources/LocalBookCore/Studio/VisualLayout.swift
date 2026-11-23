@@ -57,8 +57,12 @@ struct Builder {
 
     mutating func build() {
         var y = pad
-        if spec.layout != .mindmap, !spec.title.isEmpty {
+        // The mind map centres its title; an infographic with a backdrop writes it on the picture.
+        if spec.layout != .mindmap, !spec.title.isEmpty, !(spec.layout == .infographic && spec.hero != nil) {
             y += place(spec.title, titleStyle, x: pad, y: y, width: W - 2 * pad) + 30 * s
+        }
+        if spec.layout == .infographic, spec.hero != nil {
+            y = heroBand(top: y, height: 190 * s, titleSize: 44 * s) + 28 * s
         }
         let bottom: CGFloat
         switch spec.layout {

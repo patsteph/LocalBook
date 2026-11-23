@@ -91,6 +91,7 @@ public enum StudioStore {
 
     public static func delete(_ item: StudioItem) {
         if let media = item.mediaFile { try? FileManager.default.removeItem(at: audioURL(media)) }
+        if item.kind == .visual, let spec = try? JSONDecoder().decode(VisualSpec.self, from: Data(item.body.utf8)) { VisualHero.remove(named: spec.hero) }
         if item.kind == .video, let info = try? JSONDecoder().decode(VideoInfo.self, from: Data(item.body.utf8)) {
             try? FileManager.default.removeItem(at: audioURL(info.file))
         }

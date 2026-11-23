@@ -33,6 +33,9 @@ public struct VisualScene: Sendable, Equatable {
 /// A colour's meaning in the picture. The theme gives each a value.
 public enum VisualRole: Sendable, Hashable {
     case ink, quiet, surface, rule, background, onAccent
+    /// Over a painted backdrop: a dark veil so white words read on any picture, and the white itself. The same in
+    /// every theme and appearance, because the picture under them is not the theme's.
+    case scrim, onImage
     /// The nth accent (wraps round the theme's palette) and its pale tint.
     case accent(Int), tint(Int)
 }
@@ -86,6 +89,8 @@ public enum VisualNode: Sendable, Equatable {
     case dot(CGPoint, radius: CGFloat, fill: VisualRole, stroke: VisualRole?)
     /// A symbol fitted in a box, drawn as the theme's SF Symbol for it; the SVG draws a dot in its place.
     case symbol(VisualIcon, CGRect, role: VisualRole)
+    /// The item's painted backdrop, filling the box (cropped, corners rounded); a tinted band when the item has none.
+    case image(CGRect, radius: CGFloat)
 }
 
 /// The tokens a picture is dressed with: colours by role for light and dark, a type face, radii, strokes and the
@@ -152,6 +157,8 @@ public struct VisualTheme: Sendable, Equatable, Identifiable {
         case .rule: return set.rule
         case .background: return set.background
         case .onAccent: return set.onAccent
+        case .scrim: return RGB(0x000000, alpha: 0.45)
+        case .onImage: return RGB(0xffffff)
         case .accent(let i): return set.accents[((i % set.accents.count) + set.accents.count) % set.accents.count]
         case .tint(let i):
             var c = set.accents[((i % set.accents.count) + set.accents.count) % set.accents.count]

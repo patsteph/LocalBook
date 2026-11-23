@@ -146,7 +146,7 @@ struct VisualSceneTests {
         #expect(VisualTheme.all.count == 4 && Set(VisualTheme.all.map(\.id)).count == 4)
         for theme in VisualTheme.all {
             for dark in [false, true] {
-                for role in [VisualRole.ink, .quiet, .surface, .rule, .background, .onAccent, .accent(0), .accent(7), .tint(-1)] {
+                for role in [VisualRole.ink, .quiet, .surface, .rule, .background, .onAccent, .scrim, .onImage, .accent(0), .accent(7), .tint(-1)] {
                     let c = theme.color(role, dark: dark)
                     #expect(c.r >= 0 && c.r <= 1 && c.a > 0 && c.a <= 1)
                 }
@@ -182,5 +182,38 @@ struct VisualSceneTests {
         #expect(back.theme == "deck")
         let old = try JSONDecoder().decode(VisualSpec.self, from: Data(#"{"layout": "mindmap", "title": "old"}"#.utf8))
         #expect(old.theme == nil && old.layout == .mindmap, "items saved before themes still open")
+    }
+
+    @Test("a backdrop takes the band's place under white words, the SVG puts the picture inline, and the forms without one are unchanged")
+    func hero() throws {
+        let offer = #"{"title": "One engine for every picture", "items": [{"title": "Faster", "children": ["No Python at runtime"]}, {"title": "Richer", "children": ["Seventeen forms", "Four themes"]}]}"#
+        let plain = try spec(offer, .valueProposition)
+        var painted = plain; painted.hero = "test-hero.png"
+        let band = VisualLayout.scene(for: plain), picture = VisualLayout.scene(for: painted)
+        #expect(!band.nodes.contains { if case .image = $0 { true } else { false } })
+        #expect(picture.nodes.contains { if case .image = $0 { true } else { false } })
+        #expect(picture.nodes.contains { if case .card(_, let fill, _, _, _) = $0, fill == .scrim { true } else { false } })
+        #expect(texts(picture).contains { $0.style.role == .onImage } && !texts(band).contains { $0.style.role == .onImage })
+        #expect(VisualLint.check(picture).filter { $0.kind != .tiny }.isEmpty, "\(VisualLint.check(picture))")
+        // The infographic writes its title on the picture instead of above it; a flowchart never asks for one.
+        let facts = #"{"title": "By the numbers", "stats": [{"value": "17", "label": "forms"}, {"value": "4", "label": "themes"}], "points": [{"title": "One engine", "detail": "The same scene on Mac and iPhone."}]}"#
+        var info = try spec(facts, .infographic); info.hero = "x.png"
+        let infoScene = VisualLayout.scene(for: info)
+        #expect(infoScene.nodes.contains { if case .image = $0 { true } else { false } } && VisualLint.check(infoScene).filter { $0.kind != .tiny }.isEmpty)
+        #expect(VisualHero.wants(.valueProposition) && VisualHero.wants(.infographic) && !VisualHero.wants(.flowchart))
+        // No file on this device: the SVG draws the band; with the bytes, the picture goes inline and clipped.
+        let fallback = VisualSVG.render(picture)
+        #expect(!fallback.contains("<image") && fallback.contains("<rect"))
+        let inline = VisualSVG.render(picture, hero: Data([0x89, 0x50, 0x4e, 0x47]))
+        #expect(inline.contains("<image href='data:image/png;base64,iVBORw") && inline.contains("<clipPath id='hero1'"))
+        // The prompt carries the title and forbids words; the seed is stable.
+        let prompt = VisualHero.prompt(for: plain)
+        #expect(prompt.contains("One engine for every picture") && prompt.contains("no text") && prompt.contains("Faster"))
+        #expect(VisualHero.seed(for: plain) == VisualHero.seed(for: painted) && VisualHero.seed(for: plain) != VisualHero.seed(for: info))
+        #expect(VisualHero.width % 16 == 0 && VisualHero.height % 16 == 0)
+        // Saved and read back; an item saved before backdrops has none.
+        let data = try JSONEncoder().encode(painted)
+        #expect(try JSONDecoder().decode(VisualSpec.self, from: data).hero == "test-hero.png")
+        #expect(try JSONDecoder().decode(VisualSpec.self, from: Data(#"{"layout": "value_proposition", "title": "old"}"#.utf8)).hero == nil)
     }
 }

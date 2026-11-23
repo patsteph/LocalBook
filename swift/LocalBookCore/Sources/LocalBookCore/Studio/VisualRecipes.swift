@@ -339,17 +339,31 @@ extension Builder {
         return bottom
     }
 
+    // MARK: hero band — the title large on the item's painted backdrop, or on an accent band without one
+
+    /// Draws the band and the title on it; returns the band's bottom edge.
+    mutating func heroBand(top: CGFloat, height: CGFloat, titleSize: CGFloat) -> CGFloat {
+        let r = CGRect(x: pad, y: top, width: W - 2 * pad, height: height)
+        let painted = spec.hero != nil
+        if painted {
+            scene.add(.image(r, radius: radius))
+            scene.add(.card(r, fill: .scrim, stroke: nil, radius: radius, hit: nil))
+        } else {
+            scene.add(.card(r, fill: .accent(4), stroke: nil, radius: radius, hit: nil))
+        }
+        if let t = block(spec.title, VisualTextStyle(size: titleSize, weight: .bold, role: painted ? .onImage : .onAccent, align: .center), x: pad + 60 * s, y: 0, width: W - 2 * pad - 120 * s, maxLines: 2) {
+            var tt = t; tt.frame.origin.y = top + (height - t.frame.height) / 2; scene.add(.text(tt))
+        }
+        return top + height
+    }
+
     // MARK: value proposition — the offer as a hero band, its benefits beneath
 
     mutating func valueProposition(top: CGFloat) -> CGFloat {
-        // The title is the offer: drawn again as the hero, large, instead of the small title line.
+        // The title is the offer: drawn again as the hero, large, instead of the small title line; on a painted
+        // backdrop when the item has one, on an accent band when it has not.
         var y = top
-        let heroH = 170 * s
-        scene.add(.card(CGRect(x: pad, y: y, width: W - 2 * pad, height: heroH), fill: .accent(4), stroke: nil, radius: radius, hit: nil))
-        if let t = block(spec.title, VisualTextStyle(size: 40 * s, weight: .bold, role: .onAccent, align: .center), x: pad + 60 * s, y: 0, width: W - 2 * pad - 120 * s, maxLines: 2) {
-            var tt = t; tt.frame.origin.y = y + (heroH - t.frame.height) / 2; scene.add(.text(tt))
-        }
-        y += heroH + 32 * s
+        y = heroBand(top: y, height: (spec.hero == nil ? 170 : 240) * s, titleSize: 40 * s) + 32 * s
         let g = max(1, spec.items.count)
         let colW = (W - 2 * pad - CGFloat(g - 1) * gap) / CGFloat(g)
         var blocks: [(i: Int, title: VisualTextBlock?, kids: [VisualTextBlock], height: CGFloat)] = []

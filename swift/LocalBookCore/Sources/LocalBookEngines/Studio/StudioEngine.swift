@@ -14,6 +14,8 @@ public final class StudioEngine {
     public init() {}
     /// Settings key: let the critic look at each visual (Mac, off by default: it costs one vision call per picture).
     public static let criticKey = "studio.visualCritic"
+    /// The image model that paints backdrops, when the app has one (the Mac sets it at launch; the phone leaves it nil).
+    public static var imagery: (any VisualImagery)?
     /// What the critic said about the last visual made, for Diagnostics.
     public private(set) var lastCritique: VisualCritique?
     /// How many extra fills the last visual took (a lint defect or a critic's verdict each buy one more).
@@ -183,8 +185,24 @@ public final class StudioEngine {
                     }
                 }
             }
+            // The backdrop, for the forms that carry one, when this device has an image model ready. Painted last, so a
+            // refill never wastes a picture; a failure leaves the band, never the item.
+            let id = UUID().uuidString
+            if VisualHero.wants(spec.layout), let imagery = Self.imagery, imagery.state.isReady {
+                status = "Painting the backdrop…"
+                let start = Date()
+                do {
+                    let picture = try await imagery.hero(prompt: VisualHero.prompt(for: spec), width: VisualHero.width, height: VisualHero.height, seed: VisualHero.seed(for: spec))
+                    let name = VisualHero.fileName(forItem: id)
+                    let bytes = try VisualHero.save(picture, as: name)
+                    spec.hero = name
+                    SoakTrace.log("studio visual: backdrop painted in \(String(format: "%.1f", Date().timeIntervalSince(start))) s (\(bytes / 1024) KB)")
+                } catch {
+                    SoakTrace.log("studio visual: no backdrop: \(error.localizedDescription)")
+                }
+            }
             guard let data = try? JSONEncoder().encode(spec) else { error = "The visual couldn't be saved."; return nil }
-            let item = StudioItem(id: UUID().uuidString, notebookId: notebook.id, kind: .visual,
+            let item = StudioItem(id: id, notebookId: notebook.id, kind: .visual,
                                   title: VisualSpec.itemTitle(spec, notebook: notebook.title),
                                   created: Date(), body: String(decoding: data, as: UTF8.self))
             StudioStore.save(item)

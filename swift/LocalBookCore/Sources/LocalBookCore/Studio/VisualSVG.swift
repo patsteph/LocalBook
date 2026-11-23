@@ -4,7 +4,8 @@ import Foundation
 /// Writes a scene as an SVG file: the same geometry the canvas draws, as vectors that open in a browser, Keynote
 /// or Figma and can sit inline in an exported document. Lines are already broken, so the SVG names each line.
 public enum VisualSVG {
-    public static func render(_ scene: VisualScene, theme: VisualTheme = .clean, dark: Bool = false) -> String {
+    /// `hero` is the PNG of the item's painted backdrop, put inline where the scene has an `.image`; nil draws a band.
+    public static func render(_ scene: VisualScene, theme: VisualTheme = .clean, dark: Bool = false, hero: Data? = nil) -> String {
         func c(_ role: VisualRole) -> String { theme.color(role, dark: dark).hex }
         func f(_ v: CGFloat) -> String { v == v.rounded() ? String(Int(v)) : String(format: "%.1f", v) }
         func alpha(_ role: VisualRole) -> String { let a = theme.color(role, dark: dark).a; return a < 1 ? " fill-opacity='\(f(CGFloat(a)))'" : "" }
@@ -15,8 +16,17 @@ public enum VisualSVG {
         var out = ["<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 \(f(w)) \(f(h))' width='\(f(w))' height='\(f(h))' font-family=\"\(theme.svgFontFamily)\">",
                    "<title>\(esc(scene.title))</title>",
                    "<rect width='\(f(w))' height='\(f(h))' fill='\(c(.background))'/>"]
+        var clips = 0
         for node in scene.nodes {
             switch node {
+            case .image(let r, let radius):
+                if let hero {
+                    clips += 1
+                    out.append("<clipPath id='hero\(clips)'><rect x='\(f(r.minX))' y='\(f(r.minY))' width='\(f(r.width))' height='\(f(r.height))' rx='\(f(radius))'/></clipPath>")
+                    out.append("<image href='data:image/png;base64,\(hero.base64EncodedString())' x='\(f(r.minX))' y='\(f(r.minY))' width='\(f(r.width))' height='\(f(r.height))' preserveAspectRatio='xMidYMid slice' clip-path='url(#hero\(clips))'/>")
+                } else {
+                    out.append("<rect x='\(f(r.minX))' y='\(f(r.minY))' width='\(f(r.width))' height='\(f(r.height))' rx='\(f(radius))' fill='\(c(.accent(4)))'/>")
+                }
             case .card(let r, let fill, let stroke, let radius, _):
                 var s = "<rect x='\(f(r.minX))' y='\(f(r.minY))' width='\(f(r.width))' height='\(f(r.height))' rx='\(f(radius))' fill='\(c(fill))'\(alpha(fill))"
                 if let stroke { s += " stroke='\(c(stroke))' stroke-width='\(f(2 * theme.strokeScale))'" }

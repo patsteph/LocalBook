@@ -8,6 +8,8 @@ import LocalBookEngines
 @Observable @MainActor
 final class AppModel {
     let library = LibraryModel()
+    /// Paints the backdrops of visuals: FLUX.2 Klein, fetched after launch like the other models.
+    let imagery = KleinImagery()
     /// Drops and intents that add to a notebook.
     let intake = IntakeModel()
 
@@ -178,6 +180,7 @@ final class AppModel {
     /// Launch: open the library (no models), and when paired, sync and warm the models in the background so the
     /// composer is live in under a second and the first question never waits for a model to load.
     func start() async {
+        StudioEngine.imagery = imagery
         await library.open()
         syncSelectionToScope()
         if paired { Task { await runSync(); await loadSections() } }
@@ -209,6 +212,8 @@ final class AppModel {
         async let answers: Void = self.library.prepareAnswerModel()
         _ = await (search, answers)
         startWatching()
+        // The image model's weights come down once the models that answer are warm, so they never slow those.
+        Task { await self.imagery.prepare() }
     }
 
     /// The pairing sheet finished: the first notebook is here, the rest keeps copying.

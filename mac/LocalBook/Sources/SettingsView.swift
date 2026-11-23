@@ -163,6 +163,16 @@ struct LibrarySettings: View {
 
     private var library: LibraryModel { model.library }
 
+    /// What Settings says about the backdrop pictures' model.
+    private var imageryLine: String {
+        switch model.imagery.state {
+        case .absent: "Backdrop pictures: the image model (about 6 GB) downloads after the answer model is ready."
+        case .downloading(let p, let part): "Backdrop pictures: downloading the image model, \(Int(p * 100)) % (\(part))."
+        case .ready: "Backdrop pictures: ready. Value propositions and infographics get a painted backdrop under their title; the first takes about a minute while the model loads."
+        case .failed(let why): "Backdrop pictures: the download failed (\(why))."
+        }
+    }
+
     var body: some View {
         Form {
             Section("On this Mac") {
@@ -233,6 +243,12 @@ struct LibrarySettings: View {
                      ? "After a visual is drawn, the model looks at the picture and scores it; one below the bar is filled once more with its note. Adds a few seconds per visual."
                      : "Needs an answer model with vision; the one loaded now cannot look at pictures.")
                     .font(.callout).foregroundStyle(.secondary)
+                HStack(spacing: 8) {
+                    if case .downloading = model.imagery.state { ProgressView().controlSize(.small) }
+                    Text(imageryLine).font(.callout).foregroundStyle(.secondary)
+                    Spacer()
+                    if case .failed = model.imagery.state { Button("Try again") { Task { await model.imagery.prepare() } } }
+                }
             } header: { Text("Studio visuals") }
             Section {
                 HStack {
