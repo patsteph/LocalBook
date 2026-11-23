@@ -408,7 +408,7 @@ struct NotesPane: View {
                 Spacer()
                 Button { writing = true } label: { Label("New Note", systemImage: "square.and.pencil") }
                     .disabled(library.scopeToNotebook == nil)
-                    .help("New note in the current notebook (⇧⌘N)")
+                    .help(Shortcuts.newNote.help("New note in the current notebook"))
             }
             .padding(12)
             HStack(spacing: 6) {

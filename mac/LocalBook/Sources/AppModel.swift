@@ -64,6 +64,8 @@ final class AppModel {
     /// The import sheet: move the library of the LocalBook already on this Mac into this app.
     var showImport = false
     var showFindSources = false
+    /// Help › Keyboard Shortcuts (⌘/): the guide to every shortcut.
+    var showShortcuts = false
     /// The inspector on the right edge (View › Show Inspector, ⌥⌘I): the notebook's sources.
     var showInspector = false
     /// A Studio kind the menu asked for (Studio › Briefing…): the Studio pane opens its make sheet.
