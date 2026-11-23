@@ -12,7 +12,7 @@ final class AppModel {
     /// machine: FLUX.1 schnell (nothing from outside the FLUX checkpoint; the default) and FLUX.2 Klein 4B (its
     /// Qwen3 text encoder rules it out on managed work Macs).
     /// Settings key: "schnell", "klein" or "none".
-    static let imageModelKey = "studio.imageModel"
+    nonisolated static let imageModelKey = "studio.imageModel"
     let klein = KleinImagery()
     let schnell = SchnellImagery()
     /// The setting as it stands: a Mac that already carries Klein from before the choice existed keeps it.
