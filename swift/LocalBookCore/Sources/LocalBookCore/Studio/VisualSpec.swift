@@ -171,13 +171,20 @@ public struct VisualSpec: Codable, Hashable, Sendable {
         func objects(_ key: String) -> [[String: Any]] { o[key] as? [[String: Any]] ?? [] }
         func strings(_ v: Any?) -> [String] { (v as? [Any] ?? []).map(text).filter { !$0.isEmpty } }
         // Models rename keys freely ("name" for "title", "phases" for "items"): read the usual aliases, then any list of objects.
-        // The usual title keys first; failing those, the entry's one short string ("technique": "RAG") names it.
+        /// A level word or a number: what a model writes when it scores an item on an axis.
+        func scored(_ v: Any?) -> Bool {
+            if v is NSNumber { return true }
+            let t = text(v).lowercased()
+            return Double(t) != nil || ["very high", "high", "medium", "mid", "moderate", "low", "very low"].contains(t)
+        }
+        // The usual title keys first; failing those, the entry's one short string that is not a score ("technique":
+        // "RAG" beside "effort": "low") names it.
         func titled(_ e: [String: Any]) -> String {
             let t = text(e["title"] ?? e["name"] ?? e["label"] ?? e["step"] ?? e["stage"] ?? e["question"])
             if !t.isEmpty { return t }
             let skip: Set<String> = ["detail", "description", "text", "summary", "value", "when", "date", "x", "y", "position"]
             let shorts = e.filter { !skip.contains($0.key.lowercased()) }.compactMap { k, v -> (String, String)? in
-                guard let str = v as? String, !str.isEmpty, str.count <= 60, !str.contains("\n") else { return nil }
+                guard let str = v as? String, !str.isEmpty, str.count <= 60, !str.contains("\n"), !scored(str) else { return nil }
                 return (k, str)
             }.sorted { $0.0 < $1.0 }
             return shorts.count == 1 || e.count <= 3 ? shorts.first?.1 ?? "" : ""
@@ -210,12 +217,6 @@ public struct VisualSpec: Codable, Hashable, Sendable {
             var axes = strings(o["axes"] ?? o["columns"])
             if axes.count < 2, let a = o["axes"] as? [String: Any] { axes = [text(a["x"] ?? a["horizontal"]), text(a["y"] ?? a["vertical"])].filter { !$0.isEmpty } }
             if axes.count < 2 { axes = [text(o["x_axis"] ?? o["xAxis"] ?? o["x"]), text(o["y_axis"] ?? o["yAxis"] ?? o["y"])].filter { !$0.isEmpty } }
-            /// A level word or a number: what a model writes when it scores an item on an axis.
-            func scored(_ v: Any?) -> Bool {
-                if v is NSNumber { return true }
-                let t = text(v).lowercased()
-                return Double(t) != nil || ["very high", "high", "medium", "mid", "moderate", "low", "very low"].contains(t)
-            }
             /// The two scores of an entry: "x"/"y", a "position" object, keys named after the axes ("effort": "high",
             /// "impact": 4), or failing those the entry's first two scored values in key order.
             func scores(_ e: [String: Any]) -> (Any?, Any?)? {
@@ -277,6 +278,12 @@ public struct VisualSpec: Codable, Hashable, Sendable {
     /// back blank because the model answered a different question than the form asked.
     public static func parseAnyShape(_ raw: String, preferring layout: Layout) -> VisualSpec? {
         if let s = parse(raw, layout: layout) { return s }
+        // The asked form refused a reply of its own shape (a decision tree given ticks and crosses): that shape's
+        // plain form draws it before any other shape is tried.
+        let plain: Layout = switch layout.shape {
+        case .groups: .mindmap; case .sequence: .flowchart; case .figures: .infographic; case .matrix: .comparison; case .quadrant: .quadrant
+        }
+        if plain != layout, let s = parse(raw, layout: plain) { return s }
         let grouped = raw.contains("\"children\"")
         for other in (grouped ? [Layout.mindmap, .flowchart] : [.flowchart, .mindmap]) + [.infographic, .comparison, .quadrant] where other.shape != layout.shape {
             if let s = parse(raw, layout: other) { return s }
