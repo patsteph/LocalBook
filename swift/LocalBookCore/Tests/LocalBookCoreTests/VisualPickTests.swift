@@ -26,7 +26,7 @@ struct VisualPickTests {
             ("before and after the migration", .beforeAfter),
             ("the value proposition of the product", .valueProposition),
         ]
-        for (ask, want) in cases { #expect(VisualPick.rule(for: ask) == want, ask) }
+        for (ask, want) in cases { #expect(VisualPick.rule(for: ask) == want, Comment(rawValue: ask)) }
     }
 
     @Test("asks that name no form leave the choice to the model")
@@ -51,7 +51,7 @@ struct VisualPickTests {
     @Test("the prompt offers every form once, briefly")
     func prompt() {
         let p = VisualPick.prompt(about: "the notebook", passages: ["A passage.\nWith a line break.", String(repeating: "x", count: 1000)])
-        for l in VisualSpec.Layout.allCases { #expect(p.components(separatedBy: "\n" + l.rawValue + ":").count == 2, l.rawValue) }
+        for l in VisualSpec.Layout.allCases { #expect(p.components(separatedBy: "\n" + l.rawValue + ":").count == 2, Comment(rawValue: l.rawValue)) }
         #expect(!p.contains("\nWith a line break"))
         #expect(p.count < 2200)
     }
