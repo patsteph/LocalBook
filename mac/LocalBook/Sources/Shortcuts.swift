@@ -3,7 +3,7 @@ import SwiftUI
 
 /// One keyboard shortcut: what it does and which keys. `keys` is nil for a shortcut a view owns itself (Space to peek,
 /// ⌘↓ to open) that the guide lists but the menu bar does not declare.
-struct AppShortcut: Identifiable, Sendable {
+struct KeyShortcut: Identifiable, Sendable {
     let title: String
     let display: String                 // "⇧⌘F", in the order macOS shows modifiers: ⌃ ⌥ ⇧ ⌘
     let key: Character?
@@ -42,33 +42,33 @@ struct AppShortcut: Identifiable, Sendable {
 enum Shortcuts {
     struct Group: Identifiable, Sendable {
         let name: String
-        let items: [AppShortcut]
+        let items: [KeyShortcut]
         var id: String { name }
     }
 
     // File
-    static let newNotebook = AppShortcut("New Notebook", "n")
-    static let newNote = AppShortcut("New Note", "n", [.command, .shift])
-    static let addSources = AppShortcut("Add Sources", "o")
-    static let addWebPage = AppShortcut("Add Web Page", "l", [.command, .shift])
-    static let findSources = AppShortcut("Find Sources on the Web", "f", [.command, .shift])
-    static let exportNotebook = AppShortcut("Export Notebook", "e", [.command, .shift])
+    static let newNotebook = KeyShortcut("New Notebook", "n")
+    static let newNote = KeyShortcut("New Note", "n", [.command, .shift])
+    static let addSources = KeyShortcut("Add Sources", "o")
+    static let addWebPage = KeyShortcut("Add Web Page", "l", [.command, .shift])
+    static let findSources = KeyShortcut("Find Sources on the Web", "f", [.command, .shift])
+    static let exportNotebook = KeyShortcut("Export Notebook", "e", [.command, .shift])
 
     // Notebook
-    static let ask = AppShortcut("Ask (back to the conversation)", "l")
-    static let stopAnswer = AppShortcut("Stop Answer", ".")
-    static let syncNow = AppShortcut("Sync Now", "r")
-    static let readAloud = AppShortcut("Read Answer Aloud", "r", [.command, .option])
+    static let ask = KeyShortcut("Ask (back to the conversation)", "l")
+    static let stopAnswer = KeyShortcut("Stop Answer", ".")
+    static let syncNow = KeyShortcut("Sync Now", "r")
+    static let readAloud = KeyShortcut("Read Answer Aloud", "r", [.command, .option])
 
     // Studio
-    static let briefing = AppShortcut("Briefing", "1", [.command, .control])
-    static let quiz = AppShortcut("Quiz", "2", [.command, .control])
-    static let flashcards = AppShortcut("Flashcards", "3", [.command, .control])
-    static let audioOverview = AppShortcut("Audio Overview", "4", [.command, .control])
-    static let visual = AppShortcut("Visual", "5", [.command, .control])
+    static let briefing = KeyShortcut("Briefing", "1", [.command, .control])
+    static let quiz = KeyShortcut("Quiz", "2", [.command, .control])
+    static let flashcards = KeyShortcut("Flashcards", "3", [.command, .control])
+    static let audioOverview = KeyShortcut("Audio Overview", "4", [.command, .control])
+    static let visual = KeyShortcut("Visual", "5", [.command, .control])
 
     /// The Studio menu's shortcut for a kind, if it has one (Video Explainer does not).
-    static func make(_ kind: StudioItem.Kind) -> AppShortcut? {
+    static func make(_ kind: StudioItem.Kind) -> KeyShortcut? {
         switch kind {
         case .doc: briefing
         case .quiz: quiz
@@ -80,42 +80,42 @@ enum Shortcuts {
     }
 
     // Record
-    static let startRecording = AppShortcut("Start Meeting Recording", "r", [.command, .shift])
-    static let voiceNote = AppShortcut("Voice Note", "v", [.command, .shift])
+    static let startRecording = KeyShortcut("Start Meeting Recording", "r", [.command, .shift])
+    static let voiceNote = KeyShortcut("Voice Note", "v", [.command, .shift])
 
     // View
-    static let showSources = AppShortcut("Show Sources", "1", [.command, .option])
-    static let showStudio = AppShortcut("Show Studio", "2", [.command, .option])
-    static let showMeetings = AppShortcut("Show Meetings", "3", [.command, .option])
-    static let toggleInspector = AppShortcut("Show or Hide Inspector", "i", [.command, .option])
+    static let showSources = KeyShortcut("Show Sources", "1", [.command, .option])
+    static let showStudio = KeyShortcut("Show Studio", "2", [.command, .option])
+    static let showMeetings = KeyShortcut("Show Meetings", "3", [.command, .option])
+    static let toggleInspector = KeyShortcut("Show or Hide Inspector", "i", [.command, .option])
 
     // Window
-    static let openInNewWindow = AppShortcut("Open in New Window", "d", [.command, .shift])
+    static let openInNewWindow = KeyShortcut("Open in New Window", "d", [.command, .shift])
 
     // Help
-    static let keyboardShortcuts = AppShortcut("Keyboard Shortcuts", "/")
+    static let keyboardShortcuts = KeyShortcut("Keyboard Shortcuts", "/")
 
     /// The guide, in menu order, then the shortcuts views own themselves.
     static let groups: [Group] = [
         Group(name: "File", items: [newNotebook, newNote, addSources, addWebPage, findSources, exportNotebook]),
         Group(name: "Notebook", items: [ask, stopAnswer, syncNow, readAloud,
-                                        AppShortcut("Send the question", display: "Return"),
-                                        AppShortcut("Add files or a web address copied in the Finder or a browser", display: "⌘V")]),
+                                        KeyShortcut("Send the question", display: "Return"),
+                                        KeyShortcut("Add files or a web address copied in the Finder or a browser", display: "⌘V")]),
         Group(name: "Studio", items: [briefing, quiz, flashcards, audioOverview, visual,
-                                      AppShortcut("Flip a flashcard, or play and pause audio", display: "Space"),
-                                      AppShortcut("Previous or next flashcard", display: "← →")]),
+                                      KeyShortcut("Flip a flashcard, or play and pause audio", display: "Space"),
+                                      KeyShortcut("Previous or next flashcard", display: "← →")]),
         Group(name: "Record", items: [startRecording, voiceNote]),
-        Group(name: "View", items: [AppShortcut("Show or Hide Sidebar", "s", [.command, .control]),
+        Group(name: "View", items: [KeyShortcut("Show or Hide Sidebar", "s", [.command, .control]),
                                     showSources, showStudio, showMeetings, toggleInspector]),
-        Group(name: "Sources", items: [AppShortcut("Quick Look the selected source", display: "Space"),
-                                       AppShortcut("Open the selected source in its own window", display: "⌘↓")]),
-        Group(name: "Notes", items: [AppShortcut("Edit the selected note", "e"),
-                                     AppShortcut("Save the note", "s"),
-                                     AppShortcut("Bold, Italic, Link", display: "⌘B  ⌘I  ⌘K"),
-                                     AppShortcut("Numbered, bulleted, checklist", display: "⇧⌘7  ⇧⌘8  ⇧⌘9")]),
+        Group(name: "Sources", items: [KeyShortcut("Quick Look the selected source", display: "Space"),
+                                       KeyShortcut("Open the selected source in its own window", display: "⌘↓")]),
+        Group(name: "Notes", items: [KeyShortcut("Edit the selected note", "e"),
+                                     KeyShortcut("Save the note", "s"),
+                                     KeyShortcut("Bold, Italic, Link", display: "⌘B  ⌘I  ⌘K"),
+                                     KeyShortcut("Numbered, bulleted, checklist", display: "⇧⌘7  ⇧⌘8  ⇧⌘9")]),
         Group(name: "Window", items: [openInNewWindow,
-                                      AppShortcut("Settings", ","),
-                                      AppShortcut("Close a sheet or popover", display: "Esc"),
+                                      KeyShortcut("Settings", ","),
+                                      KeyShortcut("Close a sheet or popover", display: "Esc"),
                                       keyboardShortcuts]),
     ]
 }
