@@ -212,6 +212,10 @@ public final class StudioEngine {
             error = "The model's answer couldn't be read as \(kind == .quiz ? "a quiz" : "flashcards"). Try again."
             return nil
         }
+        if kind == .doc {
+            body = VisualInline.cleaned(body)      // a picture that draws is kept in its fence; one that does not is dropped
+            SoakTrace.log("studio doc: \(VisualInline.hasVisual(body) ? "with" : "without") an inline visual")
+        }
         if kind == .quiz, let data = body.data(using: .utf8), var qs = try? JSONDecoder().decode([StudioQuestion].self, from: data) {
             var seen = Set<String>()
             qs = qs.filter { seen.insert($0.question.lowercased()).inserted }
@@ -234,8 +238,8 @@ public final class StudioEngine {
         switch kind {
         case .doc:
             return (base + " Cite the passages you used like [1] or [2].",
-                    "Write a clear briefing about \(about). Start with a one-line title beginning with “# ”. Then short sections with “## ” headings and bullet points where they help. About 450 words.",
-                    1_100)
+                    "Write a clear briefing about \(about). Start with a one-line title beginning with “# ”. Then short sections with “## ” headings and bullet points where they help. About 450 words. " + VisualInline.promptClause,
+                    1_350)
         case .quiz:
             return (base + " You reply with JSON only.",
                     "Write exactly \(count) multiple-choice questions about \(about). Reply with ONLY a JSON array, no other text. Each item: {\"question\": string, \"choices\": [4 short strings], \"answer\": index 0-3 of the correct choice, \"why\": one sentence from the passages}.",

@@ -14,6 +14,12 @@ struct VisualItemView: View {
     @State private var committed: CGFloat = 1
     @State private var fit: CGFloat = 1
     @State private var expanded: Set<Int> = []
+    @State private var files: [VisualFiles.Kind: URL] = [:]
+
+    /// The SVG and PDF files to share, written once per drawing.
+    private func writeFiles() {
+        files = Dictionary(uniqueKeysWithValues: VisualFiles.Kind.allCases.filter { $0 != .png }.compactMap { k in VisualFiles.write(spec, title: title, as: k).map { (k, $0) } })
+    }
 
     init(spec: VisualSpec, title: String, item: StudioItem? = nil) {
         _spec = State(initialValue: spec); _title = State(initialValue: title); self.item = item
@@ -38,7 +44,15 @@ struct VisualItemView: View {
         }
         .toolbar {
             ToolbarItem(placement: .topBarLeading) {
-                if let picture { ShareLink(item: Image(platformImage: picture), preview: SharePreview(title, image: Image(platformImage: picture))) }
+                if let picture {
+                    Menu {
+                        ShareLink(item: Image(platformImage: picture), preview: SharePreview(title, image: Image(platformImage: picture))) { Label("Image", systemImage: "photo") }
+                        ForEach(VisualFiles.Kind.allCases.filter { $0 != .png }, id: \.self) { kind in
+                            if let url = files[kind] { ShareLink(item: url) { Label(kind.label, systemImage: kind == .pdf ? "doc.richtext" : "scribble.variable") } }
+                        }
+                    } label: { Image(systemName: "square.and.arrow.up") }
+                    .accessibilityLabel("Share as an image, SVG or PDF")
+                }
             }
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
@@ -61,6 +75,7 @@ struct VisualItemView: View {
         .task {
             fit = VisualSlide.fit(for: spec)
             picture = VisualSlide.image(for: spec, fit: fit)
+            writeFiles()
         }
         .onChange(of: expanded) { _, now in                     // open branches make the slide fuller: shrink it to stay 16:9
             withAnimation(.snappy) { fit = VisualSlide.fit(for: spec, expanded: now) }
@@ -81,6 +96,7 @@ struct VisualItemView: View {
 
     private func save() {
         picture = VisualSlide.image(for: spec, fit: 1)
+        writeFiles()
         if var saved = item, let data = try? JSONEncoder().encode(spec) {
             saved.body = String(decoding: data, as: UTF8.self); saved.title = title
             StudioStore.save(saved)

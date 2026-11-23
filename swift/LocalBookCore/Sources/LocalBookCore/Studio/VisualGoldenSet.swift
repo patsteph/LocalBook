@@ -71,7 +71,7 @@ public enum VisualGoldenSet {
         for (i, m) in made.enumerated() {
             let ask = m.prompt.topic.isEmpty ? "(the whole notebook)" : m.prompt.topic
             let got = m.file.map { "[\($0)](\($0))" } ?? "failed: \(m.problem ?? "unknown")"
-            lines.append("| \(i + 1) | \(m.form) | \(m.prompt.detail.label) | \(ask) | \(got) | \(m.time) | \(m.checks) |")
+            lines.append("| \(i + 1) | \(m.form)\(theme.map { " · \($0)" } ?? "") | \(m.prompt.detail.label) | \(ask) | \(got) | \(m.time) | \(m.checks) |")
         }
         lines += ["", "Judgement (fill in): ___ of 15 pairs where the Swift drawing is as good or better."]
         return lines.joined(separator: "\n")
@@ -95,7 +95,7 @@ public enum VisualGoldenSet {
         for (i, m) in made.enumerated() {
             let ask = m.prompt.topic.isEmpty ? "(the whole notebook)" : m.prompt.topic
             let facts = [m.time, m.checks].filter { !$0.isEmpty }.joined(separator: " · ")
-            out.append("<section><h2>\(i + 1). \(esc(m.form)) · \(esc(m.prompt.detail.label))</h2><p class='meta'>\(esc(ask))\(facts.isEmpty ? "" : " · " + esc(facts))</p>")
+            out.append("<section><h2>\(i + 1). \(esc(m.form))\(theme.map { " · \(esc($0))" } ?? "") · \(esc(m.prompt.detail.label))</h2><p class='meta'>\(esc(ask))\(facts.isEmpty ? "" : " · " + esc(facts))</p>")
             if let file = m.file { out.append("<img src='\(esc(file))' alt='\(esc(m.prompt.id))'>") }
             else { out.append("<p class='err'>failed: \(esc(m.problem ?? "unknown"))</p>") }
             out.append("</section>")

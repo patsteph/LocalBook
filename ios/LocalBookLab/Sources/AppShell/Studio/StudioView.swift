@@ -286,11 +286,25 @@ private struct MakeSheet: View {
 struct MarkdownText: View {
     let text: String
     private struct Block: Identifiable { let id: Int; let kind: Kind; let text: String
-        enum Kind { case h1, h2, h3, bullet, numbered(String), paragraph } }
+        enum Kind { case h1, h2, h3, bullet, numbered(String), paragraph, visual(VisualSpec) } }
 
+    /// The prose blocks, with each fenced visual (```visual … ```) as a block of its own, drawn in place.
     private var blocks: [Block] {
         var out: [Block] = []
-        for (i, raw) in text.components(separatedBy: "\n").enumerated() {
+        var n = 0
+        for piece in VisualInline.pieces(in: text) {
+            switch piece {
+            case .visual(let spec): out.append(.init(id: n, kind: .visual(spec), text: spec.title)); n += 1
+            case .text(let t): out.append(contentsOf: lines(t, from: n)); n = (out.last?.id ?? n) + 1
+            }
+        }
+        return out
+    }
+
+    private func lines(_ text: String, from start: Int) -> [Block] {
+        var out: [Block] = []
+        for (k, raw) in text.components(separatedBy: "\n").enumerated() {
+            let i = start + k
             let line = raw.trimmingCharacters(in: .whitespaces)
             if line.isEmpty { continue }
             if line.hasPrefix("### ") { out.append(.init(id: i, kind: .h3, text: String(line.dropFirst(4)))) }
@@ -319,6 +333,7 @@ struct MarkdownText: View {
                 case .bullet: HStack(alignment: .firstTextBaseline, spacing: 8) { Text("•").foregroundStyle(.tint); styled(b.text) }
                 case .numbered(let n): HStack(alignment: .firstTextBaseline, spacing: 8) { Text(n + ".").foregroundStyle(.tint).monospacedDigit(); styled(b.text) }
                 case .paragraph: styled(b.text)
+                case .visual(let spec): VisualInlineView(spec: spec).padding(.vertical, 6)
                 }
             }
         }

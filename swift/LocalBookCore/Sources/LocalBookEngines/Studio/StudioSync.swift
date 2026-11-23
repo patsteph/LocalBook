@@ -82,7 +82,7 @@ public enum StudioSync {
             catch MacLinkError.http(404, _) { throw SendError.unknownNotebook }
         }
         switch item.kind {
-        case .doc: try await put("doc", item.body)
+        case .doc: try await put("doc", VisualInline.stripped(item.body))      // the old app cannot draw the fence
         case .cards: try await put("cards", try JSONSerialization.jsonObject(with: Data(item.body.utf8)))
         case .quiz: try await put("quiz", try JSONSerialization.jsonObject(with: Data(item.body.utf8)))
         case .audio: try await sendAudio(item, to: mac, created: created)

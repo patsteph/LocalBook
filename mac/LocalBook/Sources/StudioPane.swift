@@ -333,11 +333,25 @@ struct StudioItemDetail: View {
 struct MarkdownText: View {
     let text: String
     private struct Block: Identifiable { let id: Int; let kind: Kind; let text: String
-        enum Kind { case h1, h2, h3, bullet, numbered(String), paragraph } }
+        enum Kind { case h1, h2, h3, bullet, numbered(String), paragraph, visual(VisualSpec) } }
 
+    /// The prose blocks, with each fenced visual (```visual … ```) as a block of its own, drawn in place.
     private var blocks: [Block] {
         var out: [Block] = []
-        for (i, raw) in text.components(separatedBy: "\n").enumerated() {
+        var n = 0
+        for piece in VisualInline.pieces(in: text) {
+            switch piece {
+            case .visual(let spec): out.append(.init(id: n, kind: .visual(spec), text: spec.title)); n += 1
+            case .text(let t): out.append(contentsOf: lines(t, from: n)); n = (out.last?.id ?? n) + 1
+            }
+        }
+        return out
+    }
+
+    private func lines(_ text: String, from start: Int) -> [Block] {
+        var out: [Block] = []
+        for (k, raw) in text.components(separatedBy: "\n").enumerated() {
+            let i = start + k
             let line = raw.trimmingCharacters(in: .whitespaces)
             if line.isEmpty { continue }
             if line.hasPrefix("### ") { out.append(.init(id: i, kind: .h3, text: String(line.dropFirst(4)))) }
@@ -366,6 +380,7 @@ struct MarkdownText: View {
                 case .bullet: HStack(alignment: .firstTextBaseline, spacing: 8) { Text("•").foregroundStyle(.tint); styled(b.text) }
                 case .numbered(let n): HStack(alignment: .firstTextBaseline, spacing: 8) { Text(n + ".").foregroundStyle(.tint).monospacedDigit(); styled(b.text) }
                 case .paragraph: styled(b.text)
+                case .visual(let spec): VisualInlineView(spec: spec).padding(.vertical, 6)
                 }
             }
         }
@@ -760,9 +775,15 @@ struct VisualItemView: View {
     @State private var committed: CGFloat = 1
     @State private var fit: CGFloat = 1
     @State private var expanded: Set<Int> = []
+    @State private var files: [VisualFiles.Kind: URL] = [:]
 
     init(spec: VisualSpec, title: String, item: StudioItem? = nil) {
         _spec = State(initialValue: spec); _title = State(initialValue: title); self.item = item
+    }
+
+    /// The SVG and PDF files to share, written once per drawing.
+    private func writeFiles() {
+        files = Dictionary(uniqueKeysWithValues: VisualFiles.Kind.allCases.filter { $0 != .png }.compactMap { k in VisualFiles.write(spec, title: title, as: k).map { (k, $0) } })
     }
 
     var body: some View {
@@ -786,7 +807,13 @@ struct VisualItemView: View {
             Divider()
             HStack(spacing: 12) {
                 if let picture {
-                    ShareLink(item: Image(platformImage: picture), preview: SharePreview(title, image: Image(platformImage: picture))) { Label("Share Image", systemImage: "square.and.arrow.up") }
+                    Menu {
+                        ShareLink(item: Image(platformImage: picture), preview: SharePreview(title, image: Image(platformImage: picture))) { Label("Image", systemImage: "photo") }
+                        ForEach(VisualFiles.Kind.allCases.filter { $0 != .png }, id: \.self) { kind in
+                            if let url = files[kind] { ShareLink(item: url) { Label(kind.label, systemImage: kind == .pdf ? "doc.richtext" : "scribble.variable") } }
+                        }
+                    } label: { Label("Share", systemImage: "square.and.arrow.up") }
+                    .fixedSize().help("Share as an image, an SVG that opens in Keynote or Figma, or a PDF")
                     Button { copy(picture) } label: { Label("Copy Image", systemImage: "doc.on.doc") }
                 }
                 if !spec.layout.alternatives.isEmpty {
@@ -810,6 +837,7 @@ struct VisualItemView: View {
         .task {
             fit = VisualSlide.fit(for: spec)
             picture = VisualSlide.image(for: spec, fit: fit)
+            writeFiles()
         }
         .onChange(of: expanded) { _, now in
             withAnimation(.snappy) { fit = VisualSlide.fit(for: spec, expanded: now) }
@@ -835,6 +863,7 @@ struct VisualItemView: View {
 
     private func save() {
         picture = VisualSlide.image(for: spec, fit: 1)
+        writeFiles()
         if var saved = item, let data = try? JSONEncoder().encode(spec) {
             saved.body = String(decoding: data, as: UTF8.self); saved.title = title
             StudioStore.save(saved)
@@ -966,7 +995,7 @@ enum StudioShare {
 
     static func text(_ item: StudioItem) -> String? {
         switch item.kind {
-        case .doc: return item.body
+        case .doc: return VisualInline.stripped(item.body)
         case .quiz:
             let qs = (try? JSONDecoder().decode([StudioQuestion].self, from: Data(item.body.utf8))) ?? []
             guard !qs.isEmpty else { return nil }

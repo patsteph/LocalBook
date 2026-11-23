@@ -18,7 +18,7 @@ enum StudioShare {
 
     static func text(_ item: StudioItem) -> String? {
         switch item.kind {
-        case .doc: return item.body
+        case .doc: return VisualInline.stripped(item.body)
         case .quiz:
             let qs = (try? JSONDecoder().decode([StudioQuestion].self, from: Data(item.body.utf8))) ?? []
             guard !qs.isEmpty else { return nil }
