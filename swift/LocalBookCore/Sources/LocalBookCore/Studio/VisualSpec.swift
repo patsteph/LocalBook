@@ -230,7 +230,9 @@ public struct VisualSpec: Codable, Hashable, Sendable {
                     if let a = byAxis(axes[0]), let b = byAxis(axes[1]) { return (a, b) }
                 }
                 let rest = lower.filter { scored($0.value) && !["title", "name", "label"].contains($0.key) }.sorted { $0.key < $1.key }
-                return rest.count >= 2 ? (rest[0].value, rest[1].value) : nil
+                guard rest.count >= 2 else { return nil }
+                let first: Any? = rest[0].value, second: Any? = rest[1].value
+                return (first, second)
             }
             let list = anyList(["items", "points", "techniques"])
             let placed = list.compactMap { e -> ([String: Any], (Any?, Any?))? in scores(e).map { (e, $0) } }
