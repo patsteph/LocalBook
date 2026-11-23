@@ -32,18 +32,33 @@ public enum VisualGoldenSet {
         Prompt(id: "15-info-deep", layout: .infographic, detail: .deep, topic: "a one-page summary of what matters and why", oldTemplate: "exec_summary_context"),
     ]
 
-    /// `index.md` beside the pictures: the notebook, the device, then one row per prompt with its picture's name.
-    public static func index(notebook: String, device: String, date: Date, made: [(prompt: Prompt, file: String?, problem: String?)]) -> String {
+    /// One drawing's outcome: its picture's file name or why it failed, how long the model took, and what the lint found.
+    public struct Made: Sendable {
+        public var prompt: Prompt
+        public var file: String?
+        public var problem: String?
+        public var seconds: Double?
+        public var lint: [String]
+        public init(prompt: Prompt, file: String? = nil, problem: String? = nil, seconds: Double? = nil, lint: [String] = []) {
+            self.prompt = prompt; self.file = file; self.problem = problem; self.seconds = seconds; self.lint = lint
+        }
+        var time: String { seconds.map { String(format: "%.0f s", $0) } ?? "" }
+        var checks: String { lint.isEmpty ? (file == nil ? "" : "clean") : lint.joined(separator: "; ") }
+    }
+
+    /// `index.md` beside the pictures: the notebook, the device, then one row per prompt with its picture's name,
+    /// the seconds the model took and what the lint found.
+    public static func index(notebook: String, device: String, date: Date, made: [Made]) -> String {
         let f = DateFormatter()
         f.locale = Locale(identifier: "en_US_POSIX")
         f.dateFormat = "yyyy-MM-dd HH:mm"
         var lines = ["# Visual golden set: \(notebook)", "", "Drawn by the Swift Mac app on \(device), \(f.string(from: date)).", "",
                      "Open the old app's `old-app-visuals.html` for the same notebook beside this folder and judge each pair: does the Swift drawing say what the old one said, as clearly?", "",
-                     "| # | Layout | Detail | Ask | Swift picture |", "|---|---|---|---|---|"]
+                     "| # | Layout | Detail | Ask | Swift picture | Time | Lint |", "|---|---|---|---|---|---|---|"]
         for (i, m) in made.enumerated() {
             let ask = m.prompt.topic.isEmpty ? "(the whole notebook)" : m.prompt.topic
             let got = m.file.map { "[\($0)](\($0))" } ?? "failed: \(m.problem ?? "unknown")"
-            lines.append("| \(i + 1) | \(m.prompt.layout.label) | \(m.prompt.detail.label) | \(ask) | \(got) |")
+            lines.append("| \(i + 1) | \(m.prompt.layout.label) | \(m.prompt.detail.label) | \(ask) | \(got) | \(m.time) | \(m.checks) |")
         }
         lines += ["", "Judgement (fill in): ___ of 15 pairs where the Swift drawing is as good or better."]
         return lines.joined(separator: "\n")
@@ -51,7 +66,7 @@ public enum VisualGoldenSet {
 
     /// The same index as a page with the pictures in it, for a browser: Markdown links to files beside a `.md`
     /// open in nothing on a Mac, which is what kept the first C6 sitting from the pictures.
-    public static func indexHTML(notebook: String, device: String, date: Date, made: [(prompt: Prompt, file: String?, problem: String?)]) -> String {
+    public static func indexHTML(notebook: String, device: String, date: Date, made: [Made]) -> String {
         func esc(_ s: String) -> String {
             s.replacingOccurrences(of: "&", with: "&amp;").replacingOccurrences(of: "<", with: "&lt;").replacingOccurrences(of: ">", with: "&gt;").replacingOccurrences(of: "\"", with: "&quot;")
         }
@@ -66,7 +81,8 @@ public enum VisualGoldenSet {
                    "<p class='meta'>Drawn on \(esc(device)), \(f.string(from: date)). Open the old app's old-app-visuals.html beside this page and judge each pair: does the Swift drawing say what the old one said, as clearly?</p>"]
         for (i, m) in made.enumerated() {
             let ask = m.prompt.topic.isEmpty ? "(the whole notebook)" : m.prompt.topic
-            out.append("<section><h2>\(i + 1). \(esc(m.prompt.layout.label)) · \(esc(m.prompt.detail.label))</h2><p class='meta'>\(esc(ask))</p>")
+            let facts = [m.time, m.checks].filter { !$0.isEmpty }.joined(separator: " · ")
+            out.append("<section><h2>\(i + 1). \(esc(m.prompt.layout.label)) · \(esc(m.prompt.detail.label))</h2><p class='meta'>\(esc(ask))\(facts.isEmpty ? "" : " · " + esc(facts))</p>")
             if let file = m.file { out.append("<img src='\(esc(file))' alt='\(esc(m.prompt.id))'>") }
             else { out.append("<p class='err'>failed: \(esc(m.problem ?? "unknown"))</p>") }
             out.append("</section>")

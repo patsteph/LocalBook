@@ -22,13 +22,14 @@ struct VisualGoldenSetTests {
     func index() {
         let p = VisualGoldenSet.prompts
         let md = VisualGoldenSet.index(notebook: "Trip", device: "MBP", date: Date(timeIntervalSince1970: 1_700_000_000),
-                                       made: [(p[0], "01-mindmap-overview.png", nil), (p[1], nil, "model stopped")])
+                                       made: [.init(prompt: p[0], file: "01-mindmap-overview.png", seconds: 41.4), .init(prompt: p[1], problem: "model stopped")])
         #expect(md.hasPrefix("# Visual golden set: Trip"))
-        #expect(md.contains("| 1 | Mind map | Overview | (the whole notebook) | [01-mindmap-overview.png](01-mindmap-overview.png) |"))
-        #expect(md.contains("| 2 | Mind map | Standard | the main ideas and how they connect | failed: model stopped |"))
+        #expect(md.contains("| 1 | Mind map | Overview | (the whole notebook) | [01-mindmap-overview.png](01-mindmap-overview.png) | 41 s | clean |"))
+        #expect(md.contains("| 2 | Mind map | Standard | the main ideas and how they connect | failed: model stopped |  |  |"))
         let html = VisualGoldenSet.indexHTML(notebook: "Trip & co", device: "MBP", date: Date(timeIntervalSince1970: 1_700_000_000),
-                                             made: [(p[0], "01-mindmap-overview.png", nil), (p[1], nil, "model <stopped>")])
+                                             made: [.init(prompt: p[0], file: "01-mindmap-overview.png", seconds: 41.4, lint: ["cut: “x” lost lines"]), .init(prompt: p[1], problem: "model <stopped>")])
         #expect(html.contains("<title>Visual golden set: Trip &amp; co</title>"))
+        #expect(html.contains("(the whole notebook) · 41 s · cut: “x” lost lines</p>"))
         #expect(html.contains("<img src='01-mindmap-overview.png' alt='01-mindmap-overview'>"))
         #expect(html.contains("<p class='err'>failed: model &lt;stopped&gt;</p>"))
     }

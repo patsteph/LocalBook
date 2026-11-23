@@ -1,7 +1,8 @@
 import SwiftUI
 
-/// A phone-made visual: the structure the answer model wrote (not a picture), drawn natively so it is crisp, follows
-/// light and dark mode, and can be saved as an image.
+/// A visual: the structure the answer model wrote (not a picture). `VisualLayout` places it as a `VisualScene`, which
+/// `VisualSceneView` draws natively (crisp, light and dark), `VisualSlide.image` saves as a PNG and `VisualSVG` writes as
+/// a vector file.
 public struct VisualSpec: Codable, Hashable, Sendable {
     public enum Layout: String, Codable, CaseIterable, Identifiable, Sendable {
         case mindmap, flowchart, comparison, timeline, infographic
@@ -90,263 +91,98 @@ public struct VisualSpec: Codable, Hashable, Sendable {
 }
 
 
-private struct MindBounds: PreferenceKey {
-    nonisolated(unsafe) static var defaultValue: [String: Anchor<CGRect>] = [:]
-    static func reduce(value: inout [String: Anchor<CGRect>], nextValue: () -> [String: Anchor<CGRect>]) { value.merge(nextValue()) { $1 } }
-}
+/// Draws a scene with SwiftUI's `Canvas`, scaled to whatever frame it is given, in the theme's colours for the current
+/// appearance. Cards that carry a `hit` get an invisible button over them (mind-map branches open in place).
+public struct VisualSceneView: View {
+    public let scene: VisualScene
+    public var theme: VisualTheme = .clean
+    public var hit: ((Int) -> Void)? = nil
+    @Environment(\.colorScheme) private var colorScheme
 
-private let palette: [Color] = [.blue, .orange, .green, .pink, .purple, .teal]
+    public init(scene: VisualScene, theme: VisualTheme = .clean, hit: ((Int) -> Void)? = nil) {
+        self.scene = scene; self.theme = theme; self.hit = hit
+    }
 
-/// Draws a VisualSpec at phone width.
-public struct VisualCanvas: View {
-    public let spec: VisualSpec
-    /// True when drawn on the 16:9 slide: steps, events and figures run across the page instead of down it.
-    public var slide = false
-    /// Mind-map branches opened in place (tap a branch to show all of it, tap again to fold it).
-    public var expanded: Binding<Set<Int>> = .constant([])
+    private func color(_ role: VisualRole) -> Color {
+        let c = theme.color(role, dark: colorScheme == .dark)
+        return Color(red: c.r, green: c.g, blue: c.b, opacity: c.a)
+    }
 
-    /// Indices 0..<count in rows of at most `per`, as even as possible.
-    private func rowsOf(_ count: Int, maxPerRow: Int) -> [[Int]] {
-        guard count > 0 else { return [] }
-        let rowCount = Int((Double(count) / Double(maxPerRow)).rounded(.up))
-        let per = Int((Double(count) / Double(rowCount)).rounded(.up))
-        return stride(from: 0, to: count, by: per).map { Array($0..<min($0 + per, count)) }
+    private static func font(_ style: VisualTextStyle) -> Font {
+        let w: Font.Weight = switch style.weight { case .regular: .regular; case .semibold: .semibold; case .bold: .bold }
+        return .system(size: style.size, weight: w, design: style.rounded ? .rounded : .default)
     }
 
     public var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            if spec.layout != .mindmap {              // a mind map carries its title in the middle
-                Text(spec.title).font(.title2.bold()).frame(maxWidth: .infinity, alignment: .leading)
-            }
-            switch spec.layout {
-            case .mindmap: mindmap
-            case .flowchart: flowchart
-            case .comparison: comparison
-            case .timeline: timeline
-            case .infographic: infographic
-            }
-        }
-        .fixedSize(horizontal: false, vertical: true)      // text wraps; it is never squeezed to fit a height
-        .padding(slide ? 28 : 20)
-        .background(Color.platformBackground)
-    }
-
-    /// A classic mind map: the topic in the middle, branches fanning out to both sides on curved lines.
-    private var mindmap: some View {
-        let left = Array(spec.items.enumerated()).filter { $0.offset % 2 == 1 }
-        let right = Array(spec.items.enumerated()).filter { $0.offset % 2 == 0 }
-        return HStack(alignment: .center, spacing: 0) {
-            VStack(spacing: 14) { ForEach(left, id: \.offset) { branch($0.offset, $0.element, leading: false) } }.frame(maxWidth: .infinity)
-            Text(spec.title).font(.subheadline.bold()).multilineTextAlignment(.center).foregroundStyle(.white)
-                .padding(8).frame(width: 84, height: 84)
-                .background(Circle().fill(LinearGradient(colors: [.indigo, .purple], startPoint: .topLeading, endPoint: .bottomTrailing)))
-                .anchorPreference(key: MindBounds.self, value: .bounds) { ["center": $0] }
-                .padding(.horizontal, 14)
-            VStack(spacing: 14) { ForEach(right, id: \.offset) { branch($0.offset, $0.element, leading: true) } }.frame(maxWidth: .infinity)
-        }
-        .overlayPreferenceValue(MindBounds.self) { anchors in
-            GeometryReader { geo in
-                if let c = anchors["center"].map({ geo[$0] }) {
-                    ForEach(spec.items.indices, id: \.self) { i in
-                        if let a = anchors["b\(i)"] {
-                            let b = geo[a]
-                            let toRight = i % 2 == 0
-                            let from = CGPoint(x: toRight ? c.maxX : c.minX, y: c.midY)
-                            let to = CGPoint(x: toRight ? b.minX : b.maxX, y: b.midY)
-                            Path { p in
-                                p.move(to: from)
-                                p.addCurve(to: to, control1: CGPoint(x: (from.x + to.x) / 2, y: from.y), control2: CGPoint(x: (from.x + to.x) / 2, y: to.y))
+        GeometryReader { geo in
+            let k = min(geo.size.width / scene.size.width, geo.size.height / scene.size.height)
+            Canvas(rendersAsynchronously: false) { ctx, _ in
+                ctx.scaleBy(x: k, y: k)
+                ctx.fill(Path(CGRect(origin: .zero, size: scene.size)), with: .color(color(.background)))
+                for node in scene.nodes {
+                    switch node {
+                    case .card(let r, let fill, let stroke, let radius, _):
+                        let p = Path(roundedRect: r, cornerRadius: radius)
+                        ctx.fill(p, with: .color(color(fill)))
+                        if let stroke { ctx.stroke(p, with: .color(color(stroke)), lineWidth: 2) }
+                    case .text(let t):
+                        let font = Self.font(t.style)
+                        for (i, line) in t.lines.enumerated() {
+                            let y = t.frame.minY + CGFloat(i) * t.lineHeight
+                            let text = Text(line).font(font).foregroundStyle(color(t.style.role))
+                            switch t.style.align {
+                            case .leading: ctx.draw(text, at: CGPoint(x: t.frame.minX, y: y), anchor: .topLeading)
+                            case .center: ctx.draw(text, at: CGPoint(x: t.frame.midX, y: y), anchor: .top)
+                            case .trailing: ctx.draw(text, at: CGPoint(x: t.frame.maxX, y: y), anchor: .topTrailing)
                             }
-                            .stroke(palette[i % palette.count].opacity(0.7), style: StrokeStyle(lineWidth: 3, lineCap: .round))
                         }
-                    }
-                }
-            }
-        }
-    }
-
-    private func branch(_ i: Int, _ item: VisualSpec.Item, leading: Bool) -> some View {
-        let c = palette[i % palette.count]
-        let open = expanded.wrappedValue.contains(i)
-        let hidden = max(0, item.children.count - 3)
-        let canOpen = hidden > 0 || !item.detail.isEmpty || item.children.contains { $0.count > 60 }
-        return Button {
-            guard canOpen else { return }
-            withAnimation(.snappy) {
-                if open { expanded.wrappedValue.remove(i) } else { expanded.wrappedValue.insert(i) }
-            }
-        } label: {
-            VStack(alignment: leading ? .leading : .trailing, spacing: 5) {
-                HStack(spacing: 4) {
-                    Text(item.title).font(.footnote.bold()).multilineTextAlignment(leading ? .leading : .trailing)
-                    if canOpen { Image(systemName: open ? "chevron.up" : "chevron.down").font(.caption2.weight(.bold)) }
-                }
-                .foregroundStyle(.white).padding(.horizontal, 10).padding(.vertical, 6).background(c, in: Capsule())
-                .anchorPreference(key: MindBounds.self, value: .bounds) { ["b\(i)": $0] }
-                ForEach(Array((open ? item.children : Array(item.children.prefix(3))).enumerated()), id: \.offset) { _, child in
-                    Text(child).font(.caption2).foregroundStyle(open ? .primary : .secondary).lineLimit(open ? nil : 2)
-                        .multilineTextAlignment(leading ? .leading : .trailing)
-                }
-                if open, !item.detail.isEmpty {
-                    Text(item.detail).font(.caption2).foregroundStyle(.secondary).multilineTextAlignment(leading ? .leading : .trailing)
-                }
-                if !open, hidden > 0 { Text("+\(hidden) more").font(.caption2.weight(.semibold)).foregroundStyle(c) }
-            }
-            .frame(maxWidth: .infinity, alignment: leading ? .leading : .trailing)
-        }
-        .buttonStyle(.plain)
-        .accessibilityHint(canOpen ? (open ? "Shows less" : "Shows all of this branch") : "")
-    }
-
-    @ViewBuilder private var flowchart: some View {
-        if slide { flowchartAcross } else { flowchartDown }
-    }
-
-    private var flowchartAcross: some View {
-        let rows = rowsOf(spec.items.count, maxPerRow: 4)
-        let per = rows.first?.count ?? 1
-        return VStack(spacing: 16) {
-            ForEach(rows.indices, id: \.self) { r in
-                HStack(alignment: .top, spacing: 6) {
-                    ForEach(rows[r], id: \.self) { i in
-                        let c = palette[i % palette.count]
-                        if i != rows[r].first { Image(systemName: "arrow.right").font(.callout.weight(.bold)).foregroundStyle(.secondary).padding(.top, 22) }
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text("\(i + 1)").font(.headline).foregroundStyle(.white).frame(width: 30, height: 30).background(c, in: Circle())
-                            Text(spec.items[i].title).font(.headline)
-                            if !spec.items[i].detail.isEmpty { Text(spec.items[i].detail).font(.subheadline).foregroundStyle(.secondary) }
-                        }
-                        .padding(14).frame(maxWidth: .infinity, alignment: .topLeading)
-                        .background(c.opacity(0.1), in: RoundedRectangle(cornerRadius: 16))
-                    }
-                    ForEach(0..<max(0, per - rows[r].count), id: \.self) { _ in Color.clear.frame(maxWidth: .infinity) }
-                }
-            }
-        }
-    }
-
-    private var flowchartDown: some View {
-        VStack(spacing: 0) {
-            ForEach(spec.items.indices, id: \.self) { i in
-                let c = palette[i % palette.count]
-                if i > 0 { Image(systemName: "arrow.down").font(.callout.weight(.bold)).foregroundStyle(.secondary).padding(.vertical, 6) }
-                HStack(alignment: .top, spacing: 12) {
-                    Text("\(i + 1)").font(.headline).foregroundStyle(.white).frame(width: 30, height: 30).background(c, in: Circle())
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(spec.items[i].title).font(.headline)
-                        if !spec.items[i].detail.isEmpty { Text(spec.items[i].detail).font(.subheadline).foregroundStyle(.secondary) }
-                    }
-                    Spacer(minLength: 0)
-                }
-                .padding(14).background(c.opacity(0.1), in: RoundedRectangle(cornerRadius: 16))
-            }
-        }
-    }
-
-    private var comparison: some View {
-        VStack(spacing: 0) {
-            HStack(alignment: .bottom, spacing: 8) {
-                Color.clear.frame(width: 84, height: 1)
-                ForEach(spec.columns.indices, id: \.self) { i in
-                    Text(spec.columns[i]).font(.subheadline.bold()).foregroundStyle(palette[i % palette.count])
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-            }.padding(.bottom, 8)
-            ForEach(spec.rows.indices, id: \.self) { r in
-                Divider()
-                HStack(alignment: .top, spacing: 8) {
-                    Text(spec.rows[r].label).font(.footnote.weight(.semibold)).foregroundStyle(.secondary).frame(width: 84, alignment: .leading)
-                    ForEach(spec.columns.indices, id: \.self) { i in
-                        Text(i < spec.rows[r].cells.count ? spec.rows[r].cells[i] : "").font(.footnote)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                }.padding(.vertical, 10)
-            }
-        }
-    }
-
-    @ViewBuilder private var timeline: some View {
-        if slide { timelineAcross } else { timelineDown }
-    }
-
-    private var timelineAcross: some View {
-        let rows = rowsOf(spec.items.count, maxPerRow: 5)
-        let per = rows.first?.count ?? 1
-        return VStack(spacing: 22) {
-            ForEach(rows.indices, id: \.self) { r in
-                HStack(alignment: .top, spacing: 14) {
-                    ForEach(rows[r], id: \.self) { i in
-                        let c = palette[i % palette.count]
-                        VStack(alignment: .leading, spacing: 5) {
-                            ZStack(alignment: .leading) {
-                                Rectangle().fill(c.opacity(0.3)).frame(height: 2)
-                                Circle().fill(c).frame(width: 14, height: 14)
+                    case .stroke(let segments, let role, let width, let dashed):
+                        var p = Path()
+                        for seg in segments {
+                            switch seg {
+                            case .move(let pt): p.move(to: pt)
+                            case .line(let pt): p.addLine(to: pt)
+                            case .curve(let to, let c1, let c2): p.addCurve(to: to, control1: c1, control2: c2)
                             }
-                            if !spec.items[i].value.isEmpty { Text(spec.items[i].value).font(.caption.bold()).foregroundStyle(c) }
-                            Text(spec.items[i].title).font(.headline)
-                            if !spec.items[i].detail.isEmpty { Text(spec.items[i].detail).font(.subheadline).foregroundStyle(.secondary) }
                         }
-                        .frame(maxWidth: .infinity, alignment: .topLeading)
-                    }
-                    ForEach(0..<max(0, per - rows[r].count), id: \.self) { _ in Color.clear.frame(maxWidth: .infinity) }
-                }
-            }
-        }
-    }
-
-    private var timelineDown: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            ForEach(spec.items.indices, id: \.self) { i in
-                let c = palette[i % palette.count]
-                HStack(alignment: .top, spacing: 14) {
-                    VStack(spacing: 0) {
-                        Circle().fill(c).frame(width: 14, height: 14).padding(.top, 4)
-                        if i < spec.items.count - 1 { Rectangle().fill(c.opacity(0.3)).frame(width: 2).frame(maxHeight: .infinity) }
-                    }.frame(width: 14)
-                    VStack(alignment: .leading, spacing: 3) {
-                        if !spec.items[i].value.isEmpty { Text(spec.items[i].value).font(.caption.bold()).foregroundStyle(c) }
-                        Text(spec.items[i].title).font(.headline)
-                        if !spec.items[i].detail.isEmpty { Text(spec.items[i].detail).font(.subheadline).foregroundStyle(.secondary) }
-                    }.padding(.bottom, 20)
-                    Spacer(minLength: 0)
-                }
-            }
-        }
-    }
-
-    private var infographic: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            if !spec.stats.isEmpty {
-                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: slide ? min(4, max(2, spec.stats.count)) : 2), spacing: 10) {
-                    ForEach(spec.stats.indices, id: \.self) { i in
-                        let c = palette[i % palette.count]
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(spec.stats[i].value).font(.system(.title, design: .rounded).bold()).foregroundStyle(c).minimumScaleFactor(0.5).lineLimit(2)
-                            Text(spec.stats[i].title).font(.caption).foregroundStyle(.secondary)
-                        }
-                        .padding(14).frame(maxWidth: .infinity, minHeight: 84, alignment: .leading)
-                        .background(c.opacity(0.12), in: RoundedRectangle(cornerRadius: 16))
+                        ctx.stroke(p, with: .color(color(role)), style: StrokeStyle(lineWidth: width, lineCap: .round, lineJoin: .round, dash: dashed ? [6, 6] : []))
+                    case .fill(let points, let role):
+                        var p = Path()
+                        if let first = points.first { p.move(to: first); for pt in points.dropFirst() { p.addLine(to: pt) }; p.closeSubpath() }
+                        ctx.fill(p, with: .color(color(role)))
+                    case .dot(let centre, let radius, let fill, let stroke):
+                        let p = Path(ellipseIn: CGRect(x: centre.x - radius, y: centre.y - radius, width: radius * 2, height: radius * 2))
+                        ctx.fill(p, with: .color(color(fill)))
+                        if let stroke { ctx.stroke(p, with: .color(color(stroke)), lineWidth: 2) }
+                    case .symbol(let name, let r, let role):
+                        var image = ctx.resolve(Image(systemName: name))
+                        image.shading = .color(color(role))
+                        ctx.draw(image, in: r)
                     }
                 }
             }
-            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 16, alignment: .topLeading), count: slide ? 2 : 1), alignment: .leading, spacing: 12) {
-                ForEach(spec.items.indices, id: \.self) { i in
-                    let c = palette[(i + 2) % palette.count]
-                    HStack(alignment: .top, spacing: 12) {
-                        Image(systemName: "sparkle").foregroundStyle(c).frame(width: 24)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(spec.items[i].title).font(.headline)
-                            if !spec.items[i].detail.isEmpty { Text(spec.items[i].detail).font(.subheadline).foregroundStyle(.secondary) }
+            .overlay(alignment: .topLeading) {
+                if let hit {
+                    ForEach(Array(scene.nodes.enumerated()), id: \.offset) { _, node in
+                        if case .card(let r, _, _, _, let tag) = node, let tag {
+                            Color.clear.contentShape(Rectangle())
+                                .frame(width: r.width * k, height: r.height * k)
+                                .offset(x: r.minX * k, y: r.minY * k)
+                                .onTapGesture { hit(tag) }
+                                .accessibilityLabel("Branch \(tag + 1)")
+                                .accessibilityHint("Shows all of this branch, or folds it")
                         }
                     }
                 }
             }
         }
+        .accessibilityLabel(scene.title)
     }
 }
 
-/// Every visual is one 16:9 slide: drawn 800×450 and saved at 2560×1440 (2K). A visual with a lot on it is laid out wider
-/// and shrunk to fit, so the shape never changes. On the phone it is scaled to the screen and can be pinched to zoom.
+/// Every visual is one 16:9 slide: shown at 800×450 and saved at 2560×1440 (2K). The layout fits itself to the
+/// frame (shrinking the type in steps when it must), so the shape never changes. On the phone it is scaled to the
+/// screen and can be pinched to zoom. `fit` is kept for callers from the old slide and is always 1 now.
 public struct VisualSlide: View {
     public static let size = CGSize(width: 800, height: 450)
     public static let exportWidth: CGFloat = 2560
@@ -359,33 +195,25 @@ public struct VisualSlide: View {
     }
 
     public var body: some View {
-        VisualCanvas(spec: spec, slide: true, expanded: expanded)
-            .frame(width: Self.size.width / fit)
-            .scaleEffect(fit)
-            .frame(width: Self.size.width, height: Self.size.height)
-            .background(Color.platformBackground)
-            .clipped()
+        VisualSceneView(scene: VisualLayout.scene(for: spec, expanded: expanded.wrappedValue)) { i in
+            withAnimation(.snappy) {
+                if expanded.wrappedValue.contains(i) { expanded.wrappedValue.remove(i) } else { expanded.wrappedValue.insert(i) }
+            }
+        }
+        .frame(width: Self.size.width, height: Self.size.height)
     }
 
-    /// How much to shrink the drawing so it fits the slide's height (1 when it already does).
-    @MainActor public static func fit(for spec: VisualSpec, expanded: Set<Int> = []) -> CGFloat {
-        func height(at width: CGFloat) -> CGFloat {
-            let r = ImageRenderer(content: VisualCanvas(spec: spec, slide: true, expanded: .constant(expanded)).frame(width: width).environment(\.colorScheme, .light))
-            r.scale = 1
-            return r.platformImage?.size.height ?? size.height
-        }
-        var s: CGFloat = 1
-        for _ in 0..<3 {                                    // wider means fewer wrapped lines, so measure again after each shrink
-            let shown = height(at: size.width / s) * s
-            if shown <= size.height { break }
-            s = max(0.3, s * size.height / shown)
-        }
-        return s
-    }
+    /// The layout fits the slide itself; 1, kept so the apps' views need no change.
+    @MainActor public static func fit(for spec: VisualSpec, expanded: Set<Int> = []) -> CGFloat { 1 }
 
-    @MainActor public static func image(for spec: VisualSpec, fit: CGFloat) -> PlatformImage? {
-        let r = ImageRenderer(content: VisualSlide(spec: spec, fit: fit).environment(\.colorScheme, .light))
+    @MainActor public static func image(for spec: VisualSpec, fit: CGFloat = 1) -> PlatformImage? {
+        let r = ImageRenderer(content: VisualSlide(spec: spec).environment(\.colorScheme, .light))
         r.scale = exportWidth / size.width
         return r.platformImage
+    }
+
+    /// The vector file of the same picture, in light appearance.
+    public static func svg(for spec: VisualSpec, expanded: Set<Int> = []) -> String {
+        VisualSVG.render(VisualLayout.scene(for: spec, expanded: expanded))
     }
 }
