@@ -131,9 +131,11 @@ public final class StudioEngine {
         }
 
         if kind == .visual {
-            guard let spec = VisualSpec.parse(raw, layout: form), let data = try? JSONEncoder().encode(spec) else {
-                error = "The model's answer couldn't be drawn. Try again."; return nil
+            guard let spec = VisualSpec.parseAnyShape(raw, preferring: form), let data = try? JSONEncoder().encode(spec) else {
+                SoakTrace.log("studio visual: nothing to draw as \(form.rawValue) in “\(raw.prefix(300).replacingOccurrences(of: "\n", with: " "))”")
+                error = "The model's answer couldn't be drawn as a \(form.label.lowercased()). Try again, or pick the form yourself."; return nil
             }
+            if spec.layout != form { SoakTrace.log("studio visual: the reply fitted \(spec.layout.rawValue), not \(form.rawValue); drawn as that") }
             let item = StudioItem(id: UUID().uuidString, notebookId: notebook.id, kind: .visual,
                                   title: VisualSpec.itemTitle(spec, notebook: notebook.title),
                                   created: Date(), body: String(decoding: data, as: UTF8.self))

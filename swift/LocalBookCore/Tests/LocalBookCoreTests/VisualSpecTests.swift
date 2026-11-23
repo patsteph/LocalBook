@@ -41,6 +41,19 @@ struct VisualSpecTests {
         #expect(spec.stats.first?.title == "cups")
     }
 
+    @Test("a reply in another shape is still drawn, as that shape's plain form")
+    func anyShape() throws {
+        let groupsAsItems = #"{"title": "Themes", "items": [{"title": "One", "children": ["a", "b"]}, {"title": "Two", "children": ["c"]}]}"#
+        let m = try #require(VisualSpec.parse(groupsAsItems, layout: .mindmap))
+        #expect(m.items.count == 2 && m.items[0].children == ["a", "b"])
+        let steps = #"{"title": "Steps", "steps": [{"title": "One", "detail": "first"}, {"title": "Two", "detail": "second"}]}"#
+        #expect(VisualSpec.parse(steps, layout: .quadrant) == nil)
+        let q = try #require(VisualSpec.parseAnyShape(steps, preferring: .quadrant))
+        #expect(q.layout == .flowchart && q.items.count == 2)
+        #expect(VisualSpec.parseAnyShape(steps, preferring: .cycle)?.layout == .cycle)
+        #expect(VisualSpec.parseAnyShape("no json", preferring: .mindmap) == nil)
+    }
+
     @Test("nothing to draw gives nil")
     func empty() {
         #expect(VisualSpec.parse("no json here", layout: .timeline) == nil)

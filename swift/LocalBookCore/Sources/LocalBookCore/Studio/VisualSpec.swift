@@ -140,13 +140,15 @@ public struct VisualSpec: Codable, Hashable, Sendable {
         var spec = VisualSpec(layout: layout, title: text(o["title"]))
         switch layout.shape {
         case .sequence:
-            let list = ["items", "steps", "events"].map(objects).first { !$0.isEmpty } ?? []
+            let list = ["items", "steps", "events", "stages", "groups"].map(objects).first { !$0.isEmpty } ?? []
             spec.items = list.map { Item(title: text($0["title"]), detail: text($0["detail"]), value: text($0["when"] ?? $0["value"])) }
         case .groups:
-            let list = ["groups", "branches"].map(objects).first { !$0.isEmpty } ?? []
+            // Models often write "items" whatever the prompt calls them: take the first list whose entries have children.
+            let lists = ["groups", "branches", "items", "steps"].map(objects).filter { !$0.isEmpty }
+            let list = lists.first { l in l.contains { $0["children"] != nil } } ?? lists.first ?? []
             spec.items = list.map { Item(title: text($0["title"]), detail: text($0["detail"]), children: strings($0["children"])) }
         case .quadrant:
-            spec.columns = strings(o["axes"])
+            spec.columns = strings(o["axes"] ?? o["columns"])
             spec.items = objects("items").map { Item(title: text($0["title"]), detail: text($0["detail"]), value: "\(text($0["x"])),\(text($0["y"]))") }
         case .figures:
             spec.stats = objects("stats").map { Item(title: text($0["label"]), value: text($0["value"])) }
@@ -163,6 +165,18 @@ public struct VisualSpec: Codable, Hashable, Sendable {
         default: !spec.items.isEmpty || !spec.stats.isEmpty
         }
         return usable ? spec : nil
+    }
+
+    /// `parse` for the asked form, or, when the reply does not fit that form's shape, the first other shape it does
+    /// fit, drawn as that shape's plain form. nil only when nothing in the reply can be drawn: the engine never comes
+    /// back blank because the model answered a different question than the form asked.
+    public static func parseAnyShape(_ raw: String, preferring layout: Layout) -> VisualSpec? {
+        if let s = parse(raw, layout: layout) { return s }
+        let grouped = raw.contains("\"children\"")
+        for other in (grouped ? [Layout.mindmap, .flowchart] : [.flowchart, .mindmap]) + [.infographic, .comparison, .quadrant] where other.shape != layout.shape {
+            if let s = parse(raw, layout: other) { return s }
+        }
+        return nil
     }
 
     /// How much each visual carries. Standard is the default; Deep is for when a summary isn't enough.
