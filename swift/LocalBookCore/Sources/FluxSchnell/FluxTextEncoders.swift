@@ -15,7 +15,7 @@ import Tokenizers
 final class T5LayerNorm: Module {
     @ParameterInfo var weight: MLXArray
 
-    override init() { weight = MLXArray.ones([4096]) }
+    override init() { _weight.wrappedValue = MLXArray.ones([4096]) }
 
     func callAsFunction(_ x: MLXArray) -> MLXArray {
         let variance = MLX.mean(MLX.square(x.asType(.float32)), axis: -1, keepDims: true)
@@ -31,9 +31,9 @@ final class T5SelfAttention: Module {
     @ModuleInfo(key: "relative_attention_bias") var relativeBias: Embedding
 
     override init() {
-        q = Linear(4096, 4096, bias: false); k = Linear(4096, 4096, bias: false)
-        v = Linear(4096, 4096, bias: false); o = Linear(4096, 4096, bias: false)
-        relativeBias = Embedding(embeddingCount: 32, dimensions: 64)
+        _q.wrappedValue = Linear(4096, 4096, bias: false); _k.wrappedValue = Linear(4096, 4096, bias: false)
+        _v.wrappedValue = Linear(4096, 4096, bias: false); _o.wrappedValue = Linear(4096, 4096, bias: false)
+        _relativeBias.wrappedValue = Embedding(embeddingCount: 32, dimensions: 64)
     }
 
     /// `buckets`: (S, S) int32 relative-position buckets, shared by every block.
@@ -71,7 +71,7 @@ final class T5Attention: Module {
     @ModuleInfo(key: "SelfAttention") var attention: T5SelfAttention
     @ModuleInfo(key: "layer_norm") var norm: T5LayerNorm
 
-    override init() { attention = T5SelfAttention(); norm = T5LayerNorm() }
+    override init() { _attention.wrappedValue = T5SelfAttention(); _norm.wrappedValue = T5LayerNorm() }
 
     func callAsFunction(_ x: MLXArray, buckets: MLXArray) -> MLXArray { x + attention(norm(x), buckets: buckets) }
 }
@@ -82,7 +82,7 @@ final class T5DenseReluDense: Module {
     @ModuleInfo var wo: Linear
 
     override init() {
-        wi0 = Linear(4096, 10240, bias: false); wi1 = Linear(4096, 10240, bias: false); wo = Linear(10240, 4096, bias: false)
+        _wi0.wrappedValue = Linear(4096, 10240, bias: false); _wi1.wrappedValue = Linear(4096, 10240, bias: false); _wo.wrappedValue = Linear(10240, 4096, bias: false)
     }
 
     func callAsFunction(_ x: MLXArray) -> MLXArray { wo(geluApproximate(wi0(x)) * wi1(x)) }
@@ -92,7 +92,7 @@ final class T5FeedForward: Module {
     @ModuleInfo(key: "layer_norm") var norm: T5LayerNorm
     @ModuleInfo(key: "DenseReluDense") var dense: T5DenseReluDense
 
-    override init() { norm = T5LayerNorm(); dense = T5DenseReluDense() }
+    override init() { _norm.wrappedValue = T5LayerNorm(); _dense.wrappedValue = T5DenseReluDense() }
 
     func callAsFunction(_ x: MLXArray) -> MLXArray { x + dense(norm(x)) }
 }
@@ -101,7 +101,7 @@ final class T5Block: Module {
     @ModuleInfo var attention: T5Attention
     @ModuleInfo var ff: T5FeedForward
 
-    override init() { attention = T5Attention(); ff = T5FeedForward() }
+    override init() { _attention.wrappedValue = T5Attention(); _ff.wrappedValue = T5FeedForward() }
 
     func callAsFunction(_ x: MLXArray, buckets: MLXArray) -> MLXArray { ff(attention(x, buckets: buckets)) }
 }
@@ -113,9 +113,9 @@ final class T5Encoder: Module {
     @ModuleInfo(key: "final_layer_norm") var finalNorm: T5LayerNorm
 
     override init() {
-        shared = Embedding(embeddingCount: 32128, dimensions: 4096)
-        blocks = (0 ..< 24).map { _ in T5Block() }
-        finalNorm = T5LayerNorm()
+        _shared.wrappedValue = Embedding(embeddingCount: 32128, dimensions: 4096)
+        _blocks.wrappedValue = (0 ..< 24).map { _ in T5Block() }
+        _finalNorm.wrappedValue = T5LayerNorm()
     }
 
     func callAsFunction(_ tokens: MLXArray) -> MLXArray {
@@ -133,8 +133,8 @@ final class CLIPEmbeddings: Module {
     @ModuleInfo(key: "position_embedding") var position: Embedding
 
     override init() {
-        token = Embedding(embeddingCount: 49408, dimensions: 768)
-        position = Embedding(embeddingCount: 77, dimensions: 768)
+        _token.wrappedValue = Embedding(embeddingCount: 49408, dimensions: 768)
+        _position.wrappedValue = Embedding(embeddingCount: 77, dimensions: 768)
     }
 
     func callAsFunction(_ tokens: MLXArray) -> MLXArray {
@@ -149,7 +149,7 @@ final class CLIPAttention: Module {
     @ModuleInfo(key: "out_proj") var out: Linear
 
     override init() {
-        q = Linear(768, 768); k = Linear(768, 768); v = Linear(768, 768); out = Linear(768, 768)
+        _q.wrappedValue = Linear(768, 768); _k.wrappedValue = Linear(768, 768); _v.wrappedValue = Linear(768, 768); _out.wrappedValue = Linear(768, 768)
     }
 
     func callAsFunction(_ x: MLXArray, mask: MLXArray) -> MLXArray {
@@ -163,7 +163,7 @@ final class CLIPMLP: Module {
     @ModuleInfo var fc1: Linear
     @ModuleInfo var fc2: Linear
 
-    override init() { fc1 = Linear(768, 3072); fc2 = Linear(3072, 768) }
+    override init() { _fc1.wrappedValue = Linear(768, 3072); _fc2.wrappedValue = Linear(3072, 768) }
 
     /// CLIP's "quick" GELU.
     func callAsFunction(_ x: MLXArray) -> MLXArray {
@@ -179,8 +179,8 @@ final class CLIPEncoderLayer: Module {
     @ModuleInfo(key: "layer_norm2") var norm2: LayerNorm
 
     override init() {
-        attention = CLIPAttention(); mlp = CLIPMLP()
-        norm1 = LayerNorm(dimensions: 768); norm2 = LayerNorm(dimensions: 768)
+        _attention.wrappedValue = CLIPAttention(); _mlp.wrappedValue = CLIPMLP()
+        _norm1.wrappedValue = LayerNorm(dimensions: 768); _norm2.wrappedValue = LayerNorm(dimensions: 768)
     }
 
     func callAsFunction(_ x: MLXArray, mask: MLXArray) -> MLXArray {
@@ -192,7 +192,7 @@ final class CLIPEncoderLayer: Module {
 final class CLIPEncoderStack: Module {
     @ModuleInfo var layers: [CLIPEncoderLayer]
 
-    override init() { layers = (0 ..< 12).map { _ in CLIPEncoderLayer() } }
+    override init() { _layers.wrappedValue = (0 ..< 12).map { _ in CLIPEncoderLayer() } }
 
     func callAsFunction(_ x: MLXArray, mask: MLXArray) -> MLXArray {
         var h = x
@@ -207,7 +207,7 @@ final class CLIPTextModel: Module {
     @ModuleInfo(key: "final_layer_norm") var finalNorm: LayerNorm
 
     override init() {
-        embeddings = CLIPEmbeddings(); encoder = CLIPEncoderStack(); finalNorm = LayerNorm(dimensions: 768)
+        _embeddings.wrappedValue = CLIPEmbeddings(); _encoder.wrappedValue = CLIPEncoderStack(); _finalNorm.wrappedValue = LayerNorm(dimensions: 768)
     }
 
     /// The pooled vector: the final hidden state at the end-of-text token (the highest id), (1, 768).
@@ -224,7 +224,7 @@ final class CLIPTextModel: Module {
 final class CLIPEncoder: Module {
     @ModuleInfo(key: "text_model") var textModel: CLIPTextModel
 
-    override init() { textModel = CLIPTextModel() }
+    override init() { _textModel.wrappedValue = CLIPTextModel() }
 
     func callAsFunction(_ tokens: MLXArray) -> MLXArray { textModel(tokens) }
 }
@@ -243,7 +243,7 @@ struct CLIPTokenizer: Sendable {
 
     init(folder: URL) throws {
         let vocabData = try Data(contentsOf: folder.appending(path: "vocab.json"))
-        guard let v = try JSONSerialization.jsonObject(with: vocabData) as? [String: Int] else {
+        guard let _v.wrappedValue = try JSONSerialization.jsonObject(with: vocabData) as? [String: Int] else {
             throw FluxError.weights("tokenizer/vocab.json is not a token table")
         }
         vocab = v

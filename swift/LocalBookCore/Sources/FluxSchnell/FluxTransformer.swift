@@ -19,8 +19,8 @@ final class AdaLayerNormContinuous: Module {
     @ModuleInfo var norm: LayerNorm
 
     override init() {
-        linear = Linear(fluxDim, fluxDim * 2)
-        norm = LayerNorm(dimensions: fluxDim, eps: 1e-6, affine: false)
+        _linear.wrappedValue = Linear(fluxDim, fluxDim * 2)
+        _norm.wrappedValue = LayerNorm(dimensions: fluxDim, eps: 1e-6, affine: false)
     }
 
     func callAsFunction(_ x: MLXArray, conditioning: MLXArray) -> MLXArray {
@@ -37,8 +37,8 @@ final class AdaLayerNormZero: Module {
     @ModuleInfo var norm: LayerNorm
 
     override init() {
-        linear = Linear(fluxDim, fluxDim * 6)
-        norm = LayerNorm(dimensions: fluxDim, eps: 1e-6, affine: false)
+        _linear.wrappedValue = Linear(fluxDim, fluxDim * 6)
+        _norm.wrappedValue = LayerNorm(dimensions: fluxDim, eps: 1e-6, affine: false)
     }
 
     /// Returns the normed, modulated stream and (gateAttention, shiftMLP, scaleMLP, gateMLP), each (B, 1, dim).
@@ -55,8 +55,8 @@ final class AdaLayerNormZeroSingle: Module {
     @ModuleInfo var norm: LayerNorm
 
     override init() {
-        linear = Linear(fluxDim, fluxDim * 3)
-        norm = LayerNorm(dimensions: fluxDim, eps: 1e-6, affine: false)
+        _linear.wrappedValue = Linear(fluxDim, fluxDim * 3)
+        _norm.wrappedValue = LayerNorm(dimensions: fluxDim, eps: 1e-6, affine: false)
     }
 
     func callAsFunction(_ x: MLXArray, conditioning: MLXArray) -> (MLXArray, MLXArray) {
@@ -139,8 +139,8 @@ final class TimeTextEmbed: Module {
     @ModuleInfo(key: "text_embedder") var text: TwoLinear
 
     override init() {
-        timestep = TwoLinear(256, fluxDim)
-        text = TwoLinear(768, fluxDim)
+        _timestep.wrappedValue = TwoLinear(256, fluxDim)
+        _text.wrappedValue = TwoLinear(768, fluxDim)
     }
 
     func callAsFunction(timestep t: Float, pooled: MLXArray) -> MLXArray {
@@ -161,8 +161,8 @@ final class TwoLinear: Module {
     @ModuleInfo(key: "linear_2") var second: Linear
 
     init(_ input: Int, _ output: Int) {
-        first = Linear(input, output)
-        second = Linear(output, output)
+        _first.wrappedValue = Linear(input, output)
+        _second.wrappedValue = Linear(output, output)
     }
 
     func callAsFunction(_ x: MLXArray) -> MLXArray { second(silu(first(x))) }
@@ -177,8 +177,8 @@ final class FeedForward: Module {
 
     init(approximate: Bool) {
         self.approximate = approximate
-        linear1 = Linear(fluxDim, fluxDim * 4)
-        linear2 = Linear(fluxDim * 4, fluxDim)
+        _linear1.wrappedValue = Linear(fluxDim, fluxDim * 4)
+        _linear2.wrappedValue = Linear(fluxDim * 4, fluxDim)
     }
 
     func callAsFunction(_ x: MLXArray) -> MLXArray {
@@ -201,12 +201,12 @@ final class JointAttention: Module {
     @ModuleInfo(key: "norm_added_k") var normAddedK: RMSNorm
 
     override init() {
-        toQ = Linear(fluxDim, fluxDim); toK = Linear(fluxDim, fluxDim); toV = Linear(fluxDim, fluxDim)
-        toOut = [Linear(fluxDim, fluxDim)]
-        addQ = Linear(fluxDim, fluxDim); addK = Linear(fluxDim, fluxDim); addV = Linear(fluxDim, fluxDim)
-        toAddOut = Linear(fluxDim, fluxDim)
-        normQ = RMSNorm(dimensions: fluxHeadDim); normK = RMSNorm(dimensions: fluxHeadDim)
-        normAddedQ = RMSNorm(dimensions: fluxHeadDim); normAddedK = RMSNorm(dimensions: fluxHeadDim)
+        _toQ.wrappedValue = Linear(fluxDim, fluxDim); _toK.wrappedValue = Linear(fluxDim, fluxDim); _toV.wrappedValue = Linear(fluxDim, fluxDim)
+        _toOut.wrappedValue = [Linear(fluxDim, fluxDim)]
+        _addQ.wrappedValue = Linear(fluxDim, fluxDim); _addK.wrappedValue = Linear(fluxDim, fluxDim); _addV.wrappedValue = Linear(fluxDim, fluxDim)
+        _toAddOut.wrappedValue = Linear(fluxDim, fluxDim)
+        _normQ.wrappedValue = RMSNorm(dimensions: fluxHeadDim); _normK.wrappedValue = RMSNorm(dimensions: fluxHeadDim)
+        _normAddedQ.wrappedValue = RMSNorm(dimensions: fluxHeadDim); _normAddedK.wrappedValue = RMSNorm(dimensions: fluxHeadDim)
     }
 
     /// Text tokens go first in the joint sequence, as in the reference.
@@ -232,12 +232,12 @@ final class JointTransformerBlock: Module {
     @ModuleInfo(key: "ff_context") var ffContext: FeedForward
 
     override init() {
-        norm1 = AdaLayerNormZero(); norm1Context = AdaLayerNormZero()
-        attn = JointAttention()
-        norm2 = LayerNorm(dimensions: fluxDim, eps: 1e-6, affine: false)
-        norm2Context = LayerNorm(dimensions: fluxDim, eps: 1e-6, affine: false)
-        ff = FeedForward(approximate: false)
-        ffContext = FeedForward(approximate: true)
+        _norm1.wrappedValue = AdaLayerNormZero(); _norm1Context.wrappedValue = AdaLayerNormZero()
+        _attn.wrappedValue = JointAttention()
+        _norm2.wrappedValue = LayerNorm(dimensions: fluxDim, eps: 1e-6, affine: false)
+        _norm2Context.wrappedValue = LayerNorm(dimensions: fluxDim, eps: 1e-6, affine: false)
+        _ff.wrappedValue = FeedForward(approximate: false)
+        _ffContext.wrappedValue = FeedForward(approximate: true)
     }
 
     func callAsFunction(image: MLXArray, text: MLXArray, conditioning: MLXArray, rotary: MLXArray) -> (image: MLXArray, text: MLXArray) {
@@ -264,8 +264,8 @@ final class SingleBlockAttention: Module {
     @ModuleInfo(key: "norm_k") var normK: RMSNorm
 
     override init() {
-        toQ = Linear(fluxDim, fluxDim); toK = Linear(fluxDim, fluxDim); toV = Linear(fluxDim, fluxDim)
-        normQ = RMSNorm(dimensions: fluxHeadDim); normK = RMSNorm(dimensions: fluxHeadDim)
+        _toQ.wrappedValue = Linear(fluxDim, fluxDim); _toK.wrappedValue = Linear(fluxDim, fluxDim); _toV.wrappedValue = Linear(fluxDim, fluxDim)
+        _normQ.wrappedValue = RMSNorm(dimensions: fluxHeadDim); _normK.wrappedValue = RMSNorm(dimensions: fluxHeadDim)
     }
 
     func callAsFunction(_ x: MLXArray, rotary: MLXArray) -> MLXArray {
@@ -281,10 +281,10 @@ final class SingleTransformerBlock: Module {
     @ModuleInfo(key: "proj_out") var projOut: Linear
 
     override init() {
-        norm = AdaLayerNormZeroSingle()
-        attn = SingleBlockAttention()
-        projMLP = Linear(fluxDim, fluxDim * 4)
-        projOut = Linear(fluxDim * 5, fluxDim)
+        _norm.wrappedValue = AdaLayerNormZeroSingle()
+        _attn.wrappedValue = SingleBlockAttention()
+        _projMLP.wrappedValue = Linear(fluxDim, fluxDim * 4)
+        _projOut.wrappedValue = Linear(fluxDim * 5, fluxDim)
     }
 
     func callAsFunction(_ x: MLXArray, conditioning: MLXArray, rotary: MLXArray) -> MLXArray {
@@ -308,13 +308,13 @@ final class FluxTransformer: Module {
     @ModuleInfo(key: "proj_out") var projOut: Linear
 
     override init() {
-        xEmbedder = Linear(64, fluxDim)
-        contextEmbedder = Linear(4096, fluxDim)
-        timeText = TimeTextEmbed()
-        blocks = (0 ..< 19).map { _ in JointTransformerBlock() }
-        singleBlocks = (0 ..< 38).map { _ in SingleTransformerBlock() }
-        normOut = AdaLayerNormContinuous()
-        projOut = Linear(fluxDim, 64)
+        _xEmbedder.wrappedValue = Linear(64, fluxDim)
+        _contextEmbedder.wrappedValue = Linear(4096, fluxDim)
+        _timeText.wrappedValue = TimeTextEmbed()
+        _blocks.wrappedValue = (0 ..< 19).map { _ in JointTransformerBlock() }
+        _singleBlocks.wrappedValue = (0 ..< 38).map { _ in SingleTransformerBlock() }
+        _normOut.wrappedValue = AdaLayerNormContinuous()
+        _projOut.wrappedValue = Linear(fluxDim, 64)
     }
 
     /// Predicts the flow for packed latents (1, S, 64) at `sigma` (0…1), given the T5 sequence (1, T, 4096), the
