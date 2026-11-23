@@ -171,7 +171,17 @@ public struct VisualSpec: Codable, Hashable, Sendable {
         func objects(_ key: String) -> [[String: Any]] { o[key] as? [[String: Any]] ?? [] }
         func strings(_ v: Any?) -> [String] { (v as? [Any] ?? []).map(text).filter { !$0.isEmpty } }
         // Models rename keys freely ("name" for "title", "phases" for "items"): read the usual aliases, then any list of objects.
-        func titled(_ e: [String: Any]) -> String { text(e["title"] ?? e["name"] ?? e["label"] ?? e["step"] ?? e["stage"] ?? e["question"]) }
+        // The usual title keys first; failing those, the entry's one short string ("technique": "RAG") names it.
+        func titled(_ e: [String: Any]) -> String {
+            let t = text(e["title"] ?? e["name"] ?? e["label"] ?? e["step"] ?? e["stage"] ?? e["question"])
+            if !t.isEmpty { return t }
+            let skip: Set<String> = ["detail", "description", "text", "summary", "value", "when", "date", "x", "y", "position"]
+            let shorts = e.filter { !skip.contains($0.key.lowercased()) }.compactMap { k, v -> (String, String)? in
+                guard let str = v as? String, !str.isEmpty, str.count <= 60, !str.contains("\n") else { return nil }
+                return (k, str)
+            }.sorted { $0.0 < $1.0 }
+            return shorts.count == 1 || e.count <= 3 ? shorts.first?.1 ?? "" : ""
+        }
         func detailed(_ e: [String: Any]) -> String { text(e["detail"] ?? e["description"] ?? e["text"] ?? e["summary"]) }
         func anyList(_ keys: [String]) -> [[String: Any]] {
             if let l = keys.map(objects).first(where: { !$0.isEmpty }) { return l }
@@ -200,14 +210,39 @@ public struct VisualSpec: Codable, Hashable, Sendable {
             var axes = strings(o["axes"] ?? o["columns"])
             if axes.count < 2, let a = o["axes"] as? [String: Any] { axes = [text(a["x"] ?? a["horizontal"]), text(a["y"] ?? a["vertical"])].filter { !$0.isEmpty } }
             if axes.count < 2 { axes = [text(o["x_axis"] ?? o["xAxis"] ?? o["x"]), text(o["y_axis"] ?? o["yAxis"] ?? o["y"])].filter { !$0.isEmpty } }
-            let placed = anyList(["items", "points", "techniques"]).filter { $0["x"] != nil || $0["position"] != nil }
+            /// A level word or a number: what a model writes when it scores an item on an axis.
+            func scored(_ v: Any?) -> Bool {
+                if v is NSNumber { return true }
+                let t = text(v).lowercased()
+                return Double(t) != nil || ["very high", "high", "medium", "mid", "moderate", "low", "very low"].contains(t)
+            }
+            /// The two scores of an entry: "x"/"y", a "position" object, keys named after the axes ("effort": "high",
+            /// "impact": 4), or failing those the entry's first two scored values in key order.
+            func scores(_ e: [String: Any]) -> (Any?, Any?)? {
+                if let pos = e["position"] as? [String: Any], pos["x"] != nil || pos["y"] != nil { return (pos["x"], pos["y"]) }
+                if e["x"] != nil || e["y"] != nil { return (e["x"], e["y"]) }
+                let lower = Dictionary(e.map { ($0.key.lowercased(), $0.value) }, uniquingKeysWith: { a, _ in a })
+                if axes.count >= 2 {
+                    func byAxis(_ axis: String) -> Any? {
+                        let words = axis.lowercased().split(separator: " ").map(String.init)
+                        return lower.first { k, v in scored(v) && words.contains { w in w.count > 2 && (k == w || k.hasPrefix(w) || w.hasPrefix(k)) } }?.value
+                    }
+                    if let a = byAxis(axes[0]), let b = byAxis(axes[1]) { return (a, b) }
+                }
+                let rest = lower.filter { scored($0.value) && !["title", "name", "label"].contains($0.key) }.sorted { $0.key < $1.key }
+                return rest.count >= 2 ? (rest[0].value, rest[1].value) : nil
+            }
+            let list = anyList(["items", "points", "techniques"])
+            let placed = list.compactMap { e -> ([String: Any], (Any?, Any?))? in scores(e).map { (e, $0) } }
+            // Scored on keys named after the axes but the axes themselves unnamed: take the key names as the axes.
+            if axes.count < 2, let first = placed.first?.0 {
+                let keys = first.filter { scored($0.value) && !["x", "y"].contains($0.key.lowercased()) }.map(\.key).sorted()
+                if keys.count >= 2 { axes = [keys[0].capitalized, keys[1].capitalized] }
+            }
             // Items placed but the axes unnamed: draw them anyway with plain axis names rather than nothing.
             if axes.count < 2, !placed.isEmpty { axes = ["Horizontal", "Vertical"] }
             spec.columns = axes
-            spec.items = placed.map { e in
-                let pos = e["position"] as? [String: Any] ?? e
-                return Item(title: titled(e), detail: detailed(e), value: "\(position(pos["x"])),\(position(pos["y"]))")
-            }
+            spec.items = placed.map { e, pos in Item(title: titled(e), detail: detailed(e), value: "\(position(pos.0)),\(position(pos.1))") }
         case .figures:
             spec.stats = anyList(["stats", "numbers", "figures"]).map { Item(title: text($0["label"] ?? $0["title"] ?? $0["name"]), value: text($0["value"] ?? $0["number"] ?? $0["figure"])) }
             spec.items = objects("points").map { Item(title: titled($0), detail: detailed($0)) }
@@ -217,6 +252,16 @@ public struct VisualSpec: Codable, Hashable, Sendable {
         }
         spec.items.removeAll { $0.title.isEmpty }; spec.stats.removeAll { $0.value.isEmpty }
         spec.rows.removeAll { $0.label.isEmpty }
+        // A decision tree needs outcomes a reader can act on. A reply whose "outcomes" are ticks and crosses
+        // ("RAG: ✓") is a comparison in disguise and is not drawn as decisions.
+        if layout == .decisionTree {
+            let outcomes = spec.items.flatMap(\.children)
+            let hollow = outcomes.filter { c in
+                let after = c.split(separator: ":", maxSplits: 1).last.map { String($0) } ?? c
+                return after.filter(\.isLetter).count < 3
+            }
+            if outcomes.isEmpty || hollow.count * 2 >= outcomes.count { return nil }
+        }
         let usable: Bool = switch layout.shape {
         case .matrix: !spec.rows.isEmpty && !spec.columns.isEmpty
         case .quadrant: !spec.items.isEmpty && spec.columns.count >= 2
@@ -282,7 +327,7 @@ public struct VisualSpec: Codable, Hashable, Sendable {
             return "Show who does what in the process in \(about). \(lead) {\"title\": at most 6 words, \"groups\": [\(g) people, teams or systems {\"title\": the actor, at most 3 words, \"children\": [\(k) steps that actor does, in order, at most 7 words each]}]}."
         case .decisionTree:
             let g = d.pick("2 or 3", "3 or 4", "4 to 6")
-            return "Show the decisions in \(about) and what follows from each. \(lead) {\"title\": at most 6 words, \"groups\": [\(g) decisions in order {\"title\": the question, at most 8 words, \"children\": [2 or 3 outcomes, each starting with the choice then a colon, such as \"Yes: ship it\"]}]}."
+            return "Make a decision guide for \(about): the yes-or-no questions a reader asks about their own situation, in order, and what to do for each answer. \(lead) {\"title\": at most 6 words, \"groups\": [\(g) questions in order {\"title\": a yes-or-no question ending in a question mark, at most 10 words, \"children\": [exactly 2 outcomes, \"Yes: \" then the advice in at most 8 words, and \"No: \" then the advice or which question to ask next, at most 8 words]}]}. Not a comparison table: no ticks, crosses or scores."
         case .prosCons:
             let k = d.pick("2 or 3", "3 or 4", "4 to 6")
             return "Weigh \(about). \(lead) {\"title\": the thing weighed, at most 6 words, \"groups\": [exactly 2 groups: {\"title\": \"Pros\", \"children\": [\(k) arguments for, at most 10 words each]}, {\"title\": \"Cons\", \"children\": [\(k) arguments against, at most 10 words each]}]}."

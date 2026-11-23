@@ -114,6 +114,24 @@ struct VisualSceneTests {
         #expect(texts(qs).flatMap(\.lines).contains { $0.contains("Effort") })
     }
 
+    @Test("a quadrant reads scores written as level words under the axes' own names, and names unnamed axes")
+    func quadrantAliases() throws {
+        let q = try spec(#"{"title": "Techniques", "axes": ["Effort", "Impact"], "techniques": [{"technique": "RAG", "effort": "Low", "impact": "High"}, {"technique": "Pretraining", "effort": "Very high", "impact": 5}]}"#, .quadrant)
+        #expect(q.items.map(\.title) == ["RAG", "Pretraining"] || q.items.map(\.title) == ["Pretraining", "RAG"])
+        let rag = try #require(q.items.first { $0.title == "RAG" })
+        #expect(rag.value == "1.5,4.5")
+        let bare = try spec(#"{"title": "T", "items": [{"title": "A", "cost": 2, "value": 4}, {"title": "B", "cost": 5, "value": 1}]}"#, .quadrant)
+        #expect(bare.columns == ["Cost", "Value"] && bare.items.count == 2)
+    }
+
+    @Test("a decision tree refuses ticks and crosses dressed as outcomes")
+    func decisionsNeedAdvice() {
+        let matrix = #"{"title": "Guide", "groups": [{"title": "Knowledge update need:", "children": ["RAG: ✓", "Fine-tuning: ✗", "Long context: ✗"]}, {"title": "Citations needed:", "children": ["RAG: ✓", "Fine-tuning: ✗"]}]}"#
+        #expect(VisualSpec.parse(matrix, layout: .decisionTree) == nil)
+        #expect(VisualSpec.parseAnyShape(matrix, preferring: .decisionTree)?.layout == .mindmap)
+        #expect(VisualSpec.request(.decisionTree, about: "x").contains("yes-or-no question"))
+    }
+
     @Test("the SVG names every line, escapes markup and carries the theme's colours")
     func svg() throws {
         let s = try spec(#"{"title": "Cats & dogs", "steps": [{"title": "<Feed>", "detail": "twice a day"}]}"#, .flowchart)

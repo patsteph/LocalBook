@@ -14,6 +14,14 @@ public final class StudioEngine {
     public init() {}
     /// Settings key: let the critic look at each visual (Mac, off by default: it costs one vision call per picture).
     public static let criticKey = "studio.visualCritic"
+    /// Whether every run of digits in `value` ("180", "87%", "$2.5M") occurs in the passages, so a stat is only ever a
+    /// figure the notes hold. A value without digits (a short fact) passes.
+    static func grounded(_ value: String, in passages: [LibraryHit]) -> Bool {
+        let runs = value.split(whereSeparator: { !$0.isNumber }).map(String.init).filter { !$0.isEmpty }
+        guard !runs.isEmpty else { return true }
+        let text = passages.map(\.text).joined(separator: "\n")
+        return runs.allSatisfy { text.contains($0) }
+    }
     /// The image model that paints backdrops, when the app has one (the Mac sets it at launch; the phone leaves it nil).
     public static var imagery: (any VisualImagery)?
     /// Settings key: "best" (default) paints a backdrop twice, the second pass for detail; "fast" paints once.
@@ -156,6 +164,14 @@ public final class StudioEngine {
             }
             if spec.layout != form { SoakTrace.log("studio visual: the reply fitted \(spec.layout.rawValue), not \(form.rawValue); drawn as that") }
             spec.theme = theme
+            // A figure the notes do not contain is not drawn: every number in a stat must appear in the passages.
+            if !spec.stats.isEmpty {
+                let grounded = spec.stats.filter { Self.grounded($0.value, in: passages) }
+                if grounded.count < spec.stats.count {
+                    SoakTrace.log("studio visual: dropped \(spec.stats.count - grounded.count) figure(s) not in the notes: \(spec.stats.filter { !Self.grounded($0.value, in: passages) }.map(\.value).joined(separator: ", "))")
+                    spec.stats = grounded
+                }
+            }
 
             /// One more fill with a note about what was wrong: the new spec when it draws, nil when it did not.
             func refill(_ why: String) async -> VisualSpec? {
