@@ -13,7 +13,7 @@ import Observation
 final class SchnellImagery: VisualImagery {
     let name = "FLUX.1 schnell"
     /// What Settings says beside the choice, so a scan holds no surprises.
-    static let note = "Black Forest Labs' FLUX.1 schnell (Germany, Apache 2.0) with its own T5 (Google) and CLIP (OpenAI) text encoders. About 9.6 GB. No part from any other model family; suits managed work Macs."
+    static let note = "Black Forest Labs' FLUX.1 schnell (Germany, Apache 2.0) with its own T5 (Google) and CLIP (OpenAI) text encoders. About 9.6 GB. No part from any other model family."
     private(set) var state: VisualImageryState = .absent
     private var pipeline: FluxSchnellPipeline?
 

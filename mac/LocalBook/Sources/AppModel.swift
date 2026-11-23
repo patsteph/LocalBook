@@ -10,7 +10,7 @@ final class AppModel {
     let library = LibraryModel()
     /// Paints the backdrops of visuals, fetched after launch like the other models. Two to choose from by
     /// machine: FLUX.1 schnell (nothing from outside the FLUX checkpoint; the default) and FLUX.2 Klein 4B (its
-    /// Qwen3 text encoder rules it out on managed work Macs).
+    /// Qwen3 text encoder, from Alibaba, is named in its note).
     /// Settings key: "schnell", "klein" or "none".
     nonisolated static let imageModelKey = "studio.imageModel"
     let klein = KleinImagery()

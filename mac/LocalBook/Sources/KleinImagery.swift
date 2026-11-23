@@ -14,7 +14,7 @@ import Observation
 final class KleinImagery: VisualImagery {
     let name = "FLUX.2 Klein 4B"
     /// What Settings says beside the choice: the parts and where they come from, so nobody is surprised by a scan.
-    static let note = "Black Forest Labs' FLUX.2 Klein 4B (Germany) with its Qwen3-4B text encoder (Alibaba). About 6 GB. Not for managed work Macs where Qwen is not allowed."
+    static let note = "Black Forest Labs' FLUX.2 Klein 4B (Germany) with its Qwen3-4B text encoder (Alibaba). About 6 GB."
     private(set) var state: VisualImageryState = .absent
     private var pipeline: Flux2Pipeline?
 
