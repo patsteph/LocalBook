@@ -208,7 +208,7 @@ struct VisualSceneTests {
         #expect(inline.contains("<image href='data:image/png;base64,iVBORw") && inline.contains("<clipPath id='hero1'"))
         // The prompt carries the title and forbids words; the seed is stable.
         let prompt = VisualHero.prompt(for: plain)
-        #expect(prompt.contains("One engine for every picture") && prompt.contains("no text") && prompt.contains("Faster"))
+        #expect(prompt.contains("One engine for every picture") && prompt.lowercased().contains("no text") && prompt.contains("Faster"))
         #expect(VisualHero.seed(for: plain) == VisualHero.seed(for: painted) && VisualHero.seed(for: plain) != VisualHero.seed(for: info))
         #expect(VisualHero.width % 16 == 0 && VisualHero.height % 16 == 0)
         // Saved and read back; an item saved before backdrops has none.
