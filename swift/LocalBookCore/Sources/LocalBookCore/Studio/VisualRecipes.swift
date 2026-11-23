@@ -296,7 +296,7 @@ extension Builder {
                 scene.add(.stroke([.move(from), .line(CGPoint(x: midX, y: from.y)), .line(CGPoint(x: midX, y: to.y)), .line(CGPoint(x: to.x - 10 * s, y: to.y))], role: .rule, width: 2 * s, dashed: false))
                 head(at: to, direction: CGPoint(x: 1, y: 0), role: .rule)
                 // The choice ("Yes", "No") sits inside the outcome card's left edge, where it cannot cross the connector.
-                if !o.label.isEmpty, let l = block(o.label.uppercased(), VisualTextStyle(size: 13 * s, weight: .bold, role: .accent(i)), x: frame.minX + 12 * s, y: frame.minY + 6 * s, width: outW - 24 * s, maxLines: 1) { scene.add(.text(l)) }
+                if !o.label.isEmpty, let l = block(o.label, VisualTextStyle(size: 14 * s, weight: .bold, role: .accent(i)), x: frame.minX + 12 * s, y: frame.minY + 6 * s, width: outW - 24 * s, maxLines: 1) { scene.add(.text(l)) }
             }
             if i < spec.items.count - 1 {
                 let next = y + blockH + 36 * s
