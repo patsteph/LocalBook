@@ -83,12 +83,24 @@ def stream(path: str, body: dict) -> dict:
     return {"error": "the stream ended without a primary visual"}
 
 
+def notebook_title(notebook_id: str) -> str:
+    """The notebook's title, so the page says which notebook it was drawn from (C6 was once judged across two)."""
+    req = urllib.request.Request(f"{BASE}/notebooks/{notebook_id}", headers={"x-localbook-token": token()})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return str(json.load(resp).get("title") or "")
+    except (urllib.error.URLError, ValueError, json.JSONDecodeError):
+        return ""
+
+
 def main() -> int:
     if len(sys.argv) != 3:
         print(__doc__)
         return 2
     notebook_id, out_dir = sys.argv[1], Path(os.path.expanduser(sys.argv[2])).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
+    title = notebook_title(notebook_id)
+    print(f"[visual-golden] notebook: {title or '(title not found)'} ({notebook_id})")
     made = []
     for pid, layout, detail, topic, template in PROMPTS:
         ask = topic or "the whole notebook"
@@ -123,8 +135,9 @@ def main() -> int:
         "<style>body{font-family:-apple-system,Helvetica,sans-serif;max-width:1100px;margin:30px auto;padding:0 20px}",
         "section{border:1px solid #ddd;border-radius:10px;padding:16px;margin:20px 0}h2{margin:0 0 4px}.meta{color:#666;margin:0 0 12px}",
         ".mermaid,.svg{background:#fff}.svg svg{max-width:100%;height:auto}pre.err{color:#b00}</style></head><body>",
-        f"<h1>Old app: visual golden set</h1><p class='meta'>Notebook {html.escape(notebook_id)}, drawn {stamp}. "
-        "Open the Swift app's index.md for the same notebook beside this page.</p>",
+        f"<h1>Old app: visual golden set</h1><p class='meta'><strong>Notebook: {html.escape(title or notebook_id)}</strong> "
+        f"({html.escape(notebook_id)}), drawn {stamp}. Open the Swift app's index.html for the SAME notebook beside this "
+        "page; the old app draws the form it chooses, so judge each pair as the best picture each engine made of that ask.</p>",
     ]
     for i, e in enumerate(made, 1):
         parts.append(f"<section><h2>{i}. {html.escape(e['layout'])} · {html.escape(e['detail'])}</h2>")
