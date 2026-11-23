@@ -43,9 +43,9 @@ Left to right: sidebar toggle (system), notebook picker (when the sidebar is hid
 | Studio | Briefing (⌃⌘1), Quiz (⌃⌘2), Flashcards (⌃⌘3), Audio Overview (⌃⌘4), Visual (⌃⌘5), Video Explainer, Image…, Canvas, Constellation |
 | Record | Start Meeting Recording (⇧⌘R), Voice Note (⇧⌘V) |
 | Window | System: Minimize, Zoom, tabs, Bring All to Front |
-| Help | LocalBook Help, Privacy |
+| Help | LocalBook Help, Keyboard Shortcuts (⌘/), Privacy |
 
-Every item exists in the app from Phase 0, disabled until its feature lands. No action is reachable only by mouse.
+Every item exists in the app from Phase 0, disabled until its feature lands. No action is reachable only by mouse. The shortcuts live in one table (`Shortcuts.swift`): the menu bar reads it, every button with a shortcut quotes it in its hover tooltip, and Help › Keyboard Shortcuts (⌘/) draws the whole table on one sheet.
 
 ## Keyboard map beyond the menus
 

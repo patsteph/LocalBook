@@ -108,7 +108,7 @@ struct StudioPane: View {
                             .background(kind.tint.opacity(0.12), in: RoundedRectangle(cornerRadius: 10))
                         }
                         .buttonStyle(.plain).disabled(notebook == nil || engine.working)
-                        .help("\(kind.label): \(kind.blurb.lowercased())")
+                        .help(Shortcuts.make(kind).map { $0.help("\(kind.label): \(kind.blurb.lowercased())") } ?? "\(kind.label): \(kind.blurb.lowercased())")
                     }
                 }
             }

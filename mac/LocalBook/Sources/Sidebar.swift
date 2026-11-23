@@ -25,6 +25,7 @@ struct Sidebar: View {
                             .foregroundStyle(.secondary)
                             .padding(.vertical, 4)
                         Button("New Notebook…") { model.prompts.text = ""; model.prompts.newNotebookSection = nil; model.prompts.newNotebook = true }.buttonStyle(.link).font(.callout)
+                            .help(Shortcuts.newNotebook.help("New notebook"))
                         if !model.paired {
                             Button("Move my library here…") { model.showImport = true }.buttonStyle(.link).font(.callout)
                         }

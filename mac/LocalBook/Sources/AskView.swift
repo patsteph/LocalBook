@@ -231,6 +231,7 @@ struct AskView: View {
                 default: Label("Read Aloud", systemImage: "speaker.wave.2.fill")
                 }
             }
+            .help(Shortcuts.readAloud.help("Read the answer aloud"))
             if reader.isActive {
                 Button { reader.stop() } label: { Label("Stop", systemImage: "stop.fill") }
                 ProgressView(value: reader.fraction).frame(maxWidth: 80)
@@ -289,7 +290,7 @@ struct AskView: View {
             if library.answering {
                 Button { library.stopAnswer() } label: { Image(systemName: "stop.circle.fill").font(.title2) }
                     .buttonStyle(.plain)
-                    .help("Stop (⌘.)")
+                    .help(Shortcuts.stopAnswer.help("Stop"))
                     .accessibilityLabel("Stop")
             } else {
                 Button(action: send) { Image(systemName: "arrow.up.circle.fill").font(.title2) }

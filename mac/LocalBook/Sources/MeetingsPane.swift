@@ -382,7 +382,7 @@ struct MeetingsPane: View {
                 Spacer()
                 Button { Task { await session.start() } } label: { Label("Record", systemImage: "record.circle") }
                     .tint(.red).disabled(session.phase != .idle || library.notebooks.isEmpty)
-                    .help("Start recording a meeting (⇧⌘R)")
+                    .help(Shortcuts.startRecording.help("Start recording a meeting"))
             }
             .padding(12)
             Divider()
@@ -424,6 +424,7 @@ struct MeetingsPane: View {
             Button { Task { await session.start() } } label: {
                 Label("Start recording", systemImage: "record.circle").frame(maxWidth: 240).padding(.vertical, 4)
             }.buttonStyle(.borderedProminent).controlSize(.large).tint(.red).disabled(library.notebooks.isEmpty)
+                .help(Shortcuts.startRecording.help("Start recording a meeting"))
             if session.pending != nil {
                 VStack(spacing: 8) {
                     Text("A recording was never turned into a note.").font(.footnote).foregroundStyle(.secondary)
