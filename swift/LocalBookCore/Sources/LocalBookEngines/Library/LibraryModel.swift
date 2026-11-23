@@ -65,6 +65,18 @@ public final class LibraryModel {
     public private(set) var answering = false
     private var generation: Task<Void, Never>?
     public var gemma: ModelContainer?
+    /// The answer model can look at a picture: it was loaded with its vision tower (the Mac), so the visuals critic can run.
+    public var answerModelSeesImages: Bool { gemma != nil && AnswerModels.loadedWithVision }
+    /// The answer model without the stoppable wrapper, for a prompt that carries an image: the wrapper reads the
+    /// words of a prompt in chunks and knows nothing of pictures. The same weights, no second copy.
+    public func plainAnswerModel() async -> ModelContainer? {
+        guard let gemma else { return nil }
+        return await gemma.perform { context in
+            guard let stoppable = context.model as? StoppableLM else { return gemma }
+            return ModelContainer(context: ModelContext(configuration: context.configuration, model: stoppable.inner,
+                                                        processor: context.processor, tokenizer: context.tokenizer))
+        }
+    }
     public var query = ""
     public var scopeToNotebook: String? {
         didSet {
@@ -390,7 +402,7 @@ public final class LibraryModel {
         do {
             SoakTrace.log("answer model load begins (stoppable prefill: \(useStoppablePrefill ? "on" : "off"))")
             Memory.cacheLimit = 64 * 1024 * 1024
-            let plain = try await #huggingFaceLoadModelContainer(configuration: AnswerModels.configuration)
+            let plain = try await AnswerModels.loadContainer()
             if useStoppablePrefill {
                 let wrapped = await StoppableLM.wrap(plain)
                 if await Self.producesAnAnswer(wrapped) { gemma = wrapped; SoakTrace.log("answer model ready (stoppable prompt reading verified)") }
@@ -518,7 +530,7 @@ public final class LibraryModel {
         if gemma == nil {
             SoakTrace.log("answer model load begins")
             Memory.cacheLimit = 64 * 1024 * 1024
-            gemma = try await #huggingFaceLoadModelContainer(configuration: AnswerModels.configuration)
+            gemma = try await AnswerModels.loadContainer()
             SoakTrace.log("answer model load ends")
         }
         guard let gemma else { throw LibraryError.badResponse("answer model not loaded") }
@@ -762,7 +774,7 @@ public final class LibraryModel {
             if gemma == nil {
                 answerStatus = "Getting the answer model ready…"
                 Memory.cacheLimit = 64 * 1024 * 1024
-                gemma = try await #huggingFaceLoadModelContainer(configuration: AnswerModels.configuration)
+                gemma = try await AnswerModels.loadContainer()
             }
             guard let gemma else { return }
             guard GPUGuard.canStart else { answerStatus = "Open the app and ask again — answers can't run while the screen is off."; return }

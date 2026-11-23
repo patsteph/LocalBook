@@ -1,8 +1,11 @@
 import Foundation
 import HuggingFace
 import LocalBookCore
+import MLXHuggingFace
 import MLXLLM
 import MLXLMCommon
+import MLXVLM
+import Tokenizers
 #if canImport(Metal)
 import Metal
 #endif
@@ -34,6 +37,28 @@ public enum AnswerModels {
         let lower = id.lowercased()
         let eos: Set<String> = lower.contains("gemma-4") ? ["<turn|>"] : lower.contains("gemma") ? ["<end_of_turn>"] : []
         return ModelConfiguration(id: id, extraEOSTokens: eos)
+    }
+
+    /// Whether the model last loaded can look at a picture (it was loaded with its vision tower).
+    nonisolated(unsafe) public private(set) static var loadedWithVision = false
+
+    /// Loads the chosen answer model. On the Mac the checkpoint is loaded with its vision tower when it has one, so the
+    /// visuals critic can look at a picture with the same model and nothing more is downloaded; a text-only
+    /// checkpoint falls back to the text loader. The phone loads the text model only, as it always has: the vision
+    /// tower would sit in the memory the answer model and search already fill.
+    public static func loadContainer() async throws -> ModelContainer {
+        #if os(macOS)
+        do {
+            let c = try await VLMModelFactory.shared.loadContainer(from: #hubDownloader(), using: #huggingFaceTokenizerLoader(), configuration: configuration)
+            loadedWithVision = true
+            return c
+        } catch {
+            SoakTrace.log("answer model: no vision tower (\(error.localizedDescription)); loading the text model")
+        }
+        #endif
+        let c = try await LLMModelFactory.shared.loadContainer(from: #hubDownloader(), using: #huggingFaceTokenizerLoader(), configuration: configuration)
+        loadedWithVision = false
+        return c
     }
 
     /// "mlx-community/gemma-4-e4b-it-4bit" → "gemma-4-e4b-it-4bit".

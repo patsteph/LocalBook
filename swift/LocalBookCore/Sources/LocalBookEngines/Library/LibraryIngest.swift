@@ -154,7 +154,7 @@ extension LibraryModel {
     func generateText(_ prompt: String, maxTokens: Int) async throws -> String {
         if gemma == nil {
             SoakTrace.log("answer model load begins (ingest)")
-            gemma = try await #huggingFaceLoadModelContainer(configuration: AnswerModels.configuration)
+            gemma = try await AnswerModels.loadContainer()
             SoakTrace.log("answer model load ends (ingest)")
         }
         guard let gemma else { throw LibraryError.badResponse("answer model not loaded") }

@@ -409,9 +409,10 @@ public struct VisualSlide: View {
     /// The layout fits the slide itself; 1, kept so the apps' views need no change.
     @MainActor public static func fit(for spec: VisualSpec, expanded: Set<Int> = []) -> CGFloat { 1 }
 
-    @MainActor public static func image(for spec: VisualSpec, fit: CGFloat = 1) -> PlatformImage? {
+    /// The picture as a bitmap in light appearance: 2K wide for sharing, or `width` for the critic's look.
+    @MainActor public static func image(for spec: VisualSpec, fit: CGFloat = 1, width: CGFloat = VisualSlide.exportWidth) -> PlatformImage? {
         let r = ImageRenderer(content: VisualSlide(spec: spec).environment(\.colorScheme, .light))
-        r.scale = exportWidth / size.width
+        r.scale = width / size.width
         return r.platformImage
     }
 

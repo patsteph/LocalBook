@@ -12,6 +12,12 @@ import SwiftUI
 @MainActor @Observable
 public final class StudioEngine {
     public init() {}
+    /// Settings key: let the critic look at each visual (Mac, off by default: it costs one vision call per picture).
+    public static let criticKey = "studio.visualCritic"
+    /// What the critic said about the last visual made, for Diagnostics.
+    public private(set) var lastCritique: VisualCritique?
+    /// How many extra fills the last visual took (a lint defect or a critic's verdict each buy one more).
+    public private(set) var lastRetries = 0
     public private(set) var working = false
     public private(set) var status = ""
     public private(set) var preview = ""
@@ -27,7 +33,7 @@ public final class StudioEngine {
 
     /// Returns the saved item, or nil (with `error` set) when it could not be made. A visual with no `layout` has its
     /// form chosen by the engine (`VisualPick`): the words of the ask first, the model only when they name no form.
-    public func make(_ kind: StudioItem.Kind, in notebook: LibraryNotebookInfo, topic: String, count: Int, notebookOnly: Bool, style: AudioStyle = .casual, videoStyle: VideoStyle = .clean, accent: AudioAccent = .british, layout: VisualSpec.Layout? = nil, detail: VisualSpec.Detail = .standard, theme: String? = nil, library: LibraryModel) async -> StudioItem? {
+    public func make(_ kind: StudioItem.Kind, in notebook: LibraryNotebookInfo, topic: String, count: Int, notebookOnly: Bool, style: AudioStyle = .casual, videoStyle: VideoStyle = .clean, accent: AudioAccent = .british, layout: VisualSpec.Layout? = nil, detail: VisualSpec.Detail = .standard, theme: String? = nil, critic: Bool? = nil, library: LibraryModel) async -> StudioItem? {
         guard !working else { return nil }
         working = true; error = nil; preview = ""; progress = 0; caption = ""; stopped = false
         try? await Task.sleep(for: .milliseconds(200))              // let the making screen appear before the heavy work starts
@@ -131,12 +137,52 @@ public final class StudioEngine {
         }
 
         if kind == .visual {
+            lastCritique = nil; lastRetries = 0
             guard var spec = VisualSpec.parseAnyShape(raw, preferring: form) else {
                 SoakTrace.log("studio visual: nothing to draw as \(form.rawValue) in “\(raw.prefix(300).replacingOccurrences(of: "\n", with: " "))”")
                 error = "The model's answer couldn't be drawn as a \(form.label.lowercased()). Try again, or pick the form yourself."; return nil
             }
             if spec.layout != form { SoakTrace.log("studio visual: the reply fitted \(spec.layout.rawValue), not \(form.rawValue); drawn as that") }
             spec.theme = theme
+
+            /// One more fill with a note about what was wrong: the new spec when it draws, nil when it did not.
+            func refill(_ why: String) async -> VisualSpec? {
+                lastRetries += 1
+                let again = "Passages:\n\n\(numbered(passages))\n\n\(request)\n\nYour previous answer was drawn and \(why) Keep to the counts and word limits asked for; say less, not more."
+                guard let out = await run(again, instructions: instructions, tokens: tokens), var next = VisualSpec.parseAnyShape(out, preferring: spec.layout) else { return nil }
+                next.theme = theme
+                return next
+            }
+            // Check: a defect the lint can see (words cut, past the edge, cards on top of each other) buys one more fill,
+            // kept only when it has fewer defects.
+            func defects(_ s: VisualSpec) -> [VisualLint.Finding] {
+                VisualLint.check(VisualLayout.scene(for: s)).filter { $0.kind == .cut || $0.kind == .offSlide || $0.kind == .overlap }
+            }
+            let found = defects(spec)
+            if !found.isEmpty {
+                status = "Making it fit…"
+                let next = await refill("did not fit the picture: \(found.map(\.description).joined(separator: "; ")).")
+                if let next, defects(next).count < found.count { spec = next }
+                SoakTrace.log("studio visual: lint found \(found.count) defect(s); the second fill \(next.map { defects($0).count < found.count } == true ? "fixed it" : "was no better")")
+            }
+            // The critic, when asked for and the model can look: one vision call, and one more fill when the verdict is
+            // below the bar, kept only when the critic likes it better.
+            let wantCritic = critic ?? UserDefaults.standard.bool(forKey: Self.criticKey)
+            if wantCritic, library.answerModelSeesImages, let eyes = await library.plainAnswerModel() {
+                status = "Looking it over…"
+                if let verdict = await VisualCritic.judge(spec, with: eyes) {
+                    lastCritique = verdict
+                    if !verdict.passes, !verdict.problem.isEmpty {
+                        status = "Improving it…"
+                        if let next = await refill("a reader said: \(verdict.problem)."), let second = await VisualCritic.judge(next, with: eyes), second.mean > verdict.mean {
+                            spec = next; lastCritique = second
+                            SoakTrace.log("studio visual: critic \(verdict.line); the second fill scored \(second.line) and is kept")
+                        } else {
+                            SoakTrace.log("studio visual: critic \(verdict.line); the second fill was no better")
+                        }
+                    }
+                }
+            }
             guard let data = try? JSONEncoder().encode(spec) else { error = "The visual couldn't be saved."; return nil }
             let item = StudioItem(id: UUID().uuidString, notebookId: notebook.id, kind: .visual,
                                   title: VisualSpec.itemTitle(spec, notebook: notebook.title),
