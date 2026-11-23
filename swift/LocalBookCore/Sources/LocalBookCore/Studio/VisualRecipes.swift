@@ -305,7 +305,7 @@ extension Builder {
 
     // MARK: two columns — pros against cons, or before against after
 
-    mutating func twoColumns(top: CGFloat, marks: (String, String), arrow: Bool) -> CGFloat {
+    mutating func twoColumns(top: CGFloat, marks: (VisualIcon, VisualIcon), arrow: Bool) -> CGFloat {
         let groups = Array(spec.items.prefix(2))
         guard !groups.isEmpty else { return top }
         let mid = arrow ? 90 * s : 36 * s
@@ -367,7 +367,7 @@ extension Builder {
         var x = pad
         for b in blocks {
             scene.add(.card(CGRect(x: x, y: y, width: colW, height: h), fill: .surface, stroke: nil, radius: radius, hit: nil))
-            scene.add(.symbol("star.fill", CGRect(x: x + inner, y: y + inner, width: 36 * s, height: 36 * s), role: .accent(b.i)))
+            scene.add(.symbol(.benefit, CGRect(x: x + inner, y: y + inner, width: 36 * s, height: 36 * s), role: .accent(b.i)))
             if var t = b.title { t.frame.origin = CGPoint(x: x + inner, y: y + inner + 36 * s + 12 * s); scene.add(.text(t)) }
             for var k in b.kids { k.frame.origin.x = x + inner; k.frame.origin.y += y; scene.add(.text(k)) }
             x += colW + gap

@@ -27,7 +27,7 @@ public final class StudioEngine {
 
     /// Returns the saved item, or nil (with `error` set) when it could not be made. A visual with no `layout` has its
     /// form chosen by the engine (`VisualPick`): the words of the ask first, the model only when they name no form.
-    public func make(_ kind: StudioItem.Kind, in notebook: LibraryNotebookInfo, topic: String, count: Int, notebookOnly: Bool, style: AudioStyle = .casual, videoStyle: VideoStyle = .clean, accent: AudioAccent = .british, layout: VisualSpec.Layout? = nil, detail: VisualSpec.Detail = .standard, library: LibraryModel) async -> StudioItem? {
+    public func make(_ kind: StudioItem.Kind, in notebook: LibraryNotebookInfo, topic: String, count: Int, notebookOnly: Bool, style: AudioStyle = .casual, videoStyle: VideoStyle = .clean, accent: AudioAccent = .british, layout: VisualSpec.Layout? = nil, detail: VisualSpec.Detail = .standard, theme: String? = nil, library: LibraryModel) async -> StudioItem? {
         guard !working else { return nil }
         working = true; error = nil; preview = ""; progress = 0; caption = ""; stopped = false
         try? await Task.sleep(for: .milliseconds(200))              // let the making screen appear before the heavy work starts
@@ -131,11 +131,13 @@ public final class StudioEngine {
         }
 
         if kind == .visual {
-            guard let spec = VisualSpec.parseAnyShape(raw, preferring: form), let data = try? JSONEncoder().encode(spec) else {
+            guard var spec = VisualSpec.parseAnyShape(raw, preferring: form) else {
                 SoakTrace.log("studio visual: nothing to draw as \(form.rawValue) in “\(raw.prefix(300).replacingOccurrences(of: "\n", with: " "))”")
                 error = "The model's answer couldn't be drawn as a \(form.label.lowercased()). Try again, or pick the form yourself."; return nil
             }
             if spec.layout != form { SoakTrace.log("studio visual: the reply fitted \(spec.layout.rawValue), not \(form.rawValue); drawn as that") }
+            spec.theme = theme
+            guard let data = try? JSONEncoder().encode(spec) else { error = "The visual couldn't be saved."; return nil }
             let item = StudioItem(id: UUID().uuidString, notebookId: notebook.id, kind: .visual,
                                   title: VisualSpec.itemTitle(spec, notebook: notebook.title),
                                   created: Date(), body: String(decoding: data, as: UTF8.self))

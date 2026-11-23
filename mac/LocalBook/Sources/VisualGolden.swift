@@ -13,6 +13,8 @@ final class VisualGoldenDiagnostics {
     var notebookId: String?
     /// Let the engine choose each picture's form from the ask (the pick), instead of the prompt's fixed form.
     var chooseForm = false
+    /// The theme the 15 are drawn in.
+    var theme = VisualTheme.clean.id
     private(set) var running = false
     private(set) var done = 0
     private(set) var current = ""
@@ -37,7 +39,7 @@ final class VisualGoldenDiagnostics {
                 let started = Date()
                 let choose = chooseForm
                 let item = await engine.make(.visual, in: notebook, topic: prompt.topic, count: 0, notebookOnly: true,
-                                             layout: choose ? nil : prompt.layout, detail: prompt.detail, library: library)
+                                             layout: choose ? nil : prompt.layout, detail: prompt.detail, theme: theme, library: library)
                 let seconds = Date().timeIntervalSince(started)
                 if let item, let spec = try? JSONDecoder().decode(VisualSpec.self, from: Data(item.body.utf8)) {
                     StudioStore.delete(item)
@@ -57,9 +59,10 @@ final class VisualGoldenDiagnostics {
                 done += 1
             }
             guard let self else { return }
-            let index = VisualGoldenSet.index(notebook: notebook.title, device: LibraryModel.deviceLine, date: Date(), made: made)
+            let themeName = VisualTheme.named(theme).name
+            let index = VisualGoldenSet.index(notebook: notebook.title, device: LibraryModel.deviceLine, date: Date(), made: made, theme: themeName)
             try? index.data(using: .utf8)?.write(to: out.appending(path: "index.md"))
-            let page = VisualGoldenSet.indexHTML(notebook: notebook.title, device: LibraryModel.deviceLine, date: Date(), made: made)
+            let page = VisualGoldenSet.indexHTML(notebook: notebook.title, device: LibraryModel.deviceLine, date: Date(), made: made, theme: themeName)
             try? page.data(using: .utf8)?.write(to: out.appending(path: "index.html"))
             folder = out
             running = false
@@ -89,6 +92,7 @@ struct VisualGoldenSection: View {
                 ForEach(library.notebooks) { nb in Text(nb.title).tag(Optional(nb.id)) }
             }
             Toggle("Let the engine choose each form", isOn: Bindable(golden).chooseForm).disabled(golden.running)
+            VisualThemePicker(theme: Bindable(golden).theme).pickerStyle(.segmented).disabled(golden.running)
             HStack {
                 Button(golden.running ? "Drawing…" : "Draw the 15") { golden.run(library: library) }
                     .disabled(golden.running || golden.notebookId == nil)

@@ -31,6 +31,7 @@ struct Builder {
     let spec: VisualSpec
     let expanded: Set<Int>
     let s: CGFloat
+    let theme: VisualTheme
     var scene = VisualScene()
     var fits = true
 
@@ -43,12 +44,13 @@ struct Builder {
     var headingStyle: VisualTextStyle { .init(size: 25 * s, weight: .semibold) }
     var bodyStyle: VisualTextStyle { .init(size: 20 * s, role: .quiet) }
     func captionStyle(_ i: Int) -> VisualTextStyle { .init(size: 17 * s, weight: .semibold, role: .accent(i)) }
-    var radius: CGFloat { 20 * s }
+    var radius: CGFloat { 20 * s * theme.radiusScale }
     var gap: CGFloat { 24 * s }
     var inner: CGFloat { 22 * s }
 
     init(spec: VisualSpec, expanded: Set<Int>, s: CGFloat) {
         self.spec = spec; self.expanded = expanded; self.s = s
+        theme = VisualTheme.named(spec.theme)
         scene.title = spec.title
         scene.scale = s
     }
@@ -73,8 +75,8 @@ struct Builder {
         case .clusters: bottom = clusters(top: y)
         case .swimlane: bottom = swimlane(top: y)
         case .decisionTree: bottom = decisionTree(top: y)
-        case .prosCons: bottom = twoColumns(top: y, marks: ("checkmark.circle.fill", "xmark.circle.fill"), arrow: false)
-        case .beforeAfter: bottom = twoColumns(top: y, marks: ("circle.fill", "circle.fill"), arrow: true)
+        case .prosCons: bottom = twoColumns(top: y, marks: (.pro, .con), arrow: false)
+        case .beforeAfter: bottom = twoColumns(top: y, marks: (.before, .after), arrow: true)
         case .valueProposition: bottom = valueProposition(top: y)
         case .quadrant: bottom = quadrant(top: y)
         }
@@ -83,10 +85,14 @@ struct Builder {
 
     // MARK: words
 
-    /// The block `text` makes in a box `width` wide at (x, y); nil for nothing to say.
+    /// The block `text` makes in a box `width` wide at (x, y); nil for nothing to say. The theme's face and weight
+    /// are applied here, the one place words are measured, so what is measured is what is drawn.
     func block(_ text: String, _ style: VisualTextStyle, x: CGFloat, y: CGFloat, width: CGFloat, maxLines: Int? = nil) -> VisualTextBlock? {
         let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !t.isEmpty else { return nil }
+        var style = style
+        style.design = theme.design
+        if theme.heavyHeadings { switch style.weight { case .semibold: style.weight = .bold; case .bold: style.weight = .heavy; default: break } }
         let wrapped = VisualText.wrap(t, style: style, width: width)
         var lines = wrapped.lines
         let lh = wrapped.lineHeight, ascent = wrapped.ascent
@@ -281,7 +287,7 @@ struct Builder {
                 let c = n % cols
                 let x = pad + CGFloat(c) * (colW + colGap)
                 var ty = colBottom[c]
-                scene.add(.symbol("sparkle", CGRect(x: x, y: ty + 2 * s, width: mark, height: mark), role: .accent(n + 2)))
+                scene.add(.symbol(.point, CGRect(x: x, y: ty + 2 * s, width: mark, height: mark), role: .accent(n + 2)))
                 let textX = x + mark + 14 * s
                 let th = place(item.title, headingStyle, x: textX, y: ty, width: colW - mark - 14 * s)
                 ty += th + (th > 0 ? 4 * s : 0)

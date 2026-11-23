@@ -113,13 +113,17 @@ public struct VisualSpec: Codable, Hashable, Sendable {
     public var stats: [Item] = []          // figures (value + title as the label)
     public var columns: [String] = []      // comparison: the options; quadrant: the two axes
     public var rows: [Row] = []            // comparison
+    /// The theme's id (`VisualTheme.all`); nil, and ids from a later version, draw as Clean.
+    public var theme: String? = nil
 
-    public init(layout: Layout, title: String, items: [Item] = [], stats: [Item] = [], columns: [String] = [], rows: [Row] = []) {
-        self.layout = layout; self.title = title; self.items = items; self.stats = stats; self.columns = columns; self.rows = rows
+    public init(layout: Layout, title: String, items: [Item] = [], stats: [Item] = [], columns: [String] = [], rows: [Row] = [], theme: String? = nil) {
+        self.layout = layout; self.title = title; self.items = items; self.stats = stats; self.columns = columns; self.rows = rows; self.theme = theme
     }
 
     /// The same content as another form of the same shape.
     public func drawn(as other: Layout) -> VisualSpec { var s = self; s.layout = other; return s }
+    /// The same picture in another theme.
+    public func dressed(in theme: VisualTheme) -> VisualSpec { var s = self; s.theme = theme.id; return s }
 
     /// The Studio item's title for a spec: the form, then the picture's own title (or the notebook's).
     public static func itemTitle(_ spec: VisualSpec, notebook: String) -> String {
@@ -267,6 +271,18 @@ public struct VisualFormPicker: View {
     }
 }
 
+/// The theme of a visual, with each one's line.
+public struct VisualThemePicker: View {
+    @Binding var theme: String
+    public init(theme: Binding<String>) { _theme = theme }
+
+    public var body: some View {
+        Picker("Theme", selection: $theme) {
+            ForEach(VisualTheme.all) { t in Text(t.name).tag(t.id) }
+        }
+    }
+}
+
 /// Draws a scene with SwiftUI's `Canvas`, scaled to whatever frame it is given, in the theme's colours for the current
 /// appearance. Cards that carry a `hit` get an invisible button over them (mind-map branches open in place).
 public struct VisualSceneView: View {
@@ -285,8 +301,9 @@ public struct VisualSceneView: View {
     }
 
     private static func font(_ style: VisualTextStyle) -> Font {
-        let w: Font.Weight = switch style.weight { case .regular: .regular; case .semibold: .semibold; case .bold: .bold }
-        return .system(size: style.size, weight: w, design: style.rounded ? .rounded : .default)
+        let w: Font.Weight = switch style.weight { case .regular: .regular; case .semibold: .semibold; case .bold: .bold; case .heavy: .heavy }
+        let design: Font.Design = style.rounded ? .rounded : (style.design == .serif ? .serif : (style.design == .rounded ? .rounded : .default))
+        return .system(size: style.size, weight: w, design: design)
     }
 
     public var body: some View {
@@ -299,8 +316,18 @@ public struct VisualSceneView: View {
                     switch node {
                     case .card(let r, let fill, let stroke, let radius, _):
                         let p = Path(roundedRect: r, cornerRadius: radius)
-                        ctx.fill(p, with: .color(color(fill)))
-                        if let stroke { ctx.stroke(p, with: .color(color(stroke)), lineWidth: 2) }
+                        var isTint = false
+                        if case .tint = fill { isTint = true }
+                        if theme.shadows, !isTint {
+                            ctx.drawLayer { layer in
+                                layer.addFilter(.shadow(color: .black.opacity(0.35), radius: 14, y: 6))
+                                layer.fill(p, with: .color(color(fill)))
+                            }
+                        } else {
+                            ctx.fill(p, with: .color(color(fill)))
+                        }
+                        if let stroke { ctx.stroke(p, with: .color(color(stroke)), lineWidth: 2 * theme.strokeScale) }
+                        else if theme.outlinedCards { ctx.stroke(p, with: .color(color(isTint ? .ink : .rule)), lineWidth: 1.6 * theme.strokeScale) }
                     case .text(let t):
                         let font = Self.font(t.style)
                         for (i, line) in t.lines.enumerated() {
@@ -321,7 +348,7 @@ public struct VisualSceneView: View {
                             case .curve(let to, let c1, let c2): p.addCurve(to: to, control1: c1, control2: c2)
                             }
                         }
-                        ctx.stroke(p, with: .color(color(role)), style: StrokeStyle(lineWidth: width, lineCap: .round, lineJoin: .round, dash: dashed ? [6, 6] : []))
+                        ctx.stroke(p, with: .color(color(role)), style: StrokeStyle(lineWidth: width * theme.strokeScale, lineCap: .round, lineJoin: .round, dash: dashed ? [6, 6] : []))
                     case .fill(let points, let role):
                         var p = Path()
                         if let first = points.first { p.move(to: first); for pt in points.dropFirst() { p.addLine(to: pt) }; p.closeSubpath() }
@@ -330,8 +357,8 @@ public struct VisualSceneView: View {
                         let p = Path(ellipseIn: CGRect(x: centre.x - radius, y: centre.y - radius, width: radius * 2, height: radius * 2))
                         ctx.fill(p, with: .color(color(fill)))
                         if let stroke { ctx.stroke(p, with: .color(color(stroke)), lineWidth: 2) }
-                    case .symbol(let name, let r, let role):
-                        var image = ctx.resolve(Image(systemName: name))
+                    case .symbol(let icon, let r, let role):
+                        var image = ctx.resolve(Image(systemName: theme.symbol(for: icon)))
                         image.shading = .color(color(role))
                         ctx.draw(image, in: r)
                     }
@@ -371,7 +398,7 @@ public struct VisualSlide: View {
     }
 
     public var body: some View {
-        VisualSceneView(scene: VisualLayout.scene(for: spec, expanded: expanded.wrappedValue)) { i in
+        VisualSceneView(scene: VisualLayout.scene(for: spec, expanded: expanded.wrappedValue), theme: VisualTheme.named(spec.theme)) { i in
             withAnimation(.snappy) {
                 if expanded.wrappedValue.contains(i) { expanded.wrappedValue.remove(i) } else { expanded.wrappedValue.insert(i) }
             }
@@ -390,6 +417,6 @@ public struct VisualSlide: View {
 
     /// The vector file of the same picture, in light appearance.
     public static func svg(for spec: VisualSpec, expanded: Set<Int> = []) -> String {
-        VisualSVG.render(VisualLayout.scene(for: spec, expanded: expanded))
+        VisualSVG.render(VisualLayout.scene(for: spec, expanded: expanded), theme: VisualTheme.named(spec.theme))
     }
 }

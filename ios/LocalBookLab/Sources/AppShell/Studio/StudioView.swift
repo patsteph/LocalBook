@@ -193,6 +193,7 @@ private struct MakeSheet: View {
     @State private var accent: AudioAccent = .british
     @State private var notebookOnly = true
     @State private var layout: VisualSpec.Layout? = nil           // nil: the engine chooses the form
+    @AppStorage("studio.visualTheme") private var theme = VisualTheme.clean.id
     @State private var detail: VisualSpec.Detail = .standard
     @FocusState private var typing: Bool
 
@@ -221,6 +222,9 @@ private struct MakeSheet: View {
                             } header: { Text("Form") } footer: {
                                 Text(layout?.hint ?? "The engine picks the form that fits the ask and the notes.")
                             }
+                            Section {
+                                VisualThemePicker(theme: $theme).pickerStyle(.segmented)
+                            } header: { Text("Theme") } footer: { Text(VisualTheme.named(theme).tagline + ".") }
                             Section {
                                 Picker("Detail", selection: $detail) { ForEach(VisualSpec.Detail.allCases) { Text($0.label).tag($0) } }.pickerStyle(.segmented)
                             } header: { Text("Detail") } footer: {
@@ -272,7 +276,7 @@ private struct MakeSheet: View {
     }
 
     private func make() async {
-        if let made = await engine.make(kind, in: notebook, topic: topic, count: count, notebookOnly: notebookOnly, style: style, videoStyle: videoStyle, accent: accent, layout: layout, detail: detail, library: library) {
+        if let made = await engine.make(kind, in: notebook, topic: topic, count: count, notebookOnly: notebookOnly, style: style, videoStyle: videoStyle, accent: accent, layout: layout, detail: detail, theme: kind == .visual ? theme : nil, library: library) {
             onMade(made); dismiss()
         }
     }

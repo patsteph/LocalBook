@@ -41,12 +41,15 @@ struct VisualItemView: View {
                 if let picture { ShareLink(item: Image(platformImage: picture), preview: SharePreview(title, image: Image(platformImage: picture))) }
             }
             ToolbarItem(placement: .topBarTrailing) {
-                if !spec.layout.alternatives.isEmpty {
-                    Menu { ForEach(spec.layout.alternatives) { form in Button { redraw(as: form) } label: { Label(form.label, systemImage: form.symbol) } } } label: {
-                        Label("Draw as", systemImage: "square.on.square.dashed")
+                Menu {
+                    if !spec.layout.alternatives.isEmpty {
+                        Section("Draw as") { ForEach(spec.layout.alternatives) { form in Button { redraw(as: form) } label: { Label(form.label, systemImage: form.symbol) } } }
                     }
-                    .accessibilityLabel("Draw as another form")
+                    Section("Theme") { ForEach(VisualTheme.all) { t in Button { dress(in: t) } label: { Text(t.name) } } }
+                } label: {
+                    Label("Draw as", systemImage: "square.on.square.dashed")
                 }
+                .accessibilityLabel("Draw as another form or theme")
             }
             ToolbarItem(placement: .topBarLeading) {
                 if scale > 1.01 {
@@ -68,6 +71,15 @@ struct VisualItemView: View {
         let old = spec.layout
         withAnimation(.snappy) { spec = spec.drawn(as: form); expanded = []; scale = 1; committed = 1 }
         title = VisualSpec.retitle(title, from: old, to: form)
+        save()
+    }
+
+    private func dress(in theme: VisualTheme) {
+        withAnimation(.snappy) { spec = spec.dressed(in: theme) }
+        save()
+    }
+
+    private func save() {
         picture = VisualSlide.image(for: spec, fit: 1)
         if var saved = item, let data = try? JSONEncoder().encode(spec) {
             saved.body = String(decoding: data, as: UTF8.self); saved.title = title

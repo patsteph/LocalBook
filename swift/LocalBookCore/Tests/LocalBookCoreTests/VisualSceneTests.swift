@@ -141,15 +141,46 @@ struct VisualSceneTests {
         #expect(kinds.contains(.offSlide) && kinds.contains(.overlap) && !kinds.contains(.empty))
     }
 
-    @Test("the theme answers every role in both appearances")
+    @Test("every theme answers every role in both appearances and reads at WCAG contrast")
     func theme() {
-        for dark in [false, true] {
-            for role in [VisualRole.ink, .quiet, .surface, .rule, .background, .onAccent, .accent(0), .accent(7), .tint(-1)] {
-                let c = VisualTheme.clean.color(role, dark: dark)
-                #expect(c.r >= 0 && c.r <= 1 && c.a > 0 && c.a <= 1)
+        #expect(VisualTheme.all.count == 4 && Set(VisualTheme.all.map(\.id)).count == 4)
+        for theme in VisualTheme.all {
+            for dark in [false, true] {
+                for role in [VisualRole.ink, .quiet, .surface, .rule, .background, .onAccent, .accent(0), .accent(7), .tint(-1)] {
+                    let c = theme.color(role, dark: dark)
+                    #expect(c.r >= 0 && c.r <= 1 && c.a > 0 && c.a <= 1)
+                }
             }
+            #expect(theme.color(.tint(2), dark: false).a < 1)
+            #expect(theme.contrastProblems().isEmpty, "\(theme.contrastProblems())")
+            for icon in VisualIcon.allCases { #expect(!theme.symbol(for: icon).isEmpty) }
         }
-        #expect(VisualTheme.clean.color(.tint(2), dark: false).a < 1)
         #expect(VisualTheme.RGB(0x2f6fed).hex == "#2f6fed")
+        #expect(VisualTheme.RGB.contrast(VisualTheme.RGB(0xffffff), VisualTheme.RGB(0x000000)) > 20)
+        #expect(VisualTheme.named("deck").id == "deck" && VisualTheme.named(nil) == .clean && VisualTheme.named("neon") == .clean)
+    }
+
+    @Test("a theme changes the face, the corners and the SVG, and the picture still fits")
+    func themed() throws {
+        let steps = (1...5).map { #"{"title": "Step \#($0)", "detail": "What happens in step \#($0), in one sentence."}"# }
+        let s = try spec(#"{"title": "How it works", "items": [\#(steps.joined(separator: ","))]}"#, .flowchart)
+        let plain = VisualLayout.scene(for: s)
+        for theme in VisualTheme.all {
+            let dressed = s.dressed(in: theme)
+            #expect(dressed.theme == theme.id)
+            let scene = VisualLayout.scene(for: dressed)
+            #expect(VisualLint.check(scene).filter { $0.kind != .tiny }.isEmpty, "\(theme.id): \(VisualLint.check(scene))")
+            #expect(texts(scene).allSatisfy { $0.style.design == theme.design }, Comment(rawValue: theme.id))
+            let svg = VisualSlide.svg(for: dressed)
+            #expect(svg.contains(theme.svgFontFamily) && svg.contains("fill='\(theme.light.background.hex)'"))
+            if theme.heavyHeadings { #expect(texts(scene).contains { $0.style.weight == .heavy }) }
+            if theme.outlinedCards { #expect(svg.contains("stroke='\(theme.light.ink.hex)'"), "tinted cards get an ink outline") }
+        }
+        #expect(VisualLayout.scene(for: s.dressed(in: .editorial)) != plain, "a serif measures differently")
+        let data = try JSONEncoder().encode(s.dressed(in: .deck))
+        let back = try JSONDecoder().decode(VisualSpec.self, from: data)
+        #expect(back.theme == "deck")
+        let old = try JSONDecoder().decode(VisualSpec.self, from: Data(#"{"layout": "mindmap", "title": "old"}"#.utf8))
+        #expect(old.theme == nil && old.layout == .mindmap, "items saved before themes still open")
     }
 }

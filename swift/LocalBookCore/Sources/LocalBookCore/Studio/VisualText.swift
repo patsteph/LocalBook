@@ -11,14 +11,16 @@ import AppKit
 public enum VisualText {
     static func font(_ style: VisualTextStyle) -> CTFont {
         #if canImport(UIKit)
-        let weight: UIFont.Weight = switch style.weight { case .regular: .regular; case .semibold: .semibold; case .bold: .bold }
+        let weight: UIFont.Weight = switch style.weight { case .regular: .regular; case .semibold: .semibold; case .bold: .bold; case .heavy: .heavy }
         let base = UIFont.systemFont(ofSize: style.size, weight: weight)
-        if style.rounded, let d = base.fontDescriptor.withDesign(.rounded) { return UIFont(descriptor: d, size: style.size) as CTFont }
+        let design: UIFontDescriptor.SystemDesign? = style.rounded ? .rounded : (style.design == .serif ? .serif : (style.design == .rounded ? .rounded : nil))
+        if let design, let d = base.fontDescriptor.withDesign(design) { return UIFont(descriptor: d, size: style.size) as CTFont }
         return base as CTFont
         #else
-        let weight: NSFont.Weight = switch style.weight { case .regular: .regular; case .semibold: .semibold; case .bold: .bold }
+        let weight: NSFont.Weight = switch style.weight { case .regular: .regular; case .semibold: .semibold; case .bold: .bold; case .heavy: .heavy }
         let base = NSFont.systemFont(ofSize: style.size, weight: weight)
-        if style.rounded, let d = base.fontDescriptor.withDesign(.rounded), let f = NSFont(descriptor: d, size: style.size) { return f as CTFont }
+        let design: NSFontDescriptor.SystemDesign? = style.rounded ? .rounded : (style.design == .serif ? .serif : (style.design == .rounded ? .rounded : nil))
+        if let design, let d = base.fontDescriptor.withDesign(design), let f = NSFont(descriptor: d, size: style.size) { return f as CTFont }
         return base as CTFont
         #endif
     }

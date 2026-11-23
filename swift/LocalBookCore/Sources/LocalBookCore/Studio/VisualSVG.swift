@@ -19,10 +19,15 @@ public enum VisualSVG {
             switch node {
             case .card(let r, let fill, let stroke, let radius, _):
                 var s = "<rect x='\(f(r.minX))' y='\(f(r.minY))' width='\(f(r.width))' height='\(f(r.height))' rx='\(f(radius))' fill='\(c(fill))'\(alpha(fill))"
-                if let stroke { s += " stroke='\(c(stroke))' stroke-width='2'" }
+                if let stroke { s += " stroke='\(c(stroke))' stroke-width='\(f(2 * theme.strokeScale))'" }
+                else if theme.outlinedCards {
+                    var isTint = false
+                    if case .tint = fill { isTint = true }
+                    s += " stroke='\(c(isTint ? .ink : .rule))' stroke-width='\(f(1.6 * theme.strokeScale))'"
+                }
                 out.append(s + "/>")
             case .text(let t):
-                let weight = switch t.style.weight { case .regular: "400"; case .semibold: "600"; case .bold: "700" }
+                let weight = switch t.style.weight { case .regular: "400"; case .semibold: "600"; case .bold: "700"; case .heavy: "800" }
                 let anchor: String, x: CGFloat
                 switch t.style.align {
                 case .leading: anchor = "start"; x = t.frame.minX
@@ -42,7 +47,7 @@ public enum VisualSVG {
                     case .curve(let to, let c1, let c2): d += "C\(f(c1.x)) \(f(c1.y)) \(f(c2.x)) \(f(c2.y)) \(f(to.x)) \(f(to.y))"
                     }
                 }
-                out.append("<path d='\(d)' fill='none' stroke='\(c(role))' stroke-width='\(f(width))' stroke-linecap='round' stroke-linejoin='round'\(dashed ? " stroke-dasharray='6 6'" : "")/>")
+                out.append("<path d='\(d)' fill='none' stroke='\(c(role))' stroke-width='\(f(width * theme.strokeScale))' stroke-linecap='round' stroke-linejoin='round'\(dashed ? " stroke-dasharray='6 6'" : "")/>")
             case .fill(let points, let role):
                 out.append("<polygon points='\(points.map { "\(f($0.x)),\(f($0.y))" }.joined(separator: " "))' fill='\(c(role))'/>")
             case .dot(let p, let radius, let fill, let stroke):

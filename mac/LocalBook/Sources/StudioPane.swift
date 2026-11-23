@@ -220,6 +220,7 @@ private struct MakeSheet: View {
     @State private var notebookOnly = true
     @State private var layout: VisualSpec.Layout? = nil           // nil: the engine chooses the form
     @State private var detail: VisualSpec.Detail = .standard
+    @AppStorage("studio.visualTheme") private var theme = VisualTheme.clean.id
 
     init(kind: StudioItem.Kind, notebook: LibraryNotebookInfo, library: LibraryModel, engine: StudioEngine, topic: String = "", onMade: @escaping (StudioItem) -> Void) {
         _topic = State(initialValue: topic)
@@ -248,6 +249,8 @@ private struct MakeSheet: View {
                         Picker("Detail", selection: $detail) { ForEach(VisualSpec.Detail.allCases) { Text($0.label).tag($0) } }.pickerStyle(.segmented)
                         Text(detail == .deep ? "More branches and facts." : (detail == .overview ? "The big picture only." : "A clear, balanced picture."))
                             .font(.callout).foregroundStyle(.secondary)
+                        VisualThemePicker(theme: $theme).pickerStyle(.segmented)
+                        Text(VisualTheme.named(theme).tagline + ".").font(.callout).foregroundStyle(.secondary)
                     }
                     if kind != .doc && kind != .visual {
                         Picker(kind == .quiz ? "Questions" : (kind == .audio ? "Length" : (kind == .video ? "Slides" : "Cards")), selection: $count) {
@@ -281,12 +284,12 @@ private struct MakeSheet: View {
                 .padding(14)
             }
         }
-        .frame(width: 480, height: engine.working ? 460 : (kind == .doc ? 300 : (kind == .visual ? 440 : 400)))
+        .frame(width: 480, height: engine.working ? 460 : (kind == .doc ? 300 : (kind == .visual ? 500 : 400)))
         .interactiveDismissDisabled(engine.working)
     }
 
     private func make() async {
-        if let made = await engine.make(kind, in: notebook, topic: topic, count: count, notebookOnly: notebookOnly, style: style, videoStyle: videoStyle, accent: accent, layout: layout, detail: detail, library: library) {
+        if let made = await engine.make(kind, in: notebook, topic: topic, count: count, notebookOnly: notebookOnly, style: style, videoStyle: videoStyle, accent: accent, layout: layout, detail: detail, theme: kind == .visual ? theme : nil, library: library) {
             onMade(made); dismiss()
         }
     }
@@ -792,6 +795,10 @@ struct VisualItemView: View {
                     }
                     .fixedSize().help("The same content as another form")
                 }
+                Menu { ForEach(VisualTheme.all) { t in Button { dress(in: t) } label: { Text(t.name) } } } label: {
+                    Label(VisualTheme.named(spec.theme).name, systemImage: "paintpalette")
+                }
+                .fixedSize().help("The same picture in another theme")
                 Spacer()
                 if scale > 1.01 {
                     Button { withAnimation(.snappy) { scale = 1; committed = 1 } } label: { Label("Fit", systemImage: "arrow.down.right.and.arrow.up.left") }
@@ -818,6 +825,15 @@ struct VisualItemView: View {
         let old = spec.layout
         withAnimation(.snappy) { spec = spec.drawn(as: form); expanded = []; scale = 1; committed = 1 }
         title = VisualSpec.retitle(title, from: old, to: form)
+        save()
+    }
+
+    private func dress(in theme: VisualTheme) {
+        withAnimation(.snappy) { spec = spec.dressed(in: theme) }
+        save()
+    }
+
+    private func save() {
         picture = VisualSlide.image(for: spec, fit: 1)
         if var saved = item, let data = try? JSONEncoder().encode(spec) {
             saved.body = String(decoding: data, as: UTF8.self); saved.title = title

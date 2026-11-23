@@ -52,11 +52,11 @@ public enum VisualGoldenSet {
 
     /// `index.md` beside the pictures: the notebook, the device, then one row per prompt with its picture's name,
     /// the seconds the model took and what the lint found.
-    public static func index(notebook: String, device: String, date: Date, made: [Made]) -> String {
+    public static func index(notebook: String, device: String, date: Date, made: [Made], theme: String? = nil) -> String {
         let f = DateFormatter()
         f.locale = Locale(identifier: "en_US_POSIX")
         f.dateFormat = "yyyy-MM-dd HH:mm"
-        var lines = ["# Visual golden set: \(notebook)", "", "Drawn by the Swift Mac app on \(device), \(f.string(from: date)).", "",
+        var lines = ["# Visual golden set: \(notebook)", "", "Drawn by the Swift Mac app on \(device), \(f.string(from: date))\(theme.map { " in the \($0) theme" } ?? "").", "",
                      "Open the old app's `old-app-visuals.html` for the same notebook beside this folder and judge each pair: does the Swift drawing say what the old one said, as clearly?", "",
                      "| # | Form | Detail | Ask | Swift picture | Time | Lint |", "|---|---|---|---|---|---|---|"]
         for (i, m) in made.enumerated() {
@@ -70,7 +70,7 @@ public enum VisualGoldenSet {
 
     /// The same index as a page with the pictures in it, for a browser: Markdown links to files beside a `.md`
     /// open in nothing on a Mac, which is what kept the first C6 sitting from the pictures.
-    public static func indexHTML(notebook: String, device: String, date: Date, made: [Made]) -> String {
+    public static func indexHTML(notebook: String, device: String, date: Date, made: [Made], theme: String? = nil) -> String {
         func esc(_ s: String) -> String {
             s.replacingOccurrences(of: "&", with: "&amp;").replacingOccurrences(of: "<", with: "&lt;").replacingOccurrences(of: ">", with: "&gt;").replacingOccurrences(of: "\"", with: "&quot;")
         }
@@ -82,7 +82,7 @@ public enum VisualGoldenSet {
                    "section{border:1px solid #ddd;border-radius:10px;padding:16px;margin:20px 0}h2{margin:0 0 4px}.meta{color:#666;margin:0 0 12px}",
                    "img{max-width:100%;height:auto;background:#fff}p.err{color:#b00}</style></head><body>",
                    "<h1>Swift app: visual golden set, \(esc(notebook))</h1>",
-                   "<p class='meta'>Drawn on \(esc(device)), \(f.string(from: date)). Open the old app's old-app-visuals.html beside this page and judge each pair: does the Swift drawing say what the old one said, as clearly?</p>"]
+                   "<p class='meta'>Drawn on \(esc(device)), \(f.string(from: date))\(theme.map { " in the \(esc($0)) theme" } ?? ""). Open the old app's old-app-visuals.html beside this page and judge each pair: does the Swift drawing say what the old one said, as clearly?</p>"]
         for (i, m) in made.enumerated() {
             let ask = m.prompt.topic.isEmpty ? "(the whole notebook)" : m.prompt.topic
             let facts = [m.time, m.checks].filter { !$0.isEmpty }.joined(separator: " · ")
