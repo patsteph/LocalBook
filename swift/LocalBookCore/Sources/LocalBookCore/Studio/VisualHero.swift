@@ -36,7 +36,8 @@ public enum VisualHero {
     public static func fileName(forItem id: String) -> String { id + "-hero.png" }
     public static func url(_ name: String) -> URL { StudioStore.folder.appendingPathComponent(name) }
 
-    private static let cache = NSCache<NSString, CGImage>()
+    // NSCache is thread-safe; the compiler cannot see that.
+    nonisolated(unsafe) private static let cache = NSCache<NSString, CGImage>()
 
     /// The saved backdrop, decoded once and kept; nil when the file is not on this device (the phone, before a
     /// sync) and the form draws its band instead.
