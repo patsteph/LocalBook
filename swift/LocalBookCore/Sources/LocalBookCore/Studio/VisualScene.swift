@@ -101,6 +101,12 @@ public struct VisualTheme: Sendable, Equatable, Identifiable {
         public init(_ hex: UInt32, alpha: Double = 1) {
             r = Double((hex >> 16) & 0xff) / 255; g = Double((hex >> 8) & 0xff) / 255; b = Double(hex & 0xff) / 255; a = alpha
         }
+        /// From `#rrggbb` (or `rrggbb`); nil for anything else.
+        public init?(hex text: String) {
+            let t = text.trimmingCharacters(in: .whitespaces).replacingOccurrences(of: "#", with: "")
+            guard t.count == 6, let v = UInt32(t, radix: 16) else { return nil }
+            self.init(v)
+        }
         /// `#rrggbb` for the SVG.
         public var hex: String { String(format: "#%02x%02x%02x", Int((r * 255).rounded()), Int((g * 255).rounded()), Int((b * 255).rounded())) }
         /// Relative luminance (WCAG), for the contrast check.
@@ -180,6 +186,29 @@ public struct VisualTheme: Sendable, Equatable, Identifiable {
             for (i, a) in set.accents.enumerated() where RGB.contrast(set.onAccent, a) < 3 {
                 out.append("\(id) \(name): words on accent \(i) are \(String(format: "%.1f", RGB.contrast(set.onAccent, a)))")
             }
+        }
+        return out
+    }
+
+    /// This theme with its first accents taken from a painted backdrop's colours, each pushed until words on it
+    /// read (WCAG 3). Fewer than two usable colours leaves the theme as it is.
+    public func matched(to hexes: [String]?) -> VisualTheme {
+        let colours = (hexes ?? []).compactMap { RGB(hex: $0) }
+        guard colours.count >= 2 else { return self }
+        func legible(_ c: RGB, against on: RGB) -> RGB {
+            var c = c
+            for _ in 0..<10 where RGB.contrast(c, on) < 3 {
+                // Move away from the words: darker under light words, lighter under dark ones.
+                if on.luminance > 0.5 { c.r *= 0.85; c.g *= 0.85; c.b *= 0.85 }
+                else { c.r += (1 - c.r) * 0.2; c.g += (1 - c.g) * 0.2; c.b += (1 - c.b) * 0.2 }
+            }
+            return c
+        }
+        var out = self
+        for keyPath in [\VisualTheme.light, \VisualTheme.dark] {
+            var set = out[keyPath: keyPath]
+            for (i, c) in colours.prefix(set.accents.count).enumerated() { set.accents[i] = legible(c, against: set.onAccent) }
+            out[keyPath: keyPath] = set
         }
         return out
     }

@@ -124,6 +124,12 @@ public struct VisualSpec: Codable, Hashable, Sendable {
     public var theme: String? = nil
     /// The file of the painted backdrop (`VisualHero`), beside the item; nil, or a file not on this device, draws a band.
     public var hero: String? = nil
+    /// Colours read from the painted backdrop (`#rrggbb`), which the theme's first accents take so the picture and the
+    /// cards read as one piece; nil keeps the theme's own accents.
+    public var palette: [String]? = nil
+
+    /// The theme this picture is dressed in, with its accents matched to the backdrop when one was painted.
+    public var dressing: VisualTheme { VisualTheme.named(theme).matched(to: palette) }
 
     public init(layout: Layout, title: String, items: [Item] = [], stats: [Item] = [], columns: [String] = [], rows: [Row] = [], theme: String? = nil) {
         self.layout = layout; self.title = title; self.items = items; self.stats = stats; self.columns = columns; self.rows = rows; self.theme = theme
@@ -140,6 +146,7 @@ public struct VisualSpec: Codable, Hashable, Sendable {
         rows = try c.decodeIfPresent([Row].self, forKey: .rows) ?? []
         theme = try c.decodeIfPresent(String.self, forKey: .theme)
         hero = try c.decodeIfPresent(String.self, forKey: .hero)
+        palette = try c.decodeIfPresent([String].self, forKey: .palette)
     }
 
     /// The same content as another form of the same shape.
@@ -461,7 +468,7 @@ public struct VisualSlide: View {
     }
 
     public var body: some View {
-        VisualSceneView(scene: VisualLayout.scene(for: spec, expanded: expanded.wrappedValue), theme: VisualTheme.named(spec.theme), hero: VisualHero.image(named: spec.hero)) { i in
+        VisualSceneView(scene: VisualLayout.scene(for: spec, expanded: expanded.wrappedValue), theme: spec.dressing, hero: VisualHero.image(named: spec.hero)) { i in
             withAnimation(.snappy) {
                 if expanded.wrappedValue.contains(i) { expanded.wrappedValue.remove(i) } else { expanded.wrappedValue.insert(i) }
             }
@@ -481,6 +488,6 @@ public struct VisualSlide: View {
 
     /// The vector file of the same picture, in light appearance.
     public static func svg(for spec: VisualSpec, expanded: Set<Int> = []) -> String {
-        VisualSVG.render(VisualLayout.scene(for: spec, expanded: expanded), theme: VisualTheme.named(spec.theme), hero: VisualHero.data(named: spec.hero))
+        VisualSVG.render(VisualLayout.scene(for: spec, expanded: expanded), theme: spec.dressing, hero: VisualHero.data(named: spec.hero))
     }
 }

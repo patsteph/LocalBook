@@ -12,6 +12,9 @@ import Observation
 /// weights (a minute); the transformer then stays loaded, and the text encoder is dropped after each prompt.
 @Observable @MainActor
 final class KleinImagery: VisualImagery {
+    let name = "FLUX.2 Klein 4B"
+    /// What Settings says beside the choice: the parts and where they come from, so nobody is surprised by a scan.
+    static let note = "Black Forest Labs' FLUX.2 Klein 4B (Germany) with its Qwen3-4B text encoder (Alibaba). About 6 GB. Not for managed work Macs where Qwen is not allowed."
     private(set) var state: VisualImageryState = .absent
     private var pipeline: Flux2Pipeline?
 
@@ -25,6 +28,21 @@ final class KleinImagery: VisualImagery {
         TextEncoderModelDownloader.customModelsDirectory = Self.folder
         TextEncoderModelDownloader.reconfigureHubApi()
         if Self.downloaded { state = .ready }
+    }
+
+    /// Removes every downloaded part (when the Mac is switched to another model), and forgets the loaded pipeline.
+    func deleteWeights() {
+        if case .downloading = state { return }
+        pipeline = nil
+        try? FileManager.default.removeItem(at: Self.folder.deletingLastPathComponent())
+        try? FileManager.default.createDirectory(at: Self.folder, withIntermediateDirectories: true)
+        state = .absent
+        SoakTrace.log("imagery: Klein weights removed")
+    }
+
+    /// Something is on disk (for the "remove" button).
+    static var anythingOnDisk: Bool {
+        ((try? FileManager.default.contentsOfDirectory(atPath: folder.path))?.isEmpty == false)
     }
 
     /// Every part is on disk.
@@ -62,5 +80,11 @@ final class KleinImagery: VisualImagery {
         if !p.isLoaded { try await p.loadModels() }
         // Klein is distilled for four steps with the guidance folded in.
         return try await p.generateTextToImage(prompt: prompt, height: height, width: width, steps: 4, guidance: 1.0, seed: seed)
+    }
+
+    /// Klein edits natively: the first picture goes in as the reference and comes back redrawn with more detail.
+    func refine(_ picture: CGImage, prompt: String, seed: UInt64) async throws -> CGImage {
+        guard let p = pipeline, p.isLoaded else { return picture }
+        return try await p.generateImageToImage(prompt: prompt, images: [picture], height: picture.height, width: picture.width, steps: 4, guidance: 1.0, seed: seed)
     }
 }

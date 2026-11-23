@@ -216,4 +216,40 @@ struct VisualSceneTests {
         #expect(try JSONDecoder().decode(VisualSpec.self, from: data).hero == "test-hero.png")
         #expect(try JSONDecoder().decode(VisualSpec.self, from: Data(#"{"layout": "value_proposition", "title": "old"}"#.utf8)).hero == nil)
     }
+
+    @Test("art direction follows the theme, the model's brief is cleaned, a painting lends its colours and the words stay legible")
+    func artDirection() throws {
+        let offer = #"{"title": "One engine", "items": [{"title": "Faster", "children": ["No Python"]}, {"title": "Richer", "children": ["Themes"]}]}"#
+        var plain = try spec(offer, .valueProposition)
+        #expect(VisualHero.prompt(for: plain).contains("flat vector") && VisualHero.prompt(for: plain).contains("No text"))
+        plain.theme = "sketch"
+        #expect(VisualHero.prompt(for: plain).contains("watercolour"))
+        let brief = VisualHero.enrichment(for: plain)
+        #expect(brief.prompt.contains("One engine") && brief.prompt.contains("Faster") && brief.instructions.contains("60 words"))
+        let cleaned = try #require(VisualHero.enriched("```\n“A lone lighthouse of stacked gears on a calm sea at dawn, warm light on brass.”\n\nSecond paragraph.", for: plain))
+        #expect(cleaned.hasPrefix("A lone lighthouse") && !cleaned.contains("Second") && cleaned.contains("watercolour") && cleaned.contains("No text"))
+        #expect(VisualHero.enriched("ok", for: plain) == nil)
+        #expect(VisualHero.refinePrompt(for: plain).contains("Keep the composition"))
+
+        // A picture of two colours and a grey band gives those two colours, grey left out.
+        let w = 128, h = 72
+        let ctx = try #require(CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        ctx.setFillColor(CGColor(red: 0.2, green: 0.4, blue: 0.9, alpha: 1)); ctx.fill(CGRect(x: 0, y: 0, width: 64, height: 72))
+        ctx.setFillColor(CGColor(red: 0.9, green: 0.5, blue: 0.1, alpha: 1)); ctx.fill(CGRect(x: 64, y: 0, width: 40, height: 72))
+        ctx.setFillColor(CGColor(red: 0.5, green: 0.5, blue: 0.5, alpha: 1)); ctx.fill(CGRect(x: 104, y: 0, width: 24, height: 72))
+        let picture = try #require(ctx.makeImage())
+        let palette = VisualHero.palette(from: picture)
+        #expect(palette.count == 2, "\(palette)")
+        #expect(VisualTheme.RGB(hex: palette[0]).map { $0.b > $0.r } == true)       // the blue half first: it covers more
+        // The theme takes them as its first accents, pushed until white words read on them; the rest is untouched.
+        plain.palette = palette
+        let dressed = plain.dressing
+        #expect(dressed.light.accents[2] == VisualTheme.sketch.light.accents[2])
+        for set in [dressed.light, dressed.dark] {
+            for a in set.accents.prefix(2) { #expect(VisualTheme.RGB.contrast(a, set.onAccent) >= 3) }
+        }
+        #expect(VisualTheme.sketch.matched(to: ["#zz"]) == VisualTheme.sketch && VisualTheme.sketch.matched(to: nil) == VisualTheme.sketch)
+        var one = plain; one.palette = ["#ff0000"]
+        #expect(one.dressing == VisualTheme.sketch)
+    }
 }

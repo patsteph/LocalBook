@@ -76,7 +76,7 @@ public struct VisualInlineView: View {
     public let spec: VisualSpec
     public init(spec: VisualSpec) { self.spec = spec }
     public var body: some View {
-        VisualSceneView(scene: VisualLayout.scene(for: spec), theme: VisualTheme.named(spec.theme), hero: VisualHero.image(named: spec.hero))
+        VisualSceneView(scene: VisualLayout.scene(for: spec), theme: spec.dressing, hero: VisualHero.image(named: spec.hero))
             .aspectRatio(VisualScene.size.width / VisualScene.size.height, contentMode: .fit)
             .clipShape(RoundedRectangle(cornerRadius: 10))
             .overlay(RoundedRectangle(cornerRadius: 10).stroke(.quaternary, lineWidth: 1))

@@ -16,6 +16,9 @@ public final class StudioEngine {
     public static let criticKey = "studio.visualCritic"
     /// The image model that paints backdrops, when the app has one (the Mac sets it at launch; the phone leaves it nil).
     public static var imagery: (any VisualImagery)?
+    /// Settings key: "best" (default) paints a backdrop twice, the second pass for detail; "fast" paints once.
+    public static let pictureQualityKey = "studio.pictureQuality"
+    public static var bestPictures: Bool { UserDefaults.standard.string(forKey: pictureQualityKey) != "fast" }
     /// What the critic said about the last visual made, for Diagnostics.
     public private(set) var lastCritique: VisualCritique?
     /// How many extra fills the last visual took (a lint defect or a critic's verdict each buy one more).
@@ -196,14 +199,29 @@ public final class StudioEngine {
             // refill never wastes a picture; a failure leaves the band, never the item.
             let id = UUID().uuidString
             if VisualHero.wants(spec.layout), let imagery = Self.imagery, imagery.state.isReady {
+                // The answer model writes the art direction first: one concrete scene beats a title as a prompt.
+                status = "Briefing the illustrator…"
+                let brief = VisualHero.enrichment(for: spec)
+                let written = await run(brief.prompt, instructions: brief.instructions, tokens: brief.tokens)
+                let prompt = written.flatMap { VisualHero.enriched($0, for: spec) } ?? VisualHero.prompt(for: spec)
+                SoakTrace.log("studio visual: art direction \(written == nil || prompt == VisualHero.prompt(for: spec) ? "from the template" : "by the model"): “\(prompt.prefix(160))”")
                 status = "Painting the backdrop…"
                 let start = Date()
                 do {
-                    let picture = try await imagery.hero(prompt: VisualHero.prompt(for: spec), width: VisualHero.width, height: VisualHero.height, seed: VisualHero.seed(for: spec))
+                    let seed = VisualHero.seed(for: spec)
+                    var picture = try await imagery.hero(prompt: prompt, width: VisualHero.width, height: VisualHero.height, seed: seed)
+                    if Self.bestPictures {
+                        status = "Adding detail…"
+                        let pass = Date()
+                        picture = try await imagery.refine(picture, prompt: VisualHero.refinePrompt(for: spec), seed: seed &+ 1)
+                        SoakTrace.log("studio visual: detail pass in \(String(format: "%.1f", Date().timeIntervalSince(pass))) s")
+                    }
                     let name = VisualHero.fileName(forItem: id)
                     let bytes = try VisualHero.save(picture, as: name)
                     spec.hero = name
-                    SoakTrace.log("studio visual: backdrop painted in \(String(format: "%.1f", Date().timeIntervalSince(start))) s (\(bytes / 1024) KB)")
+                    spec.palette = VisualHero.palette(from: picture)
+                    if spec.palette?.count ?? 0 < 2 { spec.palette = nil }
+                    SoakTrace.log("studio visual: backdrop by \(imagery.name) in \(String(format: "%.1f", Date().timeIntervalSince(start))) s (\(bytes / 1024) KB), palette \(spec.palette ?? [])")
                 } catch {
                     SoakTrace.log("studio visual: no backdrop: \(error.localizedDescription)")
                 }

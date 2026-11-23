@@ -9,7 +9,11 @@ import LocalBookEngines
 final class AppModel {
     let library = LibraryModel()
     /// Paints the backdrops of visuals: FLUX.2 Klein, fetched after launch like the other models.
-    let imagery = KleinImagery()
+    /// Settings key: which image model paints backdrops. "none" (the default: nothing downloads) or "klein".
+    static let imageModelKey = "studio.imageModel"
+    let klein = KleinImagery()
+    /// The image model the setting names, or nil for none.
+    var imagery: (any VisualImagery)? { UserDefaults.standard.string(forKey: Self.imageModelKey) == "klein" ? klein : nil }
     /// Drops and intents that add to a notebook.
     let intake = IntakeModel()
 
@@ -180,7 +184,7 @@ final class AppModel {
     /// Launch: open the library (no models), and when paired, sync and warm the models in the background so the
     /// composer is live in under a second and the first question never waits for a model to load.
     func start() async {
-        StudioEngine.imagery = imagery
+        applyImageModel()
         await library.open()
         syncSelectionToScope()
         if paired { Task { await runSync(); await loadSections() } }
@@ -212,8 +216,15 @@ final class AppModel {
         async let answers: Void = self.library.prepareAnswerModel()
         _ = await (search, answers)
         startWatching()
-        // The image model's weights come down once the models that answer are warm, so they never slow those.
-        Task { await self.imagery.prepare() }
+        // The chosen image model's weights come down once the models that answer are warm, so they never slow those.
+        if let imagery { Task { await imagery.prepare() } }
+    }
+
+    /// The setting changed, or the app started: the engine paints with the chosen model, and its weights come
+    /// down if the other models are already warm (else `startModels` fetches them after).
+    func applyImageModel() {
+        StudioEngine.imagery = imagery
+        if modelsStarted, let imagery { Task { await imagery.prepare() } }
     }
 
     /// The pairing sheet finished: the first notebook is here, the rest keeps copying.

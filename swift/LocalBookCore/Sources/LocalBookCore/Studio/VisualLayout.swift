@@ -50,7 +50,7 @@ struct Builder {
 
     init(spec: VisualSpec, expanded: Set<Int>, s: CGFloat) {
         self.spec = spec; self.expanded = expanded; self.s = s
-        theme = VisualTheme.named(spec.theme)
+        theme = spec.dressing
         scene.title = spec.title
         scene.scale = s
     }
