@@ -50,6 +50,8 @@ final class VisualGoldenDiagnostics {
             guard let self else { return }
             let index = VisualGoldenSet.index(notebook: notebook.title, device: LibraryModel.deviceLine, date: Date(), made: made)
             try? index.data(using: .utf8)?.write(to: out.appending(path: "index.md"))
+            let page = VisualGoldenSet.indexHTML(notebook: notebook.title, device: LibraryModel.deviceLine, date: Date(), made: made)
+            try? page.data(using: .utf8)?.write(to: out.appending(path: "index.html"))
             folder = out
             running = false
             current = ""
@@ -82,7 +84,7 @@ struct VisualGoldenSection: View {
                     .disabled(golden.running || golden.notebookId == nil)
                 if golden.running { Button("Stop", role: .destructive) { golden.stop() } }
                 if let folder = golden.folder {
-                    Button("Open index") { NSWorkspace.shared.open(folder.appending(path: "index.md")) }
+                    Button("Open index") { NSWorkspace.shared.open(folder.appending(path: "index.html")) }
                     Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([folder]) }
                 }
             }

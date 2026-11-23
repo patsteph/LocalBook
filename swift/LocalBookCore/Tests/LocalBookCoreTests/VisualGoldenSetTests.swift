@@ -26,5 +26,10 @@ struct VisualGoldenSetTests {
         #expect(md.hasPrefix("# Visual golden set: Trip"))
         #expect(md.contains("| 1 | Mind map | Overview | (the whole notebook) | [01-mindmap-overview.png](01-mindmap-overview.png) |"))
         #expect(md.contains("| 2 | Mind map | Standard | the main ideas and how they connect | failed: model stopped |"))
+        let html = VisualGoldenSet.indexHTML(notebook: "Trip & co", device: "MBP", date: Date(timeIntervalSince1970: 1_700_000_000),
+                                             made: [(p[0], "01-mindmap-overview.png", nil), (p[1], nil, "model <stopped>")])
+        #expect(html.contains("<title>Visual golden set: Trip &amp; co</title>"))
+        #expect(html.contains("<img src='01-mindmap-overview.png' alt='01-mindmap-overview'>"))
+        #expect(html.contains("<p class='err'>failed: model &lt;stopped&gt;</p>"))
     }
 }

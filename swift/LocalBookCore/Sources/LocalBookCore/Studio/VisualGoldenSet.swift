@@ -48,4 +48,30 @@ public enum VisualGoldenSet {
         lines += ["", "Judgement (fill in): ___ of 15 pairs where the Swift drawing is as good or better."]
         return lines.joined(separator: "\n")
     }
+
+    /// The same index as a page with the pictures in it, for a browser: Markdown links to files beside a `.md`
+    /// open in nothing on a Mac, which is what kept the first C6 sitting from the pictures.
+    public static func indexHTML(notebook: String, device: String, date: Date, made: [(prompt: Prompt, file: String?, problem: String?)]) -> String {
+        func esc(_ s: String) -> String {
+            s.replacingOccurrences(of: "&", with: "&amp;").replacingOccurrences(of: "<", with: "&lt;").replacingOccurrences(of: ">", with: "&gt;").replacingOccurrences(of: "\"", with: "&quot;")
+        }
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "yyyy-MM-dd HH:mm"
+        var out = ["<!DOCTYPE html><html><head><meta charset='utf-8'><title>Visual golden set: \(esc(notebook))</title>",
+                   "<style>body{font-family:-apple-system,Helvetica,sans-serif;max-width:1100px;margin:30px auto;padding:0 20px}",
+                   "section{border:1px solid #ddd;border-radius:10px;padding:16px;margin:20px 0}h2{margin:0 0 4px}.meta{color:#666;margin:0 0 12px}",
+                   "img{max-width:100%;height:auto;background:#fff}p.err{color:#b00}</style></head><body>",
+                   "<h1>Swift app: visual golden set, \(esc(notebook))</h1>",
+                   "<p class='meta'>Drawn on \(esc(device)), \(f.string(from: date)). Open the old app's old-app-visuals.html beside this page and judge each pair: does the Swift drawing say what the old one said, as clearly?</p>"]
+        for (i, m) in made.enumerated() {
+            let ask = m.prompt.topic.isEmpty ? "(the whole notebook)" : m.prompt.topic
+            out.append("<section><h2>\(i + 1). \(esc(m.prompt.layout.label)) · \(esc(m.prompt.detail.label))</h2><p class='meta'>\(esc(ask))</p>")
+            if let file = m.file { out.append("<img src='\(esc(file))' alt='\(esc(m.prompt.id))'>") }
+            else { out.append("<p class='err'>failed: \(esc(m.problem ?? "unknown"))</p>") }
+            out.append("</section>")
+        }
+        out.append("<p>Judgement (fill in index.md): ___ of 15 pairs where the Swift drawing is as good or better.</p></body></html>")
+        return out.joined(separator: "\n")
+    }
 }
