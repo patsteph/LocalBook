@@ -243,7 +243,7 @@ struct CLIPTokenizer: Sendable {
 
     init(folder: URL) throws {
         let vocabData = try Data(contentsOf: folder.appending(path: "vocab.json"))
-        guard let _v.wrappedValue = try JSONSerialization.jsonObject(with: vocabData) as? [String: Int] else {
+        guard let v = try JSONSerialization.jsonObject(with: vocabData) as? [String: Int] else {
             throw FluxError.weights("tokenizer/vocab.json is not a token table")
         }
         vocab = v
