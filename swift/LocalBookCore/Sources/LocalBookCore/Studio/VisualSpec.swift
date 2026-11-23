@@ -104,6 +104,13 @@ public struct VisualSpec: Codable, Hashable, Sendable {
         public init(title: String, detail: String = "", value: String = "", children: [String] = []) {
             self.title = title; self.detail = detail; self.value = value; self.children = children
         }
+        public init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            title = try c.decodeIfPresent(String.self, forKey: .title) ?? ""
+            detail = try c.decodeIfPresent(String.self, forKey: .detail) ?? ""
+            value = try c.decodeIfPresent(String.self, forKey: .value) ?? ""
+            children = try c.decodeIfPresent([String].self, forKey: .children) ?? []
+        }
     }
     public struct Row: Codable, Hashable, Sendable { public var label: String; public var cells: [String] }
 
@@ -118,6 +125,18 @@ public struct VisualSpec: Codable, Hashable, Sendable {
 
     public init(layout: Layout, title: String, items: [Item] = [], stats: [Item] = [], columns: [String] = [], rows: [Row] = [], theme: String? = nil) {
         self.layout = layout; self.title = title; self.items = items; self.stats = stats; self.columns = columns; self.rows = rows; self.theme = theme
+    }
+
+    /// A saved item needs only its form and title: a list it never had, or a field from a later version, reads as empty.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        layout = try c.decode(Layout.self, forKey: .layout)
+        title = try c.decodeIfPresent(String.self, forKey: .title) ?? ""
+        items = try c.decodeIfPresent([Item].self, forKey: .items) ?? []
+        stats = try c.decodeIfPresent([Item].self, forKey: .stats) ?? []
+        columns = try c.decodeIfPresent([String].self, forKey: .columns) ?? []
+        rows = try c.decodeIfPresent([Row].self, forKey: .rows) ?? []
+        theme = try c.decodeIfPresent(String.self, forKey: .theme)
     }
 
     /// The same content as another form of the same shape.
