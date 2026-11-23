@@ -41,6 +41,8 @@ public enum AnswerModels {
 
     /// Whether the model last loaded can look at a picture (it was loaded with its vision tower).
     nonisolated(unsafe) public private(set) static var loadedWithVision = false
+    /// Why the last load went without the vision tower, for the settings line; nil when it loaded with vision.
+    nonisolated(unsafe) public private(set) static var visionProblem: String?
 
     /// Loads the chosen answer model. On the Mac the checkpoint is loaded with its vision tower when it has one, so the
     /// visuals critic can look at a picture with the same model and nothing more is downloaded; a text-only
@@ -51,8 +53,10 @@ public enum AnswerModels {
         do {
             let c = try await VLMModelFactory.shared.loadContainer(from: #hubDownloader(), using: #huggingFaceTokenizerLoader(), configuration: configuration)
             loadedWithVision = true
+            visionProblem = nil
             return c
         } catch {
+            visionProblem = error.localizedDescription
             SoakTrace.log("answer model: no vision tower (\(error.localizedDescription)); loading the text model")
         }
         #endif

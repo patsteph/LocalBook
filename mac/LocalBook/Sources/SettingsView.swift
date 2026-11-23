@@ -246,7 +246,9 @@ struct LibrarySettings: View {
                 Toggle("Have the answer model look over each visual", isOn: $visualCritic)
                 Text(library.answerModelSeesImages
                      ? "After a visual is drawn, the model looks at the picture and scores it; one below the bar is filled once more with its note. Adds a few seconds per visual."
-                     : "Needs an answer model with vision; the one loaded now cannot look at pictures.")
+                     : library.gemma == nil
+                     ? "Waiting for the answer model to finish loading."
+                     : "The answer model loaded without its vision tower, so it cannot look at pictures. " + (AnswerModels.visionProblem.map { "The loader said: \($0)" } ?? "Choose a model with vision, such as Gemma 4."))
                     .font(.callout).foregroundStyle(.secondary)
                 Picker("Image model for backdrops", selection: $imageModel) {
                     Text("FLUX.1 schnell").tag("schnell")
