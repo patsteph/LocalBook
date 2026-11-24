@@ -76,7 +76,7 @@ public enum VisualPick {
         }
         guard words.count == 2 else { return nil }
         // "the main techniques on two axes, effort against impact": the first word may carry an article or a verb.
-        let stop: Set<String> = ["the", "a", "an", "on", "of", "two", "axes", "plot", "place", "sort", "map", "by", "with", "their", "its"]
+        let stop: Set<String> = ["the", "a", "an", "on", "of", "two", "axes", "plot", "place", "sort", "map", "by", "with", "their", "its", "for", "in", "to", "at", "from", "across", "over"]
         let clean = words.map { w in w.split(separator: " ").map(String.init).filter { !stop.contains($0) }.joined(separator: " ") }.filter { !$0.isEmpty }
         guard clean.count == 2, clean.allSatisfy({ $0.count >= 3 && $0.count <= 24 }) else { return nil }
         return clean.map(\.capitalized)
