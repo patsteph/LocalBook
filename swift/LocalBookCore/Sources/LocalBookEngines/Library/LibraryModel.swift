@@ -325,13 +325,16 @@ public final class LibraryModel {
             top = r.boosted(scored, question: question, personal: personal).map { top[$0.index] }
         }
         let pool = top.map { Ranked(hit: $0.hit, rerank: $0.rerank) }
-        let (cited, nothing) = cite(pool, didRerank: didRerank)
+        let (cited, nothing) = cite(pool, didRerank: didRerank, question: question)
         return Retrieval(hits: cited, reranked: didRerank, candidates: found.hits.count, scanned: found.scanned,
                          embedSeconds: embedSeconds, seconds: Date().timeIntervalSince(t0), nothingRelevant: nothing, pool: pool)
     }
 
-    /// Confidence and the keep/drop rules are the Mac's (rag_context.build_citations_and_context).
-    public func cite(_ top: [Ranked], didRerank: Bool) -> (hits: [LibraryHit], nothing: Bool) {
+    /// Confidence and the keep/drop rules are the Mac's (rag_context.build_citations_and_context), then the notebook
+    /// boundary: the Mac's "very low confidence" refusal never fires (its RRF score is normalised, so the best
+    /// candidate is always 0.9), so `AnswerBoundary` decides whether these passages hold anything about the question
+    /// at all. When they do not, nothing is cited and the model is never asked.
+    public func cite(_ top: [Ranked], didRerank: Bool, question: String) -> (hits: [LibraryHit], nothing: Bool) {
         var cited = top.map { item -> LibraryHit in
             let conf = recipe?.confidence(rerank: didRerank ? item.rerank : 0, rrfNormalised: Double(item.hit.rrf)) ?? Double(item.hit.rrf)
             return LibraryHit(notebookId: item.hit.notebookId, notebookTitle: item.hit.notebookTitle, sourceId: item.hit.sourceId,
@@ -345,6 +348,10 @@ public final class LibraryModel {
             if best < rules.veryLowConfidence { cited = []; nothing = true }
             else if strong.isEmpty { cited = Array(cited.prefix(rules.fallbackKeep)) }
             else { cited = strong }
+        }
+        if !nothing {
+            let evidence = top.map { AnswerBoundary.Passage(text: $0.hit.text, rerank: didRerank ? $0.rerank : nil) }
+            if !AnswerBoundary.hasEvidence(question: question, passages: evidence) { cited = []; nothing = true }
         }
         return (cited, nothing)
     }
@@ -375,7 +382,7 @@ public final class LibraryModel {
         guard all.count > first.count else { return nil }
         let scores = try await reranker.scores(query: question, passages: all.map(\.text))
         let top = zip(all, scores).map { Ranked(hit: $0, rerank: Double($1)) }.sorted { $0.rerank > $1.rerank }.prefix(c.rerankKeep)
-        let (cited, nothing) = cite(Array(top), didRerank: true)
+        let (cited, nothing) = cite(Array(top), didRerank: true, question: question)
         return Retrieval(hits: cited, reranked: true, candidates: all.count, scanned: scanned, embedSeconds: 0,
                          seconds: Date().timeIntervalSince(t0), nothingRelevant: nothing, pool: Array(top))
     }
@@ -459,6 +466,9 @@ public final class LibraryModel {
 
     public func stopAnswer() { generation?.cancel() }
 
+    /// The notebook's title as the refusal and the model's instructions name it.
+    public func notebookTitle(_ id: String) -> String { notebooks.first { $0.id == id }?.title ?? "this notebook" }
+
     /// Delete everything synced from the Mac (chunks, notebooks, recipe, profile data) and reset the screen state.
     public func wipeLibrary() async {
         stopAnswer()
@@ -510,22 +520,26 @@ public final class LibraryModel {
         let t0 = Date()
         var result = try await retrieve(question: question, notebook: notebook)
         let personal = await personal(for: notebook)
-        var gen = try await generateOnce(question: question, result: result, personal: personal, withEntityContext: true)
-        // The Mac's second look: a weak answer retriggers retrieval with rewritten queries and answers again.
-        if let r = recipe, !r.answerLooksGood(question: question, answer: gen.text, type: r.classify(question)),
+        var gen = try await generateOnce(question: question, notebook: notebook, result: result, personal: personal, withEntityContext: true)
+        // The Mac's second look: a weak answer, or the model saying the passages hold nothing, retriggers retrieval
+        // with rewritten queries and answers again.
+        if let r = recipe, AnswerBoundary.isRefusal(gen.text) || !r.answerLooksGood(question: question, answer: gen.text, type: r.classify(question)),
            let second = try await correctiveRetrieve(question: question, notebook: notebook, first: result.pool) {
             result = second
-            gen = try await generateOnce(question: question, result: result, personal: personal, withEntityContext: false)
+            gen = try await generateOnce(question: question, notebook: notebook, result: result, personal: personal, withEntityContext: false)
         }
-        return LocalAnswer(sources: result.nothingRelevant ? [] : result.hits, answer: gen.text, seconds: Date().timeIntervalSince(t0),
+        // The model's own refusal is shown as the clean line, with no sources: unrelated passages are not sources.
+        let refused = result.nothingRelevant || AnswerBoundary.isRefusal(gen.text)
+        return LocalAnswer(sources: refused ? [] : result.hits, answer: refused ? AnswerBoundary.noAnswer(notebook: notebookTitle(notebook)) : gen.text,
+                           seconds: Date().timeIntervalSince(t0),
                            firstWordSeconds: gen.firstWord, tokensPerSecond: gen.tokensPerSecond)
     }
 
-    /// One answer for one retrieval (UI-free). Nothing relevant means the Mac's refusal, without asking the model.
-    private func generateOnce(question: String, result: Retrieval, personal: PersonalContext?, withEntityContext: Bool)
+    /// One answer for one retrieval (UI-free). Nothing relevant means the notebook's refusal, without asking the model.
+    private func generateOnce(question: String, notebook: String, result: Retrieval, personal: PersonalContext?, withEntityContext: Bool)
         async throws -> (text: String, firstWord: Double?, tokensPerSecond: Double?) {
         if result.nothingRelevant || result.hits.isEmpty {
-            return (recipe?.citations.noAnswer ?? "I don't have enough relevant information in your documents to answer this question accurately.", nil, nil)
+            return (AnswerBoundary.noAnswer(notebook: notebookTitle(notebook)), nil, nil)
         }
         if gemma == nil {
             SoakTrace.log("answer model load begins")
@@ -537,7 +551,7 @@ public final class LibraryModel {
         SoakTrace.log("decode begins (\(result.hits.count) passages)")
         defer { SoakTrace.log("decode ends") }
         let passages = await withMeetingContext(result.hits)
-        let setup = generationSetup(question: question, hits: passages, personal: personal, withEntityContext: withEntityContext)
+        let setup = generationSetup(question: question, hits: passages, personal: personal, withEntityContext: withEntityContext, notebookTitle: notebookTitle(notebook))
         let session = ChatSession(gemma, instructions: setup.instructions, generateParameters: setup.params)
         var answer = "", first: Double?, info: GenerateCompletionInfo?
         let started = Date()
@@ -552,11 +566,14 @@ public final class LibraryModel {
     }
 
     /// What the phone gives its model: the Mac's own prompts, decode settings and passage framing when the
-    /// recipe has been synced, otherwise the short built-in fallback.
-    public func generationSetup(question: String, hits: [LibraryHit], personal: PersonalContext? = nil, withEntityContext: Bool = true) -> (instructions: String, prompt: String, params: GenerateParameters, clean: (String, Bool) -> String) {
+    /// recipe has been synced, otherwise the short built-in fallback. Either way the notebook boundary comes first:
+    /// these passages, from this notebook, are all the model may use (`AnswerBoundary.instructions`).
+    public func generationSetup(question: String, hits: [LibraryHit], personal: PersonalContext? = nil, withEntityContext: Bool = true,
+                                notebookTitle: String? = nil) -> (instructions: String, prompt: String, params: GenerateParameters, clean: (String, Bool) -> String) {
+        let boundary = AnswerBoundary.instructions(notebook: notebookTitle ?? hits.first?.notebookTitle ?? "this notebook")
         if let r = recipe {
             let length = AnswerLength.current
-            return (r.systemPrompt(for: question, personal: personal, lengthWords: length.words),
+            return (boundary + "\n\n" + r.systemPrompt(for: question, personal: personal, lengthWords: length.words),
                     r.userPrompt(question: question, passages: hits.map(\.text), suffix: withEntityContext ? r.contextSuffix(question: question, personal: personal) : ""),
                     r.parameters(maxTokens: length.maxTokens),
                     { text, cutOff in
@@ -565,7 +582,7 @@ public final class LibraryModel {
                     })
         }
         let sources = hits.enumerated().map { i, h in "[\(i + 1)] (\(h.filename))\n\(String(h.text.prefix(1_100)))" }.joined(separator: "\n\n")
-        return (Self.localInstructions, "Passages:\n\n\(sources)\n\nQuestion: \(question)", GenerateParameters(maxTokens: 400), { text, _ in text })
+        return (boundary + "\n\n" + Self.localInstructions, "Passages:\n\n\(sources)\n\nQuestion: \(question)", GenerateParameters(maxTokens: 400), { text, _ in text })
     }
 
     public static let localInstructions = "You answer questions using ONLY the numbered passages from the user's own notes. "
@@ -765,8 +782,9 @@ public final class LibraryModel {
                     result = second; corrected = true; withContext = false
                     hits = second.hits; answerSources = second.hits
                 } else {
-                    answerText = recipe?.citations.noAnswer ?? "I don't have enough relevant information in your documents to answer this question accurately."
-                    answerStatus = "Passages in \(Int(findSeconds * 1000)) ms · nothing relevant enough"
+                    answerText = AnswerBoundary.noAnswer(notebook: notebookTitle(scope))
+                    hits = []; answerSources = []                      // the nearest passages are not sources for this question
+                    answerStatus = "Passages in \(Int(findSeconds * 1000)) ms · nothing in this notebook about that"
                     return
                 }
             }
@@ -782,7 +800,7 @@ public final class LibraryModel {
             var current = result
             var line = ""
             while true {
-                let setup = generationSetup(question: question, hits: current.hits, personal: personal, withEntityContext: withContext)
+                let setup = generationSetup(question: question, hits: current.hits, personal: personal, withEntityContext: withContext, notebookTitle: notebookTitle(scope))
                 let prompt = setup.prompt
                 let session = ChatSession(gemma, instructions: setup.instructions, generateParameters: setup.params)
                 answerStatus = corrected ? "Looking again, then writing…" : "Writing…"
@@ -814,8 +832,10 @@ public final class LibraryModel {
                 if let info { line += " · \(String(format: "%.0f", info.tokensPerSecond)) tok/s · \(info.generationTokenCount) tokens" }
                 line += " · memory \(Int(MemoryProbe.footprintMB())) MB"
                 if cancelled { line += " · stopped"; break }
-                // The Mac's second look: a weak answer retriggers retrieval with rewritten queries and one more answer.
-                guard !corrected, let r = recipe, !r.answerLooksGood(question: question, answer: answerText, type: r.classify(question)) else { break }
+                // The Mac's second look: a weak answer, or the model saying the passages hold nothing, retriggers
+                // retrieval with rewritten queries and one more answer.
+                guard !corrected, let r = recipe,
+                      AnswerBoundary.isRefusal(answerText) || !r.answerLooksGood(question: question, answer: answerText, type: r.classify(question)) else { break }
                 corrected = true
                 answerStatus = "Looking again with rewritten queries…"
                 guard let second = try await correctiveRetrieve(question: question, notebook: scope, first: current.pool) else { break }
@@ -824,12 +844,16 @@ public final class LibraryModel {
                 hits = second.hits
                 answerSources = second.hits
                 if second.nothingRelevant || second.hits.isEmpty {
-                    answerText = r.citations.noAnswer
-                    line += " · nothing relevant after a second look"
+                    answerText = AnswerBoundary.noAnswer(notebook: notebookTitle(scope))      // shown below, with no sources
                     break
                 }
             }
             if corrected { line += " · after a second look" }
+            if AnswerBoundary.isRefusal(answerText) {                 // the model found nothing in the passages: the clean line, no sources
+                answerText = AnswerBoundary.noAnswer(notebook: notebookTitle(scope))
+                hits = []; answerSources = []
+                line += " · nothing in this notebook about that"
+            }
             answerStatus = line
         } catch {
             answerStatus = "Could not answer: \(error.localizedDescription)"
