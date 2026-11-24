@@ -51,7 +51,7 @@ public enum AnswerBench {
         }
         guard let info else { throw LabError.model("the model produced no completion information") }
         let reason: String
-        switch info.stopReason { case .stop: reason = "stop"; case .length: reason = "length"; case .cancelled: reason = "cancelled"; @unknown default: reason = "other" }
+        switch info.stopReason { case .stop: reason = "stop"; case .length: reason = "length"; case .cancelled: reason = "cancelled"; default: reason = "other" }
         return AnswerBenchResult(
             date: Date(), model: model, device: await DeviceInfo.current().model,
             promptTokens: info.promptTokenCount, generatedTokens: info.generationTokenCount,

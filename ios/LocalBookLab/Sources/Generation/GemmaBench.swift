@@ -112,12 +112,14 @@ final class GemmaBenchModel {
         do {
             // Keep MLX's buffer cache small: on a phone it is memory the app cannot spare.
             Memory.cacheLimit = 64 * 1024 * 1024
-            let c = try await #huggingFaceLoadModelContainer(configuration: Self.configuration) { [weak self] progress in
-                let fraction = progress.fractionCompleted
-                Task { @MainActor in
-                    if case .downloading = self?.state { self?.state = .downloading(fraction) }
-                }
-            }
+            let c = try await LLMModelFactory.shared.loadContainer(
+                from: HubDownloads.Downloader(), using: HubDownloads.TokenizerLoader(), configuration: Self.configuration,
+                progress: .download { [weak self] progress in
+                    let fraction = progress.fractionCompleted
+                    Task { @MainActor in
+                        if case .downloading = self?.state { self?.state = .downloading(fraction) }
+                    }
+                })
             state = .loading
             // Touch the weights once so the load cost is paid here, not in the first measured run.
             let warm = ChatSession(c, generateParameters: GenerateParameters(maxTokens: 4))

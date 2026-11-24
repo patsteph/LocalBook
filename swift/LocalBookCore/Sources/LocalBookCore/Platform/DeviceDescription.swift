@@ -17,7 +17,9 @@ public enum DeviceDescription {
     /// The operating system and version (`iOS 27.2`, `macOS 26.1`).
     public static var system: String {
         #if canImport(UIKit)
-        return "\(UIDevice.current.systemName) \(UIDevice.current.systemVersion)"
+        // UIDevice is main-actor only on the iOS 27 SDK; the version needs no device object.
+        let v = ProcessInfo.processInfo.operatingSystemVersion
+        return "iOS \(v.majorVersion).\(v.minorVersion)" + (v.patchVersion > 0 ? ".\(v.patchVersion)" : "")
         #else
         let v = ProcessInfo.processInfo.operatingSystemVersion
         return "macOS \(v.majorVersion).\(v.minorVersion)" + (v.patchVersion > 0 ? ".\(v.patchVersion)" : "")
@@ -43,7 +45,9 @@ public enum DeviceDescription {
     /// The name the user gave the device (`Commodore 64`, `Patrick's MacBook Pro`).
     public static var userName: String {
         #if canImport(UIKit)
-        return UIDevice.current.name
+        // UIDevice is main-actor only on the iOS 27 SDK; read it there whichever thread asks.
+        if Thread.isMainThread { return MainActor.assumeIsolated { UIDevice.current.name } }
+        return DispatchQueue.main.sync { MainActor.assumeIsolated { UIDevice.current.name } }
         #else
         return Host.current().localizedName ?? ProcessInfo.processInfo.hostName
         #endif

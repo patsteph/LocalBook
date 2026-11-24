@@ -7,18 +7,18 @@ import Tokenizers
 /// macros. MLXHuggingFace pulls in the package's FoundationModels adapter (a default trait), and that adapter does
 /// not compile against the iOS 27 SDK; the macros expanded to exactly these two types, so nothing is lost by
 /// writing them here and leaving that library out of both apps.
-enum HubDownloads {
+public enum HubDownloads {
     struct InvalidRepository: Error, LocalizedError {
         let id: String
         var errorDescription: String? { "“\(id)” is not a model repository id" }
     }
 
     /// Downloads a model snapshot (or returns the cached one) through swift-huggingface's hub client.
-    struct Downloader: MLXLMCommon.Downloader {
+    public struct Downloader: MLXLMCommon.Downloader {
         private let hub: HubClient
-        init(_ hub: HubClient = HubClient()) { self.hub = hub }
+        public init(_ hub: HubClient = HubClient()) { self.hub = hub }
 
-        func download(id: String, revision: String?, matching patterns: [String], useLatest: Bool,
+        public func download(id: String, revision: String?, matching patterns: [String], useLatest: Bool,
                       progressHandler: @Sendable @escaping (Progress) -> Void) async throws -> URL {
             guard let repo = Repo.ID(rawValue: id) else { throw InvalidRepository(id: id) }
             return try await hub.downloadSnapshot(of: repo, revision: revision ?? "main", matching: patterns,
@@ -27,8 +27,9 @@ enum HubDownloads {
     }
 
     /// Loads a model folder's tokenizer with swift-transformers and presents it as the runtime's tokenizer.
-    struct TokenizerLoader: MLXLMCommon.TokenizerLoader {
-        func load(from directory: URL) async throws -> any MLXLMCommon.Tokenizer {
+    public struct TokenizerLoader: MLXLMCommon.TokenizerLoader {
+        public init() {}
+        public func load(from directory: URL) async throws -> any MLXLMCommon.Tokenizer {
             TokenizerBridge(try await AutoTokenizer.from(modelFolder: directory))
         }
     }

@@ -204,7 +204,7 @@ extension LibraryModel {
                     _ = try await call(mac, "/phone/library/notebook/edit", ["action": "delete", "notebook_id": b["notebook_id"] ?? ""])
                 case "notebook_section":
                     let name = b["section"] ?? ""
-                    let sid: Any = name.isEmpty ? NSNull() : (try await macSection(named: name, create: true) ?? NSNull())
+                    let sid: Any = name.isEmpty ? NSNull() : ((try await macSection(named: name, create: true)) as Any? ?? NSNull())
                     _ = try await call(mac, "/phone/library/notebook/edit", ["action": "section", "notebook_id": b["notebook_id"] ?? "", "section_id": sid])
                 case "section_create":
                     _ = try await macSection(named: b["name"] ?? "", create: true)
