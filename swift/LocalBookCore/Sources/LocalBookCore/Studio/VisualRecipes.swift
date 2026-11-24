@@ -258,54 +258,93 @@ extension Builder {
         return y - laneGap
     }
 
-    // MARK: decision tree — a question card with a diamond mark, its outcomes to the right, the next question below
+    // MARK: decision tree — a flow diagram: diamonds down a spine, Yes to a pill on the right, No down to the next
+    // question or to a pill of its own, each arrow labelled with the answer it carries
+
+    /// An outcome that hands over to the next question rather than ending the path.
+    static func continues(_ outcome: String) -> Bool {
+        let t = outcome.lowercased()
+        return t.isEmpty || t.range(of: #"next question|next step|continue|otherwise|move on|go on|proceed|keep going|see below|^ask\b"#, options: .regularExpression) != nil
+    }
 
     mutating func decisionTree(top: CGFloat) -> CGFloat {
-        let qW = 440 * s, qGap = 64 * s, mark = 26 * s
-        let outW = W - pad - (pad + qW + qGap)
-        var y = top
-        for (i, q) in spec.items.enumerated() {
-            // A rounded card, not a rhombus: three lines of question fit a card, where a flat diamond cut their ends off.
-            let question = block(q.title, VisualTextStyle(size: 21 * s, weight: .semibold), x: pad + inner + mark + 14 * s, y: 0, width: qW - 2 * inner - mark - 14 * s, maxLines: 3)
-            let qH = max(88 * s, (question?.frame.height ?? 0) + 2 * inner)
-            // Outcomes first, to know the height.
-            var outcomes: [(label: String, block: VisualTextBlock?, lead: CGFloat)] = []
-            var oy = y
-            for child in q.children {
-                let parts = child.split(separator: ":", maxSplits: 1).map { $0.trimmingCharacters(in: .whitespaces) }
-                let label = parts.count == 2 ? parts[0] : ""
-                let text = parts.count == 2 ? parts[1] : child
-                let lead = (label.isEmpty ? 12 : 30) * s      // room for the choice word above the outcome
-                let b = block(text, VisualTextStyle(size: 19 * s), x: pad + qW + qGap + inner, y: oy + lead, width: outW - 2 * inner, maxLines: 2)
-                outcomes.append((label, b, lead))
-                oy += (b?.frame.height ?? 0) + lead + 12 * s + 10 * s
-            }
-            let blockH = max(qH, oy - y - 10 * s)
-            let cx = pad + qW / 2, cy = y + blockH / 2
-            scene.add(.card(CGRect(x: pad, y: cy - qH / 2, width: qW, height: qH), fill: .tint(i), stroke: .accent(i), radius: radius, hit: nil))
-            let mx = pad + inner + mark / 2
-            scene.add(.fill([CGPoint(x: mx, y: cy - mark / 2), CGPoint(x: mx + mark / 2, y: cy), CGPoint(x: mx, y: cy + mark / 2), CGPoint(x: mx - mark / 2, y: cy)], role: .accent(i)))
-            if var qb = question { qb.frame.origin.y = cy - qb.frame.height / 2; scene.add(.text(qb)) }
-            for o in outcomes {
-                guard let b = o.block else { continue }
-                let frame = CGRect(x: pad + qW + qGap, y: b.frame.minY - o.lead, width: outW, height: b.frame.height + o.lead + 12 * s)
-                scene.add(.card(frame, fill: .surface, stroke: nil, radius: 12 * s, hit: nil))
-                scene.add(.text(b))
-                let from = CGPoint(x: pad + qW, y: cy), to = CGPoint(x: frame.minX, y: frame.midY)
-                let midX = from.x + qGap / 2
-                scene.add(.stroke([.move(from), .line(CGPoint(x: midX, y: from.y)), .line(CGPoint(x: midX, y: to.y)), .line(CGPoint(x: to.x - 10 * s, y: to.y))], role: .rule, width: 2 * s, dashed: false))
-                head(at: to, direction: CGPoint(x: 1, y: 0), role: .rule)
-                // The choice ("Yes", "No") sits inside the outcome card's left edge, where it cannot cross the connector.
-                if !o.label.isEmpty, let l = block(o.label, VisualTextStyle(size: 14 * s, weight: .bold, role: .accent(i)), x: frame.minX + 12 * s, y: frame.minY + 6 * s, width: outW - 24 * s, maxLines: 1) { scene.add(.text(l)) }
-            }
-            if i < spec.items.count - 1 {
-                let next = y + blockH + 36 * s
-                scene.add(.stroke([.move(CGPoint(x: cx, y: cy + qH / 2)), .line(CGPoint(x: cx, y: next + 44 * s - 10 * s))], role: .rule, width: 2 * s, dashed: true))
-                head(at: CGPoint(x: cx, y: next + 44 * s - 10 * s), direction: CGPoint(x: 0, y: 1), role: .rule)
-            }
-            y += blockH + 36 * s
+        let n = spec.items.count
+        guard n > 0 else { return top }
+        let cx = W * 0.45
+        let stage = (H - pad - top) / CGFloat(n)
+        let dW = min(520 * s, (W - 2 * pad) * 0.4)
+        let dH = min(170 * s, stage * 0.72)
+        let reach = 90 * s                                   // arrow from a diamond's point to a pill
+        let qStyle = VisualTextStyle(size: (n >= 6 ? 16 : (n == 5 ? 18 : 20)) * s, weight: .semibold, align: .center)
+        let pillStyle = VisualTextStyle(size: 18 * s, weight: .semibold, role: .onAccent, align: .center)
+
+        /// The answer word and the advice of one outcome ("Yes: use RAG").
+        func split(_ child: String, fallback: String) -> (answer: String, advice: String) {
+            let parts = child.split(separator: ":", maxSplits: 1).map { $0.trimmingCharacters(in: .whitespaces) }
+            if parts.count == 2, parts[0].count <= 12, !parts[1].isEmpty { return (parts[0].uppercased(), parts[1]) }
+            return (fallback, child)
         }
-        return y - 36 * s
+        /// A pill whose near edge sits at `edge` (its left edge when `leading`, else its right), centred on `cy`.
+        func pill(_ text: String, edge: CGFloat, leading: Bool, cy: CGFloat, accent: Int, maxWidth: CGFloat) -> CGRect {
+            let w = min(maxWidth, VisualText.width(of: text, style: pillStyle) + 44 * s)
+            let x = leading ? edge : edge - w
+            let b = block(text, pillStyle, x: x + 16 * s, y: 0, width: w - 32 * s, maxLines: 2)
+            let h = (b?.frame.height ?? 20 * s) + 22 * s
+            let frame = CGRect(x: x, y: cy - h / 2, width: w, height: h)
+            scene.add(.card(frame, fill: .accent(accent), stroke: nil, radius: h / 2, hit: nil))
+            if var t = b { t.frame.origin.y = cy - t.frame.height / 2; scene.add(.text(t)) }
+            return frame
+        }
+        /// An arrow with the answer word beside its middle: above a level arrow, to the right of a falling one.
+        func labelled(_ word: String, from: CGPoint, to: CGPoint, accent: Int) {
+            arrow(from: from, to: to, role: .accent(accent))
+            let ls = VisualTextStyle(size: 14 * s, weight: .bold, role: .accent(accent), align: to.x == from.x ? .leading : .center)
+            if to.x == from.x {
+                place(word, ls, x: from.x + 10 * s, y: (from.y + to.y) / 2 - 9 * s, width: 90 * s, maxLines: 1)
+            } else {
+                place(word, ls, x: (from.x + to.x) / 2 - 45 * s, y: from.y - 24 * s, width: 90 * s, maxLines: 1)
+            }
+        }
+
+        for (i, q) in spec.items.enumerated() {
+            let cy = top + stage * CGFloat(i) + dH / 2 + 6 * s
+            // The diamond, with the question inside; a question too long for it is shrunk by the next pass.
+            let textW = dW * 0.55
+            let question = block(q.title, qStyle, x: cx - textW / 2, y: 0, width: textW, maxLines: 3)
+            if let qb = question, textW / dW + qb.frame.height / dH > 1 { fits = false }
+            let corners = [CGPoint(x: cx, y: cy - dH / 2), CGPoint(x: cx + dW / 2, y: cy), CGPoint(x: cx, y: cy + dH / 2), CGPoint(x: cx - dW / 2, y: cy)]
+            scene.add(.fill(corners, role: .tint(i)))
+            scene.add(.stroke([.move(corners[0]), .line(corners[1]), .line(corners[2]), .line(corners[3]), .line(corners[0])], role: .accent(i), width: 2.5 * s, dashed: false))
+            if var qb = question { qb.frame.origin.y = cy - qb.frame.height / 2; scene.add(.text(qb)) }
+
+            // The two outcomes: Yes first, No second, however they were written.
+            let yes = q.children.indices.contains(0) ? split(q.children[0], fallback: "YES") : ("YES", "")
+            let no = q.children.indices.contains(1) ? split(q.children[1], fallback: "NO") : ("NO", "")
+            let last = i == n - 1
+            let nextTop = CGPoint(x: cx, y: cy + stage - dH / 2 + 6 * s)
+            // One answer may hand over to the next question: that one goes down the spine, the other to a pill.
+            let yesGoesDown = !last && Self.continues(yes.advice) && !Self.continues(no.advice)
+            let side = yesGoesDown ? no : yes
+            let down = yesGoesDown ? yes : no
+            // The side pill, to the right of the diamond.
+            let rightEdge = cx + dW / 2 + reach
+            let right = pill(side.advice.isEmpty ? side.answer.capitalized : side.advice, edge: rightEdge, leading: true, cy: cy, accent: i, maxWidth: W - pad - rightEdge)
+            labelled(side.answer, from: CGPoint(x: cx + dW / 2, y: cy), to: CGPoint(x: right.minX, y: cy), accent: i)
+            if !last, Self.continues(down.advice) {
+                // Down the spine to the next question.
+                labelled(down.answer, from: CGPoint(x: cx, y: cy + dH / 2), to: nextTop, accent: i)
+            } else {
+                // A second ending: a pill to the left, and when a question follows, an unlabelled path on to it.
+                let leftEdge = cx - dW / 2 - reach
+                let left = pill(down.advice.isEmpty ? down.answer.capitalized : down.advice, edge: leftEdge, leading: false, cy: cy, accent: i, maxWidth: leftEdge - pad)
+                labelled(down.answer, from: CGPoint(x: cx - dW / 2, y: cy), to: CGPoint(x: left.maxX, y: cy), accent: i)
+                if !last {
+                    scene.add(.stroke([.move(CGPoint(x: cx, y: cy + dH / 2)), .line(CGPoint(x: nextTop.x, y: nextTop.y - 12 * s))], role: .rule, width: 2 * s, dashed: true))
+                    head(at: nextTop, direction: CGPoint(x: 0, y: 1), role: .rule)
+                }
+            }
+        }
+        return H - pad
     }
 
     // MARK: two columns — pros against cons, or before against after

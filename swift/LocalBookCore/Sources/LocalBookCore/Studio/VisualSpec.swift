@@ -340,6 +340,7 @@ public struct VisualSpec: Codable, Hashable, Sendable {
             if axes.count < 2, !placed.isEmpty { axes = ["Horizontal", "Vertical"] }
             spec.columns = axes
             spec.items = placed.map { e, pos in Item(title: titled(e), detail: detailed(e), value: "\(position(pos.0)),\(position(pos.1))") }
+            spec.items = spread(spec.items)
         case .figures:
             spec.stats = anyList(["stats", "numbers", "figures"]).map { Item(title: text($0["label"] ?? $0["title"] ?? $0["name"]), value: text($0["value"] ?? $0["number"] ?? $0["figure"])) }
             spec.items = objects("points").map { Item(title: titled($0), detail: detailed($0)) }
@@ -390,6 +391,28 @@ public struct VisualSpec: Codable, Hashable, Sendable {
             if let s = parse(raw, layout: other) { return s }
         }
         return nil
+    }
+
+    /// Items that share one spot (every item of a cell, when placed by the cell's name) spread over a small grid
+    /// around it, so no two dots or labels sit on top of each other.
+    static func spread(_ items: [Item]) -> [Item] {
+        var byValue: [String: [Int]] = [:]
+        for (i, it) in items.enumerated() { byValue[it.value, default: []].append(i) }
+        var out = items
+        for (value, at) in byValue where at.count > 1 {
+            let parts = value.split(separator: ",").compactMap { Double($0.trimmingCharacters(in: .whitespaces)) }
+            guard parts.count == 2 else { continue }
+            let cols = at.count <= 2 ? at.count : 2
+            let rows = Int((Double(at.count) / Double(cols)).rounded(.up))
+            for (k, i) in at.enumerated() {
+                let c = k % cols, r = k / cols
+                let dx = cols == 1 ? 0 : (Double(c) - Double(cols - 1) / 2) * 1.4
+                let dy = rows == 1 ? 0 : (Double(rows - 1) / 2 - Double(r)) * (1.6 / Double(max(1, rows - 1)))
+                let x = min(5, max(1, parts[0] + dx)), y = min(5, max(1, parts[1] + dy))
+                out[i].value = "\(x),\(y)"
+            }
+        }
+        return out
     }
 
     /// Groups whose children are "option: mark" pairs ("RAG: ✓", "Fine-tuning: ✗", "Long context: partial") read as a
@@ -474,7 +497,7 @@ public struct VisualSpec: Codable, Hashable, Sendable {
             return "Make a comparison table for \(about). \(lead) {\"title\": at most 6 words, \"columns\": [2 or 3 names of the things compared], \"rows\": [\(r) items {\"label\": the aspect compared, \"cells\": [one short phrase per column, in column order]}]}."
         case .quadrant:
             let k = d.pick("4 to 6", "6 to 9", "9 to 14")
-            return "Place the items in \(about) on two axes. \(lead) {\"title\": at most 6 words, \"axes\": [the horizontal axis, the vertical axis, each at most 3 words, low to high], \"items\": [\(k) items {\"title\": at most 4 words, \"x\": 1 to 5, \"y\": 1 to 5}]}."
+            return "Sort the items in \(about) into the four cells of two axes. \(lead) {\"title\": at most 6 words, \"axes\": [the horizontal axis, the vertical axis, one or two words each], \"cells\": [exactly 4 cells {\"cell\": \"low <horizontal axis>, low <vertical axis>\", \"items\": [names of at most 4 words]}, then the same for \"high …, low …\", \"low …, high …\" and \"high …, high …\"]}, with \(k) names in all, each in one cell only. For example, for chores on effort and impact: {\"title\": \"Chores worth doing\", \"axes\": [\"Effort\", \"Impact\"], \"cells\": [{\"cell\": \"low effort, low impact\", \"items\": [\"Dusting\"]}, {\"cell\": \"high effort, low impact\", \"items\": [\"Repainting the shed\"]}, {\"cell\": \"low effort, high impact\", \"items\": [\"Paying the bills\", \"Locking up\"]}, {\"cell\": \"high effort, high impact\", \"items\": [\"Fixing the roof\"]}]}."
         case .infographic:
             let st = d.pick("3", "3 or 4", "4 to 6"), p = d.pick("2 or 3", "3 to 5", "5 to 8")
             return "Make an infographic for \(about). \(lead) {\"title\": a punchy headline of at most 8 words, \"stats\": [\(st) items {\"value\": a figure, number or short fact taken from the passages, \"label\": at most 5 words}], \"points\": [\(p) items {\"title\": at most 5 words, \"detail\": \(sentence)}]}."

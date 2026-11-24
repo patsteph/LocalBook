@@ -152,6 +152,14 @@ struct VisualSceneTests {
         #expect(n.items[1].children == ["Yes: Smaller model", "No: Larger model"])
         let scene = VisualLayout.scene(for: t)
         #expect(VisualLint.check(scene).filter { $0.kind == .cut || $0.kind == .offSlide || $0.kind == .overlap }.isEmpty)
+        // Drawn as a flow: a diamond per question, "Use retrieval" on a pill, YES and NO on the arrows, nothing past the edge.
+        let words = scene.nodes.compactMap { n -> [String]? in if case .text(let t) = n { return t.lines } else { return nil } }.flatMap { $0 }
+        #expect(words.contains("YES") && words.contains("NO") && words.contains("Use retrieval"))
+        #expect(scene.nodes.filter { if case .fill(let pts, _) = $0 { return pts.count == 4 } else { return false } }.count == 2)
+        #expect(Builder.continues("Ask the next question") && Builder.continues("") && !Builder.continues("Use retrieval"))
+        // Six questions still fit, shrunk if they must, with no pill off the slide.
+        let six = try spec(#"{"title": "Long guide", "questions": [{"question": "Does the knowledge change every week or faster?", "yes": "Use retrieval with a fresh index", "no": "Ask the next question"}, {"question": "Do you need citations back to the source documents?", "yes": "Use retrieval", "no": "Ask the next question"}, {"question": "Is the corpus larger than the context window?", "yes": "Use retrieval", "no": "Ask the next question"}, {"question": "Do you need a new tone, format or persona?", "yes": "Fine-tune a small model", "no": "Ask the next question"}, {"question": "Is latency critical?", "yes": "Long context with caching", "no": "Ask the next question"}, {"question": "Is the data private?", "yes": "Run everything locally", "no": "Either route works"}]}"#, .decisionTree)
+        #expect(VisualLint.check(VisualLayout.scene(for: six)).filter { $0.kind == .cut || $0.kind == .offSlide || $0.kind == .overlap }.isEmpty)
     }
 
     @Test("two axes place items by their cell in words, by grouped cells, by a cell dictionary, and read a name beside a rationale")
@@ -160,7 +168,22 @@ struct VisualSceneTests {
         #expect(worded.items.first { $0.title == "RAG" }?.value == "1.5,4.5")
         #expect(worded.items.first { $0.title == "Pretraining" }?.value == "4.5,1.5")
         let grouped = try spec(#"{"title": "T", "axes": ["Effort", "Impact"], "quadrants": [{"title": "Quick wins", "description": "low effort, high impact", "items": ["RAG", "Prompting"]}, {"title": "Big bets", "description": "high effort, high impact", "items": ["Pretraining"]}]}"#, .quadrant)
-        #expect(grouped.items.count == 3 && grouped.items.first { $0.title == "Prompting" }?.value == "1.5,4.5")
+        #expect(grouped.items.count == 3)
+        // Two names in one cell spread apart inside it, still low effort and high impact.
+        let rag = try #require(grouped.items.first { $0.title == "RAG" }), prompting = try #require(grouped.items.first { $0.title == "Prompting" })
+        #expect(rag.value != prompting.value)
+        for v in [rag.value, prompting.value] {
+            let p = v.split(separator: ",").compactMap { Double($0) }
+            #expect(p.count == 2 && p[0] < 3 && p[1] > 3)
+        }
+        // The schema the model is asked for: four named cells, each with its names.
+        let asked = try spec(#"{"title": "Techniques", "axes": ["Effort", "Impact"], "cells": [{"cell": "low effort, low impact", "items": ["Prompting"]}, {"cell": "high effort, low impact", "items": ["Pretraining"]}, {"cell": "low effort, high impact", "items": ["RAG", "Few-shot"]}, {"cell": "high effort, high impact", "items": ["Fine-tuning"]}]}"#, .quadrant)
+        #expect(asked.items.count == 5 && asked.columns == ["Effort", "Impact"])
+        let pre = try #require(asked.items.first { $0.title == "Pretraining" }).value.split(separator: ",").compactMap { Double($0) }
+        #expect(pre[0] > 3 && pre[1] < 3)
+        #expect(VisualSpec.request(.quadrant, about: "x").contains("\"cells\""))
+        let scene = VisualLayout.scene(for: asked)
+        #expect(VisualLint.check(scene).filter { $0.kind == .cut || $0.kind == .offSlide || $0.kind == .overlap }.isEmpty)
         let dict = try spec(#"{"title": "T", "axes": ["Effort", "Impact"], "quadrants": {"High effort / Low impact": ["Pretraining"], "Low effort / High impact": ["RAG"]}}"#, .quadrant)
         #expect(dict.items.count == 2 && dict.items.first { $0.title == "RAG" }?.value == "1.5,4.5")
         let reasoned = try spec(#"{"title": "T", "axes": ["Effort", "Impact"], "items": [{"technique": "RAG", "effort": "Low", "impact": "High", "rationale": "Needs only an index of the documents and a retriever in front of the model"}]}"#, .quadrant)
