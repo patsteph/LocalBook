@@ -55,7 +55,7 @@ Lab in this folder. Every pass bar was fixed before its numbers existed. Per-tes
   one-time nonce plus this Mac's id and certificate fingerprint (no replay, no redirect to another Mac),
   expires after 2 minutes, and an address is locked out for 2 minutes after 6 failed attempts in a minute.
 - Voice engine: Kokoro legacy (Neural Engine + CPU). Transcription: Parakeet v3.
-- Gemma runtime: `mlx-swift-lm` pinned 3.31.4 (3.32.x does not build against the iOS 27 beta SDK).
+- Gemma runtime: `mlx-swift-lm` pinned 3.31.4 at the time (3.32.x did not build against the iOS 27 beta SDK); raised to 3.33.0 with mlx-swift 0.33 on 2026-11-24 so the Mac gets Gemma 4's vision tower.
 
 ## Not measured (do not assume)
 

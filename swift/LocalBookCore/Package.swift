@@ -28,10 +28,11 @@ let package = Package(
         // 1.7.x needs -enable-experimental-feature BorrowingSequence; keep to the stable line.
         .package(url: "https://github.com/apple/swift-collections", exact: "1.3.0"),
         .package(url: "https://github.com/huggingface/swift-transformers", from: "1.3.5"),
-        .package(url: "https://github.com/ml-explore/mlx-swift", "0.31.4"..<"0.32.0"),
-        // 3.32.x adds a FoundationModels adapter that does not compile against the iOS 27 SDK the phone app uses;
-        // 3.31.4 has Gemma 4 E4B and none of that.
-        .package(url: "https://github.com/ml-explore/mlx-swift-lm", exact: "3.31.4"),
+        // 0.33 is what mlx-swift-lm 3.33 and flux-2-swift-mlx 3.2 both want; the Mac app's Klein package pins it exactly.
+        .package(url: "https://github.com/ml-explore/mlx-swift", "0.33.0"..<"0.34.0"),
+        // 3.33.0 builds Gemma 4's vision tower without the K/V weights its shared layers do not have, so the Mac's
+        // critic can look at pictures; its FoundationModels adapter is behind a build flag and never compiles here.
+        .package(url: "https://github.com/ml-explore/mlx-swift-lm", exact: "3.33.0"),
         .package(url: "https://github.com/FluidInference/FluidAudio", from: "0.17.6"),
         .package(url: "https://github.com/huggingface/swift-huggingface", from: "0.9.0"),
         // Office Open XML (.xlsx, .pptx) is a zip of XML parts; this opens the zip, Foundation parses the parts.

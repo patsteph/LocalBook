@@ -16,12 +16,12 @@ packages:
     from: "1.3.5"
   mlx-swift:
     url: https://github.com/ml-explore/mlx-swift
-    minorVersion: "0.31.4"
+    minorVersion: "0.33.0"
   mlx-swift-lm:
     url: https://github.com/ml-explore/mlx-swift-lm
-    # 3.32.x adds a FoundationModels adapter that does not compile against the iOS 27 beta SDK;
-    # 3.31.4 has Gemma 4 E4B and none of that.
-    exactVersion: "3.31.4"
+    # The same pin as the shared package: 3.33.0 (its FoundationModels adapter is behind a build flag, so the
+    # iOS 27 SDK trouble 3.32.x had is gone).
+    exactVersion: "3.33.0"
   FluidAudio:
     url: https://github.com/FluidInference/FluidAudio
     from: "0.17.6"

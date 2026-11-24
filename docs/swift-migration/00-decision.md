@@ -44,8 +44,8 @@ Library today: 19 LanceDB tables, 41,970 rows, 768-d f32 vectors.
 | Swift language mode | 6 | strict concurrency from the first line |
 | Minimum OS | macOS 26, iOS 27 | Vision document reader and SpeechAnalyzer need 26; the phone app is already on 27 |
 | swift-collections | 1.3.0 exact | 1.7.x needs an experimental feature flag |
-| mlx-swift | 0.31.x | the phone's pin |
-| mlx-swift-lm | 3.31.4 exact | 3.32.x adds a FoundationModels adapter that does not compile against the iOS 27 SDK |
+| mlx-swift | 0.33.x (was 0.31.x) | raised 2026-11-24 with mlx-swift-lm; flux-2-swift-mlx 3.2.0 pins 0.33.0 exactly |
+| mlx-swift-lm | 3.33.0 exact (was 3.31.4) | 3.31.4 built Gemma 4's vision tower with K/V weights the E4B checkpoint's shared layers do not have, so the Mac fell back to the text model; 3.33.0 fixes that. Its FoundationModels adapter sits behind a build flag now |
 | FluidAudio | 0.17.6+ | Kokoro and Parakeet |
 | SwiftPM build system | `--build-system native` where Xcode 27's new one misbehaves | USearch and NumKong failed to link under the new one |
 

@@ -6,8 +6,8 @@ import MLXNN
 
 /// The reason the answer model's prompt processing could not simply be cancelled.
 ///
-/// mlx-swift-lm reads a prompt in 512-token chunks and queues ALL of them on the GPU at once (`asyncEval`), without
-/// ever checking whether the task was cancelled. If the screen locks during that stretch — several seconds on a long
+/// mlx-swift-lm (3.31) read a prompt in 512-token chunks and queued ALL of them on the GPU at once (`asyncEval`),
+/// without ever checking whether the task was cancelled. If the screen locks during that stretch — several seconds on a long
 /// prompt — iOS withdraws GPU access with a dozen chunks still queued, they fail, and MLX turns the failure into an
 /// uncaught C++ exception ("Insufficient Permission (to submit GPU work from background)").
 ///
@@ -56,20 +56,26 @@ public final class StoppableLM: Module, LanguageModel, @unchecked Sendable {
         super.init()
     }
 
-    public func prepare(_ input: LMInput, cache: [KVCache], windowSize: Int?) throws -> PrepareResult {
-        let step = min(windowSize ?? GPUGate.prefillChunk, GPUGate.prefillChunk)
+    /// Reads the prompt in chunks of `GPUGate.prefillChunk` tokens at most (the iterator's own step when it is
+    /// smaller), each one finished before the next is queued, with the gate checked in between. The chunk progress
+    /// the iterator asked for is reported the same way the library's own reading would.
+    public func prepare(_ input: LMInput, cache: [KVCache], state: LMOutput.State?, prefill: PrefillParameters) throws -> PrepareResult {
+        let step = Swift.min(prefill.stepSize ?? GPUGate.prefillChunk, GPUGate.prefillChunk)
         var y = input.text
+        let total = y.tokens.size
         var stopped = false
         try GPUGate.check()
         withPreparedCache(cache, lengths: y.sequenceLengths) {
-            var state: LMOutput.State?
+            var carried = state
             while y.tokens.size > step {
                 if GPUGate.isClosed || Task.isCancelled { stopped = true; break }       // cancelled answers stop here even after the screen is back
                 let chunk = y[.newAxis, ..<step]
-                let output = inner(chunk, cache: cache.isEmpty ? nil : cache, state: state)
-                state = output.state
+                let output = inner(chunk, cache: cache.isEmpty ? nil : cache, state: carried)
+                carried = output.state
                 eval(cache)                          // finish this chunk before queuing the next
                 y = y[step...]
+                prefill.progress?(total - y.tokens.size, total)
+                Memory.clearCache()
             }
             if !stopped {
                 if GPUGate.isClosed || Task.isCancelled { stopped = true } else { eval(cache) }
@@ -82,6 +88,13 @@ public final class StoppableLM: Module, LanguageModel, @unchecked Sendable {
         return .tokens(y)
     }
 
+    /// The real model builds its derived state (the library calls this once after loading).
+    public func prepare() throws { try inner.prepare() }
+
+    public var capabilities: LMModelCapabilities { inner.capabilities }
+    public var toolCallFormat: ToolCallFormat? { inner.toolCallFormat }
+    public var reasoningConfig: ReasoningConfig? { inner.reasoningConfig }
+
     public func callAsFunction(_ input: LMInput.Text, cache: [KVCache]?, state: LMOutput.State?) -> LMOutput {
         inner(input, cache: cache, state: state)
     }
@@ -90,8 +103,12 @@ public final class StoppableLM: Module, LanguageModel, @unchecked Sendable {
         inner(inputs, cache: cache)
     }
 
-    public func newCache(parameters: GenerateParameters?) -> [KVCache] {
-        inner.newCache(parameters: parameters)
+    public func newCache(parameters: GenerateParameters?) throws -> [KVCache] {
+        try inner.newCache(parameters: parameters)
+    }
+
+    public func nextTokenLogits(_ input: LMInput.Text, cache: [KVCache]?, state: LMOutput.State?) -> LMOutput {
+        inner.nextTokenLogits(input, cache: cache, state: state)
     }
 
     /// The same model, with stoppable prompt processing.

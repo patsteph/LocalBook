@@ -54,6 +54,7 @@ public enum AnswerModels {
             let c = try await VLMModelFactory.shared.loadContainer(from: #hubDownloader(), using: #huggingFaceTokenizerLoader(), configuration: configuration)
             loadedWithVision = true
             visionProblem = nil
+            SoakTrace.log("answer model: loaded with its vision tower")
             return c
         } catch {
             visionProblem = error.localizedDescription
