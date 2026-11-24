@@ -9,7 +9,7 @@ import SwiftUI
 struct FindSourcesSheet: View {
     @Environment(AppModel.self) private var model
     @State private var mode = Mode.search
-    @State private var query = ""
+    @State private var query = ""                              // starts as the words typed after /web, if any
     @State private var site: SiteSearch.Site? = nil           // nil: every site
     @State private var range = SiteSearch.TimeRange.all
     @State private var notebookId = ""
@@ -69,7 +69,11 @@ struct FindSourcesSheet: View {
             }
         }
         .padding(20).frame(width: 640, height: 560)
-        .onAppear { notebookId = model.currentNotebookId ?? model.library.notebooks.first?.id ?? ""; focused = true }
+        .onAppear {
+            notebookId = model.currentNotebookId ?? model.library.notebooks.first?.id ?? ""
+            if !model.findSourcesQuery.isEmpty { query = model.findSourcesQuery; model.findSourcesQuery = "" }
+            focused = true
+        }
     }
 
     private var resultsList: some View {

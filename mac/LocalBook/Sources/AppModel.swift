@@ -89,6 +89,10 @@ final class AppModel {
     var showInspector = false
     /// A Studio kind the menu asked for (Studio › Briefing…): the Studio pane opens its make sheet.
     var makeRequest: StudioItem.Kind?
+    /// The subject typed after a `/briefing`-style command in the Ask field; the make sheet opens with it filled in.
+    var makeSubject = ""
+    /// The phrase typed after `/web` in the Ask field; the Find Sources sheet opens with it filled in.
+    var findSourcesQuery = ""
     /// A question from an intent or a `localbook://ask` link, asked by the Ask view once it is on screen.
     var pendingQuestion: String?
     /// Record › Voice Note (⇧⌘V): the note editor with dictation already listening.
@@ -284,8 +288,9 @@ final class AppModel {
     }
 
     /// Studio › Briefing, Quiz, …: show the Studio pane and open that kind's make sheet.
-    func make(_ kind: StudioItem.Kind) {
+    func make(_ kind: StudioItem.Kind, subject: String = "") {
         selection = .studio
+        makeSubject = subject
         makeRequest = kind
     }
 }

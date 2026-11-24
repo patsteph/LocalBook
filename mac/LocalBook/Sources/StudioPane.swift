@@ -56,6 +56,7 @@ struct StudioPane: View {
         .onChange(of: model.makeRequest) { _, kind in
             guard let kind else { return }
             model.makeRequest = nil
+            prefill = model.makeSubject; model.makeSubject = ""
             if notebook != nil { making = kind }
         }
         .task { reload(); await send(); _ = await StudioPull.pull(); reload() }

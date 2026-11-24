@@ -100,6 +100,8 @@ enum Shortcuts {
         Group(name: "File", items: [newNotebook, newNote, addSources, addWebPage, findSources, exportNotebook]),
         Group(name: "Notebook", items: [ask, stopAnswer, syncNow, readAloud,
                                         KeyShortcut("Send the question", display: "Return"),
+                                        KeyShortcut("New line in the question", display: "⌥Return"),
+                                        KeyShortcut("List actions (Briefing, Quiz, Note, Web…) in the Ask field", display: "/"),
                                         KeyShortcut("Add files or a web address copied in the Finder or a browser", display: "⌘V")]),
         Group(name: "Studio", items: [briefing, quiz, flashcards, audioOverview, visual,
                                       KeyShortcut("Flip a flashcard, or play and pause audio", display: "Space"),
