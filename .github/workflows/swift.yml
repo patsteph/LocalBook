@@ -1,5 +1,9 @@
-# The native Swift side of LocalBook: the shared package and the Mac app (docs/swift-migration/).
-# Runs only when those trees change; the Python, TypeScript and iOS checks stay in ci.yml.
+# The native Swift side of LocalBook: the shared package, the Mac app and the iPhone app (docs/swift-migration/).
+# Runs only when those trees change; the Python and TypeScript checks stay in ci.yml.
+#
+# Three macOS jobs run side by side, so a run takes as long as its slowest job (the Mac app). Each job restores
+# its compiled dependencies (MLX, mlx-swift-lm, FluidAudio, ...) from the Actions cache, keyed on the Xcode version
+# and the package pins, so a push that only changes LocalBook's own sources recompiles only those.
 name: Swift
 
 on:
@@ -9,17 +13,20 @@ on:
       - 'swift/**'
       - 'mac/**'
       - 'ios/**'
+      - 'scripts/ci/**'
       - '.github/workflows/swift.yml'
   pull_request:
     paths:
       - 'swift/**'
       - 'mac/**'
       - 'ios/**'
+      - 'scripts/ci/**'
       - '.github/workflows/swift.yml'
   workflow_dispatch:
 
+# A newer push to the same branch supersedes the run in flight; PR runs are grouped by PR.
 concurrency:
-  group: swift-${{ github.ref }}
+  group: swift-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 env:
@@ -31,7 +38,7 @@ jobs:
   core-macos:
     name: LocalBookCore on macOS (build + Swift Testing)
     runs-on: macos-26
-    timeout-minutes: 90
+    timeout-minutes: 60
     defaults:
       run:
         working-directory: swift/LocalBookCore
@@ -39,17 +46,20 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Select Xcode
+        id: xcode
         working-directory: .
-        run: ./scripts/ci/select-xcode.sh "$WANTED_XCODE_MAJOR"
+        run: |
+          ./scripts/ci/select-xcode.sh "$WANTED_XCODE_MAJOR"
+          echo "version=$(xcodebuild -version | tr -d ' ' | paste -sd- -)" >> "$GITHUB_OUTPUT"
 
-      - name: Cache SwiftPM
+      - name: Cache SwiftPM checkouts and build
         uses: actions/cache@v4
         with:
           path: |
             swift/LocalBookCore/.build
             ~/Library/Caches/org.swift.swiftpm
-          key: spm-core-${{ runner.os }}-${{ hashFiles('swift/LocalBookCore/Package.swift', 'swift/LocalBookCore/Package.resolved') }}
-          restore-keys: spm-core-${{ runner.os }}-
+          key: spm-core-${{ steps.xcode.outputs.version }}-${{ hashFiles('swift/LocalBookCore/Package.swift', 'swift/LocalBookCore/Package.resolved') }}
+          restore-keys: spm-core-${{ steps.xcode.outputs.version }}-
 
       - name: Resolve
         run: swift package resolve
@@ -72,36 +82,21 @@ jobs:
             swift test
           fi
 
-  core-ios:
-    name: LocalBookCore for iOS (shims against UIKit)
-    runs-on: macos-26
-    timeout-minutes: 60
-    defaults:
-      run:
-        working-directory: swift/LocalBookCore
-    steps:
-      - uses: actions/checkout@v4
-      - name: Select Xcode
-        working-directory: .
-        run: ./scripts/ci/select-xcode.sh "$WANTED_XCODE_MAJOR"
-      - name: Build the pure library for a device
-        # Only LocalBookCore: the engines need MLX, which the iOS app project already builds on Patrick's Mac.
-        run: |
-          xcodebuild build -scheme LocalBookCore -destination 'generic/platform=iOS' \
-            -derivedDataPath .derived CODE_SIGNING_ALLOWED=NO -skipPackagePluginValidation -skipMacroValidation -quiet
-
   mac-app:
     name: LocalBook for Mac (xcodegen + xcodebuild)
     runs-on: macos-26
-    timeout-minutes: 90
+    timeout-minutes: 60
     defaults:
       run:
         working-directory: mac/LocalBook
     steps:
       - uses: actions/checkout@v4
       - name: Select Xcode
+        id: xcode
         working-directory: .
-        run: ./scripts/ci/select-xcode.sh "$WANTED_XCODE_MAJOR"
+        run: |
+          ./scripts/ci/select-xcode.sh "$WANTED_XCODE_MAJOR"
+          echo "version=$(xcodebuild -version | tr -d ' ' | paste -sd- -)" >> "$GITHUB_OUTPUT"
       - name: Install xcodegen
         run: brew list xcodegen >/dev/null 2>&1 || brew install xcodegen
       - name: Generate the project without the uncommitted reranker model
@@ -115,12 +110,18 @@ jobs:
           PY
           grep -c 'tools/cache' project.yml && exit 1 || true
           xcodegen generate
-      - name: Cache SwiftPM (Xcode)
+      - name: Cache DerivedData (package checkouts + compiled dependencies)
+        # Whole derived-data folder, keyed on the toolchain and the package pins, so the cache changes only when a
+        # dependency does. A hit leaves MLX and friends compiled; the checkout gives LocalBook's own files new
+        # timestamps, so Xcode rebuilds exactly those. Logs and the index are left out (big, useless here).
         uses: actions/cache@v4
         with:
-          path: mac/LocalBook/.derived/SourcePackages
-          key: spm-mac-${{ runner.os }}-${{ hashFiles('swift/LocalBookCore/Package.swift', 'swift/LocalBookCore/Package.resolved') }}
-          restore-keys: spm-mac-${{ runner.os }}-
+          path: |
+            mac/LocalBook/.derived
+            !mac/LocalBook/.derived/Logs
+            !mac/LocalBook/.derived/Index.noindex
+          key: derived-mac-${{ steps.xcode.outputs.version }}-${{ hashFiles('swift/LocalBookCore/Package.swift', 'swift/LocalBookCore/Package.resolved', 'mac/LocalBook/project.yml') }}
+          restore-keys: derived-mac-${{ steps.xcode.outputs.version }}-
       - name: Build
         run: |
           xcodebuild build -project LocalBook.xcodeproj -scheme LocalBook -destination 'platform=macOS' \
@@ -128,17 +129,21 @@ jobs:
             -skipPackagePluginValidation -skipMacroValidation -quiet
 
   ios-app:
+    # Building the iPhone app compiles LocalBookCore for iOS too, so there is no separate package-for-iOS job.
     name: LocalBook for iPhone (unsigned build, checks the package extraction)
     runs-on: macos-26
-    timeout-minutes: 90
+    timeout-minutes: 60
     defaults:
       run:
         working-directory: ios/LocalBookLab
     steps:
       - uses: actions/checkout@v4
       - name: Select Xcode
+        id: xcode
         working-directory: .
-        run: ./scripts/ci/select-xcode.sh "$WANTED_XCODE_MAJOR"
+        run: |
+          ./scripts/ci/select-xcode.sh "$WANTED_XCODE_MAJOR"
+          echo "version=$(xcodebuild -version | tr -d ' ' | paste -sd- -)" >> "$GITHUB_OUTPUT"
       - name: Install xcodegen
         run: brew list xcodegen >/dev/null 2>&1 || brew install xcodegen
       - name: Generate the project without the uncommitted reranker model
@@ -154,12 +159,16 @@ jobs:
           PY
           grep -c 'tools/cache' project.yml && exit 1 || true
           xcodegen generate
-      - name: Cache SwiftPM (Xcode)
+      - name: Cache DerivedData (package checkouts + compiled dependencies)
+        # Same idea as the Mac job: dependencies stay compiled across runs, LocalBook's own files rebuild.
         uses: actions/cache@v4
         with:
-          path: ios/LocalBookLab/.derived/SourcePackages
-          key: spm-ios-${{ runner.os }}-${{ hashFiles('swift/LocalBookCore/Package.swift', 'ios/LocalBookLab/project.yml') }}
-          restore-keys: spm-ios-${{ runner.os }}-
+          path: |
+            ios/LocalBookLab/.derived
+            !ios/LocalBookLab/.derived/Logs
+            !ios/LocalBookLab/.derived/Index.noindex
+          key: derived-ios-${{ steps.xcode.outputs.version }}-${{ hashFiles('swift/LocalBookCore/Package.swift', 'swift/LocalBookCore/Package.resolved', 'ios/LocalBookLab/project.yml') }}
+          restore-keys: derived-ios-${{ steps.xcode.outputs.version }}-
       - name: Build the LocalBook app for a device, unsigned
         # The app targets iOS 27; until the runner ships Xcode 27 its AVFAudio iOS 27 calls cannot compile here.
         # scripts/ci/ios-sdk-gap.py lets exactly those through and fails on anything else, so the job still proves
