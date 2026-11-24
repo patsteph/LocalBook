@@ -15,6 +15,9 @@ struct AskView: View {
     @State private var openSource: SourceRef?
     @State private var length = AnswerLength.current.rawValue
     @State private var reader = ReadAloud()
+    /// The slash action chosen for this send, shown as a chip at the front of the field.
+    @State private var command: SlashCommand?
+    @State private var highlighted = 0
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var library: LibraryModel { model.library }
@@ -268,6 +271,9 @@ struct AskView: View {
 
     // MARK: composer
 
+    /// The Ask field: two lines tall from the start, growing to six, then scrolling. Typing `/` first lists the
+    /// actions in `SlashCommands`; the chosen one sits at the front as a chip and the text after it goes to that
+    /// action (a Studio subject, a note's first line, a web search). Delete on an empty field removes the chip.
     private var composer: some View {
         @Bindable var lib = library
         return HStack(alignment: .bottom, spacing: 8) {
@@ -281,41 +287,121 @@ struct AskView: View {
                 .help("Answer length")
                 .accessibilityLabel("Answer length")
                 .onChange(of: length) { _, v in UserDefaults.standard.set(v, forKey: "answerLength") }
-            TextField(placeholder, text: $lib.query, axis: .vertical)
-                .textFieldStyle(.plain)
-                .lineLimit(2...6)           // two lines at rest: room for a real question, and for the hint to read
-                .focused($composerFocused)
-                .onSubmit(send)
-                .disabled(library.notebooks.isEmpty)
+                .padding(.bottom, 4)
+            HStack(alignment: .top, spacing: 8) {
+                if let command {
+                    CommandChip(command: command) { withAnimation(reduceMotion ? nil : .easeOut(duration: 0.15)) { self.command = nil } }
+                        .padding(.top, 1)
+                }
+                TextField(placeholder, text: $lib.query, axis: .vertical)
+                    .textFieldStyle(.plain)
+                    .lineLimit(2...6)
+                    .focused($composerFocused)
+                    .onSubmit(send)
+                    .disabled(library.notebooks.isEmpty)
+                    .onChange(of: library.query) { _, text in queryChanged(text) }
+                    .onKeyPress(.delete) { command != nil && library.query.isEmpty ? removeChip() : .ignored }
+                    .onKeyPress(.upArrow) { menuShown ? moveMenu(-1) : .ignored }
+                    .onKeyPress(.downArrow) { menuShown ? moveMenu(1) : .ignored }
+                    .onKeyPress(.tab) { menuShown ? pickHighlighted() : .ignored }
+                    .onKeyPress(.return) { menuShown ? pickHighlighted() : .ignored }
+                    .onKeyPress(.escape) { menuShown ? closeMenu() : .ignored }
+            }
             if library.answering {
                 Button { library.stopAnswer() } label: { Image(systemName: "stop.circle.fill").font(.title2) }
                     .buttonStyle(.plain)
                     .help(Shortcuts.stopAnswer.help("Stop"))
                     .accessibilityLabel("Stop")
+                    .padding(.bottom, 2)
             } else {
-                Button(action: send) { Image(systemName: "arrow.up.circle.fill").font(.title2) }
+                Button(action: send) { Image(systemName: command == nil ? "arrow.up.circle.fill" : "return") }
+                    .font(command == nil ? .title2 : .body.weight(.semibold))
                     .buttonStyle(.plain)
                     .disabled(!canSend)
-                    .help("Send (Return)")
-                    .accessibilityLabel("Send")
+                    .help(command == nil ? "Send (Return)" : "\(command!.title) (Return)")
+                    .accessibilityLabel(command == nil ? "Send" : command!.title)
+                    .padding(.bottom, 2)
             }
         }
         .padding(12)
         .background(.bar)
+        .overlay(alignment: .topLeading) {
+            if menuShown {
+                SlashMenu(matches: matches, highlighted: highlighted) { pick($0) }
+                    .alignmentGuide(.top) { $0[.bottom] + 4 }     // sits just above the bar, over the conversation
+                    .padding(.leading, 40)
+                    .transition(.opacity)
+            }
+        }
+        .zIndex(1)
     }
 
     private var placeholder: String {
         if library.notebooks.isEmpty { return model.paired ? "Your notebooks are on their way" : "Make a notebook to ask" }
-        return ready ? "Ask \(currentTitle)…" : "Ask now, the answer starts when ready"
+        if let command { return command.hint }
+        return ready ? "Ask \(currentTitle), or type / for actions" : "Ask now, the answer starts when ready"
+    }
+
+    // MARK: slash menu
+
+    /// The slash menu is open while the field holds `/` and a partial word, and no chip is in place yet.
+    private var menuShown: Bool { command == nil && library.query.hasPrefix("/") && !library.query.contains(where: \.isNewline) && !matches.isEmpty }
+    private var matches: [SlashCommand] {
+        guard command == nil, library.query.hasPrefix("/") else { return [] }
+        let word = library.query.dropFirst().prefix { !$0.isWhitespace }
+        guard word.count == library.query.count - 1 || library.query.last == " " else { return [] }   // "/qui" or "/quiz "
+        return SlashCommands.matching(String(word))
+    }
+
+    /// "/quiz " (a known word and a space) becomes the chip at once, so the menu never needs a click.
+    private func queryChanged(_ text: String) {
+        guard command == nil, text.hasPrefix("/"), text.last == " ", let parsed = SlashCommands.parse(text) else {
+            highlighted = min(highlighted, max(matches.count - 1, 0)); return
+        }
+        pick(parsed.0, rest: parsed.1)
+    }
+
+    private func pick(_ cmd: SlashCommand, rest: String? = nil) {
+        let text = rest ?? SlashCommands.parse(library.query).map { $0.1 } ?? ""
+        withAnimation(reduceMotion ? nil : .easeOut(duration: 0.15)) { command = cmd }
+        library.query = text
+        highlighted = 0
+        composerFocused = true
+    }
+
+    private func pickHighlighted() -> KeyPress.Result {
+        guard matches.indices.contains(highlighted) else { return .ignored }
+        pick(matches[highlighted]); return .handled
+    }
+
+    private func moveMenu(_ by: Int) -> KeyPress.Result {
+        guard !matches.isEmpty else { return .ignored }
+        highlighted = (highlighted + by + matches.count) % matches.count; return .handled
+    }
+
+    private func closeMenu() -> KeyPress.Result {
+        library.query = ""; return .handled
+    }
+
+    private func removeChip() -> KeyPress.Result {
+        withAnimation(reduceMotion ? nil : .easeOut(duration: 0.15)) { command = nil }; return .handled
     }
 
     private var canSend: Bool {
-        !library.notebooks.isEmpty && !library.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        !library.notebooks.isEmpty && (command != nil || !library.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
     }
 
     private func send() {
         let q = library.query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !q.isEmpty, !library.answering, !library.notebooks.isEmpty else { return }
+        guard !library.notebooks.isEmpty else { return }
+        if let command {
+            // The action runs with the text after the chip; the field is empty again, ready for the next ask.
+            library.query = ""
+            self.command = nil
+            command.run(q, model)
+            return
+        }
+        guard !q.isEmpty, !library.answering else { return }
         reader.stop()
         if !ready { queued = q; library.query = ""; return }
         library.query = q
@@ -324,6 +410,69 @@ struct AskView: View {
 }
 
 struct SourceRef: Identifiable { let id = UUID(); let number: Int; let hits: [LibraryHit] }
+
+/// The chosen slash action, at the front of the Ask field: its symbol and name in a capsule, with an × to drop it.
+struct CommandChip: View {
+    let command: SlashCommand
+    let remove: () -> Void
+    var body: some View {
+        HStack(spacing: 5) {
+            Image(systemName: command.symbol).font(.caption.weight(.semibold))
+            Text(command.title).font(.caption.weight(.semibold))
+            Button(action: remove) { Image(systemName: "xmark").font(.caption2.weight(.bold)) }
+                .buttonStyle(.plain).foregroundStyle(.secondary)
+                .help("Remove (Delete on an empty field)")
+                .accessibilityLabel("Remove \(command.title)")
+        }
+        .padding(.horizontal, 9).padding(.vertical, 4)
+        .foregroundStyle(.tint)
+        .background(.tint.opacity(0.14), in: Capsule())
+        .fixedSize()
+        .accessibilityElement(children: .combine)
+    }
+}
+
+/// The small list that opens above the Ask field after `/`: actions, then agents once there are any. ↑↓ move,
+/// Return or Tab picks, Esc closes; a click picks too.
+struct SlashMenu: View {
+    let matches: [SlashCommand]
+    let highlighted: Int
+    let pick: (SlashCommand) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            ForEach(SlashCommand.Group.allCases, id: \.self) { group in
+                let rows = matches.enumerated().filter { $0.element.group == group }
+                if !rows.isEmpty {
+                    Text(group.rawValue).font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+                        .padding(.horizontal, 10).padding(.top, 6).padding(.bottom, 2)
+                    ForEach(rows, id: \.element.id) { i, cmd in
+                        Button { pick(cmd) } label: {
+                            HStack(spacing: 8) {
+                                Image(systemName: cmd.symbol).frame(width: 18).foregroundStyle(i == highlighted ? .primary : .secondary)
+                                Text(cmd.title)
+                                Spacer(minLength: 16)
+                                Text("/" + cmd.name).font(.callout).monospaced().foregroundStyle(.tertiary)
+                            }
+                            .font(.callout)
+                            .padding(.horizontal, 10).padding(.vertical, 5)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(i == highlighted ? AnyShapeStyle(.tint.opacity(0.16)) : AnyShapeStyle(.clear), in: RoundedRectangle(cornerRadius: 6))
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+        }
+        .padding(4)
+        .frame(width: 300)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
+        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(.separator))
+        .shadow(color: .black.opacity(0.12), radius: 10, y: 4)
+        .accessibilityLabel("Actions")
+    }
+}
 
 /// The cited passage, in a popover; the window button (⌘↓) opens the whole source in the source viewer.
 struct SourcePopover: View {
