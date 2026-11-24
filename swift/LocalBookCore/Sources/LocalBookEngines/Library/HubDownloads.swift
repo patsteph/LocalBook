@@ -1,5 +1,6 @@
 import Foundation
 import HuggingFace
+import LocalBookCore
 import MLXLMCommon
 import Tokenizers
 
@@ -13,7 +14,11 @@ public enum HubDownloads {
         var errorDescription: String? { "“\(id)” is not a model repository id" }
     }
 
-    /// Downloads a model snapshot (or returns the cached one) through swift-huggingface's hub client.
+    /// Hands the loader a model's files. A model already on this device is used as it is, with no network at all;
+    /// only a model that is missing or incomplete is fetched from Hugging Face. The hub client would otherwise ask
+    /// Hugging Face for the file list on every load (the cache shortcut needs a commit hash, and the loader asks for
+    /// `main`), and on a slow or half-connected phone that request can hang the launch for minutes with the model
+    /// sitting right there on disk.
     public struct Downloader: MLXLMCommon.Downloader {
         private let hub: HubClient
         public init(_ hub: HubClient = HubClient()) { self.hub = hub }
@@ -21,9 +26,40 @@ public enum HubDownloads {
         public func download(id: String, revision: String?, matching patterns: [String], useLatest: Bool,
                       progressHandler: @Sendable @escaping (Progress) -> Void) async throws -> URL {
             guard let repo = Repo.ID(rawValue: id) else { throw InvalidRepository(id: id) }
-            return try await hub.downloadSnapshot(of: repo, revision: revision ?? "main", matching: patterns,
-                                                  progressHandler: { @MainActor progress in progressHandler(progress) })
+            let revision = revision ?? "main"
+            let started = Date()
+            if !useLatest,
+               let local = try? await hub.downloadSnapshot(of: repo, revision: revision, matching: patterns, localFilesOnly: true),
+               HubDownloads.isComplete(local, patterns: patterns) {
+                SoakTrace.log("model files: \(id) is on this device; no network needed")
+                let done = Progress(totalUnitCount: 1); done.completedUnitCount = 1
+                progressHandler(done)
+                return local
+            }
+            SoakTrace.log("model files: \(id) is not complete on this device; fetching from Hugging Face")
+            let url = try await hub.downloadSnapshot(of: repo, revision: revision, matching: patterns,
+                                                     progressHandler: { @MainActor progress in progressHandler(progress) })
+            SoakTrace.log("model files: \(id) fetched in \(Int(Date().timeIntervalSince(started))) s")
+            return url
         }
+    }
+
+    /// Whether a snapshot folder holds everything a load needs: the configuration, at least one weights file when
+    /// weights were asked for, and every shard an index lists.
+    static func isComplete(_ directory: URL, patterns: [String]) -> Bool {
+        let fm = FileManager.default
+        guard let files = try? fm.contentsOfDirectory(atPath: directory.path) else { return false }
+        let wantsWeights = patterns.contains { $0.hasSuffix("safetensors") }
+        if patterns.contains(where: { $0.hasSuffix("json") }), !files.contains("config.json") { return false }
+        guard wantsWeights else { return !files.isEmpty }
+        guard files.contains(where: { $0.hasSuffix(".safetensors") }) else { return false }
+        let indexURL = directory.appending(path: "model.safetensors.index.json")
+        if let data = try? Data(contentsOf: indexURL),
+           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let map = json["weight_map"] as? [String: String] {
+            return Set(map.values).allSatisfy { files.contains($0) }
+        }
+        return true
     }
 
     /// Loads a model folder's tokenizer with swift-transformers and presents it as the runtime's tokenizer.

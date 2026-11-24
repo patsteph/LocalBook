@@ -42,12 +42,24 @@ public enum DeviceDescription {
         }
     }
 
+    #if canImport(UIKit)
+    nonisolated(unsafe) private static var cachedUserName: String?
+    #endif
+
     /// The name the user gave the device (`Commodore 64`, `Patrick's MacBook Pro`).
     public static var userName: String {
         #if canImport(UIKit)
-        // UIDevice is main-actor only on the iOS 27 SDK; read it there whichever thread asks.
-        if Thread.isMainThread { return MainActor.assumeIsolated { UIDevice.current.name } }
-        return DispatchQueue.main.sync { MainActor.assumeIsolated { UIDevice.current.name } }
+        // UIDevice is main-actor only on the iOS 27 SDK. The main thread reads it directly; any other thread gets the
+        // last name read there (asking the main thread to refresh it) rather than waiting on the main thread, which
+        // may itself be waiting on this thread.
+        if Thread.isMainThread {
+            let name = MainActor.assumeIsolated { UIDevice.current.name }
+            cachedUserName = name
+            return name
+        }
+        if let name = cachedUserName { return name }
+        Task { @MainActor in cachedUserName = UIDevice.current.name }
+        return "iPhone"
         #else
         return Host.current().localizedName ?? ProcessInfo.processInfo.hostName
         #endif

@@ -50,7 +50,7 @@ public enum AnswerModels {
     public static func loadContainer() async throws -> ModelContainer {
         #if os(macOS)
         do {
-            let c = try await VLMModelFactory.shared.loadContainer(from: HubDownloads.Downloader(), using: HubDownloads.TokenizerLoader(), configuration: configuration)
+            let c = try await VLMModelFactory.shared.loadContainer(from: HubDownloads.Downloader(), using: HubDownloads.TokenizerLoader(), configuration: configuration, progress: loadTrace())
             loadedWithVision = true
             visionProblem = nil
             SoakTrace.log("answer model: loaded with its vision tower")
@@ -60,9 +60,27 @@ public enum AnswerModels {
             SoakTrace.log("answer model: no vision tower (\(error.localizedDescription)); loading the text model")
         }
         #endif
-        let c = try await LLMModelFactory.shared.loadContainer(from: HubDownloads.Downloader(), using: HubDownloads.TokenizerLoader(), configuration: configuration)
+        let c = try await LLMModelFactory.shared.loadContainer(from: HubDownloads.Downloader(), using: HubDownloads.TokenizerLoader(), configuration: configuration, progress: loadTrace())
         loadedWithVision = false
         return c
+    }
+
+    /// Trace lines for the two phases of a load (fetching files, reading weights) at the quarter marks, so a stalled
+    /// launch says where it stopped.
+    static func loadTrace() -> LoadProgressHandlers {
+        final class Marks: @unchecked Sendable {
+            private let lock = NSLock()
+            private var next: [String: Int] = [:]
+            func log(_ phase: String, _ p: Progress) {
+                let quarter = Int(min(max(p.fractionCompleted, 0), 1) * 4)
+                lock.lock(); defer { lock.unlock() }
+                guard quarter >= next[phase, default: 0] else { return }
+                next[phase] = quarter + 1
+                SoakTrace.log("answer model \(phase): \(quarter * 25)%")
+            }
+        }
+        let marks = Marks()
+        return LoadProgressHandlers(download: { marks.log("files", $0) }, weights: { marks.log("weights", $0) })
     }
 
     /// "mlx-community/gemma-4-e4b-it-4bit" → "gemma-4-e4b-it-4bit".
