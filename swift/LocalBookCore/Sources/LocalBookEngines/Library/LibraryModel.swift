@@ -18,7 +18,8 @@ public final class LibraryModel {
 
     public internal(set) var syncState: SyncState = .idle
     public private(set) var searchState: SearchState = .notReady
-    public enum ModelState: Equatable { case idle, loading, ready, failed(String) }
+    /// `downloading` carries the fetch's fraction: the model was not on this device and is coming from Hugging Face.
+    public enum ModelState: Equatable { case idle, loading, downloading(Double), ready, failed(String) }
     public private(set) var answerModelState: ModelState = .idle
     /// Experimental: read prompts in small chunks that stop when the screen locks (StoppableLM). was OFF by default — the first
     /// phone test of it ended in a hot, unstable phone, so it stays out until it has been proven in a controlled test.
@@ -408,7 +409,12 @@ public final class LibraryModel {
         do {
             SoakTrace.log("answer model load begins (stoppable prefill: \(useStoppablePrefill ? "on" : "off"))")
             Memory.cacheLimit = 64 * 1024 * 1024
-            let plain = try await AnswerModels.loadContainer()
+            let plain = try await AnswerModels.loadContainer { fraction in
+                Task { @MainActor [weak self] in
+                    guard let self, self.answerLoading else { return }
+                    self.answerModelState = fraction >= 1 ? .loading : .downloading(fraction)
+                }
+            }
             if useStoppablePrefill {
                 let wrapped = await StoppableLM.wrap(plain)
                 if await Self.producesAnAnswer(wrapped) { gemma = wrapped; SoakTrace.log("answer model ready (stoppable prompt reading verified)") }

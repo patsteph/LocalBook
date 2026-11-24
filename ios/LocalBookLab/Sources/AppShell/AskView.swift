@@ -364,8 +364,13 @@ struct ReadyBar: View {
             if let why = failure {
                 Label(why, systemImage: "exclamationmark.triangle.fill").font(.footnote).foregroundStyle(.orange)
             } else {
-                Text("Getting ready — about a minute. You can ask now; the answer starts when ready.").font(.footnote).foregroundStyle(.secondary)
-                ProgressView(value: progress)
+                if case .downloading(let fraction) = library.answerModelState {
+                    Text("Downloading the answer model — \(Int(fraction * 100))% of about 5 GB, once. Keep the app open.").font(.footnote).foregroundStyle(.secondary)
+                    ProgressView(value: fraction)
+                } else {
+                    Text("Getting ready — about a minute. You can ask now; the answer starts when ready.").font(.footnote).foregroundStyle(.secondary)
+                    ProgressView(value: progress)
+                }
             }
         }
         .accessibilityElement(children: .combine)

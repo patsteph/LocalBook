@@ -280,7 +280,8 @@ struct LLMStudioView: View {
     private var answerLine: String {
         switch library.answerModelState {
         case .idle: "Not loaded"
-        case .loading: "Loading… (downloads first if it is not on this Mac)"
+        case .loading: "Loading…"
+        case .downloading(let f): "Downloading… \(Int(f * 100))% (the model is not on this Mac yet)"
         case .ready: "Ready (MLX)"
         case .failed(let why): "Failed: \(why)"
         }

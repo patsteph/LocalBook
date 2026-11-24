@@ -47,10 +47,11 @@ public enum AnswerModels {
     /// visuals critic can look at a picture with the same model and nothing more is downloaded; a text-only
     /// checkpoint falls back to the text loader. The phone loads the text model only, as it always has: the vision
     /// tower would sit in the memory the answer model and search already fill.
-    public static func loadContainer() async throws -> ModelContainer {
+    /// `downloading` hears the fetch's fraction (0…1) when the model has to come from Hugging Face; nothing when it is on the device.
+    public static func loadContainer(downloading: (@Sendable (Double) -> Void)? = nil) async throws -> ModelContainer {
         #if os(macOS)
         do {
-            let c = try await VLMModelFactory.shared.loadContainer(from: HubDownloads.Downloader(), using: HubDownloads.TokenizerLoader(), configuration: configuration, progress: loadTrace())
+            let c = try await VLMModelFactory.shared.loadContainer(from: HubDownloads.Downloader(), using: HubDownloads.TokenizerLoader(), configuration: configuration, progress: loadTrace(downloading: downloading))
             loadedWithVision = true
             visionProblem = nil
             SoakTrace.log("answer model: loaded with its vision tower")
@@ -60,14 +61,14 @@ public enum AnswerModels {
             SoakTrace.log("answer model: no vision tower (\(error.localizedDescription)); loading the text model")
         }
         #endif
-        let c = try await LLMModelFactory.shared.loadContainer(from: HubDownloads.Downloader(), using: HubDownloads.TokenizerLoader(), configuration: configuration, progress: loadTrace())
+        let c = try await LLMModelFactory.shared.loadContainer(from: HubDownloads.Downloader(), using: HubDownloads.TokenizerLoader(), configuration: configuration, progress: loadTrace(downloading: downloading))
         loadedWithVision = false
         return c
     }
 
     /// Trace lines for the two phases of a load (fetching files, reading weights) at the quarter marks, so a stalled
     /// launch says where it stopped.
-    static func loadTrace() -> LoadProgressHandlers {
+    static func loadTrace(downloading: (@Sendable (Double) -> Void)?) -> LoadProgressHandlers {
         final class Marks: @unchecked Sendable {
             private let lock = NSLock()
             private var next: [String: Int] = [:]
@@ -80,7 +81,10 @@ public enum AnswerModels {
             }
         }
         let marks = Marks()
-        return LoadProgressHandlers(download: { marks.log("files", $0) }, weights: { marks.log("weights", $0) })
+        return LoadProgressHandlers(download: { p in
+            marks.log("files", p)
+            if p.totalUnitCount > 1 { downloading?(p.fractionCompleted) }   // a real fetch, not the one-step "already here"
+        }, weights: { marks.log("weights", $0) })
     }
 
     /// "mlx-community/gemma-4-e4b-it-4bit" → "gemma-4-e4b-it-4bit".

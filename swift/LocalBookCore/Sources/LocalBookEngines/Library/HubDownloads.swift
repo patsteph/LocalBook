@@ -28,13 +28,19 @@ public enum HubDownloads {
             guard let repo = Repo.ID(rawValue: id) else { throw InvalidRepository(id: id) }
             let revision = revision ?? "main"
             let started = Date()
-            if !useLatest,
-               let local = try? await hub.downloadSnapshot(of: repo, revision: revision, matching: patterns, localFilesOnly: true),
-               HubDownloads.isComplete(local, patterns: patterns) {
-                SoakTrace.log("model files: \(id) is on this device; no network needed")
+            if !useLatest {
                 let done = Progress(totalUnitCount: 1); done.completedUnitCount = 1
-                progressHandler(done)
-                return local
+                if let local = try? await hub.downloadSnapshot(of: repo, revision: revision, matching: patterns, localFilesOnly: true),
+                   HubDownloads.isComplete(local, patterns: patterns) {
+                    SoakTrace.log("model files: \(id) is on this device; no network needed")
+                    progressHandler(done)
+                    return local
+                }
+                if let earlier = HubDownloads.earlierBuildsCopy(of: id), HubDownloads.isComplete(earlier, patterns: patterns) {
+                    SoakTrace.log("model files: using the copy of \(id) an earlier build kept in Documents; no network needed")
+                    progressHandler(done)
+                    return earlier
+                }
             }
             SoakTrace.log("model files: \(id) is not complete on this device; fetching from Hugging Face")
             let url = try await hub.downloadSnapshot(of: repo, revision: revision, matching: patterns,
@@ -42,6 +48,14 @@ public enum HubDownloads {
             SoakTrace.log("model files: \(id) fetched in \(Int(Date().timeIntervalSince(started))) s")
             return url
         }
+    }
+
+    /// Where builds before November 2026 kept a model: swift-transformers' hub folder under Documents
+    /// (`Documents/huggingface/models/<owner>/<name>`). A phone updated from such a build has its model there, and
+    /// fetching the same gigabytes again into the new cache is the last thing a launch should do.
+    static func earlierBuildsCopy(of id: String) -> URL? {
+        let folder = URL.documentsDirectory.appending(path: "huggingface/models/\(id)", directoryHint: .isDirectory)
+        return FileManager.default.fileExists(atPath: folder.appending(path: "config.json").path) ? folder : nil
     }
 
     /// Whether a snapshot folder holds everything a load needs: the configuration, at least one weights file when
