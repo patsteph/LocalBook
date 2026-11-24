@@ -42,8 +42,8 @@ struct AnswerBoundaryTests {
     func holistic() {
         for q in ["What are the main points in this notebook?", "What changed most recently?", "Who is mentioned most often?",
                   "Summarize these notes", "Give me an overview", "What are the key themes?"] {
-            #expect(AnswerBoundary.isHolistic(q), q)
-            #expect(AnswerBoundary.hasEvidence(question: q, passages: Self.coffee), q)
+            #expect(AnswerBoundary.isHolistic(q), Comment(rawValue: q))
+            #expect(AnswerBoundary.hasEvidence(question: q, passages: Self.coffee), Comment(rawValue: q))
         }
         #expect(!AnswerBoundary.isHolistic("ttt"))
         #expect(!AnswerBoundary.isHolistic("What time does the roastery open?"))
