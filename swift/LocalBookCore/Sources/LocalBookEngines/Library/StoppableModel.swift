@@ -59,33 +59,39 @@ public final class StoppableLM: Module, LanguageModel, @unchecked Sendable {
     /// Reads the prompt in chunks of `GPUGate.prefillChunk` tokens at most (the iterator's own step when it is
     /// smaller), each one finished before the next is queued, with the gate checked in between. The chunk progress
     /// the iterator asked for is reported the same way the library's own reading would.
+    ///
+    /// A prompt with a picture (or video, or audio) goes to the real model whole: it embeds the picture itself,
+    /// and the critic's one picture is a short prompt anyway. The vision loader's processor hands tokens over as
+    /// one row (1 × length) where the text loader's gives a flat list; both are read flat here, and the remainder
+    /// goes back flat, which is the shape the iterator adds its batch axis to.
     public func prepare(_ input: LMInput, cache: [KVCache], state: LMOutput.State?, prefill: PrefillParameters) throws -> PrepareResult {
+        if input.image != nil || input.video != nil || input.audio != nil {
+            return try inner.prepare(input, cache: cache, state: state, prefill: prefill)
+        }
         let step = Swift.min(prefill.stepSize ?? GPUGate.prefillChunk, GPUGate.prefillChunk)
-        var y = input.text
-        let total = y.tokens.size
+        var y = input.text.tokens.ndim == 1 ? input.text.tokens : input.text.tokens.flattened()
+        let total = y.size
         var stopped = false
+        var carried = state
         try GPUGate.check()
-        withPreparedCache(cache, lengths: y.sequenceLengths) {
-            var carried = state
-            while y.tokens.size > step {
-                if GPUGate.isClosed || Task.isCancelled { stopped = true; break }       // cancelled answers stop here even after the screen is back
-                let chunk = y[.newAxis, ..<step]
-                let output = inner(chunk, cache: cache.isEmpty ? nil : cache, state: carried)
-                carried = output.state
-                eval(cache)                          // finish this chunk before queuing the next
-                y = y[step...]
-                prefill.progress?(total - y.tokens.size, total)
-                Memory.clearCache()
-            }
-            if !stopped {
-                if GPUGate.isClosed || Task.isCancelled { stopped = true } else { eval(cache) }
-            }
+        while y.size > step {
+            if GPUGate.isClosed || Task.isCancelled { stopped = true; break }       // cancelled answers stop here even after the screen is back
+            let chunk = LMInput.Text(tokens: y[.newAxis, ..<step])
+            let output = inner(chunk, cache: cache.isEmpty ? nil : cache, state: carried)
+            carried = output.state
+            eval(cache)                          // finish this chunk before queuing the next
+            y = y[step...]
+            prefill.progress?(total - y.size, total)
+            Memory.clearCache()
+        }
+        if !stopped {
+            if GPUGate.isClosed || Task.isCancelled { stopped = true } else { eval(cache) }
         }
         if stopped {
-            SoakTrace.log("StoppableLM: prompt processing stopped at the gate (\(y.tokens.size) tokens left)")
+            SoakTrace.log("StoppableLM: prompt processing stopped at the gate (\(y.size) tokens left)")
             throw GPUGate.Closed()
         }
-        return .tokens(y)
+        return .tokens(LMInput.Text(tokens: y))
     }
 
     /// The real model builds its derived state (the library calls this once after loading).
