@@ -330,7 +330,7 @@ public final class PhoneHostBridge: PhoneHostDelegate {
                 }])
             case .visual:
                 guard let spec = try? JSONDecoder().decode(VisualSpec.self, from: Data(item.body.utf8)) else { continue }
-                out.append(["kind": "visual", "id": id, "svg": VisualSpec.svg(for: spec)])
+                out.append(["kind": "visual", "id": id, "svg": VisualSlide.svg(for: spec)])
             case .audio:
                 guard let file = item.mediaFile, let bytes = mediaBytes(item) else { continue }
                 let script = try? JSONDecoder().decode(AudioScript.self, from: Data(item.body.utf8))
