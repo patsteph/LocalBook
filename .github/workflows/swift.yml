@@ -53,8 +53,9 @@ jobs:
           ./scripts/ci/select-xcode.sh "$WANTED_XCODE_MAJOR"
           echo "version=$(xcodebuild -version | tr -d ' ' | paste -sd- -)" >> "$GITHUB_OUTPUT"
 
-      - name: Cache SwiftPM checkouts and build
-        uses: actions/cache@v4
+      - name: Restore SwiftPM checkouts and build
+        id: cache
+        uses: actions/cache/restore@v4
         with:
           path: |
             swift/LocalBookCore/.build
@@ -82,6 +83,17 @@ jobs:
           else
             swift test
           fi
+
+      - name: Save SwiftPM checkouts and build
+        # Saved even when the build or the tests fail: the dependencies compiled all the same, and that is what
+        # the next run wants back.
+        if: always() && steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            swift/LocalBookCore/.build
+            ~/Library/Caches/org.swift.swiftpm
+          key: spm-core-${{ steps.xcode.outputs.version }}-${{ hashFiles('swift/LocalBookCore/Package.swift', 'swift/LocalBookCore/Package.resolved') }}
 
   mac-app:
     name: LocalBook for Mac (xcodegen + xcodebuild)
@@ -111,11 +123,12 @@ jobs:
           PY
           grep -c 'tools/cache' project.yml && exit 1 || true
           xcodegen generate
-      - name: Cache DerivedData (package checkouts + compiled dependencies)
+      - name: Restore DerivedData (package checkouts + compiled dependencies)
+        id: cache
         # Whole derived-data folder, keyed on the toolchain and the package pins, so the cache changes only when a
         # dependency does. A hit leaves MLX and friends compiled; the checkout gives LocalBook's own files new
         # timestamps, so Xcode rebuilds exactly those. Logs and the index are left out (big, useless here).
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: |
             mac/LocalBook/.derived
@@ -128,6 +141,16 @@ jobs:
           xcodebuild build -project LocalBook.xcodeproj -scheme LocalBook -destination 'platform=macOS' \
             -derivedDataPath .derived CODE_SIGNING_ALLOWED=NO CODE_SIGN_IDENTITY="" DEVELOPMENT_TEAM="" \
             -skipPackagePluginValidation -skipMacroValidation -quiet
+      - name: Save DerivedData (package checkouts + compiled dependencies)
+        # Saved even when LocalBook's own code fails to compile: the dependencies built, and the next run wants them.
+        if: always() && steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            mac/LocalBook/.derived
+            !mac/LocalBook/.derived/Logs
+            !mac/LocalBook/.derived/Index.noindex
+          key: derived-mac-${{ steps.xcode.outputs.version }}-${{ hashFiles('swift/LocalBookCore/Package.swift', 'swift/LocalBookCore/Package.resolved', 'mac/LocalBook/project.yml') }}
 
   ios-app:
     # Building the iPhone app compiles LocalBookCore for iOS too, so there is no separate package-for-iOS job.
@@ -160,7 +183,8 @@ jobs:
           PY
           grep -c 'tools/cache' project.yml && exit 1 || true
           xcodegen generate
-      - name: Cache DerivedData (package checkouts + compiled dependencies)
+      - name: Restore DerivedData (package checkouts + compiled dependencies)
+        id: cache
         # Same idea as the Mac job: dependencies stay compiled across runs, LocalBook's own files rebuild.
         uses: actions/cache@v4
         with:
@@ -183,3 +207,13 @@ jobs:
           else
             python3 ../../scripts/ci/ios-sdk-gap.py build.log
           fi
+      - name: Save DerivedData (package checkouts + compiled dependencies)
+        # Saved even when LocalBook's own code fails to compile: the dependencies built, and the next run wants them.
+        if: always() && steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ios/LocalBookLab/.derived
+            !ios/LocalBookLab/.derived/Logs
+            !ios/LocalBookLab/.derived/Index.noindex
+          key: derived-ios-${{ steps.xcode.outputs.version }}-${{ hashFiles('swift/LocalBookCore/Package.swift', 'swift/LocalBookCore/Package.resolved', 'ios/LocalBookLab/project.yml') }}
