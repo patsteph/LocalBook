@@ -1,9 +1,33 @@
 name: CI
 
+# The Python backend, the TypeScript front end and the PyInstaller bundle checks. Swift-only changes (swift/, mac/,
+# ios/) skip this workflow: swift.yml covers them, and nothing here reads those trees.
 on:
   push:
     branches: [ master, dev ]
+    paths-ignore:
+      - 'swift/**'
+      - 'mac/**'
+      - 'ios/**'
+      - 'docs/**'
+      - 'testdata/**'
+      - '**.md'
+      - '.github/workflows/swift.yml'
   pull_request:
+    paths-ignore:
+      - 'swift/**'
+      - 'mac/**'
+      - 'ios/**'
+      - 'docs/**'
+      - 'testdata/**'
+      - '**.md'
+      - '.github/workflows/swift.yml'
+  workflow_dispatch:
+
+# A newer push to the same branch supersedes the run in flight; PR runs are grouped by PR.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   pyinstaller-hidden-imports:
@@ -43,11 +67,15 @@ jobs:
 
   unit-tests:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.13'
+          # Wheels cached between runs (installing cold took ~4 of the job's 6 minutes).
+          cache: 'pip'
+          cache-dependency-path: backend/requirements-test.txt
       - name: Install slim test deps
         # Slim set (no mlx/torch/lancedb/langgraph) — see backend/requirements-test.txt.
         run: pip install -r backend/requirements-test.txt

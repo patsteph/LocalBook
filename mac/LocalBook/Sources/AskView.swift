@@ -57,6 +57,7 @@ struct AskView: View {
                     }
                 }
             }
+            .overlay(alignment: .bottomLeading) { slashMenuOverlay }
             Divider()
             composer
         }
@@ -325,15 +326,16 @@ struct AskView: View {
         }
         .padding(12)
         .background(.bar)
-        .overlay(alignment: .topLeading) {
-            if menuShown {
-                SlashMenu(matches: matches, highlighted: highlighted) { pick($0) }
-                    .alignmentGuide(.top) { $0[.bottom] + 4 }     // sits just above the bar, over the conversation
-                    .padding(.leading, 40)
-                    .transition(.opacity)
-            }
+    }
+
+    /// The slash menu, drawn over the bottom of the conversation so it always sits fully inside the window, just
+    /// above the bar.
+    @ViewBuilder private var slashMenuOverlay: some View {
+        if menuShown {
+            SlashMenu(matches: matches, highlighted: highlighted) { pick($0) }
+                .padding(.leading, 44).padding(.bottom, 6)
+                .transition(.opacity)
         }
-        .zIndex(1)
     }
 
     private var placeholder: String {

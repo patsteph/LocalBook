@@ -19,7 +19,7 @@ Code:
 | `swift/LocalBookCore` | The shared package: `LocalBookCore` (pure engine) and `LocalBookEngines` (MLX, Core ML, FluidAudio) |
 | `mac/LocalBook` | The Mac app (xcodegen project) |
 | `ios/LocalBookLab` | The iPhone app and Lab; depends on the package from Phase 1 |
-| `.github/workflows/swift.yml` | macOS CI: package build and Swift Testing, iOS build of the pure library, Mac app build |
+| `.github/workflows/swift.yml` | macOS CI, three jobs side by side with compiled dependencies cached: package build and Swift Testing, Mac app build, iPhone app build (which also compiles the package for iOS) |
 
 The full plan and the three research documents behind it live in the project's shared folder under
 `research/2026-11-13-*.md`; the decision record summarises them.
