@@ -152,12 +152,26 @@ public final class StudioEngine {
         if kind == .visual {
             lastCritique = nil; lastRetries = 0
             var drawn = VisualSpec.parseAnyShape(raw, preferring: form)
+            func shown(_ r: String) -> String { r.prefix(600).replacingOccurrences(of: "\n", with: " ") }
             if drawn == nil {
-                // The reply was prose or JSON of another shape: ask once more, pointing at the schema, before giving up.
-                SoakTrace.log("studio visual: nothing to draw as \(form.rawValue) in “\(raw.prefix(300).replacingOccurrences(of: "\n", with: " "))”; asking again")
+                // The reply was prose or JSON of another shape: ask once more, pointing at the schema.
+                SoakTrace.log("studio visual: nothing to draw as \(form.rawValue) in “\(shown(raw))”; asking again")
                 status = "Drawing again…"
-                let again = "Passages:\n\n\(numbered(passages))\n\n\(request)\n\nYour previous reply could not be drawn. Reply with ONLY the JSON object described, exactly those keys, no prose, no apology. If the notes are thin, still fill every list from what they do say."
-                if let out = await run(again, instructions: instructions, tokens: tokens) { drawn = VisualSpec.parseAnyShape(out, preferring: form); lastRetries = 1 }
+                let again = "Passages:\n\n\(numbered(passages))\n\n\(request)\n\nYour previous reply could not be drawn. Reply with ONLY the JSON object described, exactly those keys, no prose, no apology, and begin your reply with {. If the notes are thin, still fill every list from what they do say."
+                if let out = await run(again, instructions: instructions, tokens: tokens) {
+                    drawn = VisualSpec.parseAnyShape(out, preferring: form); lastRetries = 1
+                    if drawn == nil { SoakTrace.log("studio visual: the second reply could not be drawn either: “\(shown(out))”") }
+                }
+            }
+            if drawn == nil, form != .mindmap {
+                // Twice the model could not answer in this form. A visual is still owed: the plainest form, a mind map of
+                // the subject, is asked for and drawn, and the log says so. The person never sees a refusal.
+                status = "Drawing the main ideas instead…"
+                let (_, plainRequest, _) = Self.prompt(kind, notebookTitle: notebook.title, topic: topic, count: count, notebookOnly: notebookOnly, layout: .mindmap, detail: detail)
+                if let out = await run("Passages:\n\n\(numbered(passages))\n\n\(plainRequest)", instructions: instructions, tokens: tokens) {
+                    drawn = VisualSpec.parseAnyShape(out, preferring: .mindmap); lastRetries += 1
+                    SoakTrace.log("studio visual: \(drawn == nil ? "no mind map either" : "drawn as a mind map") after two replies that did not fit \(form.rawValue)")
+                }
             }
             guard var spec = drawn else {
                 error = "The model's answer couldn't be drawn as a \(form.label.lowercased()). Try again, or pick the form yourself."; return nil

@@ -166,7 +166,7 @@ public struct VisualSpec: Codable, Hashable, Sendable {
 
     /// Reads the model's JSON object leniently. nil when there is nothing usable to draw.
     public static func parse(_ raw: String, layout: Layout) -> VisualSpec? {
-        guard let o = JSONObjects.scan(in: raw).first else { return nil }
+        guard let o = JSONObjects.first(in: raw) else { return nil }
         func text(_ v: Any?) -> String { (v as? String ?? (v as? NSNumber).map { "\($0)" } ?? "").trimmingCharacters(in: .whitespacesAndNewlines) }
         func objects(_ key: String) -> [[String: Any]] { o[key] as? [[String: Any]] ?? [] }
         func strings(_ v: Any?) -> [String] { (v as? [Any] ?? []).map(text).filter { !$0.isEmpty } }
@@ -182,12 +182,14 @@ public struct VisualSpec: Codable, Hashable, Sendable {
         func titled(_ e: [String: Any]) -> String {
             let t = text(e["title"] ?? e["name"] ?? e["label"] ?? e["step"] ?? e["stage"] ?? e["question"])
             if !t.isEmpty { return t }
-            let skip: Set<String> = ["detail", "description", "text", "summary", "value", "when", "date", "x", "y", "position"]
+            let skip: Set<String> = ["detail", "description", "text", "summary", "value", "when", "date", "x", "y", "position", "quadrant", "cell",
+                                     "rationale", "reason", "reasoning", "why", "note", "notes", "explanation", "justification", "comment", "yes", "no", "then", "else"]
             let shorts = e.filter { !skip.contains($0.key.lowercased()) }.compactMap { k, v -> (String, String)? in
                 guard let str = v as? String, !str.isEmpty, str.count <= 60, !str.contains("\n"), !scored(str) else { return nil }
                 return (k, str)
-            }.sorted { $0.0 < $1.0 }
-            return shorts.count == 1 || e.count <= 3 ? shorts.first?.1 ?? "" : ""
+            }
+            // Several short strings: the name is the shortest of them (a name is a few words; a reason is a sentence).
+            return shorts.min { a, b in a.1.count != b.1.count ? a.1.count < b.1.count : a.0 < b.0 }?.1 ?? ""
         }
         func detailed(_ e: [String: Any]) -> String { text(e["detail"] ?? e["description"] ?? e["text"] ?? e["summary"]) }
         func anyList(_ keys: [String]) -> [[String: Any]] {
@@ -210,9 +212,38 @@ public struct VisualSpec: Codable, Hashable, Sendable {
             spec.items = list.map { Item(title: titled($0), detail: detailed($0), value: text($0["when"] ?? $0["value"] ?? $0["date"])) }
         case .groups:
             // Models often write "items" whatever the prompt calls them: take the first list whose entries have children.
-            let lists = ["groups", "branches", "items", "steps", "decisions", "nodes"].map(objects).filter { !$0.isEmpty }
+            let lists = ["groups", "branches", "questions", "items", "steps", "decisions", "nodes"].map(objects).filter { !$0.isEmpty }
             let list = lists.first { l in l.contains { $0["children"] != nil } } ?? lists.first ?? anyList([])
-            spec.items = list.map { Item(title: titled($0), detail: detailed($0), children: strings($0["children"] ?? $0["points"] ?? $0["outcomes"] ?? $0["options"] ?? $0["items"])) }
+            /// The children of a group: a list of strings, a list of objects (each named by its title or its text), or
+            /// for a decision the "yes" and "no" keys, however the answer is spelt.
+            func children(_ e: [String: Any]) -> [String] {
+                let kids = e["children"] ?? e["points"] ?? e["outcomes"] ?? e["options"] ?? e["items"] ?? e["answers"] ?? e["branches"]
+                var out = strings(kids)
+                if out.isEmpty, let objs = kids as? [[String: Any]] {
+                    out = objs.compactMap { c -> String? in
+                        let answer = text(c["answer"] ?? c["choice"] ?? c["if"] ?? c["label"] ?? c["condition"])
+                        let advice = text(c["then"] ?? c["advice"] ?? c["outcome"] ?? c["action"] ?? c["result"] ?? c["detail"] ?? c["text"] ?? c["title"] ?? c["name"])
+                        if answer.isEmpty { return advice.isEmpty ? nil : advice }
+                        return advice.isEmpty ? answer : "\(answer): \(advice)"
+                    }
+                }
+                if out.isEmpty {
+                    let lower = Dictionary(e.map { ($0.key.lowercased(), $0.value) }, uniquingKeysWith: { a, _ in a })
+                    func answer(_ keys: [String]) -> String? {
+                        for k in keys {
+                            guard let v = lower[k] else { continue }
+                            let t = (v as? [String: Any]).map { d in text(d["advice"] ?? d["then"] ?? d["action"] ?? d["text"] ?? d["title"]) } ?? text(v)
+                            if !t.isEmpty { return t }
+                        }
+                        return nil
+                    }
+                    if let y = answer(["yes", "if yes", "if_yes", "ifyes", "true", "then"]), let n = answer(["no", "if no", "if_no", "ifno", "false", "else", "otherwise"]) {
+                        out = ["Yes: \(y)", "No: \(n)"]
+                    }
+                }
+                return out
+            }
+            spec.items = list.map { Item(title: titled($0), detail: detailed($0), children: children($0)) }
         case .quadrant:
             var axes = strings(o["axes"] ?? o["columns"])
             if axes.count < 2, let a = o["axes"] as? [String: Any] { axes = [text(a["x"] ?? a["horizontal"]), text(a["y"] ?? a["vertical"])].filter { !$0.isEmpty } }
@@ -235,8 +266,71 @@ public struct VisualSpec: Codable, Hashable, Sendable {
                 let first: Any? = rest[0].value, second: Any? = rest[1].value
                 return (first, second)
             }
+            /// A cell named in words ("High impact, low effort", "Quick wins: low effort / high impact") as two scores,
+            /// read against the axes when they are known, else in the order written. nil when no level word is there.
+            func cell(_ words: String) -> (Any?, Any?)? {
+                let t = words.lowercased()
+                let levels: [(String, Double)] = [("very high", 5), ("very low", 1), ("high", 4.5), ("low", 1.5), ("medium", 3), ("mid", 3), ("moderate", 3)]
+                var found: [(at: Int, level: Double)] = []
+                var scan = t
+                for (word, v) in levels {
+                    while let r = scan.range(of: "\\b\(word)\\b", options: .regularExpression) {
+                        let at = scan.distance(from: scan.startIndex, to: r.lowerBound)
+                        found.append((at, v))
+                        scan.replaceSubrange(r, with: String(repeating: " ", count: word.count))
+                    }
+                }
+                found.sort { $0.at < $1.at }
+                guard let firstLevel = found.first else { return nil }
+                if axes.count >= 2 {
+                    // Each level word belongs to the axis word nearest after or before it.
+                    func pos(_ axis: String) -> Int? {
+                        for w in axis.lowercased().split(separator: " ").map(String.init) where w.count > 2 {
+                            if let r = t.range(of: w.prefix(5)) { return t.distance(from: t.startIndex, to: r.lowerBound) }
+                        }
+                        return nil
+                    }
+                    if let ax = pos(axes[0]), let ay = pos(axes[1]), found.count >= 2 {
+                        let x = found.min { abs($0.at - ax) < abs($1.at - ax) }!.level
+                        let y = found.min { abs($0.at - ay) < abs($1.at - ay) }!.level
+                        return (x, y)
+                    }
+                    if let ax = pos(axes[0]), found.count == 1 { return abs(firstLevel.at - ax) < 12 ? (firstLevel.level, 3.0) : (3.0, firstLevel.level) }
+                }
+                return (firstLevel.level, found.count >= 2 ? found[1].level : 3.0)
+            }
             let list = anyList(["items", "points", "techniques"])
-            let placed = list.compactMap { e -> ([String: Any], (Any?, Any?))? in scores(e).map { (e, $0) } }
+            var placed = list.compactMap { e -> ([String: Any], (Any?, Any?))? in scores(e).map { (e, $0) } }
+            // Items with their cell in words rather than scores ("quadrant": "High impact, low effort").
+            if placed.isEmpty {
+                placed = list.compactMap { e in
+                    let words = text(e["quadrant"] ?? e["cell"] ?? e["position"] ?? e["placement"] ?? e["category"])
+                    return cell(words).map { (e, $0) }
+                }
+            }
+            // The model grouped the items by cell instead: groups whose titles name the cell and list the items, or a
+            // dictionary of cell name to names. Each name is placed where its cell says.
+            if placed.isEmpty {
+                var cells: [(String, [String])] = []
+                let groups = anyList(["quadrants", "cells", "groups"])
+                for g in groups {
+                    let names = strings(g["children"] ?? g["items"] ?? g["techniques"] ?? g["points"] ?? g["members"] ?? g["examples"])
+                    let label = [titled(g), detailed(g), text(g["quadrant"] ?? g["cell"] ?? g["position"])].filter { !$0.isEmpty }.joined(separator: " ")
+                    if !names.isEmpty { cells.append((label, names)) }
+                }
+                if cells.isEmpty {
+                    for (k, v) in o {
+                        if let dict = v as? [String: Any] {
+                            for (name, members) in dict where !strings(members).isEmpty { cells.append((name, strings(members))) }
+                            for (name, note) in dict where cell(text(note)) != nil && !(note is [Any]) && k != "axes" { cells.append((text(note), [name])) }
+                        }
+                    }
+                }
+                for (label, names) in cells {
+                    guard let at = cell(label) else { continue }
+                    for n in names { placed.append((["title": n], at)) }
+                }
+            }
             // Scored on keys named after the axes but the axes themselves unnamed: take the key names as the axes.
             if axes.count < 2, let first = placed.first?.0 {
                 let keys = first.filter { scored($0.value) && !["x", "y"].contains($0.key.lowercased()) }.map(\.key).sorted()
@@ -256,7 +350,7 @@ public struct VisualSpec: Codable, Hashable, Sendable {
         spec.items.removeAll { $0.title.isEmpty }; spec.stats.removeAll { $0.value.isEmpty }
         spec.rows.removeAll { $0.label.isEmpty }
         // A decision tree needs outcomes a reader can act on. A reply whose "outcomes" are ticks and crosses
-        // ("RAG: ✓") is a comparison in disguise and is not drawn as decisions.
+        // ("RAG: ✓") is a comparison in disguise and is not drawn as decisions: `parseAnyShape` draws it as the table it is.
         if layout == .decisionTree {
             let outcomes = spec.items.flatMap(\.children)
             let hollow = outcomes.filter { c in
@@ -278,8 +372,15 @@ public struct VisualSpec: Codable, Hashable, Sendable {
     /// back blank because the model answered a different question than the form asked.
     public static func parseAnyShape(_ raw: String, preferring layout: Layout) -> VisualSpec? {
         if let s = parse(raw, layout: layout) { return s }
-        // The asked form refused a reply of its own shape (a decision tree given ticks and crosses): that shape's
-        // plain form draws it before any other shape is tried.
+        // A decision tree refused a reply of its own shape: the reply was a comparison in disguise (criteria with a
+        // mark per option), and is drawn as the table it is. A mind map of bare questions is not offered: it reads worse
+        // than either, so when the reply is neither decisions nor a table the engine asks again.
+        if layout == .decisionTree {
+            if let table = comparison(fromMarks: raw) { return table }
+            for other in [Layout.infographic, .comparison, .quadrant] { if let s = parse(raw, layout: other) { return s } }
+            return nil
+        }
+        // Another form refused a reply of its own shape: that shape's plain form draws it before any other shape is tried.
         let plain: Layout = switch layout.shape {
         case .groups: .mindmap; case .sequence: .flowchart; case .figures: .infographic; case .matrix: .comparison; case .quadrant: .quadrant
         }
@@ -289,6 +390,28 @@ public struct VisualSpec: Codable, Hashable, Sendable {
             if let s = parse(raw, layout: other) { return s }
         }
         return nil
+    }
+
+    /// Groups whose children are "option: mark" pairs ("RAG: ✓", "Fine-tuning: ✗", "Long context: partial") read as a
+    /// comparison table: the options are the columns, each group is a row, the marks are the cells. nil unless at
+    /// least two options appear in at least two groups.
+    public static func comparison(fromMarks raw: String) -> VisualSpec? {
+        guard let groups = parse(raw, layout: .mindmap), groups.items.count >= 2 else { return nil }
+        var columns: [String] = []
+        var marks: [(label: String, cells: [String: String])] = []
+        for g in groups.items {
+            var cells: [String: String] = [:]
+            for c in g.children {
+                let parts = c.split(separator: ":", maxSplits: 1).map { $0.trimmingCharacters(in: .whitespaces) }
+                guard parts.count == 2, !parts[0].isEmpty, parts[0].count <= 30 else { continue }
+                if !columns.contains(parts[0]) { columns.append(parts[0]) }
+                cells[parts[0]] = parts[1].isEmpty ? "✓" : parts[1]
+            }
+            if !cells.isEmpty { marks.append((g.title.trimmingCharacters(in: CharacterSet(charactersIn: ": ")), cells)) }
+        }
+        guard columns.count >= 2, marks.count >= 2 else { return nil }
+        let rows = marks.map { m in Row(label: m.label, cells: columns.map { m.cells[$0] ?? "" }) }
+        return VisualSpec(layout: .comparison, title: groups.title, columns: columns, rows: rows)
     }
 
     /// How much each visual carries. Standard is the default; Deep is for when a summary isn't enough.
@@ -336,7 +459,7 @@ public struct VisualSpec: Codable, Hashable, Sendable {
             return "Show who does what in the process in \(about). \(lead) {\"title\": at most 6 words, \"groups\": [\(g) people, teams or systems {\"title\": the actor, at most 3 words, \"children\": [\(k) steps that actor does, in order, at most 7 words each]}]}."
         case .decisionTree:
             let g = d.pick("2 or 3", "3 or 4", "4 to 6")
-            return "Make a decision guide for \(about): the yes-or-no questions a reader asks about their own situation, in order, and what to do for each answer. \(lead) {\"title\": at most 6 words, \"groups\": [\(g) questions in order {\"title\": a yes-or-no question ending in a question mark, at most 10 words, \"children\": [exactly 2 outcomes, \"Yes: \" then the advice in at most 8 words, and \"No: \" then the advice or which question to ask next, at most 8 words]}]}. Not a comparison table: no ticks, crosses or scores."
+            return "Make a decision guide for \(about): the yes-or-no questions a reader asks about their own situation, in the order they should ask them, and what to do for each answer. \(lead) {\"title\": at most 6 words, \"questions\": [\(g) questions in order {\"question\": a yes-or-no question ending in a question mark, at most 10 words, \"yes\": what to do when the answer is yes, at most 8 words, \"no\": what to do when the answer is no, or \"Ask the next question\", at most 8 words}]}. For example, for choosing a car: {\"title\": \"Which car to buy\", \"questions\": [{\"question\": \"Do you drive more than 50 miles a day?\", \"yes\": \"Choose the hybrid\", \"no\": \"Ask the next question\"}]}. Every answer is advice in words: no ticks, crosses, scores or tables."
         case .prosCons:
             let k = d.pick("2 or 3", "3 or 4", "4 to 6")
             return "Weigh \(about). \(lead) {\"title\": the thing weighed, at most 6 words, \"groups\": [exactly 2 groups: {\"title\": \"Pros\", \"children\": [\(k) arguments for, at most 10 words each]}, {\"title\": \"Cons\", \"children\": [\(k) arguments against, at most 10 words each]}]}."

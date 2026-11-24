@@ -283,7 +283,7 @@ struct AskView: View {
                 .onChange(of: length) { _, v in UserDefaults.standard.set(v, forKey: "answerLength") }
             TextField(placeholder, text: $lib.query, axis: .vertical)
                 .textFieldStyle(.plain)
-                .lineLimit(1...6)
+                .lineLimit(2...6)           // two lines at rest: room for a real question, and for the hint to read
                 .focused($composerFocused)
                 .onSubmit(send)
                 .disabled(library.notebooks.isEmpty)

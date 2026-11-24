@@ -124,12 +124,59 @@ struct VisualSceneTests {
         #expect(bare.columns == ["Cost", "Value"] && bare.items.count == 2)
     }
 
-    @Test("a decision tree refuses ticks and crosses dressed as outcomes")
-    func decisionsNeedAdvice() {
+    @Test("ticks and crosses dressed as a decision tree are drawn as the comparison table they are, never a mind map")
+    func decisionsNeedAdvice() throws {
         let matrix = #"{"title": "Guide", "groups": [{"title": "Knowledge update need:", "children": ["RAG: ✓", "Fine-tuning: ✗", "Long context: ✗"]}, {"title": "Citations needed:", "children": ["RAG: ✓", "Fine-tuning: ✗"]}]}"#
         #expect(VisualSpec.parse(matrix, layout: .decisionTree) == nil)
-        #expect(VisualSpec.parseAnyShape(matrix, preferring: .decisionTree)?.layout == .mindmap)
-        #expect(VisualSpec.request(.decisionTree, about: "x").contains("yes-or-no question"))
+        let table = try #require(VisualSpec.parseAnyShape(matrix, preferring: .decisionTree))
+        #expect(table.layout == .comparison)
+        #expect(table.columns == ["RAG", "Fine-tuning", "Long context"])
+        #expect(table.rows.map(\.label) == ["Knowledge update need", "Citations needed"])
+        #expect(table.rows[1].cells == ["✓", "✗", ""])
+        // Questions with no outcomes at all are not a mind map of bare questions either: the engine asks again.
+        let bare = #"{"title": "Guide", "questions": [{"question": "Does the data change?"}, {"question": "Need citations?"}]}"#
+        #expect(VisualSpec.parseAnyShape(bare, preferring: .decisionTree) == nil)
+        #expect(VisualSpec.request(.decisionTree, about: "x").contains("\"questions\""))
+    }
+
+    @Test("a decision guide reads question/yes/no entries, yes/no objects and outcome objects as Yes: and No: outcomes")
+    func decisionShapes() throws {
+        let natural = #"{"title": "Fine-tune or retrieve", "questions": [{"question": "Does the knowledge change weekly?", "yes": "Use retrieval", "no": "Ask the next question"}, {"question": "Do you need a new style or format?", "yes": "Fine-tune", "no": "Use retrieval"}]}"#
+        let t = try spec(natural, .decisionTree)
+        #expect(t.layout == .decisionTree && t.items.count == 2)
+        #expect(t.items[0].title == "Does the knowledge change weekly?")
+        #expect(t.items[0].children == ["Yes: Use retrieval", "No: Ask the next question"])
+        let nested = #"{"title": "G", "groups": [{"title": "Is the data private?", "yes": {"advice": "Run it locally"}, "no": {"advice": "Either works"}}, {"title": "Is latency critical?", "children": [{"answer": "Yes", "then": "Smaller model"}, {"answer": "No", "then": "Larger model"}]}]}"#
+        let n = try spec(nested, .decisionTree)
+        #expect(n.items[0].children == ["Yes: Run it locally", "No: Either works"])
+        #expect(n.items[1].children == ["Yes: Smaller model", "No: Larger model"])
+        let scene = VisualLayout.scene(for: t)
+        #expect(VisualLint.check(scene).filter { $0.kind == .cut || $0.kind == .offSlide || $0.kind == .overlap }.isEmpty)
+    }
+
+    @Test("two axes place items by their cell in words, by grouped cells, by a cell dictionary, and read a name beside a rationale")
+    func quadrantCells() throws {
+        let worded = try spec(#"{"title": "T", "axes": ["Effort", "Impact"], "items": [{"title": "RAG", "quadrant": "Low effort, high impact"}, {"title": "Pretraining", "quadrant": "High effort, low impact"}]}"#, .quadrant)
+        #expect(worded.items.first { $0.title == "RAG" }?.value == "1.5,4.5")
+        #expect(worded.items.first { $0.title == "Pretraining" }?.value == "4.5,1.5")
+        let grouped = try spec(#"{"title": "T", "axes": ["Effort", "Impact"], "quadrants": [{"title": "Quick wins", "description": "low effort, high impact", "items": ["RAG", "Prompting"]}, {"title": "Big bets", "description": "high effort, high impact", "items": ["Pretraining"]}]}"#, .quadrant)
+        #expect(grouped.items.count == 3 && grouped.items.first { $0.title == "Prompting" }?.value == "1.5,4.5")
+        let dict = try spec(#"{"title": "T", "axes": ["Effort", "Impact"], "quadrants": {"High effort / Low impact": ["Pretraining"], "Low effort / High impact": ["RAG"]}}"#, .quadrant)
+        #expect(dict.items.count == 2 && dict.items.first { $0.title == "RAG" }?.value == "1.5,4.5")
+        let reasoned = try spec(#"{"title": "T", "axes": ["Effort", "Impact"], "items": [{"technique": "RAG", "effort": "Low", "impact": "High", "rationale": "Needs only an index of the documents and a retriever in front of the model"}]}"#, .quadrant)
+        #expect(reasoned.items.map(\.title) == ["RAG"])
+    }
+
+    @Test("a reply with a trailing comma, a comment, or cut off by the token budget still draws what was complete")
+    func repairedJSON() throws {
+        let trailing = #"```json {"title": "T", "axes": ["Effort", "Impact"], "items": [{"title": "RAG", "x": 1, "y": 5}, {"title": "Fine-tuning", "x": 4, "y": 4},],} ```"#
+        #expect(try spec(trailing, .quadrant).items.count == 2)
+        let cut = #"{"title": "T", "axes": ["Effort", "Impact"], "items": [{"title": "RAG", "x": 1, "y": 5}, {"title": "Fine-tuning", "x": 4, "y": 4}, {"title": "Pretrai"#
+        let q = try spec(cut, .quadrant)
+        #expect(q.items.map(\.title) == ["RAG", "Fine-tuning"] && q.columns == ["Effort", "Impact"])
+        let commented = "{\n  // the map\n  \"title\": \"T\",\n  \"groups\": [{\"title\": \"A\", \"children\": [\"a\", \"b\"]}]\n}"
+        #expect(try spec(commented, .mindmap).items.count == 1)
+        #expect(JSONObjects.first(in: "Sorry, I cannot draw that.") == nil)
     }
 
     @Test("the SVG names every line, escapes markup and carries the theme's colours")

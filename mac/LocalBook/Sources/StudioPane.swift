@@ -237,8 +237,13 @@ private struct MakeSheet: View {
                 ScrollView { MakingView(kind: kind, status: engine.status, progress: engine.progress, caption: engine.caption) { engine.stop() }.padding() }
             } else {
                 Form {
-                    Section {
-                        TextField("Subject (optional)", text: $topic, prompt: Text("Leave empty to cover the whole notebook"))
+                    Section("Subject (optional)") {
+                        // A growing field with its words at the left: a labelled one-line field in a grouped form sets
+                        // the text flush right, so a long ask seemed to type backwards and was cut to one line.
+                        TextField("Subject", text: $topic, prompt: Text("Leave empty to cover the whole notebook"), axis: .vertical)
+                            .labelsHidden()
+                            .lineLimit(1...6)
+                            .multilineTextAlignment(.leading)
                             .onSubmit { Task { await make() } }
                         Text("From \(notebook.title).").font(.callout).foregroundStyle(.secondary)
                     }
