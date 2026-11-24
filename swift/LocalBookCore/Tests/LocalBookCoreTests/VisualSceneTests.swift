@@ -106,7 +106,7 @@ struct VisualSceneTests {
         let d = try spec(#"{"title": "Ship it?", "groups": [{"title": "Do the tests pass?", "children": ["Yes: ship it", "No: fix first"]}, {"title": "Is it Friday?", "children": ["Yes: wait for Monday", "No: deploy now"]}]}"#, .decisionTree)
         let ds = VisualLayout.scene(for: d)
         let words = texts(ds).flatMap(\.lines)
-        #expect(words.contains("Yes") && words.contains("No") && words.contains("ship it"))
+        #expect(words.contains("YES") && words.contains("NO") && words.contains("ship it"))
         let q = try spec(#"{"title": "Where to spend", "axes": ["Effort", "Impact"], "items": [{"title": "Search", "x": 1, "y": 5}, {"title": "Themes", "x": 5, "y": 1}]}"#, .quadrant)
         let qs = VisualLayout.scene(for: q)
         let dots = qs.nodes.filter { if case .dot = $0 { true } else { false } }
