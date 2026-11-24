@@ -449,6 +449,16 @@ extension Builder {
         if spec.columns.count >= 2 {
             place(spec.columns[0] + "  →", axisStyle, x: cx + 12 * s, y: plotBottom + 8 * s, width: right - cx)
             place("↑  " + spec.columns[1], axisStyle, x: left + 12 * s, y: plotTop + 6 * s, width: cx - left)
+            // Every cell says what it holds, in its top-right corner, so an empty cell still reads.
+            var cellStyle = VisualTextStyle(size: 15 * s, weight: .semibold, role: .quiet, align: .trailing)
+            cellStyle.align = .trailing
+            let h = spec.columns[0], v = spec.columns[1]
+            for (q, words) in [(CGRect(x: left, y: plotTop, width: cx - left, height: cy - plotTop), "Low \(h) · High \(v)"),
+                               (CGRect(x: cx, y: plotTop, width: right - cx, height: cy - plotTop), "High \(h) · High \(v)"),
+                               (CGRect(x: left, y: cy, width: cx - left, height: plotBottom - cy), "Low \(h) · Low \(v)"),
+                               (CGRect(x: cx, y: cy, width: right - cx, height: plotBottom - cy), "High \(h) · Low \(v)")] {
+                place(words, cellStyle, x: q.minX + 14 * s, y: q.minY + 8 * s, width: q.width - 28 * s, maxLines: 1)
+            }
         }
         for (i, item) in spec.items.enumerated() {
             let parts = item.value.split(separator: ",").map { Double($0.trimmingCharacters(in: .whitespaces)) ?? 3 }

@@ -178,6 +178,8 @@ public final class StudioEngine {
             }
             if spec.layout != form { SoakTrace.log("studio visual: the reply fitted \(spec.layout.rawValue), not \(form.rawValue); drawn as that") }
             spec.theme = theme
+            // The axes the ask named are the axes drawn, whatever the model called them.
+            if spec.layout == .quadrant, let asked = VisualPick.axes(in: topic) { spec.columns = asked }
             // A figure the notes do not contain is not drawn: every number in a stat must appear in the passages.
             if !spec.stats.isEmpty {
                 let grounded = spec.stats.filter { Self.grounded($0.value, in: passages) }
@@ -300,7 +302,7 @@ public final class StudioEngine {
                     "Write exactly \(count) multiple-choice questions about \(about). Reply with ONLY a JSON array, no other text. Each item: {\"question\": string, \"choices\": [4 short strings], \"answer\": index 0-3 of the correct choice, \"why\": one sentence from the passages}.",
                     max(600, count * 230))
         case .visual:
-            return (base + " Keep every label short. You reply with JSON only.", VisualSpec.request(layout, about: about, detail: detail), detail.tokens)
+            return (base + " Keep every label short. You reply with JSON only.", VisualSpec.request(layout, about: about, detail: detail, axes: layout == .quadrant ? VisualPick.axes(in: topic) : nil), detail.tokens)
         case .cards, .audio, .video:
             return (base + " You reply with JSON only.",
                     "Write exactly \(count) flashcards about \(about). Reply with ONLY a JSON array, no other text. Each item: {\"front\": a short question or term, \"back\": a short answer from the passages}.",

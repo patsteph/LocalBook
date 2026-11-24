@@ -34,6 +34,26 @@ public enum VisualPick {
         return nil
     }
 
+    /// The two axes an ask names for a two-axis plot ("effort against impact", "urgency vs importance", "plot risk
+    /// and reward"), horizontal first, capitalised; nil when the ask names none.
+    public static func axes(in topic: String) -> [String]? {
+        let t = topic.lowercased()
+        // "against" and "versus" name axes almost always; "and" and "by" only when nothing stronger is there.
+        let side = #"([a-z][a-z-]+(?: [a-z][a-z-]+)?)"#
+        var words: [String] = []
+        for joiner in [#"(?:against|vs\.?|versus)"#, #"(?:by|and)"#] {
+            guard let m = t.range(of: #"\b"# + side + #"\s+"# + joiner + #"\s+"# + side + #"\b"#, options: .regularExpression) else { continue }
+            words = String(t[m]).replacingOccurrences(of: #"\s+"# + joiner + #"\s+"#, with: "|", options: .regularExpression).split(separator: "|").map { $0.trimmingCharacters(in: .whitespaces) }
+            break
+        }
+        guard words.count == 2 else { return nil }
+        // "the main techniques on two axes, effort against impact": the first word may carry an article or a verb.
+        let stop: Set<String> = ["the", "a", "an", "on", "of", "two", "axes", "plot", "place", "sort", "map", "by", "with", "their", "its"]
+        let clean = words.map { w in w.split(separator: " ").map(String.init).filter { !stop.contains($0) }.joined(separator: " ") }.filter { !$0.isEmpty }
+        guard clean.count == 2, clean.allSatisfy({ $0.count >= 3 && $0.count <= 24 }) else { return nil }
+        return clean.map(\.capitalized)
+    }
+
     /// What the model is told when asked to choose.
     public static let instructions = "You choose the best form for a diagram. Reply with exactly one id from the list and nothing else."
 

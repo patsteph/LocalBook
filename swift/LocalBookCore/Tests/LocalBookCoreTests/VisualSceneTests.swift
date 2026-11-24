@@ -182,6 +182,16 @@ struct VisualSceneTests {
         let pre = try #require(asked.items.first { $0.title == "Pretraining" }).value.split(separator: ",").compactMap { Double($0) }
         #expect(pre[0] > 3 && pre[1] < 3)
         #expect(VisualSpec.request(.quadrant, about: "x").contains("\"cells\""))
+        // Cells that carry their own label and object members: the members are the items, never the cell's label.
+        let labelled = try spec(#"{"title": "T", "axes": ["Scope", "Source"], "cells": [{"cell": "low effort, high impact", "title": "Adaptive Generalists", "items": [{"name": "RAG"}, {"name": "Prompting"}]}, {"cell": "high effort, high impact", "title": "Cognitive Mirrors", "items": [{"name": "Fine-tuning"}]}]}"#, .quadrant)
+        #expect(labelled.items.map(\.title).sorted() == ["Fine-tuning", "Prompting", "RAG"])
+        // The ask names the axes: they are read, put in the request, and the drawn cells are captioned with them.
+        #expect(VisualPick.axes(in: "Plot the main AI techniques on two axes, effort against impact") == ["Effort", "Impact"])
+        #expect(VisualPick.axes(in: "A 2x2 of urgency and importance for the tasks") == ["Urgency", "Importance"])
+        #expect(VisualPick.axes(in: "Rank the top five risks") == nil)
+        #expect(VisualSpec.request(.quadrant, about: "x", axes: ["Effort", "Impact"]).contains("Effort (horizontal) and Impact (vertical)"))
+        let captions = VisualLayout.scene(for: asked).nodes.compactMap { n -> String? in if case .text(let t) = n { return t.lines.joined() } else { return nil } }
+        #expect(captions.contains("Low Effort · High Impact") && captions.contains("High Effort · Low Impact"))
         let scene = VisualLayout.scene(for: asked)
         #expect(VisualLint.check(scene).filter { $0.kind == .cut || $0.kind == .offSlide || $0.kind == .overlap }.isEmpty)
         let dict = try spec(#"{"title": "T", "axes": ["Effort", "Impact"], "quadrants": {"High effort / Low impact": ["Pretraining"], "Low effort / High impact": ["RAG"]}}"#, .quadrant)

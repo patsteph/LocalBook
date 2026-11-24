@@ -299,36 +299,42 @@ public struct VisualSpec: Codable, Hashable, Sendable {
                 }
                 return (firstLevel.level, found.count >= 2 ? found[1].level : 3.0)
             }
-            let list = anyList(["items", "points", "techniques"])
-            var placed = list.compactMap { e -> ([String: Any], (Any?, Any?))? in scores(e).map { (e, $0) } }
-            // Items with their cell in words rather than scores ("quadrant": "High impact, low effort").
-            if placed.isEmpty {
-                placed = list.compactMap { e in
-                    let words = text(e["quadrant"] ?? e["cell"] ?? e["position"] ?? e["placement"] ?? e["category"])
-                    return cell(words).map { (e, $0) }
-                }
+            /// The names in a list, written as strings or as objects named by their title.
+            func names(_ v: Any?) -> [String] {
+                let plain = strings(v)
+                if !plain.isEmpty { return plain }
+                return (v as? [[String: Any]] ?? []).map(titled).filter { !$0.isEmpty }
             }
-            // The model grouped the items by cell instead: groups whose titles name the cell and list the items, or a
-            // dictionary of cell name to names. Each name is placed where its cell says.
-            if placed.isEmpty {
-                var cells: [(String, [String])] = []
-                let groups = anyList(["quadrants", "cells", "groups"])
-                for g in groups {
-                    let names = strings(g["children"] ?? g["items"] ?? g["techniques"] ?? g["points"] ?? g["members"] ?? g["examples"])
-                    let label = [titled(g), detailed(g), text(g["quadrant"] ?? g["cell"] ?? g["position"])].filter { !$0.isEmpty }.joined(separator: " ")
-                    if !names.isEmpty { cells.append((label, names)) }
-                }
-                if cells.isEmpty {
-                    for (k, v) in o {
-                        if let dict = v as? [String: Any] {
-                            for (name, members) in dict where !strings(members).isEmpty { cells.append((name, strings(members))) }
-                            for (name, note) in dict where cell(text(note)) != nil && !(note is [Any]) && k != "axes" { cells.append((text(note), [name])) }
-                        }
+            var placed: [([String: Any], (Any?, Any?))] = []
+            // The asked shape first: cells that name their corner and list their names ({"cell": "low effort, high
+            // impact", "items": [...]}), or a dictionary of cell name to names. Each name is placed where its cell says.
+            var cells: [(String, [String])] = []
+            for g in anyList(["cells", "quadrants", "groups"]) {
+                let members = names(g["items"] ?? g["children"] ?? g["techniques"] ?? g["points"] ?? g["members"] ?? g["examples"] ?? g["names"])
+                let label = [text(g["cell"] ?? g["quadrant"] ?? g["position"]), titled(g), detailed(g)].filter { !$0.isEmpty }.joined(separator: " ")
+                if !members.isEmpty, cell(label) != nil { cells.append((label, members)) }
+            }
+            if cells.isEmpty {
+                for (k, v) in o where k != "axes" {
+                    if let dict = v as? [String: Any] {
+                        for (name, members) in dict where !names(members).isEmpty && cell(name) != nil { cells.append((name, names(members))) }
+                        for (name, note) in dict where !(note is [Any]) && cell(text(note)) != nil { cells.append((text(note), [name])) }
                     }
                 }
-                for (label, names) in cells {
-                    guard let at = cell(label) else { continue }
-                    for n in names { placed.append((["title": n], at)) }
+            }
+            for (label, members) in cells {
+                guard let at = cell(label) else { continue }
+                for n in members { placed.append((["title": n], at)) }
+            }
+            // Failing that, a list of items each with its own scores, or with its cell in words.
+            if placed.isEmpty {
+                let list = anyList(["items", "points", "techniques"])
+                placed = list.compactMap { e -> ([String: Any], (Any?, Any?))? in scores(e).map { (e, $0) } }
+                if placed.isEmpty {
+                    placed = list.compactMap { e in
+                        let words = text(e["quadrant"] ?? e["cell"] ?? e["position"] ?? e["placement"] ?? e["category"])
+                        return cell(words).map { (e, $0) }
+                    }
                 }
             }
             // Scored on keys named after the axes but the axes themselves unnamed: take the key names as the axes.
@@ -450,7 +456,7 @@ public struct VisualSpec: Codable, Hashable, Sendable {
     }
 
     /// The JSON shape each form is asked for: one schema per shape, with the form's own words for what the items are.
-    public static func request(_ layout: Layout, about: String, detail: Detail = .standard) -> String {
+    public static func request(_ layout: Layout, about: String, detail: Detail = .standard, axes: [String]? = nil) -> String {
         let d = detail
         let sentence = d.pick("a few words", "one short sentence", "one or two sentences")
         let n = d.pick("4 or 5", "5 to 8", "8 to 12")
@@ -497,7 +503,10 @@ public struct VisualSpec: Codable, Hashable, Sendable {
             return "Make a comparison table for \(about). \(lead) {\"title\": at most 6 words, \"columns\": [2 or 3 names of the things compared], \"rows\": [\(r) items {\"label\": the aspect compared, \"cells\": [one short phrase per column, in column order]}]}."
         case .quadrant:
             let k = d.pick("4 to 6", "6 to 9", "9 to 14")
-            return "Sort the items in \(about) into the four cells of two axes. \(lead) {\"title\": at most 6 words, \"axes\": [the horizontal axis, the vertical axis, one or two words each], \"cells\": [exactly 4 cells {\"cell\": \"low <horizontal axis>, low <vertical axis>\", \"items\": [names of at most 4 words]}, then the same for \"high …, low …\", \"low …, high …\" and \"high …, high …\"]}, with \(k) names in all, each in one cell only. For example, for chores on effort and impact: {\"title\": \"Chores worth doing\", \"axes\": [\"Effort\", \"Impact\"], \"cells\": [{\"cell\": \"low effort, low impact\", \"items\": [\"Dusting\"]}, {\"cell\": \"high effort, low impact\", \"items\": [\"Repainting the shed\"]}, {\"cell\": \"low effort, high impact\", \"items\": [\"Paying the bills\", \"Locking up\"]}, {\"cell\": \"high effort, high impact\", \"items\": [\"Fixing the roof\"]}]}."
+            let named = axes.flatMap { $0.count >= 2 ? $0 : nil }
+            let which = named.map { "The axes are \($0[0]) (horizontal) and \($0[1]) (vertical): use exactly those. " } ?? ""
+            let axesField = named.map { "[\"\($0[0])\", \"\($0[1])\"]" } ?? "[the horizontal axis, the vertical axis, one or two words each]"
+            return "Sort the items in \(about) into the four cells of two axes. \(which)\(lead) {\"title\": at most 6 words, \"axes\": \(axesField), \"cells\": [exactly 4 cells {\"cell\": \"low <horizontal axis>, low <vertical axis>\", \"items\": [names of at most 4 words]}, then the same for \"high …, low …\", \"low …, high …\" and \"high …, high …\"]}, with \(k) names in all, each in one cell only. For example, for chores on effort and impact: {\"title\": \"Chores worth doing\", \"axes\": [\"Effort\", \"Impact\"], \"cells\": [{\"cell\": \"low effort, low impact\", \"items\": [\"Dusting\"]}, {\"cell\": \"high effort, low impact\", \"items\": [\"Repainting the shed\"]}, {\"cell\": \"low effort, high impact\", \"items\": [\"Paying the bills\", \"Locking up\"]}, {\"cell\": \"high effort, high impact\", \"items\": [\"Fixing the roof\"]}]}."
         case .infographic:
             let st = d.pick("3", "3 or 4", "4 to 6"), p = d.pick("2 or 3", "3 to 5", "5 to 8")
             return "Make an infographic for \(about). \(lead) {\"title\": a punchy headline of at most 8 words, \"stats\": [\(st) items {\"value\": a figure, number or short fact taken from the passages, \"label\": at most 5 words}], \"points\": [\(p) items {\"title\": at most 5 words, \"detail\": \(sentence)}]}."
