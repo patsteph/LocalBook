@@ -318,8 +318,8 @@ extension Builder {
             if var qb = question { qb.frame.origin.y = cy - qb.frame.height / 2; scene.add(.text(qb)) }
 
             // The two outcomes: Yes first, No second, however they were written.
-            let yes = q.children.indices.contains(0) ? split(q.children[0], fallback: "YES") : ("YES", "")
-            let no = q.children.indices.contains(1) ? split(q.children[1], fallback: "NO") : ("NO", "")
+            let yes: (answer: String, advice: String) = q.children.indices.contains(0) ? split(q.children[0], fallback: "YES") : (answer: "YES", advice: "")
+            let no: (answer: String, advice: String) = q.children.indices.contains(1) ? split(q.children[1], fallback: "NO") : (answer: "NO", advice: "")
             let last = i == n - 1
             let nextTop = CGPoint(x: cx, y: cy + stage - dH / 2 + 6 * s)
             // One answer may hand over to the next question: that one goes down the spine, the other to a pill.
