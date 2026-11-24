@@ -200,6 +200,34 @@ struct VisualSceneTests {
         #expect(reasoned.items.map(\.title) == ["RAG"])
     }
 
+    @Test("the real replies of 2026-11-24: an empty skeleton is seen as empty, the flat retry draws, and the ask's subject is read without its form words")
+    func realReplies() throws {
+        // What the model sent twice for statement 5: the four cells, all empty. Not drawable, and recognised as the skeleton.
+        let skeleton = #"```json {   "title": "AI Research Techniques Map",   "axes": [     "Effort",     "Impact"   ],   "cells": [     {       "cell": "low effort, low impact",       "items": []     },     {       "cell": "high effort, low impact",       "items": []     },     {       "cell": "low effort, high impact",       "items": []     },     {       "cell": "high effort, high impact",       "items": []     }   ] } ```"#
+        #expect(VisualSpec.parseAnyShape(skeleton, preferring: .quadrant) == nil)
+        #expect(VisualSpec.listsEmpty(skeleton))
+        #expect(!VisualSpec.listsEmpty(#"{"title": "T", "axes": ["A", "B"], "cells": [{"cell": "low a, low b", "items": ["x"]}]}"#))
+        // The cells filled with years, not levels: nothing placed, nothing invented.
+        let years = #"{"title": "AI Index Report 2026", "axes": ["Year", "Earliest grade"], "cells": [{"cell": "2025 - DRAFT", "items": ["9–12 elective"]}, {"cell": "2024", "items": ["Kindergarten"]}]}"#
+        #expect(VisualSpec.parse(years, layout: .quadrant) == nil)
+        // The second ask's flat form, at the top level or under a key, with the scores as numbers or words.
+        let flat = try spec(#"{"RAG": [2, 5], "Fine-tuning": [4, 4], "Prompting": ["low", "medium"]}"#, .quadrant)
+        #expect(flat.items.map(\.title) == ["Fine-tuning", "Prompting", "RAG"])
+        #expect(flat.items.first { $0.title == "RAG" }?.value == "2.0,5.0" || flat.items.first { $0.title == "RAG" }?.value == "2,5")
+        let keyed = try spec(#"{"title": "Map", "axes": ["Effort", "Impact"], "scores": {"RAG": [2, 5], "Fine-tuning": [4, 4]}}"#, .quadrant)
+        #expect(keyed.items.count == 2 && keyed.columns == ["Effort", "Impact"])
+        let retry = VisualSpec.retryRequest(.quadrant, about: "x", axes: ["Effort", "Impact"], emptyLists: true)
+        #expect(retry.contains("[Effort score, Impact score]") && retry.contains("left every list empty"))
+        // The subject the notebook is searched for: the form words are gone, the matter stays.
+        #expect(VisualPick.subject(of: "Plot the main AI techniques on two axes, effort against impact") == "main AI techniques")
+        #expect(VisualPick.subject(of: "Whether to fine-tune a model or use retrieval: a decision guide") == "Whether to fine-tune a model or use retrieval")
+        #expect(VisualPick.subject(of: "AI agents at a glance: what matters and why") == "AI agents")
+        #expect(VisualPick.subject(of: "The value proposition of running AI models locally instead of in the cloud") == "running AI models locally instead of in the cloud")
+        #expect(VisualPick.subject(of: "The feedback loop of training, evaluation and fine-tuning in model development") == "training, evaluation and fine-tuning in model development")
+        #expect(VisualPick.subject(of: "Rank the top five risks of AI agents in order of importance") == "risks of AI agents")
+        #expect(VisualPick.subject(of: "Transformers") == "Transformers")
+    }
+
     @Test("a reply with a trailing comma, a comment, or cut off by the token budget still draws what was complete")
     func repairedJSON() throws {
         let trailing = #"```json {"title": "T", "axes": ["Effort", "Impact"], "items": [{"title": "RAG", "x": 1, "y": 5}, {"title": "Fine-tuning", "x": 4, "y": 4},],} ```"#

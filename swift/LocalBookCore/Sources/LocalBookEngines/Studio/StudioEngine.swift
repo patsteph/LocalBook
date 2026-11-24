@@ -58,9 +58,12 @@ public final class StudioEngine {
         guard GPUGuard.canStart else { error = "Open the app and try again: this can't run while the screen is off."; return nil }
 
         let topic = topic.trimmingCharacters(in: .whitespacesAndNewlines)
+        // A visual's ask carries form words ("plot", "two axes", "decision guide"); the notebook is read about its subject.
+        let subject = kind == .visual ? VisualPick.subject(of: topic) : topic
+        if subject != topic { SoakTrace.log("studio visual: reading about “\(subject)”") }
         status = "Reading the notebook…"
         var seeds = ["the main ideas and key points", "important facts, names, dates and numbers", "conclusions, decisions and open questions"]
-        if !topic.isEmpty { seeds = [topic, "\(topic) key facts and details", "\(topic) background and context"] }
+        if !subject.isEmpty { seeds = [subject, "\(subject) key facts and details", "\(subject) background and context"] }
         if kind == .quiz {
             let t = topic.isEmpty ? "" : topic + " "
             seeds += ["\(t)definitions and explanations", "\(t)examples, processes and steps", "\(t)people, organizations and relationships", "\(t)problems, risks and recommendations"]
@@ -121,6 +124,7 @@ public final class StudioEngine {
             }
         }
         let (instructions, request, tokens) = Self.prompt(kind, notebookTitle: notebook.title, topic: topic, count: count, notebookOnly: notebookOnly, layout: form, detail: detail)
+        let visualAbout = subject.isEmpty ? "the notebook “\(notebook.title)”" : "“\(subject)” in the notebook “\(notebook.title)”"
 
         var raw = ""
         if kind == .quiz {
@@ -157,7 +161,9 @@ public final class StudioEngine {
                 // The reply was prose or JSON of another shape: ask once more, pointing at the schema.
                 SoakTrace.log("studio visual: nothing to draw as \(form.rawValue) in “\(shown(raw))”; asking again")
                 status = "Drawing again…"
-                let again = "Passages:\n\n\(numbered(passages))\n\n\(request)\n\nYour previous reply could not be drawn. Reply with ONLY the JSON object described, exactly those keys, no prose, no apology, and begin your reply with {. If the notes are thin, still fill every list from what they do say."
+                let empty = VisualSpec.listsEmpty(raw)
+                if empty { SoakTrace.log("studio visual: the reply was the skeleton with empty lists") }
+                let again = "Passages:\n\n\(numbered(passages))\n\n" + VisualSpec.retryRequest(form, about: visualAbout, detail: detail, axes: form == .quadrant ? VisualPick.axes(in: topic) : nil, emptyLists: empty)
                 if let out = await run(again, instructions: instructions, tokens: tokens) {
                     drawn = VisualSpec.parseAnyShape(out, preferring: form); lastRetries = 1
                     if drawn == nil { SoakTrace.log("studio visual: the second reply could not be drawn either: “\(shown(out))”") }
@@ -288,7 +294,8 @@ public final class StudioEngine {
     // MARK: prompts and parsing
 
     public nonisolated static func prompt(_ kind: StudioItem.Kind, notebookTitle: String, topic: String, count: Int, notebookOnly: Bool, layout: VisualSpec.Layout = .mindmap, detail: VisualSpec.Detail = .standard) -> (String, String, Int) {
-        let about = topic.isEmpty ? "the notebook “\(notebookTitle)”" : "“\(topic)” in the notebook “\(notebookTitle)”"
+        let subject = kind == .visual ? VisualPick.subject(of: topic) : topic
+        let about = subject.isEmpty ? "the notebook “\(notebookTitle)”" : "“\(subject)” in the notebook “\(notebookTitle)”"
         let base = (notebookOnly
             ? "You write ONLY from the numbered passages from the user's own notes. Never add facts that are not in them."
             : "You write mainly from the numbered passages from the user's own notes, and may add well-established general knowledge about the subject.") + " Plain text: no LaTeX."

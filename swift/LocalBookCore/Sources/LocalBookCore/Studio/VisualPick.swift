@@ -34,6 +34,34 @@ public enum VisualPick {
         return nil
     }
 
+    /// The subject of an ask with its form words taken out: "Plot the main AI techniques on two axes, effort against
+    /// impact" reads about "the main AI techniques". The notebook is searched for the subject, and the model is asked
+    /// about the subject, so the words that steer the form ("plot", "two axes", "decision guide") never pull in
+    /// passages about plotting or guides. The ask itself when nothing is left.
+    public static func subject(of topic: String) -> String {
+        var t = topic.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cuts = [
+            #"^(?:please )?(?:plot|draw|make|show|create|map|place|sort|build|give me|visuali[sz]e|chart|graph|lay out)\b\s*(?:me\s+)?(?:a |an |the )?"#,
+            #"\bon two axes,?\s*"#, #"\b(?:as |in )?a 2 ?[x×] ?2(?: matrix| grid)?,?\s*"#, #"\bon a (?:quadrant|matrix|grid)\b"#,
+            #",?\s*:?\s*a decision (?:guide|tree)(?: for| to| on)?\b"#, #"\bdecision (?:guide|tree) (?:for|to|on|of)\b"#,
+            #"^(?:rank|order|list)\s+(?:the\s+)?(?:top\s+(?:\d+|three|five|ten)\s+)?"#,
+            #"\b(?:the )?(?:as )?(?:a |an )?(?:mind ?map|flowchart|flow chart|timeline|infographic|cycle|pyramid|comparison(?: table)?|hierarchy|swim ?lanes?|value proposition|ranked list|concept clusters?|cheat ?sheet|fact ?sheet|one[- ]pager?) (?:of|for|on|showing)\b"#,
+            #"\bat a glance\b:?"#, #",?\s*what matters and why\b"#, #"\bby the numbers\b"#, #"\bside by side\b"#,
+            #"\bin order of importance\b"#, #"\bfrom first to last\b"#, #"\bthen and now\b"#, #"\bbefore and after\b"#,
+            #"\b(?:the )?(?:pros and cons|strengths and weaknesses|advantages and disadvantages) of\b"#,
+            #"\b(?:the )?(?:steps|stages|phases) (?:of|in)\b"#, #"\b(?:the )?(?:main|key) (?:ideas|points) (?:of|in)\b"#, #"\b(?:an )?overview of\b"#,
+            #"\bwho does what in\b"#, #"\bthe feedback loop of\b"#,
+        ]
+        for c in cuts { t = t.replacingOccurrences(of: c, with: " ", options: [.regularExpression, .caseInsensitive]) }
+        // The axes of a two-axis ask are a form word too ("effort against impact").
+        if rule(for: topic) == .quadrant, let axes = axes(in: topic) {
+            t = t.replacingOccurrences(of: #"[,:]?\s*\b"# + NSRegularExpression.escapedPattern(for: axes[0]) + #"\s+(?:against|vs\.?|versus|by|and)\s+"# + NSRegularExpression.escapedPattern(for: axes[1]) + #"\b"#, with: " ", options: [.regularExpression, .caseInsensitive])
+        }
+        t = t.replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+            .trimmingCharacters(in: CharacterSet(charactersIn: " ,:;.-"))
+        return t.count >= 3 ? t : topic
+    }
+
     /// The two axes an ask names for a two-axis plot ("effort against impact", "urgency vs importance", "plot risk
     /// and reward"), horizontal first, capitalised; nil when the ask names none.
     public static func axes(in topic: String) -> [String]? {

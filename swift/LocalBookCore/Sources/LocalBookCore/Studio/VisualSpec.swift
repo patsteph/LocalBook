@@ -326,6 +326,19 @@ public struct VisualSpec: Codable, Hashable, Sendable {
                 guard let at = cell(label) else { continue }
                 for n in members { placed.append((["title": n], at)) }
             }
+            // The flat form of the second ask: name to [horizontal score, vertical score], at the top level or under
+            // one key ({"RAG": [2, 5], "Fine-tuning": [4, 4]}).
+            if placed.isEmpty {
+                func pairs(_ d: [String: Any]) -> [([String: Any], (Any?, Any?))] {
+                    d.compactMap { k, v in
+                        guard let pair = v as? [Any], pair.count == 2, scored(pair[0]), scored(pair[1]), !["axes", "columns"].contains(k.lowercased()) else { return nil }
+                        return (["title": k], (pair[0], pair[1]))
+                    }
+                }
+                placed = pairs(o)
+                if placed.isEmpty { for v in o.values { if let d = v as? [String: Any] { placed += pairs(d) } } }
+                placed.sort { titled($0.0) < titled($1.0) }
+            }
             // Failing that, a list of items each with its own scores, or with its cell in words.
             if placed.isEmpty {
                 let list = anyList(["items", "points", "techniques"])
@@ -443,6 +456,38 @@ public struct VisualSpec: Codable, Hashable, Sendable {
         return VisualSpec(layout: .comparison, title: groups.title, columns: columns, rows: rows)
     }
 
+    /// The second ask when the first reply could not be drawn: the same form in its plainest possible JSON. A two-axis
+    /// plot is asked for as names with two scores each, which a small model fills far more reliably than four cells;
+    /// the other forms repeat their request with a note on what was wrong.
+    public static func retryRequest(_ layout: Layout, about: String, detail: Detail = .standard, axes: [String]? = nil, emptyLists: Bool) -> String {
+        let note = emptyLists
+            ? "Your previous reply left every list empty. The passages do name things: use the concepts, methods, tools or ideas they do name, and never leave a list empty."
+            : "Your previous reply could not be drawn."
+        switch layout {
+        case .quadrant:
+            let h = axes?.first ?? "the horizontal axis", v = axes?.dropFirst().first ?? "the vertical axis"
+            let k = detail.pick("4 to 6", "6 to 9", "9 to 14")
+            return "\(note) Name \(k) things from the passages about \(about) and score each from 1 (low) to 5 (high) on \(h), then on \(v). Reply with ONLY a JSON object of name to [\(h) score, \(v) score], nothing else: {\"First name\": [2, 5], \"Second name\": [4, 4], \"Third name\": [1, 2]}."
+        default:
+            return request(layout, about: about, detail: detail, axes: axes) + "\n\n\(note) Reply with ONLY the JSON object described, exactly those keys, no prose, no apology, and begin your reply with {. If the notes are thin, still fill every list from what they do say."
+        }
+    }
+
+    /// True when a reply's lists are all empty: the skeleton came back without content. The axes list does not count.
+    public static func listsEmpty(_ raw: String) -> Bool {
+        guard let o = JSONObjects.first(in: raw) else { return false }
+        var leaves: [[Any]] = []
+        func walk(_ v: Any) {
+            if let a = v as? [Any] {
+                if a.contains(where: { $0 is [String: Any] }) { a.forEach(walk) } else { leaves.append(a) }
+            } else if let d = v as? [String: Any] {
+                for (k, v) in d where !["axes", "columns"].contains(k.lowercased()) { walk(v) }
+            }
+        }
+        walk(o)
+        return !leaves.isEmpty && leaves.allSatisfy(\.isEmpty)
+    }
+
     /// How much each visual carries. Standard is the default; Deep is for when a summary isn't enough.
     public enum Detail: String, CaseIterable, Identifiable, Sendable {
         case overview, standard, deep
@@ -506,7 +551,7 @@ public struct VisualSpec: Codable, Hashable, Sendable {
             let named = axes.flatMap { $0.count >= 2 ? $0 : nil }
             let which = named.map { "The axes are \($0[0]) (horizontal) and \($0[1]) (vertical): use exactly those. " } ?? ""
             let axesField = named.map { "[\"\($0[0])\", \"\($0[1])\"]" } ?? "[the horizontal axis, the vertical axis, one or two words each]"
-            return "Sort the items in \(about) into the four cells of two axes. \(which)\(lead) {\"title\": at most 6 words, \"axes\": \(axesField), \"cells\": [exactly 4 cells {\"cell\": \"low <horizontal axis>, low <vertical axis>\", \"items\": [names of at most 4 words]}, then the same for \"high …, low …\", \"low …, high …\" and \"high …, high …\"]}, with \(k) names in all, each in one cell only. For example, for chores on effort and impact: {\"title\": \"Chores worth doing\", \"axes\": [\"Effort\", \"Impact\"], \"cells\": [{\"cell\": \"low effort, low impact\", \"items\": [\"Dusting\"]}, {\"cell\": \"high effort, low impact\", \"items\": [\"Repainting the shed\"]}, {\"cell\": \"low effort, high impact\", \"items\": [\"Paying the bills\", \"Locking up\"]}, {\"cell\": \"high effort, high impact\", \"items\": [\"Fixing the roof\"]}]}."
+            return "Sort the items in \(about) into the four cells of two axes. \(which)\(lead) {\"title\": at most 6 words, \"axes\": \(axesField), \"cells\": [exactly 4 cells {\"cell\": \"low <horizontal axis>, low <vertical axis>\", \"items\": [names of at most 4 words]}, then the same for \"high …, low …\", \"low …, high …\" and \"high …, high …\"]}, with \(k) names in all, each in one cell only. The names are the concepts, methods, tools or ideas the passages name; the lists must not be empty. For example, for chores: {\"title\": \"Chores worth doing\", \"axes\": [\"Effort\", \"Impact\"], \"cells\": [{\"cell\": \"low effort, low impact\", \"items\": [\"Dusting\"]}, {\"cell\": \"high effort, low impact\", \"items\": [\"Repainting the shed\"]}, {\"cell\": \"low effort, high impact\", \"items\": [\"Paying the bills\", \"Locking up\"]}, {\"cell\": \"high effort, high impact\", \"items\": [\"Fixing the roof\"]}]}."
         case .infographic:
             let st = d.pick("3", "3 or 4", "4 to 6"), p = d.pick("2 or 3", "3 to 5", "5 to 8")
             return "Make an infographic for \(about). \(lead) {\"title\": a punchy headline of at most 8 words, \"stats\": [\(st) items {\"value\": a figure, number or short fact taken from the passages, \"label\": at most 5 words}], \"points\": [\(p) items {\"title\": at most 5 words, \"detail\": \(sentence)}]}."
