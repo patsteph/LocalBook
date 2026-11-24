@@ -1,7 +1,6 @@
 import Foundation
 import HuggingFace
 import LocalBookCore
-import MLXHuggingFace
 import MLXLLM
 import MLXLMCommon
 import MLXVLM
@@ -51,7 +50,7 @@ public enum AnswerModels {
     public static func loadContainer() async throws -> ModelContainer {
         #if os(macOS)
         do {
-            let c = try await VLMModelFactory.shared.loadContainer(from: #hubDownloader(), using: #huggingFaceTokenizerLoader(), configuration: configuration)
+            let c = try await VLMModelFactory.shared.loadContainer(from: HubDownloads.Downloader(), using: HubDownloads.TokenizerLoader(), configuration: configuration)
             loadedWithVision = true
             visionProblem = nil
             SoakTrace.log("answer model: loaded with its vision tower")
@@ -61,7 +60,7 @@ public enum AnswerModels {
             SoakTrace.log("answer model: no vision tower (\(error.localizedDescription)); loading the text model")
         }
         #endif
-        let c = try await LLMModelFactory.shared.loadContainer(from: #hubDownloader(), using: #huggingFaceTokenizerLoader(), configuration: configuration)
+        let c = try await LLMModelFactory.shared.loadContainer(from: HubDownloads.Downloader(), using: HubDownloads.TokenizerLoader(), configuration: configuration)
         loadedWithVision = false
         return c
     }

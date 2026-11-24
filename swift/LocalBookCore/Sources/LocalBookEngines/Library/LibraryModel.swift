@@ -2,7 +2,6 @@ import Foundation
 import LocalBookCore
 import HuggingFace
 import MLX
-import MLXHuggingFace
 import MLXLLM
 import MLXLMCommon
 import Observation

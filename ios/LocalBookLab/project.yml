@@ -19,8 +19,8 @@ packages:
     minorVersion: "0.33.0"
   mlx-swift-lm:
     url: https://github.com/ml-explore/mlx-swift-lm
-    # The same pin as the shared package: 3.33.0 (its FoundationModels adapter is behind a build flag, so the
-    # iOS 27 SDK trouble 3.32.x had is gone).
+    # The same pin as the shared package: 3.33.0. MLXHuggingFace is deliberately not linked: it brings the
+    # FoundationModels adapter along, which does not compile against the iOS 27 SDK (see HubDownloads.swift).
     exactVersion: "3.33.0"
   FluidAudio:
     url: https://github.com/FluidInference/FluidAudio
@@ -91,8 +91,6 @@ targets:
         product: MLXLLM
       - package: mlx-swift-lm
         product: MLXLMCommon
-      - package: mlx-swift-lm
-        product: MLXHuggingFace
       - package: swift-huggingface
         product: HuggingFace
       - package: FluidAudio
@@ -177,8 +175,6 @@ targets:
         product: MLXLLM
       - package: mlx-swift-lm
         product: MLXLMCommon
-      - package: mlx-swift-lm
-        product: MLXHuggingFace
       - package: swift-huggingface
         product: HuggingFace
       - package: FluidAudio

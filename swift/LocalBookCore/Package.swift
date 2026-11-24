@@ -31,7 +31,9 @@ let package = Package(
         // 0.33 is what mlx-swift-lm 3.33 and flux-2-swift-mlx 3.2 both want; the Mac app's Klein package pins it exactly.
         .package(url: "https://github.com/ml-explore/mlx-swift", "0.33.0"..<"0.34.0"),
         // 3.33.0 builds Gemma 4's vision tower without the K/V weights its shared layers do not have, so the Mac's
-        // critic can look at pictures; its FoundationModels adapter is behind a build flag and never compiles here.
+        // critic can look at pictures. Its MLXHuggingFace library is NOT linked: it drags in the FoundationModels
+        // adapter (a default trait), which does not compile against the iOS 27 SDK; HubDownloads.swift has the two
+        // bridges those macros expanded to.
         .package(url: "https://github.com/ml-explore/mlx-swift-lm", exact: "3.33.0"),
         .package(url: "https://github.com/FluidInference/FluidAudio", from: "0.17.6"),
         .package(url: "https://github.com/huggingface/swift-huggingface", from: "0.9.0"),
@@ -57,7 +59,6 @@ let package = Package(
                 .product(name: "MLXLLM", package: "mlx-swift-lm"),
                 .product(name: "MLXVLM", package: "mlx-swift-lm"),
                 .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
-                .product(name: "MLXHuggingFace", package: "mlx-swift-lm"),
                 .product(name: "Tokenizers", package: "swift-transformers"),
                 .product(name: "Hub", package: "swift-transformers"),
                 .product(name: "HuggingFace", package: "swift-huggingface"),

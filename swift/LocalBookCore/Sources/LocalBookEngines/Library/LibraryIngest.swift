@@ -1,7 +1,6 @@
 import Foundation
 import LocalBookCore
 import HuggingFace
-import MLXHuggingFace
 import Tokenizers
 import MLXLMCommon
 

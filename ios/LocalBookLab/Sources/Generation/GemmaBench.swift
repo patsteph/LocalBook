@@ -3,7 +3,6 @@ import LocalBookEngines
 import Foundation
 import HuggingFace
 import MLX
-import MLXHuggingFace
 import MLXLLM
 import MLXLMCommon
 import Observation
