@@ -24,9 +24,10 @@ on:
       - '.github/workflows/swift.yml'
   workflow_dispatch:
 
-# A newer push to the same branch supersedes the run in flight; PR runs are grouped by PR.
+# A newer push to the same branch supersedes the run in flight; PR runs are grouped by PR. A manual run stands on
+# its own and is never cancelled (that is how the dependency caches get filled while pushes keep coming).
 concurrency:
-  group: swift-${{ github.event.pull_request.number || github.ref }}
+  group: swift-${{ github.event_name == 'workflow_dispatch' && github.run_id || github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 env:
