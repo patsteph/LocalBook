@@ -339,7 +339,8 @@ public enum LocalAddresses {
             guard name != "lo0", !name.hasPrefix("utun"), !name.hasPrefix("awdl"), !name.hasPrefix("llw") else { continue }
             var host = [CChar](repeating: 0, count: Int(NI_MAXHOST))
             if getnameinfo(addr, socklen_t(addr.pointee.sa_len), &host, socklen_t(host.count), nil, 0, NI_NUMERICHOST) == 0 {
-                let text = String(cString: host)
+                let bytes = host.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }
+                let text = String(decoding: bytes, as: UTF8.self)
                 if !out.contains(text) { out.append(text) }
             }
         }

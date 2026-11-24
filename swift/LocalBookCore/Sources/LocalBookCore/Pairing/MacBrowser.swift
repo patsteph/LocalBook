@@ -37,7 +37,7 @@ public final class MacBrowser {
     public private(set) var browsing = false
     private var browser: NWBrowser?
 
-    public static let service = "_localbook._tcp"
+    public nonisolated static let service = "_localbook._tcp"
 
     public func start() {
         stop()
