@@ -7,7 +7,7 @@ import LocalBookEngines
 /// this Mac from the notebooks synced over the phone-class link. Phase 2 of `docs/swift-migration/`.
 @Observable @MainActor
 final class AppModel {
-    let library = LibraryModel()
+    let library: LibraryModel
     /// Paints the backdrops of visuals, fetched after launch like the other models. Two to choose from by
     /// machine: FLUX.1 schnell (nothing from outside the FLUX checkpoint; the default) and FLUX.2 Klein 4B (its
     /// Qwen3 text encoder, from Alibaba, is named in its note).
@@ -29,6 +29,8 @@ final class AppModel {
     }
     /// Drops and intents that add to a notebook.
     let intake = IntakeModel()
+    /// This Mac as the host of the phone link: the iPhone pairs with it and syncs from it (Phase 4, first slice).
+    let phoneHost: PhoneHostController
 
     enum Destination: Hashable {
         case notebook(String)
@@ -156,7 +158,10 @@ final class AppModel {
 
     init() {
         _ = try? AppFolders.ensure(AppFolders.base)
-        library.askMode = .phone                 // this Mac searches and answers itself, as the phone does
+        let lib = LibraryModel()
+        library = lib
+        phoneHost = PhoneHostController(library: lib)
+        lib.askMode = .phone                     // this Mac searches and answers itself, as the phone does
     }
 
     struct NotebookSection: Identifiable {
@@ -204,6 +209,7 @@ final class AppModel {
         applyImageModel()
         await library.open()
         syncSelectionToScope()
+        Task { await phoneHost.start() }         // the iPhone can find this Mac from the first second
         if paired { Task { await runSync(); await loadSections() } }
         // A library moved over from the old app answers without a pairing; the models warm for it too.
         if paired || !library.notebooks.isEmpty { await startModels() }

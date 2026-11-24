@@ -41,6 +41,12 @@ Patrick ran the parity fixture (500 chunks, 50 questions from the production lib
 
 497 items in 39 s, 0.15 ms per token. The ten top-5 disagreements are order swaps among the same passages (ranks 4 and 5), the same pattern the phone showed. The week of daily use was dropped by Patrick the same day; Phase 2 is CLOSED and the cleanup list he sends replaces it.
 
+## Phase 4, slice 1: the Swift Mac hosts the iPhone (2026-11-24, on `dev`, untested on a Mac)
+
+Why first: a tester with the new Mac app and the TestFlight phone had no way to connect them, since the phone could only pair with the Python Mac. Swift: `HTTPWire`, `HTTPServer` (Network framework TLS listener, one JSON request per connection), `PhoneSignature` + `NonceCache` + `FailureLimiter`, `PhoneHostStore` (`Sync/phones.json`), `LibraryStore+Host` (source digests, notebook digest, chunk pages), `PhoneHost` (Core: the pairing port 47602 open five minutes at a time, the sync port 47603, Bonjour `_localbook._tcp`, the read routes) and `PhoneHostBridge` (Engines: notes, edits, Studio, the bundled answer recipe when this Mac has none of its own); `PhoneHostTests`. Mac: Settings › Sync › "Devices paired with this Mac" (Let a device pair with this one, the code with Codes match / Not mine, paired devices with Forget) and "Synced to paired devices" (a notebook is synced to every paired device or kept on this Mac). The host starts with the app; a port taken by the old LocalBook on the same Mac shows as an orange line, nothing else fails. Left out on purpose: `/phone/ask` (the phone answers its own questions, Patrick's rule).
+
+Device script: see `/mnt/project-files/testing/2026-11-24-flight2-phone-host-sitting.md` (Mac app from `dev`, the iPhone's LocalBook, the old app quit). Pass: the phone pairs with the Swift Mac, copies its notebooks, answers from them; a note typed on the phone lands under the Mac's Sources and comes back to the phone; a phone-made quiz appears in the Mac's Studio; a Mac-made visual appears on the phone's shelf.
+
 ## Phase 3, sitting C findings (2026-11-19, on `dev`)
 
 C1–C3 ran. The citation gate came back at 15 % (identical order 8 of 61, same set 1, overlap 37, different 15) against the 95 % bar. This was the gate's first run: Phase 2's five bars were the cortex parity (embedder, tokenizer, reranker), not citations. Causes, from the code on both sides:

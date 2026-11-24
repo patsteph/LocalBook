@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import LocalBookCore
 import LocalBookEngines
 import SwiftUI
@@ -105,6 +106,7 @@ struct SyncSettings: View {
                     Button("Move My Library Here…") { model.showImport = true }
                 }
             } header: { Text("From the LocalBook on this Mac") }
+            PhoneHostSections()
             if model.paired {
                 Section("On this Mac") {
                     LabeledContent("Notebooks", value: "\(library.notebooks.count)")
@@ -152,6 +154,97 @@ struct SyncSettings: View {
 }
 
 /// Settings › Library: what is on this Mac, the folders it watches, and the maintenance commands of the old app.
+/// This Mac as the host of the phone link: pair an iPhone, see the devices paired, choose which notebooks they get.
+struct PhoneHostSections: View {
+    @Environment(AppModel.self) private var model
+    @State private var now = Date()
+    @State private var forgetting: PairedPhone?
+    private let clock = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
+
+    private var host: PhoneHostController { model.phoneHost }
+
+    var body: some View {
+        Group {
+        Section {
+            HStack(spacing: 8) {
+                Circle().fill(statusColor).frame(width: 8, height: 8)
+                Text(statusLine).font(.callout).foregroundStyle(.secondary)
+                Spacer()
+                if host.pairingOpen {
+                    Button("Close") { Task { await host.closePairing() } }
+                } else {
+                    Button("Let a device pair with this one") { Task { await host.openPairing() } }
+                }
+            }
+            if host.pairingOpen, let until = host.pairingOpenUntil {
+                let left = max(0, Int(until.timeIntervalSince(now)))
+                Text("Open for \(left / 60):\(String(format: "%02d", left % 60)). On the iPhone: Find my Mac, then choose “\(PhoneIdentity.deviceName)”."
+                     + (host.addresses.isEmpty ? "" : " Its address, if the phone does not find it: \(host.addresses.joined(separator: ", "))."))
+                    .font(.footnote).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+            ForEach(host.requests) { request in
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("\(request.name) shows this code?").font(.callout)
+                        Text(request.code).font(.system(size: 28, weight: .bold, design: .monospaced))
+                    }
+                    Spacer()
+                    Button("Not mine") { Task { await host.reject(request) } }
+                    Button("Codes match") { Task { await host.confirm(request) } }.buttonStyle(.borderedProminent)
+                }
+            }
+            if let problem = host.problem { Text(problem).font(.callout).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true) }
+            ForEach(host.phones) { phone in
+                HStack {
+                    Image(systemName: phone.deviceId.hasPrefix("mac-") ? "laptopcomputer" : "iphone")
+                    Text(phone.name)
+                    Spacer()
+                    Text(lastSeen(phone)).font(.footnote).foregroundStyle(.secondary)
+                    Button("Forget") { forgetting = phone }
+                }
+            }
+        } header: { Text("Devices paired with this Mac") } footer: {
+            Text("Paired devices copy the notebooks below over your own network and send their notes and Studio items back here. Nothing goes to the cloud.")
+                .font(.footnote)
+        }
+        if !model.library.notebooks.isEmpty {
+            Section {
+                ForEach(model.library.notebooks) { nb in
+                    Toggle(nb.title, isOn: Binding(get: { !host.keptLocal.contains(nb.id) },
+                                                   set: { on in Task { await host.setSynced(nb.id, on) } }))
+                }
+            } header: { Text("Synced to paired devices") } footer: {
+                Text("Off: kept on this Mac only.").font(.footnote)
+            }
+        }
+        }
+        .onReceive(clock) { now = $0 }
+        .task { await host.refresh() }
+        .alert("Forget \(forgetting?.name ?? "this device")?", isPresented: Binding(get: { forgetting != nil }, set: { if !$0 { forgetting = nil } })) {
+            Button("Forget", role: .destructive) { if let p = forgetting { Task { await host.forget(p) } }; forgetting = nil }
+            Button("Cancel", role: .cancel) { forgetting = nil }
+        } message: { Text("It can no longer sync with this Mac until it pairs again. Its own copy of the library stays on it.") }
+    }
+
+    private var statusColor: Color {
+        switch host.status { case .listening: .green; case .off: .gray; case .failed: .orange }
+    }
+
+    private var statusLine: String {
+        switch host.status {
+        case .listening: host.phones.isEmpty ? "Ready for your iPhone to pair" : "Listening for \(host.phones.count) paired device\(host.phones.count == 1 ? "" : "s")"
+        case .off: "Not listening"
+        case .failed(let why): "Phone link off: \(why)"
+        }
+    }
+
+    private func lastSeen(_ phone: PairedPhone) -> String {
+        guard let at = phone.lastSeen else { return "Paired \(phone.pairedAt.formatted(date: .abbreviated, time: .omitted))" }
+        let f = RelativeDateTimeFormatter(); f.unitsStyle = .short
+        return "Seen \(f.localizedString(for: at, relativeTo: Date()))"
+    }
+}
+
 struct LibrarySettings: View {
     @Environment(AppModel.self) private var model
     @AppStorage(StudioEngine.criticKey) private var visualCritic = false
