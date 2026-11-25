@@ -81,6 +81,23 @@ def old_panel(entry: dict | None) -> tuple[str, str]:
     return "old", f"<div class='missing'>failed: {html.escape(str(entry.get('error', 'no picture')))}</div>"
 
 
+def resolve_swift_folder(folder: Path) -> Path | None:
+    """The folder holding the 15 PNGs, or the newest ``visual-golden-*`` child of a parent folder; None (with a message)
+    when neither holds any of them, so a wrong path fails here instead of producing a page of empty panels."""
+    wanted = {f"{pid}.png" for pid, *_ in PROMPTS}
+    if any((folder / name).exists() for name in wanted):
+        return folder
+    children = sorted((c for c in folder.glob("visual-golden-*") if c.is_dir() and any((c / n).exists() for n in wanted)),
+                      key=lambda c: c.stat().st_mtime)
+    if children:
+        print(f"[visual-golden] using {children[-1]} (newest visual-golden-* folder inside {folder})")
+        return children[-1]
+    print(f"no Swift pictures: {folder} holds none of the 15 PNGs (01-mindmap-overview.png …) and has no visual-golden-* "
+          "subfolder with them.\nPass the app's visual-golden-<stamp> folder (Settings › Diagnostics › Visual golden set › "
+          "Show in Finder, then option-drag it to the Desktop) or the folder you copied it into.", file=sys.stderr)
+    return None
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("swift_folder", help="the Swift app's visual-golden-<stamp> folder")
@@ -93,6 +110,9 @@ def main() -> int:
     old_json = old / "old-app-visuals.json"
     if not swift.is_dir():
         print(f"not a folder: {swift}", file=sys.stderr)
+        return 2
+    swift = resolve_swift_folder(swift)
+    if swift is None:
         return 2
     if not old_json.exists():
         print(f"missing {old_json}", file=sys.stderr)
