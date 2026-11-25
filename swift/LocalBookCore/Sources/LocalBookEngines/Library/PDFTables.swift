@@ -12,7 +12,8 @@ enum PDFTables {
     struct Table: Sendable {
         /// Where the table sits on the page, in PDF page points.
         let rect: CGRect
-        let markdown: String
+        /// The cells as the document reader transcribed them, a row at a time.
+        let rows: [[String]]
     }
 
     static let pageTimeout: Duration = .seconds(15)
@@ -35,13 +36,13 @@ enum PDFTables {
             for observation in observations {
                 for table in observation.document.tables {
                     let rows = table.rows.map { row in row.map { cell in clean(cell.content.text.transcript) } }
-                    guard let md = markdown(rows) else { continue }
+                    guard markdown(rows) != nil else { continue }
                     // Vision's region is normalized over the image with the origin at the lower left, as the page's is.
                     let box = table.boundingRegion.boundingBox
                     let rect = CGRect(x: bounds.minX + box.origin.x * bounds.width,
                                       y: bounds.minY + box.origin.y * bounds.height,
                                       width: box.width * bounds.width, height: box.height * bounds.height)
-                    out.append(Table(rect: rect, markdown: md))
+                    out.append(Table(rect: rect, rows: rows))
                 }
             }
             return out
@@ -73,29 +74,36 @@ enum PDFTables {
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    /// `text` (the page's prose, one line per line) without the lines whose characters sit inside a table, then the
-    /// tables, each in its own paragraph.
+    /// `text` (the page's prose, one line per line) without the lines that are a table's rows, then the tables, each
+    /// in its own paragraph. A row's cells are checked against the text layer's line for that row (`TableRows`), which
+    /// fills a cell the document reader left empty and names the line to drop; the ruled box covers what is left.
     static func merge(text: String, page: PDFPage, tables: [Table]) -> String {
         guard !tables.isEmpty else { return text }
+        let proseLines = text.components(separatedBy: .newlines).map { line in
+            String(line.trimmingCharacters(in: .whitespacesAndNewlines).drop { $0 == "#" }).replacingOccurrences(of: "**", with: "")
+        }
         var covered: Set<String> = []
+        var markdowns: [String] = []
         for t in tables {
+            let repaired = TableRows.repair(t.rows, lines: proseLines)
+            covered.formUnion(repaired.covered)
+            if let md = markdown(repaired.rows) { markdowns.append(md) }
             // A little slack around the ruled box, since the text layer's glyph boxes overhang rules.
             let slack = t.rect.insetBy(dx: -2, dy: -2)
             if let selection = page.selection(for: slack), let inside = selection.string {
                 for line in inside.components(separatedBy: .newlines) {
-                    let key = line.trimmingCharacters(in: .whitespacesAndNewlines)
+                    let key = TableRows.fold(line)
                     if !key.isEmpty { covered.insert(key) }
                 }
             }
         }
         var kept: [String] = []
-        for line in text.components(separatedBy: .newlines) {
-            let plain = line.trimmingCharacters(in: .whitespacesAndNewlines).drop { $0 == "#" }.trimmingCharacters(in: .whitespaces)
-            if covered.contains(String(plain)) { continue }
+        for (line, plain) in zip(text.components(separatedBy: .newlines), proseLines) {
+            if covered.contains(TableRows.fold(plain)) { continue }
             kept.append(line)
         }
         var out = kept.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
-        for t in tables { out += (out.isEmpty ? "" : "\n\n") + t.markdown }
+        for md in markdowns { out += (out.isEmpty ? "" : "\n\n") + md }
         return out
     }
 }
