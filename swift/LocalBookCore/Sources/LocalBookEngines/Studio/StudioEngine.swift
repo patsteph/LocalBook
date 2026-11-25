@@ -196,12 +196,23 @@ public final class StudioEngine {
             }
 
             /// One more fill with a note about what was wrong: the new spec when it draws, nil when it did not.
-            func refill(_ why: String) async -> VisualSpec? {
+            func refill(_ why: String, more: Bool = false) async -> VisualSpec? {
                 lastRetries += 1
-                let again = "Passages:\n\n\(numbered(passages))\n\n\(request)\n\nYour previous answer was drawn and \(why) Keep to the counts and word limits asked for; say less, not more."
+                let steer = more ? "Fill every list from what the passages say, up to the counts asked for: more entries, each as short as before."
+                                 : "Keep to the counts and word limits asked for; say less, not more."
+                let again = "Passages:\n\n\(numbered(passages))\n\n\(request)\n\nYour previous answer was drawn and \(why) \(steer)"
                 guard let out = await run(again, instructions: instructions, tokens: tokens), var next = VisualSpec.parseAnyShape(out, preferring: spec.layout) else { return nil }
                 next.theme = theme
                 return next
+            }
+            // A reply under the depth's floor (two rows, two branches) buys one more fill asking for the rest; the
+            // fuller of the two is drawn.
+            if let short = VisualSpec.thinness(spec, detail: detail) {
+                status = "Filling it out…"
+                let next = await refill("was too thin: \(short).", more: true)
+                let fuller = next.map { VisualSpec.weight($0) > VisualSpec.weight(spec) } ?? false
+                if fuller, let next { spec = next }
+                SoakTrace.log("studio visual: the reply was thin (\(short)); the second fill \(fuller ? "is drawn" : "was no fuller")")
             }
             // Check: a defect the lint can see (words cut, past the edge, cards on top of each other) buys one more fill,
             // kept only when it has fewer defects.

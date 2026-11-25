@@ -228,6 +228,28 @@ struct VisualSceneTests {
         #expect(VisualPick.subject(of: "Transformers") == "Transformers")
     }
 
+    @Test("the real replies of 2026-11-25: two rows or two branches are seen as thin, a full table is not, and a short table still reaches the foot of the slide")
+    func thinReplies() throws {
+        // 09-compare-deep as the phone of the golden set drew it: two rows, two columns.
+        let two = try spec(#"{"title":"AI Research Alternatives Comparison","columns":["Alternative","Focus/Advantage"],"rows":[{"cells":["open-source option","deep customization of \"judge\" prompts"],"label":"grouse"},{"cells":["aggregated view","high-level picture of system's performance"],"label":"deceasedval"}]}"#, .comparison)
+        #expect(VisualSpec.thinness(two, detail: .deep)?.contains("only 2 rows") == true)
+        #expect(VisualSpec.thinness(two, detail: .overview)?.contains("only 2 rows") == true)
+        let rows = (1...4).map { #"{"label": "Criterion \#($0)", "cells": ["Option A does this well", "Option B is slower here"]}"# }
+        let four = try spec(#"{"title": "Alternatives", "columns": ["A", "B"], "rows": [\#(rows.joined(separator: ","))]}"#, .comparison)
+        #expect(VisualSpec.thinness(four, detail: .overview) == nil)
+        #expect(VisualSpec.thinness(four, detail: .deep) != nil)
+        #expect(VisualSpec.weight(four) > VisualSpec.weight(two))
+        // 01-mindmap-overview: two branches of two points.
+        let map = try spec(#"{"title": "AI Research Notebook Mind Map", "groups": [{"title": "Key Points", "children": ["Hardware innovations", "Enterprise adoption accelerates"]}, {"title": "Technical Breakthroughs", "children": ["Advanced reasoning capabilities", "Native image generation"]}]}"#, .mindmap)
+        #expect(VisualSpec.thinness(map, detail: .overview)?.contains("only 2 branches") == true)
+        // A short table fills the slide: its last row ends in the lower third, with nothing cut or overlapping.
+        let scene = VisualLayout.scene(for: four)
+        let bad = VisualLint.check(scene).filter { $0.kind == .offSlide || $0.kind == .overlap || $0.kind == .cut }
+        #expect(bad.isEmpty, "\(bad)")
+        let lowest = scene.nodes.compactMap { node -> CGFloat? in if case .card(let r, _, _, _, _) = node { return r.maxY } else { return nil } }.max() ?? 0
+        #expect(lowest > scene.size.height * 0.7, "the table ends at \(lowest) of \(scene.size.height)")
+    }
+
     @Test("a reply with a trailing comma, a comment, or cut off by the token budget still draws what was complete")
     func repairedJSON() throws {
         let trailing = #"```json {"title": "T", "axes": ["Effort", "Impact"], "items": [{"title": "RAG", "x": 1, "y": 5}, {"title": "Fine-tuning", "x": 4, "y": 4},],} ```"#

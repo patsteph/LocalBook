@@ -387,6 +387,44 @@ public struct VisualSpec: Codable, Hashable, Sendable {
         return usable ? spec : nil
     }
 
+    /// What a drawable reply is still short of for its depth, in words the model can act on; nil when it carries
+    /// enough. A reply of two rows or two branches draws, but reads as a sketch beside the old app's pictures, so the
+    /// engine asks once more for the rest before drawing. The floors sit under the counts `request` asks for.
+    public static func thinness(_ spec: VisualSpec, detail: Detail) -> String? {
+        let d = detail
+        func need(_ have: Int, _ floor: Int, _ what: String) -> String? { have < floor ? "only \(have) \(what) (give at least \(floor))" : nil }
+        var short: [String] = []
+        switch spec.layout.shape {
+        case .matrix:
+            if let m = need(spec.rows.count, d.pick(3, 4, 6), "rows") { short.append(m) }
+            if let m = need(spec.columns.count, 2, "columns") { short.append(m) }
+        case .groups:
+            let fixed = [Layout.prosCons, .beforeAfter].contains(spec.layout) ? 2 : spec.layout == .valueProposition ? 3 : 0
+            let leaves = spec.items.reduce(0) { $0 + $1.children.count }
+            if fixed > 0 {
+                if let m = need(spec.items.count, fixed, "groups") { short.append(m) }
+                if let m = need(leaves, fixed * d.pick(2, 3, 4), "points across the groups") { short.append(m) }
+            } else {
+                if let m = need(spec.items.count, d.pick(3, 4, 5), "branches") { short.append(m) }
+                if let m = need(leaves, d.pick(6, 9, 14), "points under the branches") { short.append(m) }
+            }
+        case .sequence:
+            if let m = need(spec.items.count, d.pick(4, 5, 7), "entries") { short.append(m) }
+        case .figures:
+            if spec.layout == .statCallouts {
+                if let m = need(spec.stats.count, d.pick(3, 4, 6), "figures") { short.append(m) }
+            } else if let m = need(spec.stats.count + spec.items.count, d.pick(4, 6, 8), "figures and points together") { short.append(m) }
+        case .quadrant:
+            if let m = need(spec.items.count, d.pick(4, 6, 9), "items placed") { short.append(m) }
+        }
+        return short.isEmpty ? nil : short.joined(separator: "; ")
+    }
+
+    /// How much a reply carries, to keep the fuller of two fills.
+    public static func weight(_ spec: VisualSpec) -> Int {
+        spec.rows.count * max(1, spec.columns.count) + spec.items.count + spec.items.reduce(0) { $0 + $1.children.count } + spec.stats.count
+    }
+
     /// `parse` for the asked form, or, when the reply does not fit that form's shape, the first other shape it does
     /// fit, drawn as that shape's plain form. nil only when nothing in the reply can be drawn: the engine never comes
     /// back blank because the model answered a different question than the form asked.
@@ -498,6 +536,7 @@ public struct VisualSpec: Codable, Hashable, Sendable {
         /// How many notebook passages to read.
         public var passages: Int { switch self { case .overview: 8; case .standard: 14; case .deep: 24 } }
         fileprivate func pick(_ a: String, _ b: String, _ c: String) -> String { switch self { case .overview: a; case .standard: b; case .deep: c } }
+        fileprivate func pick(_ a: Int, _ b: Int, _ c: Int) -> Int { switch self { case .overview: a; case .standard: b; case .deep: c } }
     }
 
     /// The JSON shape each form is asked for: one schema per shape, with the form's own words for what the items are.

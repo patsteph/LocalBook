@@ -216,38 +216,56 @@ struct Builder {
 
     // MARK: comparison — a matrix with the options across and the aspects down
 
+    /// The rows share the slide's height: a table of three rows is drawn as three tall bands with the words centred,
+    /// not as three thin lines over two-thirds of nothing. Each column's cells sit in that column's tint.
     mutating func comparison(top: CGFloat) -> CGFloat {
         let cols = max(1, spec.columns.count)
         let labelW = 230 * s
-        let cellGap = 20 * s
+        let cellGap = 16 * s
         let cellW = (W - 2 * pad - labelW - CGFloat(cols) * cellGap) / CGFloat(cols)
-        let labelStyle = VisualTextStyle(size: 19 * s, weight: .semibold, role: .quiet)
-        let cellStyle = VisualTextStyle(size: 20 * s)
+        let few = spec.rows.count <= 4
+        let labelStyle = VisualTextStyle(size: (few ? 22 : 19) * s, weight: .semibold, role: .quiet)
+        let cellStyle = VisualTextStyle(size: (few ? 23 : 20) * s)
         var y = top
         // Header: the things compared, each in its own colour.
         var headerH: CGFloat = 0
         for (c, name) in spec.columns.enumerated() {
             let x = pad + labelW + cellGap + CGFloat(c) * (cellW + cellGap)
-            headerH = max(headerH, place(name, VisualTextStyle(size: 24 * s, weight: .bold, role: .accent(c)), x: x, y: y, width: cellW))
+            headerH = max(headerH, place(name, VisualTextStyle(size: 26 * s, weight: .bold, role: .accent(c)), x: x + inset, y: y, width: cellW - 2 * inset))
         }
-        y += headerH + 12 * s
+        y += headerH + 14 * s
         scene.add(.stroke([.move(CGPoint(x: pad, y: y)), .line(CGPoint(x: W - pad, y: y))], role: .rule, width: 2 * s, dashed: false))
-        let rowPad = 14 * s
-        for (r, row) in spec.rows.enumerated() {
-            let label = block(row.label, labelStyle, x: pad + 12 * s, y: 0, width: labelW - 12 * s)
+        y += 10 * s
+        let rowPad = (few ? 16 : 11) * s
+        let rowGap = (few ? 10 : 6) * s
+        let inset = few ? inner : 10 * s
+        // Measure every row first, then share the spare height out so the table reaches the foot of the slide.
+        struct Measured { var label: VisualTextBlock?; var cells: [VisualTextBlock?]; var natural: CGFloat }
+        var measured: [Measured] = []
+        for row in spec.rows {
+            let label = block(row.label, labelStyle, x: pad + 12 * s, y: 0, width: labelW - 24 * s)
             var cells: [VisualTextBlock?] = []
             for c in 0..<cols {
                 let x = pad + labelW + cellGap + CGFloat(c) * (cellW + cellGap)
-                cells.append(block(c < row.cells.count ? row.cells[c] : "", cellStyle, x: x, y: 0, width: cellW))
+                cells.append(block(c < row.cells.count ? row.cells[c] : "", cellStyle, x: x + inset, y: 0, width: cellW - 2 * inset))
             }
-            let h = max(label?.frame.height ?? 0, cells.compactMap { $0?.frame.height }.max() ?? 0) + 2 * rowPad
-            if r % 2 == 1 { scene.add(.card(CGRect(x: pad, y: y, width: W - 2 * pad, height: h), fill: .surface, stroke: nil, radius: 10 * s, hit: nil)) }
-            if var l = label { l.frame.origin.y = y + rowPad; scene.add(.text(l)) }
-            for cell in cells { if var cell { cell.frame.origin.y = y + rowPad; scene.add(.text(cell)) } }
-            y += h
-            scene.add(.stroke([.move(CGPoint(x: pad, y: y)), .line(CGPoint(x: W - pad, y: y))], role: .rule, width: 1.5 * s, dashed: false))
+            let natural = max(label?.frame.height ?? 0, cells.compactMap { $0?.frame.height }.max() ?? 0) + 2 * rowPad
+            measured.append(Measured(label: label, cells: cells, natural: natural))
         }
-        return y
+        let naturalTotal = measured.map(\.natural).reduce(0, +) + CGFloat(max(0, measured.count - 1)) * rowGap
+        let spare = max(0, (H - pad) - y - naturalTotal)
+        let stretch = measured.isEmpty ? 0 : min(spare / CGFloat(measured.count), 120 * s)
+        for m in measured {
+            let h = m.natural + stretch
+            for c in 0..<cols {
+                let x = pad + labelW + cellGap + CGFloat(c) * (cellW + cellGap)
+                scene.add(.card(CGRect(x: x, y: y, width: cellW, height: h), fill: .tint(c), stroke: nil, radius: 10 * s, hit: nil))
+            }
+            if var l = m.label { l.frame.origin.y = y + (h - l.frame.height) / 2; scene.add(.text(l)) }
+            for cell in m.cells { if var cell { cell.frame.origin.y = y + (h - cell.frame.height) / 2; scene.add(.text(cell)) } }
+            y += h + rowGap
+        }
+        return y - rowGap
     }
 
     // MARK: infographic — figures in a grid of cards, then the points in two columns
