@@ -226,6 +226,7 @@ struct Builder {
         let few = spec.rows.count <= 4
         let labelStyle = VisualTextStyle(size: (few ? 22 : 19) * s, weight: .semibold, role: .quiet)
         let cellStyle = VisualTextStyle(size: (few ? 23 : 20) * s)
+        let inset = few ? inner : 10 * s
         var y = top
         // Header: the things compared, each in its own colour.
         var headerH: CGFloat = 0
@@ -238,7 +239,6 @@ struct Builder {
         y += 10 * s
         let rowPad = (few ? 16 : 11) * s
         let rowGap = (few ? 10 : 6) * s
-        let inset = few ? inner : 10 * s
         // Measure every row first, then share the spare height out so the table reaches the foot of the slide.
         struct Measured { var label: VisualTextBlock?; var cells: [VisualTextBlock?]; var natural: CGFloat }
         var measured: [Measured] = []
