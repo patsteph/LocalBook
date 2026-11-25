@@ -8,6 +8,12 @@
 set -e
 if [ $# -ne 1 ]; then echo "usage: scripts/old_app_closeout.sh <notebook id>"; exit 2; fi
 cd "$(dirname "$0")/.."
+BASE="${LOCALBOOK_URL:-http://localhost:8000}"
+if ! curl -sf "$BASE/health" >/dev/null 2>&1; then
+  echo "[close-out] the old LocalBook app is not answering at $BASE. Open it, wait until its window shows the notebooks, then run this again."
+  exit 1
+fi
+export LOCALBOOK_USE_PRODUCTION_DATA=1   # the old app's real data folder, not LocalBook-dev
 echo "[close-out] C4: reading testdata/phase3/notebook with the old app's readers"
 ( cd backend && .venv/bin/python ../scripts/ingestion_diff_export.py ../testdata/phase3/notebook )
 echo "[close-out] C6: drawing the 15 with the old app (this is the slow part)"
