@@ -12,7 +12,7 @@ extension LibraryModel {
         public let bookmark: Data?
     }
 
-    public static let fixtureName = "ingestion-fixture.json"
+    nonisolated public static let fixtureName = "ingestion-fixture.json"
 
     /// Opens the fixture and remembers its folder (with a security-scoped bookmark on the Mac, so the files beside it
     /// can be read after the open panel closes). Pass the FOLDER the fixture sits in: the sandbox grants what the user
