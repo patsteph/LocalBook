@@ -1,11 +1,13 @@
 import CoreGraphics
 import Foundation
+import LocalBookCore
 import PDFKit
 import Vision
 
 /// Ruled tables on a PDF page, found by Vision's document reader and written as the Markdown tables pymupdf4llm gave
 /// the old app's chunker. The text layer under a table is removed from the page's prose, so a cell is read once, in
-/// its row. A page is given a few seconds; one that takes longer keeps its prose and no tables.
+/// its row. A page is given some seconds (the first page pays for Vision's model to load); one that takes longer keeps
+/// its prose and no tables, and the trace says so.
 enum PDFTables {
     struct Table: Sendable {
         /// Where the table sits on the page, in PDF page points.
@@ -13,7 +15,7 @@ enum PDFTables {
         let markdown: String
     }
 
-    static let pageTimeout: Duration = .seconds(6)
+    static let pageTimeout: Duration = .seconds(15)
 
     /// Every table Vision finds on `page`, or none when it finds none or runs out of time.
     static func find(on page: PDFPage) async -> [Table] {
@@ -44,9 +46,14 @@ enum PDFTables {
             }
             return out
         }
+        let started = ContinuousClock.now
         let clock = Task { try await Task.sleep(for: pageTimeout); work.cancel() }
         let tables = await work.value
+        let timedOut = work.isCancelled
         clock.cancel()
+        let took = started.duration(to: .now)
+        let secs = Double(took.components.seconds) + Double(took.components.attoseconds) / 1e18
+        SoakTrace.log("pdf tables: page \(page.label ?? "?"): \(tables.count) table(s) in \(String(format: "%.1f", secs)) s" + (timedOut ? " (gave up at the timeout; the page keeps its prose)" : ""))
         return tables
     }
 

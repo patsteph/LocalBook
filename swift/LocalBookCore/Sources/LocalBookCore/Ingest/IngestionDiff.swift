@@ -86,6 +86,8 @@ public enum IngestionDiff {
         public let onlyPython: String?
         public let onlySwift: String?
         public let note: String?
+        /// The text this Mac read, kept for a file whose text differs so the difference can be read line by line.
+        public var swiftText: String?
     }
 
     public struct Summary: Codable, Sendable {
@@ -171,6 +173,10 @@ public enum IngestionDiff {
             if !worth.isEmpty {
                 out.append("## Differences")
                 out.append("")
+                if files.contains(where: { $0.swiftText != nil }) {
+                    out.append("The text this Mac read for each file that differs is written beside this report, one `.txt` per file, next to the old app's text in the fixture.")
+                    out.append("")
+                }
                 for f in worth {
                     out.append("### \(f.name) · \(f.format) · \(f.verdict.rawValue)")
                     out.append("")
@@ -221,8 +227,10 @@ public enum IngestionDiff {
             else if p == s { verdict = .sameText }
             else if score >= 0.95 { verdict = .close }
             else { verdict = .differs }
-            return result(verdict, textScore: score, swiftText: swiftText, swiftChunks: swiftChunks, matched: matched,
-                          onlyPython: only.python, onlySwift: only.swift)
+            var r = result(verdict, textScore: score, swiftText: swiftText, swiftChunks: swiftChunks, matched: matched,
+                           onlyPython: only.python, onlySwift: only.swift)
+            if verdict == .close || verdict == .differs { r.swiftText = swiftText }
+            return r
         }
     }
 

@@ -293,6 +293,12 @@ final class IngestionDiffDiagnostics {
             let md = ParityDiagnostics.folder.appending(path: "ingestion-diff-\(stamp).md")
             try? result.json().write(to: json)
             try? result.markdown().data(using: .utf8)?.write(to: md)
+            let texts = ParityDiagnostics.folder.appending(path: "ingestion-diff-\(stamp)-texts")
+            for f in result.files {
+                guard let text = f.swiftText else { continue }
+                try? FileManager.default.createDirectory(at: texts, withIntermediateDirectories: true)
+                try? text.data(using: .utf8)?.write(to: texts.appending(path: f.name + ".txt"))
+            }
             reportURL = md
             running = false
         }
