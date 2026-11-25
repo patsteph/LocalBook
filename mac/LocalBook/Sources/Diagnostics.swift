@@ -134,7 +134,7 @@ struct DiagnosticsSettings: View {
         .fileImporter(isPresented: $importing, allowedContentTypes: [.json]) { result in
             if case .success(let url) = result { parity.openFixture(at: url) }
         }
-        .fileImporter(isPresented: $importingDiff, allowedContentTypes: [.json]) { result in
+        .fileImporter(isPresented: $importingDiff, allowedContentTypes: [.folder, .json]) { result in
             if case .success(let url) = result { diff.open(url) }
         }
         .fileImporter(isPresented: $importingGate, allowedContentTypes: [.json]) { result in
@@ -315,7 +315,7 @@ struct IngestionDiffSection: View {
                 LabeledContent("Made", value: o.fixture.createdAt)
             }
             HStack {
-                Button(diff.opened == nil ? "Open fixture…" : "Open a different fixture…", action: choose)
+                Button(diff.opened == nil ? "Open the fixture's folder…" : "Open a different folder…", action: choose)
                 if diff.opened != nil {
                     Button(diff.running ? "Running…" : "Compare now") { diff.run(library: library) }.disabled(diff.running)
                     if diff.running { Button("Stop", role: .destructive) { diff.stop() } }
@@ -325,7 +325,7 @@ struct IngestionDiffSection: View {
                 ProgressView(value: Double(diff.done), total: Double(max(1, diff.total))) { Text(diff.current).lineLimit(1) }
             }
         } header: { Text("Ingestion diff · fixture from the Python Mac") } footer: {
-            Text("Made by scripts/ingestion_diff_export.py on the Mac that runs the old app, over a folder of documents or a list of web addresses. This Mac reads the same files from the same folder (or the same addresses), cuts them as it would for a notebook, and compares text and chunks. Nothing is added to the library.")
+            Text("Made by scripts/ingestion_diff_export.py on the Mac that runs the old app, over a folder of documents or a list of web addresses. Choose the folder that holds ingestion-fixture.json (choosing the file alone lets this app read nothing beside it). This Mac reads the same files from that folder (or the same addresses), cuts them as it would for a notebook, and compares text and chunks. Nothing is added to the library.")
         }
         if let r = diff.report {
             Section {

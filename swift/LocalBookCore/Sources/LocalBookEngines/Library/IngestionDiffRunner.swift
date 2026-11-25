@@ -12,13 +12,19 @@ extension LibraryModel {
         public let bookmark: Data?
     }
 
+    public static let fixtureName = "ingestion-fixture.json"
+
     /// Opens the fixture and remembers its folder (with a security-scoped bookmark on the Mac, so the files beside it
-    /// can be read after the open panel closes).
+    /// can be read after the open panel closes). Pass the FOLDER the fixture sits in: the sandbox grants what the user
+    /// picked and nothing beside it, so a fixture picked as a file leaves every document next to it unreadable.
+    /// A fixture file is still accepted for a web fixture, which reads nothing from the folder.
     nonisolated public static func openIngestionFixture(_ url: URL) throws -> IngestionDiffFixture {
         let scoped = url.startAccessingSecurityScopedResource()
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
-        let fixture = try IngestionDiff.Fixture.load(try Data(contentsOf: url))
-        let folder = url.deletingLastPathComponent()
+        let isFolder = (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? url.hasDirectoryPath
+        let fixtureURL = isFolder ? url.appending(path: fixtureName) : url
+        let fixture = try IngestionDiff.Fixture.load(try Data(contentsOf: fixtureURL))
+        let folder = isFolder ? url : url.deletingLastPathComponent()
         #if os(macOS)
         let bookmark = try? folder.bookmarkData(options: .withSecurityScope, includingResourceValuesForKeys: nil, relativeTo: nil)
         #else
