@@ -37,10 +37,13 @@ struct TabularTextTests {
         let text = TabularText.sentences(t, sheet: "Document Table", textCells: true)
         #expect(text == "Data from sheet 'Document Table':\n\nComplete row data:\n"
                 + "Row 1: Metric: Average lead time, Value: 2.10, As of: Q3 2026\nRow 2: Metric: Employees, Value: 63, As of: Nov 2026")
-        // A header that pandas would call a value column stays text for strings: no "Employees: Total = 63" lines.
-        let totals = TextTable(columns: ["Name", "Total"], rows: [["Employees", "63"]])
-        #expect(!TabularText.sentences(totals, sheet: "Document Table", textCells: true).contains("Employees: Total = 63"))
-        #expect(TabularText.sentences(totals, sheet: "S").contains("Employees: Total = 63"))
+        // A column named like a value is still one (python converts the string), but a column of digit strings is
+        // object dtype to pandas and so neither a label nor a value; from a sheet the same column is numeric.
+        let totals = TextTable(columns: ["Name", "Total", "Code"], rows: [["Employees", "63", "7"]])
+        let word = TabularText.sentences(totals, sheet: "Document Table", textCells: true)
+        #expect(word.contains("Employees: Total = 63") && !word.contains("Employees: Code = 7"))
+        let sheet = TabularText.sentences(totals, sheet: "S")
+        #expect(sheet.contains("Employees: Total = 63") && sheet.contains("Employees: Code = 7"))
     }
 
     @Test("a workbook lists each sheet under its marker")

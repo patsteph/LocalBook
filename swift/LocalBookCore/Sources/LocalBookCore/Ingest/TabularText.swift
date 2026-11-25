@@ -109,7 +109,7 @@ public enum TabularText {
                 guard !column.isEmpty else { continue }
                 let textCount = column.prefix(10).filter { kinds[i] == .text && !$0.trimmingCharacters(in: .whitespaces).isEmpty && !digitsOnly($0) }.count
                 if textCount > 0 { labelCols.append(i) }
-                else if numericDtype(table.rows.map { $0[i] }, kind: kinds[i]) { valueCols.append(i) }
+                else if !textCells, numericDtype(table.rows.map { $0[i] }, kind: kinds[i]) { valueCols.append(i) }
             }
             var last = Array(repeating: "", count: labelCols.count)
             for row in cells {
