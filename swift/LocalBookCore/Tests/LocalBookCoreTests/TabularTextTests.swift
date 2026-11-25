@@ -30,6 +30,19 @@ struct TabularTextTests {
         #expect(rows == [["a", "b"], ["x, y", "say \"hi\""], ["two\nlines", "3"]])
     }
 
+    @Test("a Word table's cells stay the strings python-docx gave: no number parsing, no label or value columns")
+    func wordTable() {
+        let t = TextTable(columns: ["Metric", "Value", "As of"],
+                          rows: [["Average lead time", "2.10", "Q3 2026"], ["Employees", "63", "Nov 2026"]])
+        let text = TabularText.sentences(t, sheet: "Document Table", textCells: true)
+        #expect(text == "Data from sheet 'Document Table':\n\nComplete row data:\n"
+                + "Row 1: Metric: Average lead time, Value: 2.10, As of: Q3 2026\nRow 2: Metric: Employees, Value: 63, As of: Nov 2026")
+        // A header that pandas would call a value column stays text for strings: no "Employees: Total = 63" lines.
+        let totals = TextTable(columns: ["Name", "Total"], rows: [["Employees", "63"]])
+        #expect(!TabularText.sentences(totals, sheet: "Document Table", textCells: true).contains("Employees: Total = 63"))
+        #expect(TabularText.sentences(totals, sheet: "S").contains("Employees: Total = 63"))
+    }
+
     @Test("a workbook lists each sheet under its marker")
     func workbook() {
         let t = TextTable(columns: ["A", "B"], rows: [["1", "x"]])

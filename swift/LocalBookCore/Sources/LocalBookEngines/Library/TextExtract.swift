@@ -14,7 +14,8 @@ import UIKit
 /// - PDF: PDFKit's text layer per page under the old app's `=== Page N ===` markers, with headings marked from the
 ///   fonts and ruled tables as Markdown tables (what pymupdf4llm's Markdown gave the chunker, `PDFTables`); a page with
 ///   no text layer is read with Vision instead.
-/// - Word, RTF, OpenDocument, HTML, web archive: the system document importer (Mac only), paragraphs on blank lines.
+/// - Word: the package's XML as python-docx read it, paragraphs on blank lines and tables as tabular sentences
+///   (`DOCXReader`); RTF, OpenDocument, HTML, web archive: the system document importer (Mac only).
 /// - Spreadsheets and CSV: rows as sentences, the old app's shape (`TabularText`).
 /// - PowerPoint: slide markers, shape text, tables and speaker notes (`PPTXReader`).
 /// - Excel 97-2003, PowerPoint 97-2003, OpenDocument spreadsheets: own readers (`XLSReader`, `PPTLegacyReader`, `ODSReader`).
@@ -25,10 +26,10 @@ public enum TextExtract {
     public static func format(for url: URL) -> String? {
         let ext = url.pathExtension.lowercased()
         switch ext {
-        case "pdf", "xlsx", "csv", "pptx", "xls", "ppt", "ods", "epub", "ipynb", "svg": return ext
+        case "pdf", "xlsx", "csv", "pptx", "xls", "ppt", "ods", "epub", "ipynb", "svg", "docx": return ext
         case "txt", "md", "markdown", "json", "xml", "py", "js", "ts", "css", "yaml", "yml", "tex", "bib": return ext
         #if canImport(AppKit)
-        case "docx", "doc", "rtf", "rtfd", "odt", "html", "htm", "webarchive": return ext
+        case "doc", "rtf", "rtfd", "odt", "html", "htm", "webarchive": return ext
         #endif
         default: return nil
         }
@@ -72,20 +73,37 @@ public enum TextExtract {
             return try JupyterText.text(try Data(contentsOf: url))
         case "svg":
             return SVGText.read(try Data(contentsOf: url))
-        case "docx", "doc", "rtf", "rtfd", "odt", "html", "htm", "webarchive":
+        case "docx":
+            // The package's own XML, as python-docx read it: tables keep their rows and become the tabular sentences.
+            // A file that is not a real Word package (a renamed .doc, say) falls back to the system importer on the Mac.
+            return try await Task.detached(priority: .userInitiated) {
+                do { return try DOCXReader.read(url) } catch {
+                    #if canImport(AppKit)
+                    return try richText(url)
+                    #else
+                    throw error
+                    #endif
+                }
+            }.value
+        case "doc", "rtf", "rtfd", "odt", "html", "htm", "webarchive":
             #if canImport(AppKit)
-            let attributed = try NSAttributedString(url: url, options: [:], documentAttributes: nil)
-            // python-docx hands paragraphs back one by one, joined by blank lines; the importer gives one string with a
-            // newline per paragraph, so the same shape is rebuilt here.
-            let paragraphs = attributed.string.components(separatedBy: .newlines).map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
-            return paragraphs.joined(separator: "\n\n")
+            return try richText(url)
             #else
-            throw LabError.model("Word and rich-text files are read on the Mac")
+            throw LabError.model("Word 97-2003 and rich-text files are read on the Mac")
             #endif
         default:
             return try plainText(url)
         }
     }
+
+    #if canImport(AppKit)
+    /// The system importer's reading, one paragraph per line, joined by blank lines as python-docx's paragraphs were.
+    static func richText(_ url: URL) throws -> String {
+        let attributed = try NSAttributedString(url: url, options: [:], documentAttributes: nil)
+        let paragraphs = attributed.string.components(separatedBy: .newlines).map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+        return paragraphs.joined(separator: "\n\n")
+    }
+    #endif
 
     static func plainText(_ url: URL) throws -> String {
         let data = try Data(contentsOf: url)
@@ -148,12 +166,24 @@ public enum TextExtract {
             let lineSize = sizes.max(by: { $0.value < $1.value })?.key ?? body
             let ratio = lineSize / body
             if ratio >= 1.18, line.count <= 120, !line.hasSuffix("."), line.rangeOfCharacter(from: .letters) != nil, !line.hasPrefix("#") {
-                out.append((ratio >= 1.6 ? "# " : (ratio >= 1.35 ? "## " : "### ")) + line)
+                // pymupdf4llm wrote a heading set in a bold face as `# **Title**`; the chunker's section titles match.
+                var bold = 0
+                attributed.enumerateAttribute(.font, in: lineRange) { value, range, _ in if isBold(value) { bold += range.length } }
+                let title = bold * 2 > lineRange.length ? "**\(line)**" : line
+                out.append((ratio >= 1.6 ? "# " : (ratio >= 1.35 ? "## " : "### ")) + title)
             } else {
                 out.append(line)
             }
         }
         return out.joined(separator: "\n")
+    }
+
+    private static func isBold(_ value: Any?) -> Bool {
+        #if canImport(AppKit)
+        return (value as? NSFont)?.fontDescriptor.symbolicTraits.contains(.bold) ?? false
+        #else
+        return (value as? UIFont)?.fontDescriptor.symbolicTraits.contains(.traitBold) ?? false
+        #endif
     }
 
     private static func fontSize(_ value: Any?) -> Double? {

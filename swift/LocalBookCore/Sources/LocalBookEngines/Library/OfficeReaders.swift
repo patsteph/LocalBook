@@ -259,3 +259,107 @@ enum PPTXReader {
         }
     }
 }
+
+// MARK: - .docx
+
+/// A Word document as the old app's `_extract_from_docx` gave it with python-docx: header paragraphs, then the body in
+/// order with each paragraph on its own and every table turned into the tabular sentences under `Data from sheet
+/// 'Document Table':`, then footer paragraphs, all joined by blank lines. Reading the XML keeps a table's rows together;
+/// the system importer had laid the cells out one per line, so a header cell such as "Metric" stood alone.
+enum DOCXReader {
+    static func read(_ url: URL) throws -> String {
+        let archive = try Archive(url: url, accessMode: .read)
+        guard let body = try OfficePackage.part(archive, "word/document.xml") else { throw LabError.model("\(url.lastPathComponent) has no document inside") }
+        let doc = BodyParser(); doc.parse(body)
+        let rels = try OfficePackage.relationships(archive, relsPath: "word/_rels/document.xml.rels", base: "word")
+        var parts: [String] = []
+        for rid in doc.headerIds {
+            guard let path = rels[rid], let data = try OfficePackage.part(archive, path) else { continue }
+            let p = BodyParser(); p.parse(data)
+            parts.append(contentsOf: p.blocks.compactMap { if case .paragraph(let t) = $0 { return t } else { return nil } })
+        }
+        for block in doc.blocks {
+            switch block {
+            case .paragraph(let t): parts.append(t)
+            case .table(let rows):
+                guard let first = rows.first, !first.isEmpty else { continue }
+                let width = rows.map(\.count).max() ?? 0
+                let padded = rows.map { $0.count < width ? $0 + Array(repeating: "", count: width - $0.count) : $0 }
+                // pandas' DataFrame(data[1:], columns=data[0]) keeps the header cells as they are, duplicates included.
+                let table = padded.count > 1 ? TextTable(columns: padded[0], rows: Array(padded.dropFirst()))
+                                             : TextTable(columns: padded[0].indices.map { String($0) }, rows: padded)
+                parts.append(TabularText.sentences(table, sheet: "Document Table", textCells: true))
+            }
+        }
+        for rid in doc.footerIds {
+            guard let path = rels[rid], let data = try OfficePackage.part(archive, path) else { continue }
+            let p = BodyParser(); p.parse(data)
+            parts.append(contentsOf: p.blocks.compactMap { if case .paragraph(let t) = $0 { return t } else { return nil } })
+        }
+        return parts.joined(separator: "\n\n")
+    }
+
+    /// Top-level paragraphs and tables of a document, header or footer part, in order. A paragraph's text is its runs'
+    /// text with tabs and breaks as python-docx reads them; blank paragraphs are left out as the old app left them out.
+    /// A table row repeats a cell across the grid columns it spans and a vertically merged cell repeats the one above,
+    /// which is what python-docx's `row.cells` hands back. (`shouldProcessNamespaces` strips the `w:` prefix.)
+    final class BodyParser: NSObject, XMLParserDelegate {
+        enum Block { case paragraph(String); case table([[String]]) }
+        var blocks: [Block] = []
+        var headerIds: [String] = [], footerIds: [String] = []
+        private var paragraph = ""
+        private var inText = false
+        private var tableDepth = 0
+        private var rows: [[String]] = [], row: [String] = []
+        private var cellParagraphs: [String] = []
+        private var cellSpan = 1, cellContinues = false
+        private var inParagraph = false, inCell = false, inRun = false
+
+        func parse(_ data: Data) { let x = XMLParser(data: data); x.delegate = self; x.shouldProcessNamespaces = true; x.parse() }
+
+        func parser(_ parser: XMLParser, didStartElement name: String, namespaceURI: String?, qualifiedName: String?, attributes: [String: String]) {
+            switch name {
+            case "headerReference" where (attributes["w:type"] ?? attributes["type"] ?? "default") == "default":
+                if let rid = attributes["r:id"] ?? attributes["id"] { headerIds.append(rid) }
+            case "footerReference" where (attributes["w:type"] ?? attributes["type"] ?? "default") == "default":
+                if let rid = attributes["r:id"] ?? attributes["id"] { footerIds.append(rid) }
+            case "tbl":
+                tableDepth += 1
+                if tableDepth == 1 { rows = [] }
+            case "tr" where tableDepth == 1: row = []
+            case "tc" where tableDepth == 1: inCell = true; cellParagraphs = []; cellSpan = 1; cellContinues = false
+            case "gridSpan" where inCell: cellSpan = max(1, Int(attributes["w:val"] ?? attributes["val"] ?? "1") ?? 1)
+            case "vMerge" where inCell: cellContinues = (attributes["w:val"] ?? attributes["val"]) == nil
+            case "p" where tableDepth == 0 || inCell: inParagraph = true; paragraph = ""
+            case "r" where inParagraph: inRun = true
+            // Only a run's children are text: a paragraph's tab stops (`w:tabs/w:tab`) are layout, not characters.
+            case "t" where inRun: inText = true
+            case "tab" where inRun: paragraph += "\t"
+            case "br" where inRun, "cr" where inRun: paragraph += "\n"
+            case "noBreakHyphen" where inRun: paragraph += "-"
+            default: break
+            }
+        }
+        func parser(_ parser: XMLParser, foundCharacters s: String) { if inText { paragraph += s } }
+        func parser(_ parser: XMLParser, didEndElement name: String, namespaceURI: String?, qualifiedName: String?) {
+            switch name {
+            case "t": inText = false
+            case "r": inRun = false
+            case "p" where inParagraph:
+                inParagraph = false
+                if inCell { cellParagraphs.append(paragraph) }
+                else if !paragraph.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { blocks.append(.paragraph(paragraph)) }
+            case "tc" where tableDepth == 1:
+                inCell = false
+                var text = cellParagraphs.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+                if cellContinues, let above = rows.last, row.count < above.count { text = above[row.count] }
+                row.append(contentsOf: Array(repeating: text, count: cellSpan))
+            case "tr" where tableDepth == 1: rows.append(row)
+            case "tbl":
+                tableDepth -= 1
+                if tableDepth == 0 { blocks.append(.table(rows)) }
+            default: break
+            }
+        }
+    }
+}

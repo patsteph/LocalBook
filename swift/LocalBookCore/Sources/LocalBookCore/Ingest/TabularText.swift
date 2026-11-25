@@ -88,9 +88,11 @@ public enum TabularText {
         return !stripped.isEmpty && stripped.unicodeScalars.allSatisfy { CharacterSet.decimalDigits.contains($0) }
     }
 
-    public static func sentences(_ table: TextTable, sheet: String) -> String {
+    /// `textCells` is the frame python-docx and python-pptx gave: every cell a string, so every column is object dtype
+    /// (`2.10` stays `2.10`, a column of digits is neither a label nor a value); a sheet's cells keep their inferred types.
+    public static func sentences(_ table: TextTable, sheet: String, textCells: Bool = false) -> String {
         let cols = table.columns
-        let kinds = cols.indices.map { i in kind(of: table.rows.map { $0[i] }) }
+        let kinds = cols.indices.map { i in textCells ? Kind.text : kind(of: table.rows.map { $0[i] }) }
         let cells: [[String]] = table.rows.map { row in row.indices.map { render(row[$0], as: kinds[$0]) } }
         var out = ["Data from sheet '\(sheet)':"]
 
