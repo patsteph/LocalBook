@@ -44,6 +44,12 @@ public final class LocalAPIBridge: LocalAPIDelegate {
             case "approval_queue": return JSONBox(queue(args))
             case "memory_search": return JSONBox(try await memorySearch(args))
             case "memory_add": return JSONBox(try await memoryAdd(args, caller))
+            case "events_since": return JSONBox(eventsSince(args))
+            case "event_kinds": return JSONBox(["kinds": EventLog.kinds.map { ["kind": $0.kind, "meaning": $0.meaning] }])
+            case "curator_insights": return JSONBox(curatorInsights(args))
+            case "todays_digest": return JSONBox(digest(args))
+            case "start_research": return JSONBox(startResearch(args, caller))
+            case "get_job": return JSONBox(job(args))
             default: return .error("unknown tool \(name)")
             }
         } catch {
@@ -260,6 +266,55 @@ public final class LocalAPIBridge: LocalAPIDelegate {
             ["id": $0.id, "notebook_id": $0.notebookId, "title": $0.title, "preview": String($0.body.prefix(300)), "source": $0.source, "proposed_by": $0.companionId, "created_at": $0.created, "status": $0.status.rawValue] as [String: Any]
         }
         return ["status": status.rawValue, "items": rows]
+    }
+
+    // MARK: the Curator's tools
+
+    private func eventsSince(_ args: JSONBox) -> [String: Any] {
+        let page = EventLog.since(cursor: args.string("cursor"), limit: k(args, "k", 100, max: 500))
+        let iso = ISO8601DateFormatter()
+        return ["events": page.events.map { ["id": $0.id, "kind": $0.kind, "notebook_id": $0.notebookId ?? NSNull(), "title": $0.title, "detail": $0.detail, "at": iso.string(from: $0.at)] as [String: Any] },
+                "cursor": page.cursor, "more": page.events.count >= k(args, "k", 100, max: 500)]
+    }
+
+    private func curatorInsights(_ args: JSONBox) -> [String: Any] {
+        let iso = ISO8601DateFormatter()
+        let since = args.string("since").flatMap { iso.date(from: $0) } ?? .distantPast
+        let n = k(args, "k", 10, max: 50)
+        let c = Agents.curator
+        let connections = c.connections.filter { $0.created >= since }.prefix(n).map {
+            ["id": $0.id, "label": $0.label, "strength": $0.strength, "status": $0.status.rawValue, "notebook_a": $0.notebookA, "title_a": $0.titleA, "file_a": $0.fileA, "passage_a": String($0.passageA.prefix(400)),
+             "notebook_b": $0.notebookB, "title_b": $0.titleB, "file_b": $0.fileB, "passage_b": String($0.passageB.prefix(400)), "found_at": iso.string(from: $0.created)] as [String: Any] }
+        let pieces = c.pieces.filter { $0.created >= since }.prefix(n).map { ["id": $0.id, "kind": $0.kind.rawValue, "title": $0.title, "markdown": $0.markdown, "created_at": iso.string(from: $0.created)] as [String: Any] }
+        return ["curator": c.profile.name, "connections": connections, "written": pieces]
+    }
+
+    private func digest(_ args: JSONBox) -> [String: Any] {
+        let iso = ISO8601DateFormatter()
+        let all = Agents.curator.digests()
+        let picked = args.string("notebook_id").map { id in all.filter { $0.notebookId == id } } ?? all
+        if let id = args.string("notebook_id"), picked.isEmpty { return ["notebook_id": id, "digest": NSNull(), "note": "No digest yet for that notebook; the user writes them in the Curator pane (Notebook digests › Digest)."] }
+        return ["digests": picked.map { ["notebook_id": $0.notebookId ?? "", "title": $0.title, "digest": $0.markdown, "written_at": iso.string(from: $0.created)] as [String: Any] }]
+    }
+
+    private func startResearch(_ args: JSONBox, _ caller: CompanionIdentity) -> [String: Any] {
+        guard let topic = args.string("topic")?.trimmingCharacters(in: .whitespacesAndNewlines), !topic.isEmpty else { return ["error": "a topic is required"] }
+        let notebook = args.string("notebook_id") ?? library.scopeToNotebook ?? library.notebooks.first?.id
+        guard let notebook, library.notebooks.contains(where: { $0.id == notebook }) else { return ["error": "notebook_id must name one of the notebooks (see list_notebooks)"] }
+        let mode = ResearchJob.Mode(rawValue: args.string("mode") ?? "web_search") ?? .web
+        let site = args.string("site").flatMap { SiteSearch.Site(rawValue: $0) }
+        if mode == .site, site == nil { return ["error": "site_search needs a site: " + SiteSearch.Site.allCases.map(\.rawValue).joined(separator: ", ")] }
+        let id = Agents.research.start(topic: topic, notebook: notebook, mode: mode, site: site, library: library)
+        return ["job_id": id, "status": "queued", "notebook_id": notebook, "mode": mode.rawValue, "started_by": caller.companionId,
+                "detail": "Results go to the notebook's Collector queue for the user to approve; poll get_job for progress."]
+    }
+
+    private func job(_ args: JSONBox) -> [String: Any] {
+        guard let id = args.string("job_id"), let j = Agents.research.job(id) else { return ["error": "no such job"] }
+        let iso = ISO8601DateFormatter()
+        return ["job_id": j.id, "topic": j.topic, "notebook_id": j.notebookId, "mode": j.mode.rawValue, "status": j.status.rawValue, "progress": j.progress,
+                "results": j.results.map { ["title": $0.title, "url": $0.url, "site": $0.site, "snippet": $0.snippet, "summary": $0.summary, "quality": $0.quality, "word_count": $0.wordCount] as [String: Any] },
+                "problems": j.problems, "queued_for_approval": j.queuedToCollector, "created_at": iso.string(from: j.created), "finished_at": j.finished.map { iso.string(from: $0) } ?? NSNull()]
     }
 
     private func memorySearch(_ args: JSONBox) async throws -> [String: Any] {

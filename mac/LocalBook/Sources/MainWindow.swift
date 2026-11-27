@@ -36,6 +36,10 @@ struct MainWindow: View {
                     CanvasPane()
                 case .constellation:
                     ConstellationPane()
+                case .curator:
+                    CuratorPane()
+                case .collector:
+                    CollectorPane()
                 }
             }
             .acceptsDrops(for: model.currentNotebookId)
@@ -121,6 +125,12 @@ struct MainWindow: View {
         case .showInsights: model.selection = .insights
         case .showCanvas: model.selection = .canvas
         case .showConstellation: model.selection = .constellation
+        case .showCurator: model.selection = .curator
+        case .showCollector: model.selection = .collector
+        case .curatorAction: model.selection = .curator; model.curatorRequest = CuratorPiece.Kind(rawValue: note.object as? String ?? "")
+        case .collectorAction:
+            model.selection = .collector
+            if let s = note.object as? String { model.collectorRequest = s == "collect" ? .collect : (s.hasPrefix("research:") ? .research(String(s.dropFirst(9))) : .show) }
         case .makeInsight: model.selection = .insights; model.insightRequest = Insight.Kind(rawValue: note.object as? String ?? "")
         case .writingAssistant: model.selection = .insights; model.writingRequest = true
         case .showMeetings, .startMeetingRecording: model.selection = .meetings
@@ -338,6 +348,11 @@ extension Notification.Name {
     static let showInsights = Notification.Name("LocalBook.showInsights")
     static let showCanvas = Notification.Name("LocalBook.showCanvas")
     static let showConstellation = Notification.Name("LocalBook.showConstellation")
+    static let showCurator = Notification.Name("LocalBook.showCurator")
+    static let showCollector = Notification.Name("LocalBook.showCollector")
+    /// Agents menu: `object` is a `CuratorPiece.Kind` raw value, or "collect" / "research:<topic>".
+    static let curatorAction = Notification.Name("LocalBook.curatorAction")
+    static let collectorAction = Notification.Name("LocalBook.collectorAction")
     static let makeInsight = Notification.Name("LocalBook.makeInsight")
     static let writingAssistant = Notification.Name("LocalBook.writingAssistant")
     static let findingsChanged = Notification.Name("LocalBook.findingsChanged")

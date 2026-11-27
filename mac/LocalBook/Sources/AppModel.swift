@@ -48,6 +48,9 @@ final class AppModel {
         /// The Canvas (View › Show Canvas, ⌥⌘5) and the Constellation (⌥⌘6).
         case canvas
         case constellation
+        /// The Curator (⌥⌘7) and the Collector (⌥⌘8).
+        case curator
+        case collector
     }
 
     var selection: Destination? {
@@ -103,6 +106,10 @@ final class AppModel {
     var writingRequest = false
     /// A Studio item or an insight the Canvas asked to open, by id; the pane selects it when it appears.
     var studioOpenRequest: String?
+    /// An Agents menu or slash choice for the Curator or the Collector pane to act on when it is on screen.
+    var curatorRequest: CuratorPiece.Kind?
+    enum CollectorRequest: Equatable { case collect, research(String), show }
+    var collectorRequest: CollectorRequest?
     var insightOpenRequest: String?
     /// The subject typed after a `/briefing`-style command in the Ask field; the make sheet opens with it filled in.
     var makeSubject = ""
@@ -226,6 +233,7 @@ final class AppModel {
         syncSelectionToScope()
         Task { await phoneHost.start() }         // the iPhone can find this Mac from the first second
         Task { await localAPI.start() }          // and so can the agents and the browser extension on it
+        Agents.collector.startSchedule(library: library)   // due Collectors run while the app is open
         if paired { Task { await runSync(); await loadSections() } }
         // A library moved over from the old app answers without a pairing; the models warm for it too.
         if paired || !library.notebooks.isEmpty { await startModels() }

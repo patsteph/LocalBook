@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:content="http://purl.org/rss/1.0/modules/content/" xmlns:dc="http://purl.org/dc/elements/1.1/">
+<channel>
+  <title>Harbor Lights News (test feed)</title>
+  <link>http://127.0.0.1:8765/</link>
+  <description>A local feed for the Collector sitting. Serve it with: cd testdata/flights &amp;&amp; python3 -m http.server 8765</description>
+  <item>
+    <title>Harbor Lights opens its Denver roastery</title>
+    <link>http://127.0.0.1:8765/pages/denver.html</link>
+    <guid>http://127.0.0.1:8765/pages/denver.html</guid>
+    <dc:creator>Rosa Alvarez</dc:creator>
+    <pubDate>Tue, 25 Nov 2026 09:30:00 GMT</pubDate>
+    <description><![CDATA[Harbor Lights Coffee opened its third roastery in Denver on Tuesday, bringing the company to 71 employees across Portland, Austin and Denver.]]></description>
+  </item>
+  <item>
+    <title>Shipping policy: free over $40 from December</title>
+    <link>http://127.0.0.1:8765/pages/shipping.html</link>
+    <guid>http://127.0.0.1:8765/pages/shipping.html</guid>
+    <pubDate>Wed, 26 Nov 2026 08:00:00 GMT</pubDate>
+    <description><![CDATA[From December 1 every order over $40 ships free within the continental United States; Alaska and Hawaii keep the $8 flat rate.]]></description>
+  </item>
+  <item>
+    <title>Ten cold brew recipes for summer</title>
+    <link>http://127.0.0.1:8765/pages/recipes.html</link>
+    <guid>http://127.0.0.1:8765/pages/recipes.html</guid>
+    <pubDate>Thu, 20 Nov 2026 12:00:00 GMT</pubDate>
+    <description><![CDATA[Cold brew, nitro, and a coffee tonic: ten recipes from the Harbor Lights baristas.]]></description>
+  </item>
+</channel>
+</rss>

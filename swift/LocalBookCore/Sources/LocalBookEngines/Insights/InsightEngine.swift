@@ -228,7 +228,7 @@ public final class InsightEngine {
         do {
             let made = try await body(gemma, store)
             if made == nil, error == nil, stopped { error = "Stopped." }
-            if let made { InsightStore.save(made) }
+            if let made { InsightStore.save(made); EventLog.record("insight_made", notebook: made.notebookId, title: made.title, detail: made.kind.rawValue) }
             return made
         } catch { self.error = error.localizedDescription; return nil }
     }

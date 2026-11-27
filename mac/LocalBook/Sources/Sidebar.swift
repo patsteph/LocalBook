@@ -44,6 +44,10 @@ struct Sidebar: View {
                     Label("Insights", systemImage: "lightbulb").tag(AppModel.Destination.insights)
                     Label("Canvas", systemImage: "map").tag(AppModel.Destination.canvas)
                     Label("Constellation", systemImage: "sparkles").tag(AppModel.Destination.constellation)
+                }
+                Section("Agents") {
+                    Label("Curator", systemImage: "wand.and.stars").tag(AppModel.Destination.curator)
+                    Label("Collector", systemImage: "binoculars").tag(AppModel.Destination.collector)
                     Label("Meetings", systemImage: "waveform").tag(AppModel.Destination.meetings)
                     Label("Notes", systemImage: "note.text").tag(AppModel.Destination.notes)
                 }

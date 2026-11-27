@@ -280,6 +280,7 @@ public final class StudioEngine {
                                   title: VisualSpec.itemTitle(spec, notebook: notebook.title),
                                   created: Date(), body: String(decoding: data, as: UTF8.self))
             StudioStore.save(item)
+            EventLog.record("studio_made", notebook: item.notebookId, title: item.title, detail: item.kind.rawValue)
             return item
         }
         guard var body = Self.body(for: kind, from: raw) else {
@@ -299,6 +300,7 @@ public final class StudioEngine {
         let title = Self.title(kind, notebook: notebook.title, topic: topic, body: body)
         let item = StudioItem(id: UUID().uuidString, notebookId: notebook.id, kind: kind, title: title, created: Date(), body: body)
         StudioStore.save(item)
+        EventLog.record("studio_made", notebook: item.notebookId, title: item.title, detail: item.kind.rawValue)
         return item
     }
 
@@ -558,6 +560,7 @@ extension StudioEngine {
         let title = topic.isEmpty ? "Audio overview: \(notebook.title)" : "Audio overview: \(topic)"
         let item = StudioItem(id: id, notebookId: notebook.id, kind: .audio, title: title, created: Date(), body: String(decoding: data, as: UTF8.self))
         StudioStore.save(item)
+        EventLog.record("studio_made", notebook: item.notebookId, title: item.title, detail: item.kind.rawValue)
         progress = 1
         return item
     }
@@ -753,6 +756,7 @@ extension StudioEngine {
         var item = StudioItem(id: id, notebookId: notebook.id, kind: .video, title: title, created: Date(), body: String(decoding: data, as: UTF8.self))
         item.mediaFile = videoFile
         StudioStore.save(item)
+        EventLog.record("studio_made", notebook: item.notebookId, title: item.title, detail: item.kind.rawValue)
         progress = 1
         return item
     }

@@ -1,10 +1,10 @@
-# Flights 1–3 + visuals close-out: one sitting (2026-11-27)
+# Flights 1–5 + visuals close-out: one sitting (2026-11-27)
 
-About 40 minutes at the Mac, plus two unattended runs. Everything below is in the Swift Mac app unless it says "old app".
+About 60 minutes at the Mac, plus two unattended runs. Everything below is in the Swift Mac app unless it says "old app".
 
-**Before:** `git pull origin dev && git log --oneline -1` (expect the latest dev commit, at or after `7f0839f`), rebuild the
+**Before:** `git pull origin dev && git log --oneline -1` (expect the latest dev commit, at or after `e6dab8f`), rebuild the
 Mac app in Xcode. Test files: `testdata/flights/` (this folder) and `testdata/phase3/`. Old app quit unless a step says otherwise
-(both apps listen on port 8000).
+(both apps listen on port 8000). For section G, a second Terminal: `cd testdata/flights && python3 -m http.server 8765`, left running.
 
 ## A. Unattended first (10 minutes of clicks, then walk away)
 
@@ -73,7 +73,49 @@ Mac app in Xcode. Test files: `testdata/flights/` (this folder) and `testdata/ph
     pick Left / Tie / Right for the 15, Reveal. Glance at the Swift index.html: 13–15 have a painted backdrop with crisp text; critic lines sane.
     **Send back:** the Reveal summary line (bar 12 of 15), one word on the backdrops, any critic line that looks wrong.
 
+## F. Flight 4: Canvas and Constellation (8 minutes; Harbor Insights has questions from D by now)
+
+20. Ask Harbor Insights two more questions, one it cannot answer ("What is the Denver roastery's square footage?"). Sidebar › **Canvas**
+    (⌥⌘5) › **Build the map**. **Pass:** a chip per question with the answer's first lines and a source count; a chip per source an
+    answer used (none for a file nobody asked about); the quiz or finding from D; cards gathering related questions with a model-given
+    title; the square-footage question wears the orange badge and is under **Gaps**; thin lines from sources to questions; dotted
+    suggestions between related chips. The status line reads "N things on the map · M cards · …".
+21. Drag a chip, drag a card (its chips move with it), **Build the map** again: both stay put. **Tidy up**: re-arranged. Shift-click two
+    chips › **Connect these two**: a solid line. Select the 01-company-history chip and ask "When did the Austin move happen?" in the
+    bar at the bottom. **Pass:** the answer chip lands beside it joined by a line, and the answer used only that source.
+22. **Review**: Show the answer, grade one Good; the chip loses its review badge. Insights › Contradictions already exists, so the map
+    shows a **red line** between 01 and 02; click it: the two claims in the inspector. **Send back:** any of 20–22 that did not happen.
+23. Sidebar › **Constellation** (⌥⌘6) (the knowledge graph from step 3 feeds it; otherwise **Build the constellation**). **Pass:** coloured
+    stars in 3 to 5 clusters, the biggest star of each at its centre with its name; drag to orbit, scroll to zoom; click Rosa Alvarez:
+    "Connected to" lists Harbor Lights Coffee, Portland, Austin … and "Named in" lists files; **Source** › 02-press-clipping keeps only
+    its stars; the legend's cluster counts add up to the stars line. **Send back:** a screenshot if it looks wrong, one word if fine.
+
+## G. Flight 5: Curator and Collector (12 minutes; the http.server from "Before" is running)
+
+24. Sidebar › **Collector** (⌥⌘8) with Harbor Lights selected › **Setup**: name "Harbor watch", subject "Harbor Lights Coffee", intent
+    "shipping policy and regional expansion", focus areas `shipping`, `Denver`, excluded topics `recipes`, approval **Mixed**, collect
+    **Daily**. › **Sources**: add `http://127.0.0.1:8765/pages/about.html` (**Pass:** it lands under Feeds as `…/feeds/harbor-news.xml`,
+    not under Watched pages), add `http://127.0.0.1:8765/pages/shipping.html` (under Watched pages). Keywords: `Harbor Lights Coffee`.
+25. **Collect now**. **Pass:** History shows one run "N looked at · a added · q queued · s skipped" with the recipes item among the skipped;
+    the Denver roastery and shipping policy items are either added as sources (Sources pane of Harbor Lights) or in the **Queue** with a
+    percent and reasons like "Relevance … Trusted source … fresh"; the keyword search adds whatever Hacker News / Reddit / Wikipedia return
+    (offline: a problem line, nothing else breaks). **Approve** one queued item: it appears under Sources. **Dismiss** another with a reason:
+    it shows under "Decided lately". Edit `pages/shipping.html` in a text editor (change the price), **Collect now** again: one changed-page item.
+    Without an edit, a third run collects nothing new. **Send back:** the run lines and anything that did not match.
+26. **Research**: "Harbor Lights Coffee Denver roastery", Web search, **Start**. **Pass:** the job shows progress then "done" with a count
+    and results in the Queue with percents. Then **Deep dive** on "cold brew coffee shelf life". **Pass:** a few summarized results with a
+    quality percent each (needs the internet; offline, a plain problem line).
+27. Sidebar › **Curator** (⌥⌘7) › profile button: name "Marlowe", voice **Executive brief**, leave out one notebook, Save. **Brief** (or ⌥⌘B).
+    **Pass:** a piece in that voice naming today's added sources (the Collector's), the questions asked and the Studio items, per notebook,
+    the left-out notebook absent. **Week**: a seven-day look-back. **Patterns**: at least one connection Harbor Lights ↔ Harbor Insights
+    (the shipping credit) with both passages and a percent. **Devil's advocate** against "Harbor Lights should open more roasteries":
+    an argument that cites notebooks. **Digest** of Harbor Insights. **Save as note** on the brief: under Notes. **Useful** / **Dismiss** stick.
+28. Terminal, with the smoke key from step 4: `curl -s -H "Authorization: Bearer <key>" -H "Content-Type: application/json" \
+    -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"events_since","arguments":{}}}' http://127.0.0.1:8000/mcp`
+    **Pass:** JSON events of kinds source_added, question_asked, collected, approved … Same with `"name":"todays_digest"`: the brief's text.
+    `/brief`, `/research <topic>` and `/collect` in the Ask field open the right pane and run.
+
 ## What to send back, in one message
 
-The step numbers that did not pass with what you saw (one line each), the C4 rate and three differences, the C6 Reveal line.
-Everything else is taken as passed.
+The step numbers that did not pass with what you saw (one line each), the C4 rate and three differences, the C6 Reveal line,
+the Collector run lines (25). Everything else is taken as passed.

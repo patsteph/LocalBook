@@ -100,18 +100,22 @@ public enum MCPCatalog {
           scope: "memory"),
         t("memory_add", "Remember something long-term, in LocalBook's shared memory, under your companion's tag. Needs the `memory` scope.",
           [("text", "string", "What to remember", true), ("category", "string", "A free label (preference, person, …)", false)], readOnly: false, scope: "memory"),
-        // The Curator's tools keep their names so a client written against the old app finds them; until the Curator is
-        // ported they answer that they are not in this version yet.
-        t("events_since", "What has happened in LocalBook since you last asked (not in this version yet).", [("cursor", "string", "The cursor you were given", false)], scope: "events"),
-        t("event_kinds", "The kinds of events events_since reports (not in this version yet).", scope: "events"),
-        t("curator_insights", "The Curator's cross-notebook insights (not in this version yet).", [("since", "string", "ISO date", false), ("k", "integer", "How many", false)]),
-        t("todays_digest", "The Curator's digest for today (not in this version yet).", [("notebook_id", "string", "A notebook", false)]),
-        t("start_research", "Start a deep dive on a topic in the background (not in this version yet).", [("topic", "string", "The topic", true), ("notebook_id", "string", "A notebook", false)], readOnly: false),
-        t("get_job", "Status of a research job (not in this version yet).", [("job_id", "string", "The job", true)]),
+        // The Curator's tools keep the old app's names, so a client written against it finds them.
+        t("events_since", "What has happened in LocalBook since you last asked: sources added, questions asked, Studio items and insights made, what the Collector found, briefs written. Pass back the cursor you were given. Needs the `events` scope.",
+          [("cursor", "string", "The cursor from the last call (omit for everything)", false), ("k", "integer", "How many at most (default 100)", false)], scope: "events"),
+        t("event_kinds", "The kinds of events events_since reports, with what each means.", scope: "events"),
+        t("curator_insights", "The Curator's cross-notebook connections (where two notebooks say close to the same thing) and what it wrote lately (briefs, the week in review, patterns, devil's advocate).",
+          [("since", "string", "ISO date; only items after it", false), ("k", "integer", "How many of each (default 10)", false)]),
+        t("todays_digest", "The Curator's digest of a notebook (3-4 sentences on its state), or of every notebook when notebook_id is omitted. Digests are written in the Curator pane; this reads the latest.",
+          [("notebook_id", "string", "A notebook", false)]),
+        t("start_research", "Start a research job on a topic for a notebook: a web search (default), a site search, or a deep dive that reads the pages and keeps the best. Results wait in the notebook's Collector queue for the user to approve. Returns a job id for get_job.",
+          [("topic", "string", "The topic", true), ("notebook_id", "string", "The notebook the results are for (default: the one on screen)", false), ("mode", "string", "web_search (default), site_search or deep_dive", false), ("site", "string", "For site_search: arxiv, wikipedia, hackerNews, github, reddit, stackOverflow, semanticScholar, openAlex or pubmed", false)], readOnly: false),
+        t("get_job", "Status and results of a research job.", [("job_id", "string", "The job", true)]),
     ]
 
     public static func tool(named name: String) -> Tool? { tools.first { $0.name == name } }
-    public static let notYet = ["events_since", "event_kinds", "curator_insights", "todays_digest", "start_research", "get_job"]
+    /// Tools the catalogue lists but this version does not answer (none since flight 5).
+    public static let notYet: [String] = []
 }
 
 /// Streamable HTTP MCP, the server half: one JSON-RPC request in, one JSON-RPC reply out. Sessions are stateless (the

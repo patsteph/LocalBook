@@ -70,6 +70,17 @@ struct LocalBookCommands: Commands {
                 .keyboardShortcut(Shortcuts.writingAssistant.keys)
         }
 
+        // Agents
+        CommandMenu("Agents") {
+            Button("Morning Brief") { NotificationCenter.default.post(name: .curatorAction, object: CuratorPiece.Kind.brief.rawValue) }
+                .keyboardShortcut(Shortcuts.morningBrief.keys)
+            Button("Week in Review") { NotificationCenter.default.post(name: .curatorAction, object: CuratorPiece.Kind.weekly.rawValue) }
+            Button("Discover Patterns") { NotificationCenter.default.post(name: .curatorAction, object: CuratorPiece.Kind.patterns.rawValue) }
+            Divider()
+            Button("Collect Now") { NotificationCenter.default.post(name: .collectorAction, object: "collect") }
+            Button("Research…") { NotificationCenter.default.post(name: .collectorAction, object: "research:") }
+        }
+
         // Record
         CommandMenu("Record") {
             Button("Start Meeting Recording") { NotificationCenter.default.post(name: .startMeetingRecording, object: nil) }
@@ -93,6 +104,10 @@ struct LocalBookCommands: Commands {
                 .keyboardShortcut(Shortcuts.showCanvas.keys)
             Button("Show Constellation") { NotificationCenter.default.post(name: .showConstellation, object: nil) }
                 .keyboardShortcut(Shortcuts.showConstellation.keys)
+            Button("Show Curator") { NotificationCenter.default.post(name: .showCurator, object: nil) }
+                .keyboardShortcut(Shortcuts.showCurator.keys)
+            Button("Show Collector") { NotificationCenter.default.post(name: .showCollector, object: nil) }
+                .keyboardShortcut(Shortcuts.showCollector.keys)
             Divider()
             Button("Show Inspector") { NotificationCenter.default.post(name: .toggleInspector, object: nil) }
                 .keyboardShortcut(Shortcuts.toggleInspector.keys)

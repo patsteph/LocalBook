@@ -53,6 +53,15 @@ enum SlashCommands {
         SlashCommand(name: "curator", title: "Curator", symbol: "sparkles", hint: "A question for every notebook at once", group: .agent) { text, model in
             model.askCurator(text)
         },
+        SlashCommand(name: "brief", title: "Morning Brief", symbol: "sunrise", hint: "Press Return for what changed since the last brief", group: .agent) { _, model in
+            model.selection = .curator; model.curatorRequest = .brief
+        },
+        SlashCommand(name: "research", title: "Research", symbol: "magnifyingglass.circle", hint: "A topic to research into this notebook's Collector queue", group: .agent) { text, model in
+            model.selection = .collector; model.collectorRequest = .research(text)
+        },
+        SlashCommand(name: "collect", title: "Collect Now", symbol: "binoculars", hint: "Press Return to run this notebook's Collector", group: .agent) { _, model in
+            model.selection = .collector; model.collectorRequest = .collect
+        },
     ]
 
     /// The commands whose name starts with what was typed after the slash (everything, for an empty prefix).

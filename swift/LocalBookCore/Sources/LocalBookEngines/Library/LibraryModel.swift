@@ -520,6 +520,7 @@ public final class LibraryModel {
                                                 sourcesUsed: Array(Set(answerSources.map(\.sourceId))).sorted(),
                                                 filenames: Array(Set(answerSources.map(\.filename))).sorted(),
                                                 origin: answerSources.contains { $0.notebookId != nb } ? "curator" : "ask"))
+                EventLog.record("question_asked", notebook: nb, title: shownQuestion, detail: JourneyTurn.preview(answerText, limit: 160))
             }
         }
         answerText = ""; answerSources = []; answerStatus = ""; followUps = []; hits = []; shownQuestion = ""; liveNotebookId = nil

@@ -1,4 +1,4 @@
-# Flight test files (flights 1 to 3, 2026-11-27)
+# Flight test files (flights 1 to 5, 2026-11-27)
 
 Made-up data in the Harbor Lights Coffee universe of `testdata/phase3`; nothing here is real.
 
@@ -32,3 +32,17 @@ key does not open it, the phrase does; it reads 2 files and says it is from the 
 One command against the Swift app's local API on this Mac: health, MCP initialize and tools/list, one search_notebook
 call, /v1/models and one /v1/chat/completions. Needs an agent key from Settings › Agents (paste when asked). Run it
 with the old app quit (both listen on port 8000).
+
+## `feeds/harbor-news.xml` + `pages/*.html` — the Collector's web, served from this Mac
+
+Serve this folder first: `cd testdata/flights && python3 -m http.server 8765` (leave it running). Then in the Collector:
+
+| Address to add | What it is | Expected |
+|---|---|---|
+| `http://127.0.0.1:8765/pages/about.html` | A page whose head advertises the feed | Becomes the feed `feeds/harbor-news.xml` (3 items) |
+| `http://127.0.0.1:8765/pages/shipping.html` | A watched page | Collected once; collected again only after you edit the file |
+
+Feed items: the Denver roastery and the shipping policy (both on subject, stored or queued with a percent and reasons);
+"Ten cold brew recipes for summer" is bait for the excluded topic `recipes` and must be skipped. The pages are the Harbor
+Lights universe again (shipping rates, the Portland, Austin and Denver roasteries), so once approved they sit beside the
+Harbor Insights files that say the same things, and the Curator's Patterns has pairs to find.

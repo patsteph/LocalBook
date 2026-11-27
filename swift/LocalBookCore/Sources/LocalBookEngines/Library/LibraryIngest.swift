@@ -142,6 +142,7 @@ extension LibraryModel {
                               filename: title, sourceType: "summary", vector: half.withUnsafeBytes { Data($0) }))
         }
         try await store.addLocalSource(notebook: notebook, sourceId: sourceId, title: title, format: format, text: text, url: url, chunks: rows, file: file)
+        EventLog.record("source_added", notebook: notebook, title: title, detail: format)
         await refresh()
         return IngestReport(sourceId: sourceId, title: title, format: format, characters: PyLen(text), chunks: chunks.count,
                             summarized: summary != nil, questioned: questioned)

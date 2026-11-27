@@ -90,6 +90,9 @@ enum Shortcuts {
     static let showInsights = KeyShortcut("Show Insights", "4", [.command, .option])
     static let showCanvas = KeyShortcut("Show Canvas", "5", [.command, .option])
     static let showConstellation = KeyShortcut("Show Constellation", "6", [.command, .option])
+    static let showCurator = KeyShortcut("Show Curator", "7", [.command, .option])
+    static let showCollector = KeyShortcut("Show Collector", "8", [.command, .option])
+    static let morningBrief = KeyShortcut("Morning Brief", "b", [.command, .option])
     static let writingAssistant = KeyShortcut("Writing Assistant", "w", [.command, .option])
     static let toggleInspector = KeyShortcut("Show or Hide Inspector", "i", [.command, .option])
 
@@ -112,8 +115,9 @@ enum Shortcuts {
                                       KeyShortcut("Previous or next flashcard", display: "← →")]),
         Group(name: "Record", items: [startRecording, voiceNote]),
         Group(name: "View", items: [KeyShortcut("Show or Hide Sidebar", "s", [.command, .control]),
-                                    showSources, showStudio, showMeetings, showInsights, showCanvas, showConstellation, toggleInspector]),
+                                    showSources, showStudio, showMeetings, showInsights, showCanvas, showConstellation, showCurator, showCollector, toggleInspector]),
         Group(name: "Insights", items: [writingAssistant]),
+        Group(name: "Agents", items: [morningBrief, KeyShortcut("Ask every notebook at once", display: "@curator …"), KeyShortcut("Research a topic into the Collector queue", display: "/research …")]),
         Group(name: "Sources", items: [KeyShortcut("Quick Look the selected source", display: "Space"),
                                        KeyShortcut("Open the selected source in its own window", display: "⌘↓")]),
         Group(name: "Notes", items: [KeyShortcut("Edit the selected note", "e"),
