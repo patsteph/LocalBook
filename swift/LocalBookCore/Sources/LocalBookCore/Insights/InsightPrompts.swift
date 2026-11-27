@@ -293,7 +293,7 @@ public enum DateKey {
             return Double(y) + fraction(month: mo, day: d)
         }
         var year: Int?
-        if let m = s.firstMatch(of: /(?<!\d)(1[6-9]\d\d|20\d\d|21\d\d)(?!\d)/) { year = Int(m.1) }      // `1990s` counts
+        if let m = s.firstMatch(of: /(?:^|\D)(1[6-9]\d\d|20\d\d|21\d\d)(?!\d)/) { year = Int(m.1) }      // `1990s` counts; no lookbehind in Swift Regex
         else if let m = s.firstMatch(of: /\bfy\s?'?(\d{2})\b/) { year = 2000 + (Int(m.1) ?? 0) }
         else if let m = s.firstMatch(of: /\b'(\d{2})\b/) { let n = Int(m.1) ?? 0; year = n < 50 ? 2000 + n : 1900 + n }
         guard let year else { return nil }
