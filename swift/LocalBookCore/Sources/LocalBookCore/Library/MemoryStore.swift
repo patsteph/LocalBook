@@ -30,21 +30,23 @@ public actor MemoryStore {
             throw LibraryError.sqlite("could not open \(url.lastPathComponent)")
         }
         db = handle
-        try exec("PRAGMA journal_mode=WAL")
-        try exec("""
+        // An actor's init cannot call its own methods, so the tables are made through the static form.
+        try Self.run(handle, "PRAGMA journal_mode=WAL")
+        try Self.run(handle, """
         CREATE TABLE IF NOT EXISTS memories (
             id TEXT PRIMARY KEY, kind TEXT NOT NULL, category TEXT NOT NULL DEFAULT '', text TEXT NOT NULL,
             source TEXT NOT NULL DEFAULT 'localbook', created TEXT NOT NULL, updated TEXT NOT NULL)
         """)
-        try exec("CREATE INDEX IF NOT EXISTS memories_kind ON memories(kind, updated DESC)")
+        try Self.run(handle, "CREATE INDEX IF NOT EXISTS memories_kind ON memories(kind, updated DESC)")
     }
 
-    private func exec(_ sql: String) throws {
+    private static func run(_ db: OpaquePointer, _ sql: String) throws {
         var err: UnsafeMutablePointer<CChar>?
         guard sqlite3_exec(db, sql, nil, nil, &err) == SQLITE_OK else {
             let text = err.map { String(cString: $0) } ?? "sqlite error"; sqlite3_free(err); throw LibraryError.sqlite(text)
         }
     }
+    private func exec(_ sql: String) throws { try Self.run(db, sql) }
     private func statement(_ sql: String) throws -> OpaquePointer {
         var s: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &s, nil) == SQLITE_OK, let s else { throw LibraryError.sqlite(String(cString: sqlite3_errmsg(db))) }

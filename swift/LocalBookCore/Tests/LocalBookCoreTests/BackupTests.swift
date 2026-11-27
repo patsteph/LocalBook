@@ -122,7 +122,7 @@ import Testing
         #expect(BackupPayload.mismatches(manifest: manifest, files: broken) == ["proposals.json"])
     }
 
-    @Test func stagesRestoresAndKeepsReplaced() throws {
+    @Test func stagesRestoresAndKeepsReplaced() async throws {
         let base = FileManager.default.temporaryDirectory.appending(path: "lb-backup-\(UUID().uuidString)", directoryHint: .isDirectory)
         defer { try? FileManager.default.removeItem(at: base) }
         let lib = base.appending(path: "Library", directoryHint: .isDirectory)
@@ -130,7 +130,7 @@ import Testing
         try FileManager.default.createDirectory(at: base.appending(path: "LocalBookLab/hub/x"), withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: base.appending(path: "Studio"), withIntermediateDirectories: true)
         let store = try LibraryStore(path: lib.appending(path: "library.sqlite"))
-        _ = store
+        try await store.prepare()
         try Data("weights".utf8).write(to: base.appending(path: "LocalBookLab/hub/x/model.safetensors"))
         try Data("podcast".utf8).write(to: base.appending(path: "Studio/a.m4a"))
         try Data("{\"a\":1}".utf8).write(to: base.appending(path: "Studio/a.json"))
