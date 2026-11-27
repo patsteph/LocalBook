@@ -9,6 +9,8 @@ public struct HTTPRequest: Sendable, Equatable {
     /// Header names lower-cased.
     public var headers: [String: String]
     public var body: Data
+    /// The query string's pairs (`?notebook_id=x&url=y`), percent-decoded; empty when there is none.
+    public var query: [String: String] = [:]
 
     public init(method: String, path: String, headers: [String: String], body: Data) {
         self.method = method; self.path = path; self.headers = headers; self.body = body
@@ -47,15 +49,38 @@ public enum HTTPWire {
         guard buffer.endIndex - bodyStart >= length else { return nil }
         let body = Data(buffer[bodyStart..<(bodyStart + length)])
         var path = String(parts[1])
-        if let q = path.firstIndex(of: "?") { path = String(path[..<q]) }
-        return (HTTPRequest(method: parts[0].uppercased(), path: path, headers: headers, body: body),
-                (bodyStart - buffer.startIndex) + length)
+        var query: [String: String] = [:]
+        if let q = path.firstIndex(of: "?") {
+            query = queryPairs(String(path[path.index(after: q)...]))
+            path = String(path[..<q])
+        }
+        var request = HTTPRequest(method: parts[0].uppercased(), path: path, headers: headers, body: body)
+        request.query = query
+        return (request, (bodyStart - buffer.startIndex) + length)
+    }
+
+    /// `a=1&b=hello%20there` as pairs, `+` and percent escapes decoded; a key without `=` maps to "".
+    public static func queryPairs(_ raw: String) -> [String: String] {
+        var out: [String: String] = [:]
+        for part in raw.split(separator: "&", omittingEmptySubsequences: true) {
+            let pieces = part.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+            func decode(_ s: Substring) -> String { s.replacingOccurrences(of: "+", with: " ").removingPercentEncoding ?? String(s) }
+            out[decode(pieces[0])] = pieces.count > 1 ? decode(pieces[1]) : ""
+        }
+        return out
     }
 
     /// A whole reply with a JSON body; the connection closes after it.
     public static func response(status: Int, json body: Data) -> Data {
+        response(status: status, body: body, contentType: "application/json")
+    }
+
+    /// A whole reply with any body and extra headers (an MCP session id, CORS for the browser extension).
+    public static func response(status: Int, body: Data, contentType: String, headers: [String: String] = [:]) -> Data {
         var head = "HTTP/1.1 \(status) \(reason(status))\r\n"
-        head += "Content-Type: application/json\r\nContent-Length: \(body.count)\r\nConnection: close\r\n\r\n"
+        head += "Content-Type: \(contentType)\r\nContent-Length: \(body.count)\r\nConnection: close\r\n"
+        for (k, v) in headers.sorted(by: { $0.key < $1.key }) { head += "\(k): \(v)\r\n" }
+        head += "\r\n"
         return Data(head.utf8) + body
     }
 
@@ -67,9 +92,13 @@ public enum HTTPWire {
     public static func reason(_ status: Int) -> String {
         switch status {
         case 200: "OK"
+        case 202: "Accepted"
+        case 204: "No Content"
         case 400: "Bad Request"
+        case 401: "Unauthorized"
         case 403: "Forbidden"
         case 404: "Not Found"
+        case 405: "Method Not Allowed"
         case 409: "Conflict"
         case 413: "Payload Too Large"
         case 429: "Too Many Requests"

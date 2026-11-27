@@ -31,6 +31,8 @@ final class AppModel {
     let intake = IntakeModel()
     /// This Mac as the host of the phone link: the iPhone pairs with it and syncs from it (Phase 4, first slice).
     let phoneHost: PhoneHostController
+    /// The loopback API for agents, OpenAI-style companions and the browser extension (Settings › Agents).
+    let localAPI: LocalAPIController
 
     enum Destination: Hashable {
         case notebook(String)
@@ -161,6 +163,7 @@ final class AppModel {
         let lib = LibraryModel()
         library = lib
         phoneHost = PhoneHostController(library: lib)
+        localAPI = LocalAPIController(library: lib)
         lib.askMode = .phone                     // this Mac searches and answers itself, as the phone does
     }
 
@@ -210,6 +213,7 @@ final class AppModel {
         await library.open()
         syncSelectionToScope()
         Task { await phoneHost.start() }         // the iPhone can find this Mac from the first second
+        Task { await localAPI.start() }          // and so can the agents and the browser extension on it
         if paired { Task { await runSync(); await loadSections() } }
         // A library moved over from the old app answers without a pairing; the models warm for it too.
         if paired || !library.notebooks.isEmpty { await startModels() }
@@ -256,6 +260,11 @@ final class AppModel {
         showPairing = false
         syncSelectionToScope()
         Task { await startModels() }
+    }
+
+    /// `@curator …` or the Curator slash command: one answer across every notebook, shown in the live area.
+    func askCurator(_ text: String) {
+        Task { await library.askCurator(text) }
     }
 
     func syncNow() {

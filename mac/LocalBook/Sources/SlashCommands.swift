@@ -49,8 +49,10 @@ enum SlashCommands {
         SlashCommand(name: "sync", title: "Sync Now", symbol: "arrow.triangle.2.circlepath", hint: "Press Return to sync", group: .action) { _, model in
             model.syncNow()
         },
-        // Agents go here, with `group: .agent`, and the menu grows an Agents section on its own:
-        // SlashCommand(name: "curator", title: "Curator", symbol: "sparkles", hint: "What to look into", group: .agent) { text, model in … }
+        // Agents, with `group: .agent`; the menu grows an Agents section on its own.
+        SlashCommand(name: "curator", title: "Curator", symbol: "sparkles", hint: "A question for every notebook at once", group: .agent) { text, model in
+            model.askCurator(text)
+        },
     ]
 
     /// The commands whose name starts with what was typed after the slash (everything, for an empty prefix).

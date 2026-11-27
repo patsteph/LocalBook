@@ -488,6 +488,26 @@ public final class LibraryModel {
         history = []; liveNotebookId = nil
     }
 
+    /// Shows an answer that came from outside the notebook's own Ask path (the Curator's cross-notebook answer): the
+    /// question goes up as a turn of the current notebook, the live area shows the text and its sources.
+    public func showExternalAnswer(text: String, sources: [LibraryHit], status: String) {
+        answerText = text; answerSources = sources; hits = sources; answerStatus = status; followUps = []
+        sourceScoreIsConfidence = false; sourceScoreIsRelevance = true
+    }
+
+    /// The live area while an outside answer is being made: the last turn moves up, the question shows at once.
+    public func beginExternalAnswer(question: String, status: String, notebook: String?) {
+        archiveLiveTurn()
+        shownQuestion = question
+        liveNotebookId = notebook ?? scopeToNotebook
+        answerText = ""; answerSources = []; hits = []; followUps = []
+        answerStatus = status
+        answering = true
+    }
+
+    public func endExternalAnswer() { answering = false }
+    public func setAnswerStatus(_ line: String) { answerStatus = line }
+
     /// Moves the question and answer on screen into the conversation and clears the live area.
     public func archiveLiveTurn() {
         if !shownQuestion.isEmpty, let nb = liveNotebookId {

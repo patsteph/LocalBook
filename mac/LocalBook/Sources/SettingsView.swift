@@ -13,7 +13,7 @@ struct SettingsView: View {
             Tab("Sync", systemImage: "arrow.triangle.2.circlepath") { SyncSettings() }
             Tab("Models", systemImage: "cpu") { LLMStudioView() }
             Tab("Library", systemImage: "books.vertical") { LibrarySettings() }
-            Tab("Agents", systemImage: "person.2") { SettingsPlaceholder(line: "Curator, Collector, Correspondent, People, schedules and keys for companions. Phases 4 and 5.") }
+            Tab("Agents", systemImage: "person.2") { AgentsSettings() }
             Tab("Security", systemImage: "lock") { SettingsPlaceholder(line: "Encrypted volume, recovery phrase, Touch ID, credential locker. Phase 4.") }
             Tab("Diagnostics", systemImage: "stethoscope") { DiagnosticsSettings() }
         }

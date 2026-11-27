@@ -7,6 +7,8 @@ import Security
 /// notebook's chunk page or a note's indexing does.
 public final class HTTPServer: @unchecked Sendable {
     public typealias Handler = @Sendable (_ request: HTTPRequest, _ remoteHost: String) async -> (status: Int, body: Data)
+    /// A handler that writes the whole reply itself (content type and extra headers): the local API's shape.
+    public typealias RawHandler = @Sendable (_ request: HTTPRequest, _ remoteHost: String) async -> Data
 
     public struct Advert: Sendable {
         public let name: String
@@ -26,9 +28,12 @@ public final class HTTPServer: @unchecked Sendable {
     }
 
     public let port: UInt16
-    private let identity: SecIdentity
+    /// nil: plain HTTP (the loopback-only local API, where TLS would only get in the way of `claude mcp add`).
+    private let identity: SecIdentity?
+    /// Loopback only: the listener binds 127.0.0.1 and refuses every other interface.
+    private let loopbackOnly: Bool
     private let advert: Advert?
-    private let handler: Handler
+    private let handler: RawHandler
     private let queue: DispatchQueue
     private var listener: NWListener?
     private var ready = false
@@ -36,20 +41,36 @@ public final class HTTPServer: @unchecked Sendable {
     private var connections: [ObjectIdentifier: NWConnection] = [:]
 
     public init(port: UInt16, identity: SecIdentity, advert: Advert? = nil, handler: @escaping Handler) {
-        self.port = port; self.identity = identity; self.advert = advert; self.handler = handler
+        self.port = port; self.identity = identity; self.advert = advert; self.loopbackOnly = false
+        self.handler = { req, host in
+            let (status, body) = await handler(req, host)
+            return HTTPWire.response(status: status, json: body)
+        }
         queue = DispatchQueue(label: "localbook.host.\(port)")
+    }
+
+    /// Plain HTTP on 127.0.0.1 only, for programs on this Mac (MCP, the OpenAI-style `/v1`, the browser extension).
+    public init(loopbackPort port: UInt16, handler: @escaping RawHandler) {
+        self.port = port; self.identity = nil; self.advert = nil; self.loopbackOnly = true; self.handler = handler
+        queue = DispatchQueue(label: "localbook.local.\(port)")
     }
 
     /// Opens the port; returns once it is listening, throws when it cannot (in use, no permission).
     public func start() async throws {
-        let tls = NWProtocolTLS.Options()
-        let sec = tls.securityProtocolOptions
-        guard let secIdentity = sec_identity_create(identity) else { throw ServerError.identity }
-        sec_protocol_options_set_local_identity(sec, secIdentity)
-        sec_protocol_options_set_min_tls_protocol_version(sec, .TLSv12)
-        let params = NWParameters(tls: tls, tcp: NWProtocolTCP.Options())
+        let params: NWParameters
+        if let identity {
+            let tls = NWProtocolTLS.Options()
+            let sec = tls.securityProtocolOptions
+            guard let secIdentity = sec_identity_create(identity) else { throw ServerError.identity }
+            sec_protocol_options_set_local_identity(sec, secIdentity)
+            sec_protocol_options_set_min_tls_protocol_version(sec, .TLSv12)
+            params = NWParameters(tls: tls, tcp: NWProtocolTCP.Options())
+        } else {
+            params = NWParameters(tls: nil, tcp: NWProtocolTCP.Options())
+        }
         params.allowLocalEndpointReuse = true
         guard let nwPort = NWEndpoint.Port(rawValue: port) else { throw ServerError.port(port, "not a port number") }
+        if loopbackOnly { params.requiredLocalEndpoint = NWEndpoint.hostPort(host: .ipv4(.loopback), port: nwPort) }
         let listener: NWListener
         do { listener = try NWListener(using: params, on: nwPort) } catch { throw ServerError.port(port, error.localizedDescription) }
         if let advert {
@@ -114,8 +135,8 @@ public final class HTTPServer: @unchecked Sendable {
                     let handler = self.handler
                     let box = ConnectionBox(conn)
                     Task.detached {
-                        let (status, body) = await handler(request, remote)
-                        self.reply(box.conn, status: status, body: body)
+                        let bytes = await handler(request, remote)
+                        self.send(box.conn, bytes)
                     }
                     return
                 }
@@ -130,9 +151,11 @@ public final class HTTPServer: @unchecked Sendable {
     }
 
     private func reply(_ conn: NWConnection, status: Int, body: Data) {
-        conn.send(content: HTTPWire.response(status: status, json: body), completion: .contentProcessed { _ in
-            conn.cancel()
-        })
+        send(conn, HTTPWire.response(status: status, json: body))
+    }
+
+    private func send(_ conn: NWConnection, _ bytes: Data) {
+        conn.send(content: bytes, completion: .contentProcessed { _ in conn.cancel() })
     }
 }
 

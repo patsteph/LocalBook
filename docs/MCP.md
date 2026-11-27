@@ -3,6 +3,10 @@
 LocalBook runs an [MCP](https://modelcontextprotocol.io) server inside the Mac app, so agents such
 as Claude Code, Claude Desktop, Cursor or your own scripts can search and read your notebooks.
 
+Both Mac apps serve it at the same address: the old app from its backend, the native Swift app from
+Settings → Agents (since 2026-11-27). Only one can hold port 8000 at a time, so quit the other first.
+A key issued by one works in the other once `companion_keys.json` is copied into its data folder.
+
 - **Where:** `http://127.0.0.1:8000/mcp` (Streamable HTTP). It answers only to programs on this Mac.
   Requests from web pages are refused.
 - **When:** only while LocalBook is open.
@@ -11,7 +15,7 @@ as Claude Code, Claude Desktop, Cursor or your own scripts can search and read y
 
 ## 1. Issue a key
 
-LocalBook → **Settings → Companions → Agent keys**.
+LocalBook → **Settings → Companions → Agent keys** (old app) or **Settings → Agents** (Swift app).
 
 1. Name the agent, for example `claude-code` or `claude-desktop`.
 2. Tick **mcp**. Tick **all_notebooks** only if the agent may search every notebook in one call.

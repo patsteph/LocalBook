@@ -79,6 +79,7 @@ struct AskView: View {
         .onChange(of: ready) { _, isReady in
             guard isReady, let q = queued else { return }
             queued = nil
+            if let ask = CrossNotebook.ask(in: q) { model.askCurator(ask); return }
             library.query = q
             Task { await library.ask() }
         }
@@ -256,7 +257,8 @@ struct AskView: View {
                             HStack(spacing: 6) {
                                 Text("\(i + 1)").font(.caption.weight(.semibold)).frame(minWidth: 18, minHeight: 18)
                                     .background(.tint.opacity(0.15), in: Circle())
-                                Text(h.filename).font(.caption).lineLimit(1)
+                                // A Curator answer cites several notebooks: each chip then names its notebook too.
+                                Text(Set(sources.map(\.notebookId)).count > 1 ? "\(h.notebookTitle) · \(h.filename)" : h.filename).font(.caption).lineLimit(1)
                             }
                             .padding(.horizontal, 8).padding(.vertical, 4)
                             .background(.quaternary, in: Capsule())
@@ -406,6 +408,8 @@ struct AskView: View {
         guard !q.isEmpty, !library.answering else { return }
         reader.stop()
         if !ready { queued = q; library.query = ""; return }
+        // `@curator …` is the one ask that crosses notebooks; it goes to the Curator, not the notebook's own path.
+        if let ask = CrossNotebook.ask(in: q) { library.query = ""; model.askCurator(ask); return }
         library.query = q
         Task { await library.ask() }
     }
