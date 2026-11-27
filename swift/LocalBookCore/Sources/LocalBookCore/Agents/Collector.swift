@@ -240,7 +240,7 @@ public enum CollectorScoring {
     /// Cosine 0.3…0.9 mapped onto 0…1, as the old app did.
     public static func relevance(cosine: Double?) -> (score: Double, reason: String) {
         guard let cosine else { return (0.5, "No intent set, so relevance is unknown") }
-        let s = max(0, min(1, (cosine - 0.3) / 0.6))
+        let s = (max(0, min(1, (cosine - 0.3) / 0.6)) * 1_000).rounded() / 1_000
         if s >= 0.7 { return (s, "Strongly matches what this notebook is for") }
         if s >= 0.4 { return (s, "Related to what this notebook is for") }
         return (s, "Only loosely related to this notebook")

@@ -63,7 +63,9 @@ public enum FeedParser {
         var t = s.replacingOccurrences(of: "<[^>]+>", with: " ", options: .regularExpression)
         for (e, c) in [("&amp;", "&"), ("&lt;", "<"), ("&gt;", ">"), ("&quot;", "\""), ("&#39;", "'"), ("&apos;", "'"), ("&nbsp;", " ")] { t = t.replacingOccurrences(of: e, with: c) }
         t = t.replacingOccurrences(of: "&#(\\d+);", with: "", options: .regularExpression)
-        return t.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        t = t.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        // A tag replaced by a space can leave "Denver ." behind.
+        return t.replacingOccurrences(of: " ([.,;:!?)])", with: "$1", options: .regularExpression)
     }
 
     /// RFC 822 (RSS) and RFC 3339 (Atom) dates.

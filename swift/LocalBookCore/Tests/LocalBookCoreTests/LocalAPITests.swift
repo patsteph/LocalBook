@@ -162,14 +162,14 @@ struct LocalAPITests {
         let content = try #require(result["content"] as? [[String: Any]])
         #expect((content.first?["text"] as? String)?.contains("beans") == true)
 
-        // A tool the key's scope does not cover is a result with an error, not an HTTP refusal; a Curator tool says not yet.
+        // A tool the key's scope does not cover is a result with an error, not an HTTP refusal; a Curator tool reaches the handler.
         r = parse(await api.handle(request("POST", "/mcp", headers: auth, json: ["jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": ["name": "memory_search", "arguments": ["query": "x"]]]), remoteHost: "127.0.0.1"))
         var res = try #require((r.body as? [String: Any])?["result"] as? [String: Any])
         #expect(res["isError"] as? Bool == true)
         #expect(((res["structuredContent"] as? [String: Any])?["error"] as? String)?.contains("'memory' scope") == true)
         r = parse(await api.handle(request("POST", "/mcp", headers: auth, json: ["jsonrpc": "2.0", "id": 5, "method": "tools/call", "params": ["name": "todays_digest", "arguments": [:]]]), remoteHost: "127.0.0.1"))
         res = try #require((r.body as? [String: Any])?["result"] as? [String: Any])
-        #expect(((res["structuredContent"] as? [String: Any])?["error"] as? String)?.contains("not in this version") == true)
+        #expect(((res["structuredContent"] as? [String: Any])?["error"] as? String) == "stub has no todays_digest")
 
         r = parse(await api.handle(request("POST", "/mcp", headers: auth, json: ["jsonrpc": "2.0", "id": 6, "method": "tools/call", "params": ["name": "no_such_tool"]]), remoteHost: "127.0.0.1"))
         #expect(((r.body as? [String: Any])?["error"] as? [String: Any])?["code"] as? Int == -32602)

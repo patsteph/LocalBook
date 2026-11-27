@@ -161,7 +161,7 @@ struct CollectorPane: View {
             Image(systemName: kind == "rss" ? "dot.radiowaves.left.and.right" : "doc.text.magnifyingglass").foregroundStyle(.secondary)
             VStack(alignment: .leading, spacing: 1) {
                 Text(address).lineLimit(1).font(.callout)
-                Text(healthLine(h)).font(.caption).foregroundStyle(h.health == .healthy ? .secondary : (h.health == .degraded ? .orange : .red))
+                Text(healthLine(h)).font(.caption).foregroundStyle(h.health == .healthy ? Color.secondary : (h.health == .degraded ? Color.orange : Color.red))
             }
             Spacer()
             Button { if let notebookId { collector.removeSource(address, notebook: notebookId) } } label: { Image(systemName: "minus.circle") }.buttonStyle(.borderless)

@@ -113,7 +113,8 @@ struct LocalBookCommands: Commands {
                 .keyboardShortcut(Shortcuts.toggleInspector.keys)
         }
 
-        // Window
+        // Window and Help, grouped: a Commands body holds ten entries at most.
+        Group {
         CommandGroup(after: .windowArrangement) {
             Button("Open in New Window") { NotificationCenter.default.post(name: .detachItem, object: nil) }
                 .keyboardShortcut(Shortcuts.openInNewWindow.keys)
@@ -130,6 +131,7 @@ struct LocalBookCommands: Commands {
                     NSWorkspace.shared.open(url)
                 }
             }
+        }
         }
     }
 }
