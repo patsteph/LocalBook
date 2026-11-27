@@ -2,7 +2,7 @@
 
 About 60 minutes at the Mac, plus two unattended runs. Everything below is in the Swift Mac app unless it says "old app".
 
-**Before:** `git pull origin dev && git log --oneline -1` (expect the latest dev commit, at or after `e6dab8f`), rebuild the
+**Before:** `git pull origin dev && git log --oneline -1` (expect the latest dev commit, at or after `bdd7b87`), rebuild the
 Mac app in Xcode. Test files: `testdata/flights/` (this folder) and `testdata/phase3/`. Old app quit unless a step says otherwise
 (both apps listen on port 8000). For section G, a second Terminal: `cd testdata/flights && python3 -m http.server 8765`, left running.
 
