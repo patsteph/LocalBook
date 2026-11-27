@@ -598,7 +598,7 @@ public final class LibraryModel {
         let boundary = AnswerBoundary.instructions(notebook: notebookTitle ?? hits.first?.notebookTitle ?? "this notebook")
         if let r = recipe {
             let length = AnswerLength.current
-            return (boundary + "\n\n" + r.systemPrompt(for: question, personal: personal, lengthWords: length.words),
+            return (VoiceModifier.apply(to: boundary + "\n\n" + r.systemPrompt(for: question, personal: personal, lengthWords: length.words), modelId: AnswerModels.chosenId),
                     r.userPrompt(question: question, passages: hits.map(\.text), suffix: withEntityContext ? r.contextSuffix(question: question, personal: personal) : ""),
                     r.parameters(maxTokens: length.maxTokens),
                     { text, cutOff in
@@ -607,7 +607,7 @@ public final class LibraryModel {
                     })
         }
         let sources = hits.enumerated().map { i, h in "[\(i + 1)] (\(h.filename))\n\(String(h.text.prefix(1_100)))" }.joined(separator: "\n\n")
-        return (boundary + "\n\n" + Self.localInstructions, "Passages:\n\n\(sources)\n\nQuestion: \(question)", GenerateParameters(maxTokens: 400), { text, _ in text })
+        return (VoiceModifier.apply(to: boundary + "\n\n" + Self.localInstructions, modelId: AnswerModels.chosenId), "Passages:\n\n\(sources)\n\nQuestion: \(question)", GenerateParameters(maxTokens: 400), { text, _ in text })
     }
 
     public static let localInstructions = "You answer questions using ONLY the numbered passages from the user's own notes. "

@@ -46,13 +46,13 @@ public final class StudioEngine {
 
     /// Returns the saved item, or nil (with `error` set) when it could not be made. A visual with no `layout` has its
     /// form chosen by the engine (`VisualPick`): the words of the ask first, the model only when they name no form.
-    public func make(_ kind: StudioItem.Kind, in notebook: LibraryNotebookInfo, topic: String, count: Int, notebookOnly: Bool, style: AudioStyle = .casual, videoStyle: VideoStyle = .clean, accent: AudioAccent = .british, layout: VisualSpec.Layout? = nil, detail: VisualSpec.Detail = .standard, theme: String? = nil, critic: Bool? = nil, library: LibraryModel) async -> StudioItem? {
+    public func make(_ kind: StudioItem.Kind, in notebook: LibraryNotebookInfo, topic: String, count: Int, notebookOnly: Bool, style: AudioStyle = .casual, videoStyle: VideoStyle = .clean, accent: AudioAccent = .british, voices: [String]? = nil, layout: VisualSpec.Layout? = nil, detail: VisualSpec.Detail = .standard, theme: String? = nil, critic: Bool? = nil, library: LibraryModel) async -> StudioItem? {
         guard !working else { return nil }
         working = true; error = nil; preview = ""; progress = 0; caption = ""; stopped = false
         try? await Task.sleep(for: .milliseconds(200))              // let the making screen appear before the heavy work starts
         let began = Date()
-        if kind == .audio { working = false; return await makeAudio(in: notebook, topic: topic, segments: count, notebookOnly: notebookOnly, style: style, accent: accent, library: library) }
-        if kind == .video { working = false; return await makeVideo(in: notebook, topic: topic, slides: count, notebookOnly: notebookOnly, style: videoStyle, accent: accent, library: library) }
+        if kind == .audio { working = false; return await makeAudio(in: notebook, topic: topic, segments: count, notebookOnly: notebookOnly, style: style, accent: accent, voices: voices, library: library) }
+        if kind == .video { working = false; return await makeVideo(in: notebook, topic: topic, slides: count, notebookOnly: notebookOnly, style: videoStyle, accent: accent, voices: voices, library: library) }
         defer { working = false; status = "" }
         guard let gemma = library.gemma else { error = "The answer model is still getting ready. Try again in a moment."; return nil }
         guard GPUGuard.canStart else { error = "Open the app and try again: this can't run while the screen is off."; return nil }
@@ -397,7 +397,9 @@ extension StudioEngine {
     /// A two-host spoken overview of one notebook, made entirely on the phone: the answer model writes the
     /// conversation a segment at a time from different parts of the notebook, then Kokoro voices it in two voices
     /// into one audio file.
-    public func makeAudio(in notebook: LibraryNotebookInfo, topic: String, segments: Int, notebookOnly: Bool, style: AudioStyle, accent: AudioAccent, library: LibraryModel) async -> StudioItem? {
+    public func makeAudio(in notebook: LibraryNotebookInfo, topic: String, segments: Int, notebookOnly: Bool, style: AudioStyle, accent: AudioAccent, voices chosen: [String]? = nil, library: LibraryModel) async -> StudioItem? {
+        // The hosts' voices: any two Kokoro voices picked in the sheet, or the accent's pair (Alex, then Sam).
+        let hostVoices = (chosen?.count ?? 0) >= 2 ? Array(chosen!.prefix(2)) : accent.voices
         guard !working else { return nil }
         working = true; error = nil; preview = ""; progress = 0; caption = ""; stopped = false
         defer { working = false; status = "" }
@@ -482,7 +484,7 @@ extension StudioEngine {
         for version in [KokoroAneVersion.legacy, .v3] {
             let k = KokoroAneManager(version: version)
             do {
-                do { try await k.initialize(preloadVoices: Set(accent.voices)) } catch { try await k.initialize() }
+                do { try await k.initialize(preloadVoices: Set(hostVoices)) } catch { try await k.initialize() }
                 _ = try await k.synthesizeDetailed(text: "Hello there.", voice: nil)
                 engine = k
                 SoakTrace.log("studio audio: voice engine \(version) ready")
@@ -496,7 +498,7 @@ extension StudioEngine {
         guard let kokoro = engine else { self.error = "Couldn't start the voices: \(lastFailure)"; return nil }
         // Check each host's voice with a short phrase; one that fails falls back to the default voice (nil).
         status = "Checking the voices…"
-        var voiceFor: [String?] = [accent.voices[0], accent.voices[1]]
+        var voiceFor: [String?] = [hostVoices[0], hostVoices[1]]
         for i in 0..<2 {
             do { _ = try await kokoro.synthesizeDetailed(text: "Hello there.", voice: voiceFor[i]) }
             catch {
@@ -614,7 +616,8 @@ public enum AudioAccent: String, CaseIterable, Identifiable, Sendable {
 extension StudioEngine {
     /// A narrated slide video made entirely on the phone: the answer model writes the slides and what is said over
     /// each, Kokoro speaks it, each slide is drawn as a frame, and the frames and narration are joined into an MP4.
-    public func makeVideo(in notebook: LibraryNotebookInfo, topic: String, slides count: Int, notebookOnly: Bool, style: VideoStyle, accent: AudioAccent, library: LibraryModel) async -> StudioItem? {
+    public func makeVideo(in notebook: LibraryNotebookInfo, topic: String, slides count: Int, notebookOnly: Bool, style: VideoStyle, accent: AudioAccent, voices chosen: [String]? = nil, library: LibraryModel) async -> StudioItem? {
+        let narrator = chosen?.first ?? accent.voices[0]
         guard !working else { return nil }
         working = true; error = nil; preview = ""; progress = 0; caption = ""; stopped = false
         defer { working = false; status = "" }
@@ -673,7 +676,7 @@ extension StudioEngine {
         for version in [KokoroAneVersion.legacy, .v3] {
             let k = KokoroAneManager(version: version)
             do {
-                do { try await k.initialize(preloadVoices: Set([accent.voices[0]])) } catch { try await k.initialize() }
+                do { try await k.initialize(preloadVoices: Set([narrator])) } catch { try await k.initialize() }
                 _ = try await k.synthesizeDetailed(text: "Hello there.", voice: nil)
                 voice = k
                 break
@@ -684,7 +687,7 @@ extension StudioEngine {
             }
         }
         guard let kokoro = voice else { self.error = "Couldn't start the voice: \(lastFailure)"; return nil }
-        var voiceName: String? = accent.voices[0]
+        var voiceName: String? = narrator
         do { _ = try await kokoro.synthesizeDetailed(text: "Hello there.", voice: voiceName) } catch { voiceName = nil }
 
         let id = UUID().uuidString

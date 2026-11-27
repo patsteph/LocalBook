@@ -218,6 +218,10 @@ private struct MakeSheet: View {
     @State private var style: AudioStyle = .casual
     @State private var videoStyle: VideoStyle = .clean
     @State private var accent: AudioAccent = .british
+    // Any of the Kokoro voices Read aloud offers, for the two podcast hosts and the video narrator; kept between sheets.
+    @AppStorage("studio.voiceA") private var voiceA = "bf_emma"
+    @AppStorage("studio.voiceB") private var voiceB = "bm_george"
+    @AppStorage("studio.narrator") private var narrator = "bf_emma"
     @State private var notebookOnly = true
     @State private var layout: VisualSpec.Layout? = nil           // nil: the engine chooses the form
     @State private var detail: VisualSpec.Detail = .standard
@@ -266,11 +270,12 @@ private struct MakeSheet: View {
                     }
                     if kind == .video {
                         Picker("Look", selection: $videoStyle) { ForEach(VideoStyle.allCases) { Text($0.label).tag($0) } }.pickerStyle(.segmented)
-                        Picker("Voice", selection: $accent) { ForEach(AudioAccent.allCases) { Text($0.label).tag($0) } }.pickerStyle(.segmented)
+                        StudioVoicePicker("Voice", selection: $narrator)
                     }
                     if kind == .audio {
                         Picker("Style", selection: $style) { ForEach(AudioStyle.allCases) { Text($0.label).tag($0) } }
-                        Picker("Voices", selection: $accent) { ForEach(AudioAccent.allCases) { Text($0.label).tag($0) } }.pickerStyle(.segmented)
+                        StudioVoicePicker(StudioEngine.hostNames[0], selection: $voiceA)
+                        StudioVoicePicker(StudioEngine.hostNames[1], selection: $voiceB)
                     }
                     Section {
                         Toggle("Only from this notebook", isOn: $notebookOnly)
@@ -295,7 +300,7 @@ private struct MakeSheet: View {
     }
 
     private func make() async {
-        if let made = await engine.make(kind, in: notebook, topic: topic, count: count, notebookOnly: notebookOnly, style: style, videoStyle: videoStyle, accent: accent, layout: layout, detail: detail, theme: kind == .visual ? theme : nil, library: library) {
+        if let made = await engine.make(kind, in: notebook, topic: topic, count: count, notebookOnly: notebookOnly, style: style, videoStyle: videoStyle, accent: accent, voices: kind == .audio ? [voiceA, voiceB] : (kind == .video ? [narrator] : nil), layout: layout, detail: detail, theme: kind == .visual ? theme : nil, library: library) {
             onMade(made); dismiss()
         }
     }
@@ -1054,5 +1059,24 @@ struct StudioWindow: View {
         }
         .frame(minWidth: 480, minHeight: 360)
         .navigationTitle(key.title)
+    }
+}
+
+/// One of the Kokoro voices, grouped by accent, with the same names Read aloud shows.
+struct StudioVoicePicker: View {
+    let label: String
+    @Binding var selection: String
+    init(_ label: String, selection: Binding<String>) { self.label = label; _selection = selection }
+
+    var body: some View {
+        Picker(label, selection: $selection) {
+            ForEach(ReadAloudVoice.Accent.allCases, id: \.self) { accent in
+                Section(accent == .american ? "American" : "British") {
+                    ForEach(ReadAloudVoice.all.filter { $0.accent == accent }) { v in
+                        Text("\(v.name) · \(v.feminine ? "woman" : "man")").tag(v.id)
+                    }
+                }
+            }
+        }
     }
 }

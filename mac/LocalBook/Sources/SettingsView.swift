@@ -14,7 +14,7 @@ struct SettingsView: View {
             Tab("Models", systemImage: "cpu") { LLMStudioView() }
             Tab("Library", systemImage: "books.vertical") { LibrarySettings() }
             Tab("Agents", systemImage: "person.2") { AgentsSettings() }
-            Tab("Security", systemImage: "lock") { SettingsPlaceholder(line: "Encrypted volume, recovery phrase, Touch ID, credential locker. Phase 4.") }
+            Tab("Security", systemImage: "lock") { SecuritySettings() }
             Tab("Diagnostics", systemImage: "stethoscope") { DiagnosticsSettings() }
         }
         .scenePadding()
@@ -24,6 +24,7 @@ struct SettingsView: View {
 
 struct GeneralSettings: View {
     @AppStorage("answerLength") private var answerLength = "standard"
+    @AppStorage(VoiceModifier.defaultsKey) private var voiceModifier = true
 
     var body: some View {
         Form {
@@ -33,6 +34,9 @@ struct GeneralSettings: View {
                 }
                 .pickerStyle(.segmented)
                 Text("Short ≈ 200 words, Standard ≈ 350, Detailed ≈ 500. The same setting the iPhone app has.")
+                    .font(.callout).foregroundStyle(.secondary)
+                Toggle("Keep the tone even across models", isOn: $voiceModifier)
+                Text("Puts a two-sentence note about tone in front of every answer's instructions, fitted to the model's family (Gemma tends to hedge, Phi to over-format). Tone only; the notebook rules stay the same.")
                     .font(.callout).foregroundStyle(.secondary)
             }
             ReadAloudSettings()

@@ -32,16 +32,16 @@ library import; the iPhone host (pairing, sync, notes, Studio both ways); keyboa
 | 64 Quality signals / audit | Agent calls were listed in Settings | `CompanionAudit` (Core): one row per call (tool, hashed args, ms, outcome) in `companion_calls.json`, shown and purgeable in Settings › Agents |
 | 78 Settings (Agents tab) | Placeholder | Settings › Agents: agent keys (issue once, scopes, revoke), ready-to-paste Claude Code / Claude Desktop / JSON setup, the call log, memory, proposals from agents (approve → note, dismiss) |
 
-### Flight 2: own your data (Phase 4 security rows that need no second Mac)
+### Flight 2: own your data (Phase 4 security rows that need no second Mac) — built 2026-11-27, untested on a Mac
 
 | Row | Gap | Swift approach |
 |---|---|---|
-| 73 Backup and restore | None | `BackupArchive` (Core): the old `.lbbackup` envelope (magic `LBBK1\n`, JSON header as AAD, AES-GCM, device and recovery recipients) over a tar of the Swift app's data folder with `MANIFEST.json` (sha256 per file). Restore verifies, stages and swaps at next launch. Settings › Security: Back Up Now, destination, keep count, verify, restore |
-| 72 Recovery phrase | None | BIP-39 (12 words, English list as a resource) → X25519 recovery key as the old `keyvault._recovery_private_key`; shown once; Settings › Security |
+| 73 Backup and restore | None | `BackupArchive` (Core): the old `.lbbackup` envelope (magic `LBBK1\n`, JSON header as AAD, AES-GCM, device and recovery recipients) over a ustar tar (`Tar.swift`, byte-compatible with Python's) of the Swift app's folder with `data/MANIFEST.json` (sha256 per file, SQLite copied with the backup API, models and media left out unless asked). `BackupRestore` verifies, stages under `Restore-pending/` and swaps at the next launch (`AppModel.start`), keeping what it replaced in `Restore-replaced-<when>/`. Settings › Security: folder (security-scoped bookmark), Back up now, keep count, daily, the folder's archives with Restore, Open a backup… (asks for the phrase when this Mac's key does not open it). An old-app archive opens and verifies but is refused for restore (its layout is the Python app's); the import brings that library over |
+| 72 Recovery phrase | None | BIP-39 (24 words, the English list as source in `BIP39Words.swift`) → PBKDF2 seed → X25519 recovery key exactly as the old `keyvault._recovery_private_key`, held to `Fixtures/backup_golden.json`; shown once; Settings › Security. The old app's phrase opens the new app's backups and the other way round |
 | 72 Encrypted volume, Touch ID, credential locker | None | Deferred: the Swift app's folder is in the sandbox container and FileVault covers the disk; the hdiutil volume waits until Phase 4 proper. Credential locker (site logins) ports with the People profiler (Phase 5) |
 | 20 Embedding selector, model catalog | Models tab has MLX repos only | Settings › Models: the embedding model is shown and fixed (EmbeddingGemma 2 is what the phone and the recipe need); the catalog beyond MLX waits |
-| 46 Podcast voice roster | Audio overview has two accents | Voice roster picker (Kokoro voices the Mac has) in the audio sheet |
-| 13 Voice modifier | None | A per-model "voice" instruction (Settings › Models) prepended to Ask prompts, off for structured calls, as `voice_modifier.py` did |
+| 46 Podcast voice roster | Audio overview has two accents | Done: the audio sheet picks Alex's and Sam's voices and the video sheet its narrator from the 20 Kokoro voices Read aloud offers (`StudioEngine.make(voices:)`) |
+| 13 Voice modifier | None | Done: `VoiceModifier` (Core) with `voice_modifier.py`'s family texts, applied in `generationSetup` to answers only; Settings › General › "Keep the tone even across models" |
 
 ### Flight 3: intelligence that is prompt + SQLite (Phase 5 rows with no new engine)
 

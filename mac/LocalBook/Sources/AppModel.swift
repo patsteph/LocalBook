@@ -33,6 +33,7 @@ final class AppModel {
     let phoneHost: PhoneHostController
     /// The loopback API for agents, OpenAI-style companions and the browser extension (Settings › Agents).
     let localAPI: LocalAPIController
+    let backup = BackupController()
 
     enum Destination: Hashable {
         case notebook(String)
@@ -210,6 +211,7 @@ final class AppModel {
     /// composer is live in under a second and the first question never waits for a model to load.
     func start() async {
         applyImageModel()
+        backup.applyPendingRestore()          // a staged restore goes in before anything opens the library
         await library.open()
         syncSelectionToScope()
         Task { await phoneHost.start() }         // the iPhone can find this Mac from the first second
