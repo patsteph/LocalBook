@@ -44,6 +44,7 @@ final class AppModel {
         case studio
         case meetings
         case notes
+        case insights
     }
 
     var selection: Destination? {
@@ -94,6 +95,9 @@ final class AppModel {
     var showInspector = false
     /// A Studio kind the menu asked for (Studio › Briefing…): the Studio pane opens its make sheet.
     var makeRequest: StudioItem.Kind?
+    /// An Insights menu choice: the Insights pane opens its sheet for this kind.
+    var insightRequest: Insight.Kind?
+    var writingRequest = false
     /// The subject typed after a `/briefing`-style command in the Ask field; the make sheet opens with it filled in.
     var makeSubject = ""
     /// The phrase typed after `/web` in the Ask field; the Find Sources sheet opens with it filled in.

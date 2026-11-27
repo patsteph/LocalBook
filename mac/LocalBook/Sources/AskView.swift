@@ -116,7 +116,7 @@ struct AskView: View {
                     if !library.answering, !library.answerStatus.isEmpty {
                         Text(library.answerStatus).font(.caption2).foregroundStyle(.secondary)
                     }
-                    if !library.answering { actions(for: library.answerText) }
+                    if !library.answering { actions(for: library.answerText, sources: library.answerSources) }
                     sourcesRow(library.answerSources)
                     if !library.followUps.isEmpty {
                         VStack(alignment: .leading, spacing: 6) {
@@ -216,16 +216,24 @@ struct AskView: View {
             if !turn.status.isEmpty { Text(turn.status).font(.footnote).foregroundStyle(.orange) }
         } else {
             answerBody(turn.answer, sources: turn.sources)
-            actions(for: turn.answer)
+            actions(for: turn.answer, sources: turn.sources)
             sourcesRow(turn.sources)
         }
         Divider().padding(.vertical, 4)
     }
 
     /// Under a finished answer: Copy, Share, Read aloud (⌥⌘R) with the phone's on-device voice.
-    @ViewBuilder private func actions(for text: String) -> some View {
+    @ViewBuilder private func actions(for text: String, sources: [LibraryHit]) -> some View {
         HStack(spacing: 16) {
             Button { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(text, forType: .string) } label: { Label("Copy", systemImage: "doc.on.doc") }
+            if let notebookId = sources.first?.notebookId ?? library.scopeToNotebook {
+                Button {
+                    let title = String(text.split(separator: "\n").first.map(String.init)?.prefix(80) ?? "Answer")
+                    FindingsStore.save(Finding(notebookId: notebookId, kind: .answer, title: title, text: text, refs: Array(Set(sources.map(\.sourceId))).sorted()))
+                    NotificationCenter.default.post(name: .findingsChanged, object: nil)
+                } label: { Label("Keep as finding", systemImage: "star") }
+                .help("Keeps this answer under Insights › Findings, to tag and star")
+            }
             ShareLink(item: text) { Label("Share", systemImage: "square.and.arrow.up") }
             Image(systemName: "line.3.horizontal").foregroundStyle(.secondary).draggable(text).help("Drag the answer out as text")
             Button { reader.toggle(text) } label: {

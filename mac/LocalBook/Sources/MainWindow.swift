@@ -30,6 +30,8 @@ struct MainWindow: View {
                     MeetingsPane()
                 case .notes:
                     NotesPane()
+                case .insights:
+                    InsightsPane()
                 }
             }
             .acceptsDrops(for: model.currentNotebookId)
@@ -94,7 +96,7 @@ struct MainWindow: View {
 
     /// Every menu item speaks through one notification stream, so the body stays a short modifier chain.
     @MainActor private static let menuActions = Publishers.MergeMany(
-        [Notification.Name.syncNow, .stopAnswer, .pairWithMac, .focusComposer, .showSources, .showStudio, .showMeetings,
+        [Notification.Name.syncNow, .stopAnswer, .pairWithMac, .focusComposer, .showSources, .showStudio, .showInsights, .makeInsight, .writingAssistant, .showMeetings,
          .startMeetingRecording, .newNote, .voiceNote, .toggleInspector, .makeStudio, .askQuestion, .newNotebook, .notebookRenumbered, .importLibrary,
          .addSources, .openFiles, .addWebPage, .watchFolder, .exportNotebook, .findSources, .showShortcuts]
             .map { NotificationCenter.default.publisher(for: $0) }
@@ -112,6 +114,9 @@ struct MainWindow: View {
         case .focusComposer: model.showAsk()
         case .showSources: if model.currentNotebookId != nil { model.selection = .sources }
         case .showStudio: model.selection = .studio
+        case .showInsights: model.selection = .insights
+        case .makeInsight: model.selection = .insights; model.insightRequest = Insight.Kind(rawValue: note.object as? String ?? "")
+        case .writingAssistant: model.selection = .insights; model.writingRequest = true
         case .showMeetings, .startMeetingRecording: model.selection = .meetings
         case .newNote:
             // The menu and the intents post it bare (or with text to start from); the Notes pane answers only the
@@ -324,6 +329,10 @@ extension Notification.Name {
     /// View › Show Sources (⌥⌘1), Show Studio (⌥⌘2), Show Inspector (⌥⌘I).
     static let showSources = Notification.Name("LocalBook.showSources")
     static let showStudio = Notification.Name("LocalBook.showStudio")
+    static let showInsights = Notification.Name("LocalBook.showInsights")
+    static let makeInsight = Notification.Name("LocalBook.makeInsight")
+    static let writingAssistant = Notification.Name("LocalBook.writingAssistant")
+    static let findingsChanged = Notification.Name("LocalBook.findingsChanged")
     static let toggleInspector = Notification.Name("LocalBook.toggleInspector")
     /// Studio › Briefing … Video Explainer; `object` is the `StudioItem.Kind` raw value.
     static let makeStudio = Notification.Name("LocalBook.makeStudio")

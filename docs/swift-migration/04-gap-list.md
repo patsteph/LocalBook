@@ -43,14 +43,14 @@ library import; the iPhone host (pairing, sync, notes, Studio both ways); keyboa
 | 46 Podcast voice roster | Audio overview has two accents | Done: the audio sheet picks Alex's and Sam's voices and the video sheet its narrator from the 20 Kokoro voices Read aloud offers (`StudioEngine.make(voices:)`) |
 | 13 Voice modifier | None | Done: `VoiceModifier` (Core) with `voice_modifier.py`'s family texts, applied in `generationSetup` to answers only; Settings › General › "Keep the tone even across models" |
 
-### Flight 3: intelligence that is prompt + SQLite (Phase 5 rows with no new engine)
+### Flight 3: intelligence that is prompt + SQLite (Phase 5 rows with no new engine) — built 2026-11-27, untested on a Mac
 
 | Row | Gap | Swift approach |
 |---|---|---|
-| 62 Timeline, key dates | None | `TimelineExtract` prompt port over a notebook's chunks, dated events table, a Timeline pane |
-| 62 Knowledge graph, entities, contradictions, comparison, synthesis, findings, writing assistant | None | Prompt ports with `MLXGuidedGeneration` JSON shapes, one golden fixture each from the old app, panes added to View as they land |
-| 61 Topic modeling | Tag cloud only | kNN + Leiden port after the graph lands |
-| 49 Canvas, 50 Constellation | None | Own SwiftUI canvas reading the old JSON document; SceneKit constellation after the graph |
+| 62 Timeline, key dates | None | Done: `InsightEngine.makeTimeline` reads the whole notebook in windows of 8 passages (sampled evenly past 192) with `structured_llm.extract_timeline`'s prompt, `DateKey` orders the dates a model writes (ISO, month-year, quarters, decades, FY), events merge by title and date. Insights pane › Timeline. Key dates from the web (collector) stay with flight 4 |
+| 62 Knowledge graph, entities, contradictions, comparison, synthesis, findings, writing assistant | None | Done in the Insights pane (sidebar › Insights, ⌥⌘4, the Insights menu): knowledge graph (`entity_extractor`'s prompt per window, nodes merged by name, edges by shared passage, relations named for the top 30 pairs, force-layout canvas); contradictions (`contradiction_detector`'s two prompts: claims per window, candidate pairs across sources by the search model's vectors above 0.72, up to 24 pairs checked, dismiss kept); comparison (`compare_documents`' prompt over two sources' text with an optional focus); perspectives (`topic_perspectives`: a take and claims per source, then consensus and contested); findings (`FindingsStore`: Keep as finding under an answer or an insight, tags and stars); writing assistant (`WritingAssistant`: the old tasks and formats, notebook passages as reference, Save as note, ⌥⌘W). Parsers tested in `InsightTests`; no old-app golden exists for these shapes, so the readers are tested on the shapes the old prompts specify |
+| 61 Topic modeling | Tag cloud only | Done without a new engine: `TextClusters` k-means (k-means++ seeded, fixed seed) over the notebook's chunk vectors, class-based TF-IDF keywords (BERTopic's first naming step), the model names each group. Insights › Topics. Leiden/BERTopic itself not ported |
+| 49 Canvas, 50 Constellation | None | Not started: the knowledge graph's canvas is the seed for both; the old Canvas document (clusters, tensions, gaps, idle research) and the SceneKit constellation wait for a flight of their own |
 
 ### Flight 4: the agents (Phase 5 rows that need schedules and the web)
 

@@ -60,6 +60,16 @@ struct LocalBookCommands: Commands {
             Button("Constellation") {}.disabled(true)                                             // Phase 5
         }
 
+        // Insights
+        CommandMenu("Insights") {
+            ForEach(Insight.Kind.allCases) { kind in
+                Button(kind.label) { NotificationCenter.default.post(name: .makeInsight, object: kind.rawValue) }
+            }
+            Divider()
+            Button("Writing Assistant…") { NotificationCenter.default.post(name: .writingAssistant, object: nil) }
+                .keyboardShortcut(Shortcuts.writingAssistant.keys)
+        }
+
         // Record
         CommandMenu("Record") {
             Button("Start Meeting Recording") { NotificationCenter.default.post(name: .startMeetingRecording, object: nil) }
@@ -77,6 +87,8 @@ struct LocalBookCommands: Commands {
                 .keyboardShortcut(Shortcuts.showStudio.keys)
             Button("Show Meetings") { NotificationCenter.default.post(name: .showMeetings, object: nil) }
                 .keyboardShortcut(Shortcuts.showMeetings.keys)
+            Button("Show Insights") { NotificationCenter.default.post(name: .showInsights, object: nil) }
+                .keyboardShortcut(Shortcuts.showInsights.keys)
             Divider()
             Button("Show Inspector") { NotificationCenter.default.post(name: .toggleInspector, object: nil) }
                 .keyboardShortcut(Shortcuts.toggleInspector.keys)

@@ -87,6 +87,8 @@ enum Shortcuts {
     static let showSources = KeyShortcut("Show Sources", "1", [.command, .option])
     static let showStudio = KeyShortcut("Show Studio", "2", [.command, .option])
     static let showMeetings = KeyShortcut("Show Meetings", "3", [.command, .option])
+    static let showInsights = KeyShortcut("Show Insights", "4", [.command, .option])
+    static let writingAssistant = KeyShortcut("Writing Assistant", "w", [.command, .option])
     static let toggleInspector = KeyShortcut("Show or Hide Inspector", "i", [.command, .option])
 
     // Window
@@ -108,7 +110,8 @@ enum Shortcuts {
                                       KeyShortcut("Previous or next flashcard", display: "← →")]),
         Group(name: "Record", items: [startRecording, voiceNote]),
         Group(name: "View", items: [KeyShortcut("Show or Hide Sidebar", "s", [.command, .control]),
-                                    showSources, showStudio, showMeetings, toggleInspector]),
+                                    showSources, showStudio, showMeetings, showInsights, toggleInspector]),
+        Group(name: "Insights", items: [writingAssistant]),
         Group(name: "Sources", items: [KeyShortcut("Quick Look the selected source", display: "Space"),
                                        KeyShortcut("Open the selected source in its own window", display: "⌘↓")]),
         Group(name: "Notes", items: [KeyShortcut("Edit the selected note", "e"),
