@@ -322,11 +322,11 @@ struct LocalAPITests {
         #expect(await m.count() == 2)
         let hits = try await m.search("what does Patrick prefer")
         #expect(hits.first?.memory.category == "preference")
-        let out = try await m.prefetch("coffee roast", k: 5, charBudget: 2_000)
+        let out = try await m.prefetch("coffee roast", k: 5, charBudget: 2_000).value
         let sections = out["sections"] as! [[String: Any]]
         #expect(sections.first?["kind"] as? String == "archival")
         #expect(out["chars"] as? Int ?? 0 > 0)
-        let tight = try await m.prefetch("coffee roast", k: 5, charBudget: 10)
+        let tight = try await m.prefetch("coffee roast", k: 5, charBudget: 10).value
         #expect((tight["sections"] as! [[String: Any]]).isEmpty)
         #expect(try await m.deleteAll(source: "claude-code") == 1)
         #expect(await m.count() == 1)

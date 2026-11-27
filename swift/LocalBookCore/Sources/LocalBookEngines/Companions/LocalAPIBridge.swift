@@ -265,7 +265,7 @@ public final class LocalAPIBridge: LocalAPIDelegate {
     private func memorySearch(_ args: JSONBox) async throws -> [String: Any] {
         guard let memory else { return ["error": "memory is not available"] }
         guard let query = args.string("query") else { return ["error": "a query is required"] }
-        return try await memory.prefetch(query, k: k(args, "k", 8), charBudget: Swift.max(100, Swift.min(args.int("char_budget") ?? 2_000, 20_000)))
+        return try await memory.prefetch(query, k: k(args, "k", 8), charBudget: Swift.max(100, Swift.min(args.int("char_budget") ?? 2_000, 20_000))).value
     }
 
     private func memoryAdd(_ args: JSONBox, _ caller: CompanionIdentity) async throws -> [String: Any] {

@@ -143,7 +143,8 @@ public actor MemoryStore {
     }
 
     /// What `memory_search` returns: sections of items within a character budget, each tagged with its source.
-    public func prefetch(_ query: String, k: Int = 8, charBudget: Int = 2_000) throws -> [String: Any] {
+    /// Boxed, since a dictionary of Any cannot leave the actor as it is.
+    public func prefetch(_ query: String, k: Int = 8, charBudget: Int = 2_000) throws -> JSONBox {
         let hits = try search(query, k: k)
         var chars = 0
         var core: [[String: Any]] = [], archival: [[String: Any]] = []
@@ -156,6 +157,6 @@ public actor MemoryStore {
         var sections: [[String: Any]] = []
         if !core.isEmpty { sections.append(["kind": "core", "items": core]) }
         if !archival.isEmpty { sections.append(["kind": "archival", "items": archival]) }
-        return ["sections": sections, "chars": chars]
+        return JSONBox(["sections": sections, "chars": chars])
     }
 }
