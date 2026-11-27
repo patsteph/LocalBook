@@ -31,6 +31,7 @@ public enum Constellation {
         public var stars: [Star]
         public var links: [Link]
         public var clusters: [Cluster]
+        public init(stars: [Star] = [], links: [Link] = [], clusters: [Cluster] = []) { self.stars = stars; self.links = links; self.clusters = clusters }
         public func star(_ id: String) -> Star? { stars.first { $0.id == id } }
         public func neighbours(of id: String) -> Set<String> { Set(links.filter { $0.a == id || $0.b == id }.map { $0.a == id ? $0.b : $0.a }) }
     }
