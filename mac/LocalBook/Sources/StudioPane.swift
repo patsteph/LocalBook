@@ -53,6 +53,11 @@ struct StudioPane: View {
         .onAppear { if notebookId == nil || notebook == nil { notebookId = library.scopeToNotebook ?? library.notebooks.first?.id } }
         .onChange(of: library.scopeToNotebook) { _, id in if let id { notebookId = id } }
         .onChange(of: notebookId) { _, _ in reload() }
+        .onChange(of: model.studioOpenRequest, initial: true) { _, id in
+            guard let id else { return }
+            model.studioOpenRequest = nil
+            reload(); if items.contains(where: { $0.id == id }) { selected = id }
+        }
         .onChange(of: model.makeRequest) { _, kind in
             guard let kind else { return }
             model.makeRequest = nil

@@ -32,6 +32,10 @@ struct MainWindow: View {
                     NotesPane()
                 case .insights:
                     InsightsPane()
+                case .canvas:
+                    CanvasPane()
+                case .constellation:
+                    ConstellationPane()
                 }
             }
             .acceptsDrops(for: model.currentNotebookId)
@@ -115,6 +119,8 @@ struct MainWindow: View {
         case .showSources: if model.currentNotebookId != nil { model.selection = .sources }
         case .showStudio: model.selection = .studio
         case .showInsights: model.selection = .insights
+        case .showCanvas: model.selection = .canvas
+        case .showConstellation: model.selection = .constellation
         case .makeInsight: model.selection = .insights; model.insightRequest = Insight.Kind(rawValue: note.object as? String ?? "")
         case .writingAssistant: model.selection = .insights; model.writingRequest = true
         case .showMeetings, .startMeetingRecording: model.selection = .meetings
@@ -330,6 +336,8 @@ extension Notification.Name {
     static let showSources = Notification.Name("LocalBook.showSources")
     static let showStudio = Notification.Name("LocalBook.showStudio")
     static let showInsights = Notification.Name("LocalBook.showInsights")
+    static let showCanvas = Notification.Name("LocalBook.showCanvas")
+    static let showConstellation = Notification.Name("LocalBook.showConstellation")
     static let makeInsight = Notification.Name("LocalBook.makeInsight")
     static let writingAssistant = Notification.Name("LocalBook.writingAssistant")
     static let findingsChanged = Notification.Name("LocalBook.findingsChanged")

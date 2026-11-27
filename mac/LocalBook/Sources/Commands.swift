@@ -89,6 +89,10 @@ struct LocalBookCommands: Commands {
                 .keyboardShortcut(Shortcuts.showMeetings.keys)
             Button("Show Insights") { NotificationCenter.default.post(name: .showInsights, object: nil) }
                 .keyboardShortcut(Shortcuts.showInsights.keys)
+            Button("Show Canvas") { NotificationCenter.default.post(name: .showCanvas, object: nil) }
+                .keyboardShortcut(Shortcuts.showCanvas.keys)
+            Button("Show Constellation") { NotificationCenter.default.post(name: .showConstellation, object: nil) }
+                .keyboardShortcut(Shortcuts.showConstellation.keys)
             Divider()
             Button("Show Inspector") { NotificationCenter.default.post(name: .toggleInspector, object: nil) }
                 .keyboardShortcut(Shortcuts.toggleInspector.keys)

@@ -514,6 +514,13 @@ public final class LibraryModel {
             history.append(AskTurn(notebookId: nb, notebookTitle: notebooks.first { $0.id == nb }?.title ?? "Notebook",
                                    question: shownQuestion, answer: answerText, sources: answerSources, status: answerStatus))
             if history.count > 500 { history.removeFirst(history.count - 500) }
+            // The journey behind the Canvas: every finished turn, with the sources it used.
+            if !answerText.isEmpty {
+                JourneyStore.append(JourneyTurn(notebookId: nb, question: shownQuestion, answer: answerText,
+                                                sourcesUsed: Array(Set(answerSources.map(\.sourceId))).sorted(),
+                                                filenames: Array(Set(answerSources.map(\.filename))).sorted(),
+                                                origin: answerSources.contains { $0.notebookId != nb } ? "curator" : "ask"))
+            }
         }
         answerText = ""; answerSources = []; answerStatus = ""; followUps = []; hits = []; shownQuestion = ""; liveNotebookId = nil
     }

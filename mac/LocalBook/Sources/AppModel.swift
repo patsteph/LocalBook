@@ -45,6 +45,9 @@ final class AppModel {
         case meetings
         case notes
         case insights
+        /// The Canvas (View › Show Canvas, ⌥⌘5) and the Constellation (⌥⌘6).
+        case canvas
+        case constellation
     }
 
     var selection: Destination? {
@@ -98,6 +101,9 @@ final class AppModel {
     /// An Insights menu choice: the Insights pane opens its sheet for this kind.
     var insightRequest: Insight.Kind?
     var writingRequest = false
+    /// A Studio item or an insight the Canvas asked to open, by id; the pane selects it when it appears.
+    var studioOpenRequest: String?
+    var insightOpenRequest: String?
     /// The subject typed after a `/briefing`-style command in the Ask field; the make sheet opens with it filled in.
     var makeSubject = ""
     /// The phrase typed after `/web` in the Ask field; the Find Sources sheet opens with it filled in.

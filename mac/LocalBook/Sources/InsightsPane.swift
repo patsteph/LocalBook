@@ -36,6 +36,11 @@ struct InsightsPane: View {
         .onAppear { if notebookId == nil || notebook == nil { notebookId = library.scopeToNotebook ?? library.notebooks.first?.id } }
         .onChange(of: library.scopeToNotebook) { _, id in if let id { notebookId = id } }
         .onChange(of: notebookId) { _, _ in reload() }
+        .onChange(of: model.insightOpenRequest, initial: true) { _, id in
+            guard let id else { return }
+            model.insightOpenRequest = nil
+            reload(); if items.contains(where: { $0.id == id }) { selected = .insight(id) }
+        }
         .onChange(of: model.insightRequest) { _, kind in
             guard let kind else { return }
             model.insightRequest = nil
