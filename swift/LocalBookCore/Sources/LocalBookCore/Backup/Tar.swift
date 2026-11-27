@@ -96,8 +96,7 @@ public enum Tar {
         put("0", at: 156, 1)
         put("ustar", at: 257, 6)
         put("00", at: 263, 2)
-        octal(0, at: 329, 8)
-        octal(0, at: 337, 8)
+        // devmajor and devminor stay NUL for a regular file, as Python leaves them.
         put(prefix, at: 345, 155)
         let sum = h.reduce(0) { $0 + Int($1) }
         let s = String(sum, radix: 8)

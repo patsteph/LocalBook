@@ -134,7 +134,7 @@ struct InsightsPane: View {
             }
             .padding(40)
         } else if selected == .findings {
-            FindingsView(findings: findings, reload: reload)
+            InsightFindingsView(findings: findings, reload: reload)
         } else if let item = opened {
             InsightDetail(item: item, library: library, onChange: reload)
         } else {
@@ -250,12 +250,12 @@ struct InsightDetail: View {
             ScrollView {
                 Group {
                     switch item.kind {
-                    case .timeline: if let t = item.decode(TimelineInsight.self) { TimelineView(timeline: t) }
-                    case .graph: if let g = item.decode(GraphInsight.self) { GraphView(graph: g) }
+                    case .timeline: if let t = item.decode(TimelineInsight.self) { InsightTimelineView(timeline: t) }
+                    case .graph: if let g = item.decode(GraphInsight.self) { InsightGraphView(graph: g) }
                     case .contradictions: if let c = item.decode(ContradictionsInsight.self) { ContradictionsView(item: item, report: c, onChange: onChange) }
-                    case .comparison: if let c = item.decode(ComparisonInsight.self) { ComparisonView(comparison: c) }
-                    case .perspectives: if let p = item.decode(PerspectivesInsight.self) { PerspectivesView(perspectives: p) }
-                    case .topics: if let t = item.decode(TopicsInsight.self) { TopicsView(topics: t) }
+                    case .comparison: if let c = item.decode(ComparisonInsight.self) { InsightComparisonView(comparison: c) }
+                    case .perspectives: if let p = item.decode(PerspectivesInsight.self) { InsightPerspectivesView(perspectives: p) }
+                    case .topics: if let t = item.decode(TopicsInsight.self) { InsightTopicsView(topics: t) }
                     }
                 }
                 .padding(18)
@@ -265,7 +265,7 @@ struct InsightDetail: View {
     }
 }
 
-struct TimelineView: View {
+struct InsightTimelineView: View {
     let timeline: TimelineInsight
 
     var body: some View {
@@ -295,7 +295,7 @@ struct TimelineView: View {
 }
 
 /// The graph drawn on a canvas: a few hundred rounds of a simple force layout at first appearance, then still.
-struct GraphView: View {
+struct InsightGraphView: View {
     let graph: GraphInsight
     @State private var positions: [String: CGPoint] = [:]
     @State private var picked: String?
@@ -450,7 +450,7 @@ struct ContradictionsView: View {
     }
 }
 
-struct ComparisonView: View {
+struct InsightComparisonView: View {
     let comparison: ComparisonInsight
 
     var body: some View {
@@ -476,7 +476,7 @@ struct ComparisonView: View {
     }
 }
 
-struct PerspectivesView: View {
+struct InsightPerspectivesView: View {
     let perspectives: PerspectivesInsight
 
     var body: some View {
@@ -509,7 +509,7 @@ struct PerspectivesView: View {
     }
 }
 
-struct TopicsView: View {
+struct InsightTopicsView: View {
     let topics: TopicsInsight
 
     var body: some View {
@@ -543,7 +543,7 @@ struct FlowChips: View {
 }
 
 /// The findings kept from this notebook: starred first, tags editable in place.
-struct FindingsView: View {
+struct InsightFindingsView: View {
     let findings: [Finding]
     let reload: () -> Void
     @State private var editingTags: Finding?
