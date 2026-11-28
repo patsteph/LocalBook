@@ -1,6 +1,6 @@
-# Flights 1–7 + visuals close-out: one sitting (2026-11-27)
+# Flights 1–8 + visuals close-out: one sitting (2026-11-27)
 
-About 80 minutes at the Mac, plus two unattended runs. Everything below is in the Swift Mac app unless it says "old app".
+About 85 minutes at the Mac, plus two unattended runs. Everything below is in the Swift Mac app unless it says "old app".
 
 **Before:** `git pull origin dev && git log --oneline -1` (expect the latest dev commit, at or after `bdd7b87`), rebuild the
 Mac app in Xcode. Test files: `testdata/flights/` (this folder) and `testdata/phase3/`. Old app quit unless a step says otherwise
@@ -167,7 +167,21 @@ and delete `testdata/flights/mail/outbox/` when done (it is git-ignored).
     person with your own LinkedIn address › **Read pages**. **Send back:** whether role, experience and posts came through, or the
     error line. **Sign out** afterwards if you like; the cookies live only in LocalBook's own store on this Mac.
 
+## J. Flight 8: the lock, encryption at rest, the menu bar (6 minutes)
+
+37. Settings › **Security** › **Lock**: turn on "Ask for Touch ID or my password to open LocalBook", "Lock again after" **1 minute**.
+    **Lock now**. **Pass:** the window is covered by a lock screen (nothing readable behind it), the Touch ID sheet appears; cancel it,
+    press **Unlock**, use Touch ID. Quit (⌘Q) and reopen LocalBook: locked from the first frame, Touch ID opens it. Switch to another
+    app for a minute and come back: locked again. Set "only at launch" afterwards if you prefer.
+38. **Encryption at rest**: **Pass:** a green "FileVault is on" line (or an orange line with a System Settings button if it is off; or a
+    grey "could not ask the system" line, which is the sandbox refusing `fdesetup`, so **send back** which one you got).
+39. **While the window is closed**: "Keep LocalBook in the menu bar" on (default). Close the window (⌘W). **Pass:** a book icon in the
+    menu bar; its menu shows the status line and **Check Mail Now** / **Collect Now** / **Read Profiles Now**; with the mail server from
+    "Before" still up, **Check Mail Now** makes the server's Terminal print a poll (the window is closed the whole time); **Open LocalBook**
+    brings the window back. Turn on **Open LocalBook when I log in**: System Settings › General › Login Items lists LocalBook (macOS may
+    ask you to allow it there first). Turn it off again if you do not want it.
+
 ## What to send back, in one message
 
 The step numbers that did not pass with what you saw (one line each), the C4 rate and three differences, the C6 Reveal line,
-the Collector run lines (25), the Correspondent run line (30), the Activity frequency word and the Changes lines (34, 35). Everything else is taken as passed.
+the Collector run lines (25), the Correspondent run line (30), the Activity frequency word and the Changes lines (34, 35), the FileVault line (38). Everything else is taken as passed.

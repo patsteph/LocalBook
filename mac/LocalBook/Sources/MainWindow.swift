@@ -47,6 +47,7 @@ struct MainWindow: View {
                 }
             }
             .acceptsDrops(for: model.currentNotebookId)
+            .overlay { if model.lock.locked { LockScreen() } }   // Touch ID lock: nothing behind it is readable
             // ⌘V with files on the clipboard (copied in the Finder) adds them to the notebook on screen; a text
             // field that has the focus still takes its own paste first.
             .onPasteCommand(of: [.fileURL, .url]) { providers in pasteFiles(providers) }

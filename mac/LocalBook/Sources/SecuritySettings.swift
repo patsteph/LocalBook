@@ -3,8 +3,8 @@ import UniformTypeIdentifiers
 import LocalBookCore
 import SwiftUI
 
-/// Settings › Security: backups, the recovery phrase, and restoring. Touch ID, the credential locker and the
-/// encrypted volume are later rows of the gap list.
+/// Settings › Security: backups, the recovery phrase, restoring, the Touch ID lock, encryption at rest and the
+/// menu bar item that keeps the agents working while the window is closed (`Protection.swift`).
 struct SecuritySettings: View {
     @Environment(AppModel.self) private var model
     @State private var phraseEntry = ""
@@ -114,10 +114,7 @@ struct SecuritySettings: View {
                     .font(.callout).foregroundStyle(.secondary)
             }
 
-            Section {
-                Text("Touch ID lock, the credential locker and the encrypted volume are still to come (gap list, flight 2 and later).")
-                    .font(.callout).foregroundStyle(.secondary)
-            }
+            ProtectionSettings()
         }
         .formStyle(.grouped)
         .sheet(isPresented: Binding(get: { backup.freshPhrase != nil }, set: { if !$0 { backup.discardFreshPhrase() } })) {

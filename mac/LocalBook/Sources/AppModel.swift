@@ -34,6 +34,8 @@ final class AppModel {
     /// The loopback API for agents, OpenAI-style companions and the browser extension (Settings › Agents).
     let localAPI: LocalAPIController
     let backup = BackupController()
+    /// Touch ID lock (Settings › Security).
+    let lock = AppLock()
 
     enum Destination: Hashable {
         case notebook(String)
@@ -234,6 +236,7 @@ final class AppModel {
     /// Launch: open the library (no models), and when paired, sync and warm the models in the background so the
     /// composer is live in under a second and the first question never waits for a model to load.
     func start() async {
+        lock.start()                          // locked from the first frame when the setting is on
         applyImageModel()
         backup.applyPendingRestore()          // a staged restore goes in before anything opens the library
         await library.open()

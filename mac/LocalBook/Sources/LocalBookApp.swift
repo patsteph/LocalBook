@@ -7,11 +7,12 @@ import LocalBookCore
 @main
 struct LocalBookApp: App {
     @State private var model = AppModel()
+    @AppStorage(BackgroundMenu.keepRunningKey) private var keepRunning = true
 
     init() { SoakTrace.startSession("LocalBook for Mac") }
 
     var body: some Scene {
-        WindowGroup("LocalBook") {
+        WindowGroup("LocalBook", id: "main") {
             MainWindow()
                 .environment(model)
                 .frame(minWidth: 820, minHeight: 540)
@@ -34,6 +35,11 @@ struct LocalBookApp: App {
         Settings {
             SettingsView()
                 .environment(model)
+        }
+
+        // The menu bar item that keeps the agents company while the window is closed (Settings › Security).
+        MenuBarExtra("LocalBook", systemImage: "book.closed", isInserted: $keepRunning) {
+            BackgroundMenu().environment(model)
         }
     }
 }
