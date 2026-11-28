@@ -185,12 +185,20 @@ struct CorrespondentPane: View {
         }
     }
 
+    private static func detailLine(_ a: MailAccount) -> String {
+        var parts = [a.path.label]
+        if a.path == .imap { parts.append(a.imapHost) }
+        if !a.canSend { parts.append("cannot send") }
+        if !a.enabled { parts.append("paused") }
+        return parts.joined(separator: " · ")
+    }
+
     private func accountRow(_ a: MailAccount) -> some View {
         HStack(alignment: .top, spacing: 12) {
             Image(systemName: a.path == .mailApp ? "macwindow" : "server.rack").foregroundStyle(a.enabled ? .indigo : .secondary).frame(width: 20)
             VStack(alignment: .leading, spacing: 2) {
                 Text(a.email.isEmpty ? a.mailboxURL : a.email).font(.headline)
-                Text(a.path.label + (a.path == .imap ? " · \(a.imapHost)" : "") + (a.canSend ? "" : " · cannot send") + (a.enabled ? "" : " · paused")).font(.caption).foregroundStyle(.secondary)
+                Text(Self.detailLine(a)).font(.caption).foregroundStyle(.secondary)
                 if let p = a.lastPolledAt { Text("Last checked \(p.formatted(date: .abbreviated, time: .shortened))" + (a.lastError.map { " · \($0)" } ?? "")).font(.caption).foregroundStyle(a.lastError == nil ? .secondary : .red).lineLimit(2) }
                 else { Text("Not checked yet").font(.caption).foregroundStyle(.secondary) }
             }

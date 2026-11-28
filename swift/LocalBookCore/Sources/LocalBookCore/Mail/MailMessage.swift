@@ -93,7 +93,8 @@ public enum MailParser {
             if out[name] == nil { out[name] = value.trimmingCharacters(in: .whitespaces) }
             name = ""; value = ""
         }
-        for raw in block.split(omittingEmptySubsequences: false, whereSeparator: { $0 == "\n" }) {
+        // "\r\n" is ONE Character in Swift, so the block is normalised to "\n" before it is split.
+        for raw in block.replacingOccurrences(of: "\r\n", with: "\n").split(omittingEmptySubsequences: false, whereSeparator: { $0 == "\n" }) {
             let line = raw.hasSuffix("\r") ? String(raw.dropLast()) : String(raw)
             if let first = line.first, first == " " || first == "\t" {
                 value += " " + line.trimmingCharacters(in: .whitespaces)
