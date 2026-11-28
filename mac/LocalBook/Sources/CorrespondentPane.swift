@@ -68,7 +68,7 @@ struct CorrespondentPane: View {
             model.correspondentRequest = nil
             if r == .checkMail { Task { await engine.pollAll(library: library) } }
         }
-        .sheet(isPresented: $adding) { AccountSheet(account: MailAccount(email: "", path: .mailApp), isNew: true) }
+        .sheet(isPresented: $adding) { AccountSheet(account: MailAccount(email: "", path: engine.state.mailPath), isNew: true) }
         .sheet(item: $editing) { a in AccountSheet(account: a, isNew: false) }
     }
 
@@ -156,13 +156,22 @@ struct CorrespondentPane: View {
     private var accounts: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
+                Text("Your mail setup").font(.headline)
+                Picker("", selection: Binding(get: { engine.state.mailPath }, set: { v in var s = engine.state; s.mailPath = v; engine.replaceState(s) })) {
+                    ForEach(MailAccount.Path.allCases, id: \.self) { p in Text(p.label).tag(p) }
+                }
+                .pickerStyle(.segmented).labelsHidden().frame(maxWidth: 360)
+                Text(engine.state.mailPath == .mailApp
+                     ? "Inboxes you add are read from Mail's own store on this Mac (your Mail folder, Full Disk Access once), and Mail does the moving, marking and sending."
+                     : "Inboxes you add are IMAP accounts LocalBook signs into itself with an app password; confirmations and the journal go out over SMTP.")
+                    .font(.caption).foregroundStyle(.secondary)
                 HStack {
                     Text("Connected inboxes").font(.headline)
                     Spacer()
                     Button { adding = true } label: { Label("Add an inbox", systemImage: "plus") }
                 }
                 if engine.state.accounts.isEmpty {
-                    Text("No inboxes connected yet. Mail on this Mac needs your Mail folder and Full Disk Access; an IMAP account needs an app password.").foregroundStyle(.secondary)
+                    Text("No inboxes connected yet.").foregroundStyle(.secondary)
                 }
                 ForEach(engine.state.accounts) { a in accountRow(a) }
                 Divider().padding(.vertical, 4)
@@ -264,8 +273,7 @@ struct AccountSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text(isNew ? "Add an inbox" : "Edit inbox").font(.title3.weight(.semibold))
-            Picker("Where it lives", selection: $account.path) { ForEach(MailAccount.Path.allCases, id: \.self) { p in Text(p.label).tag(p) } }.pickerStyle(.segmented)
+            Text((isNew ? "Add an inbox" : "Edit inbox") + " · " + account.path.label).font(.title3.weight(.semibold))
             Form {
                 if account.path == .mailApp { mailAppFields } else { imapFields }
                 Section("Behaviour") {

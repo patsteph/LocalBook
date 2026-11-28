@@ -166,7 +166,7 @@ public final class CorrespondentEngine {
     private struct Routing {
         var notebooks: [MailRouter.Notebook]
         var names: [(id: String, name: String)]
-        init(library: LibraryModel) async {
+        @MainActor init(library: LibraryModel) async {
             var out: [MailRouter.Notebook] = []
             for nb in library.notebooks where !nb.digest.trimmingCharacters(in: .whitespaces).isEmpty {
                 if let v = try? await library.documentVector(nb.digest) { out.append(.init(id: nb.id, name: nb.title, vector: v)) }

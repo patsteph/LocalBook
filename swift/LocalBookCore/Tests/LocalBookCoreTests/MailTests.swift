@@ -223,3 +223,17 @@ import Testing
         #expect(alt.contains("multipart/alternative") && alt.contains("text/html"))
     }
 }
+
+@Suite struct CorrespondentProfileTests {
+    @Test func mailPathIsAProfileSettingWithAnOldFileDefault() throws {
+        var s = CorrespondentState()
+        #expect(s.mailPath == .mailApp)
+        s.mailPath = .imap
+        let data = try JSONEncoder().encode(s)
+        let back = try JSONDecoder().decode(CorrespondentState.self, from: data)
+        #expect(back.mailPath == .imap)
+        // A state file written before the setting existed reads with the default.
+        let old = try JSONDecoder().decode(CorrespondentState.self, from: Data("{\"accounts\":[],\"pollHours\":4}".utf8))
+        #expect(old.mailPath == .mailApp && old.pollHours == 4 && old.personalFolder == "LocalBook/Personal")
+    }
+}

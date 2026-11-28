@@ -329,8 +329,25 @@ public struct CorrespondentState: Codable, Sendable, Hashable {
     public var runs: [MailRun]
     public var personalFolder: String
     public var pollHours: Int
+    /// The user's mail setup, a profile setting (Patrick, 2026-11-27): Mail on this Mac, or IMAP accounts. Every inbox
+    /// added follows it; both paths stay built in, and changing it leaves existing inboxes as they are.
+    public var mailPath: MailAccount.Path
 
-    public init() { accounts = []; queue = []; senderRouting = [:]; seenMessageIds = []; seenHashes = []; runs = []; personalFolder = "LocalBook/Personal"; pollHours = 8 }
+    public init() { accounts = []; queue = []; senderRouting = [:]; seenMessageIds = []; seenHashes = []; runs = []; personalFolder = "LocalBook/Personal"; pollHours = 8; mailPath = .mailApp }
+
+    enum CodingKeys: String, CodingKey { case accounts, queue, senderRouting, seenMessageIds, seenHashes, runs, personalFolder, pollHours, mailPath }
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        accounts = try c.decodeIfPresent([MailAccount].self, forKey: .accounts) ?? []
+        queue = try c.decodeIfPresent([MailQueueItem].self, forKey: .queue) ?? []
+        senderRouting = try c.decodeIfPresent([String: [String: Int]].self, forKey: .senderRouting) ?? [:]
+        seenMessageIds = try c.decodeIfPresent([String].self, forKey: .seenMessageIds) ?? []
+        seenHashes = try c.decodeIfPresent([String].self, forKey: .seenHashes) ?? []
+        runs = try c.decodeIfPresent([MailRun].self, forKey: .runs) ?? []
+        personalFolder = try c.decodeIfPresent(String.self, forKey: .personalFolder) ?? "LocalBook/Personal"
+        pollHours = try c.decodeIfPresent(Int.self, forKey: .pollHours) ?? 8
+        mailPath = try c.decodeIfPresent(MailAccount.Path.self, forKey: .mailPath) ?? .mailApp
+    }
 
     public static let seenCap = 2_000
 

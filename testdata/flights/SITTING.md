@@ -118,7 +118,8 @@ For section H, a third Terminal: `python3 scripts/flights_mailserver.py testdata
 
 ## H. Flight 6: the Correspondent (10 minutes; the mail server from "Before" is running; Harbor Lights and Harbor Insights exist)
 
-29. Sidebar › **Correspondent** (⌥⌘9) › **Inboxes** › **Add an inbox** › **IMAP account**: email `you@example.com`, IMAP host `127.0.0.1`,
+29. Sidebar › **Correspondent** (⌥⌘9) › **Inboxes** › **Your mail setup**: **IMAP account** (the profile setting; Mail on this Mac is the
+    other) › **Add an inbox**: email `you@example.com`, IMAP host `127.0.0.1`,
     port `1143`, **TLS off**, any app password; SMTP host `127.0.0.1`, port `1025`, **TLS off**. Both toggles on, "Forwards with no match go to"
     the waiting list. **Test**. **Pass:** "Signed in; 5 unread messages waiting". **Add**. (The server accepts any user and password;
     the real thing wants TLS on and port 993 / 465, and refuses a plain connection to anything but this Mac.)
@@ -136,7 +137,7 @@ For section H, a third Terminal: `python3 scripts/flights_mailserver.py testdata
 32. **Journal**: the preview "This week's letter" names today's sources (the forward, the Collector's) and the questions asked; **Send now**.
     **Pass:** a second `.eml` in `mail/outbox/` with the letter as text and HTML. (The timer sends it on its own once a week, mornings only,
     when something happened; empty weeks send nothing.)
-33. **Mail on this Mac** (optional, 3 minutes, only if Mail.app has an account on this Mac): **Add an inbox** › **Mail on this Mac** ›
+33. **Mail on this Mac** (optional, 3 minutes, only if Mail.app has an account on this Mac): **Your mail setup** › **Mail on this Mac** › **Add an inbox** ›
     **Choose Mail folder…** › `~/Library/Mail` › if the orange line asks for it, **Open Full Disk Access settings**, tick LocalBook, come back
     › pick an inbox › **Test**: "Mail's index opens; the inbox is at message N" › **Add**, then **Check now** on that row. The first run looks
     only at mail that arrives after you added it (nothing old is read), so forward yourself one message with `#harbor-lights` in the subject
