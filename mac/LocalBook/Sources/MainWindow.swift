@@ -42,6 +42,8 @@ struct MainWindow: View {
                     CollectorPane()
                 case .correspondent:
                     CorrespondentPane()
+                case .people:
+                    PeoplePane()
                 }
             }
             .acceptsDrops(for: model.currentNotebookId)
@@ -109,7 +111,7 @@ struct MainWindow: View {
         [Notification.Name.syncNow, .stopAnswer, .pairWithMac, .focusComposer, .showSources, .showStudio, .showInsights, .makeInsight, .writingAssistant, .showMeetings,
          .startMeetingRecording, .newNote, .voiceNote, .toggleInspector, .makeStudio, .askQuestion, .newNotebook, .notebookRenumbered, .importLibrary,
          .addSources, .openFiles, .addWebPage, .watchFolder, .exportNotebook, .findSources, .showShortcuts,
-         .showCanvas, .showConstellation, .showCurator, .showCollector, .curatorAction, .collectorAction, .showCorrespondent, .correspondentAction]
+         .showCanvas, .showConstellation, .showCurator, .showCollector, .curatorAction, .collectorAction, .showCorrespondent, .correspondentAction, .showPeople, .peopleAction]
             .map { NotificationCenter.default.publisher(for: $0) }
     )
 
@@ -131,6 +133,8 @@ struct MainWindow: View {
         case .showCurator: model.selection = .curator
         case .showCollector: model.selection = .collector
         case .showCorrespondent: model.selection = .correspondent
+        case .showPeople: model.selection = .people
+        case .peopleAction: model.selection = .people; model.peopleRequest = (note.object as? String) == "collect" ? .collect : .show
         case .correspondentAction: model.selection = .correspondent; model.correspondentRequest = (note.object as? String) == "check" ? .checkMail : .show
         case .curatorAction: model.selection = .curator; model.curatorRequest = CuratorPiece.Kind(rawValue: note.object as? String ?? "")
         case .collectorAction:
@@ -361,6 +365,9 @@ extension Notification.Name {
     static let showCorrespondent = Notification.Name("LocalBook.showCorrespondent")
     /// `object` is "check" to read the inboxes now.
     static let correspondentAction = Notification.Name("LocalBook.correspondentAction")
+    static let showPeople = Notification.Name("LocalBook.showPeople")
+    /// `object` is "collect" to read every profile in the notebook on screen now.
+    static let peopleAction = Notification.Name("LocalBook.peopleAction")
     static let makeInsight = Notification.Name("LocalBook.makeInsight")
     static let writingAssistant = Notification.Name("LocalBook.writingAssistant")
     static let findingsChanged = Notification.Name("LocalBook.findingsChanged")

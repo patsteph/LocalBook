@@ -108,7 +108,7 @@ public enum WebExtract {
         return .file(dest, name: name)
     }
 
-    static let userAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15"
+    public static let userAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15"
 }
 
 #if canImport(WebKit)
@@ -135,9 +135,10 @@ public final class PageLoader: NSObject, WKNavigationDelegate {
 
     public override init() { super.init() }
 
-    public func load(_ url: URL, timeout: Duration = .seconds(30), settle: Duration = .seconds(1.5)) async throws -> WebPage {
+    /// `dataStore`: a persistent store whose cookies carry a sign-in (the People profiler's), else nothing is kept past the load.
+    public func load(_ url: URL, timeout: Duration = .seconds(30), settle: Duration = .seconds(1.5), dataStore: WKWebsiteDataStore? = nil) async throws -> WebPage {
         let config = WKWebViewConfiguration()
-        config.websiteDataStore = .nonPersistent()
+        config.websiteDataStore = dataStore ?? .nonPersistent()
         config.defaultWebpagePreferences.allowsContentJavaScript = true
         let view = WKWebView(frame: CGRect(x: 0, y: 0, width: 1280, height: 900), configuration: config)
         view.customUserAgent = WebExtract.userAgent

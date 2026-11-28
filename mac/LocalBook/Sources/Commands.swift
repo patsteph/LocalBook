@@ -82,6 +82,9 @@ struct LocalBookCommands: Commands {
             Divider()
             Button("Check Mail Now") { NotificationCenter.default.post(name: .correspondentAction, object: "check") }
                 .keyboardShortcut(Shortcuts.checkMail.keys)
+            Divider()
+            Button("Read Profiles Now") { NotificationCenter.default.post(name: .peopleAction, object: "collect") }
+                .keyboardShortcut(Shortcuts.readProfiles.keys)
         }
 
         // Record
@@ -114,6 +117,8 @@ struct LocalBookCommands: Commands {
                 .keyboardShortcut(Shortcuts.showCollector.keys)
             Button("Show Correspondent") { NotificationCenter.default.post(name: .showCorrespondent, object: nil) }
                 .keyboardShortcut(Shortcuts.showCorrespondent.keys)
+            Button("Show People") { NotificationCenter.default.post(name: .showPeople, object: nil) }
+                .keyboardShortcut(Shortcuts.showPeople.keys)
             Divider()
             Button("Show Inspector") { NotificationCenter.default.post(name: .toggleInspector, object: nil) }
                 .keyboardShortcut(Shortcuts.toggleInspector.keys)

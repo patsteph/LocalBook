@@ -1,4 +1,4 @@
-# Flight test files (flights 1 to 6, 2026-11-27)
+# Flight test files (flights 1 to 7, 2026-11-27)
 
 Made-up data in the Harbor Lights Coffee universe of `testdata/phase3`; nothing here is real.
 
@@ -63,3 +63,12 @@ Any user name and password sign in. In the Correspondent: Add an inbox › IMAP 
 
 A second Check mail now finds nothing new (Message-ID and content hash are both remembered). The server logs every
 move, flag and sent message; Ctrl-C stops it, and a restart puts all five back unread.
+
+## `pages/rosa-alvarez.html` — a personal site for the People profiler
+
+Served by the same `python3 -m http.server 8765`. Add Rosa Alvarez to a people notebook with Personal site
+`http://127.0.0.1:8765/pages/rosa-alvarez.html` and **Read pages**: the page gives a role (Founder and CEO of Harbor
+Lights Coffee), Portland, three experience entries, a skills line and four dated posts (Sept–Nov 2026), so the
+Overview, Activity (posting every couple of weeks or so) and the coaching insights all have something. Edit the
+role or the city in the file and read again to see the Changes tab fill. No sign-in needed; LinkedIn, X and
+Instagram need one (Setup › Sign in…) and a real account, so they are optional in the sitting.

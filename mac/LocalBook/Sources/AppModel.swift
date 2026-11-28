@@ -51,8 +51,9 @@ final class AppModel {
         /// The Curator (⌥⌘7) and the Collector (⌥⌘8).
         case curator
         case collector
-        /// The Correspondent (⌥⌘9).
+        /// The Correspondent (⌥⌘9) and the People profiler (⌥⌘0).
         case correspondent
+        case people
     }
 
     var selection: Destination? {
@@ -114,6 +115,8 @@ final class AppModel {
     var collectorRequest: CollectorRequest?
     enum CorrespondentRequest: Equatable { case checkMail, show }
     var correspondentRequest: CorrespondentRequest?
+    enum PeopleRequest: Equatable { case collect, add(String), show }
+    var peopleRequest: PeopleRequest?
     var insightOpenRequest: String?
     /// The subject typed after a `/briefing`-style command in the Ask field; the make sheet opens with it filled in.
     var makeSubject = ""
@@ -240,6 +243,7 @@ final class AppModel {
         Agents.collector.startSchedule(library: library)   // due Collectors run while the app is open
         Agents.correspondent.mailFolder = MailFolderAccess.restore()
         Agents.correspondent.startSchedule(library: library)
+        Agents.people.startSchedule(library: library)   // due People profilers read while the app is open
         if paired { Task { await runSync(); await loadSections() } }
         // A library moved over from the old app answers without a pairing; the models warm for it too.
         if paired || !library.notebooks.isEmpty { await startModels() }

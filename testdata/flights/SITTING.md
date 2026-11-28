@@ -1,6 +1,6 @@
-# Flights 1–6 + visuals close-out: one sitting (2026-11-27)
+# Flights 1–7 + visuals close-out: one sitting (2026-11-27)
 
-About 70 minutes at the Mac, plus two unattended runs. Everything below is in the Swift Mac app unless it says "old app".
+About 80 minutes at the Mac, plus two unattended runs. Everything below is in the Swift Mac app unless it says "old app".
 
 **Before:** `git pull origin dev && git log --oneline -1` (expect the latest dev commit, at or after `bdd7b87`), rebuild the
 Mac app in Xcode. Test files: `testdata/flights/` (this folder) and `testdata/phase3/`. Old app quit unless a step says otherwise
@@ -147,7 +147,27 @@ For section H, a third Terminal: `python3 scripts/flights_mailserver.py testdata
 **Send back:** the History run line from 30, which of 01 / 05 landed where, and any of 29–33 that did not happen. Ctrl-C the mail server
 and delete `testdata/flights/mail/outbox/` when done (it is git-ignored).
 
+## I. Flight 7: the People profiler (8 minutes; the http.server from "Before" is running)
+
+34. Sidebar › **People** (⌥⌘0), notebook picker **Harbor Insights** › **Setup**: team name "Harbor leadership", **Coaching notebook** on,
+    read **Weekly**. › **Team** › **Add a person**: Rosa Alvarez, role CEO, company Harbor Lights Coffee, tags `founder`, Personal site
+    `http://127.0.0.1:8765/pages/rosa-alvarez.html`, first note "Grade 12 equivalent; runs three roasteries", **Add**. Select her ›
+    **Read pages**. **Pass:** the header walks Reading… / Reading what… / Summing up… / Adding… / Writing coaching insights…; **Overview**
+    shows About, three Experience lines, Skills and Coaching insights (strengths at least, an overall summary); **Activity** shows Personal
+    site with a frequency word (the four posts are two to six weeks apart) and four items under Lately; **Pages** shows a green read with
+    the fields it filled. Harbor Insights › Sources now has **Profile: Rosa Alvarez** and **Coaching notes: Rosa Alvarez**. Ask Harbor
+    Insights "What does Rosa Alvarez write about?" **Pass:** the answer cites the profile. **Send back:** the Activity frequency word.
+35. **Coaching**: add a note (Strength) "Delegates regions well" and a goal "Open Denver on time"; both appear, the goal's status menu
+    works. **Changes** is empty (first read is the baseline). In a text editor change `rosa-alvarez.html`: "Founder and CEO of" →
+    "Executive Chair of" and "Portland, Oregon" → "Denver, Colorado"; **Read pages** again. **Pass:** Changes lists a role and/or location
+    change (the model reads the page, so send back the lines); Sources still has ONE Profile: Rosa Alvarez (replaced, not doubled);
+    the note shows under Coaching and in the Coaching insights' summary. GitHub (optional, needs the internet): Edit… › GitHub
+    `https://github.com/torvalds` › Read pages: repositories under Activity.
+36. **Sign-ins** (optional, your own account): **Setup** › LinkedIn **Sign in…**, sign in, **Done**: the row says Signed in. Edit… a
+    person with your own LinkedIn address › **Read pages**. **Send back:** whether role, experience and posts came through, or the
+    error line. **Sign out** afterwards if you like; the cookies live only in LocalBook's own store on this Mac.
+
 ## What to send back, in one message
 
 The step numbers that did not pass with what you saw (one line each), the C4 rate and three differences, the C6 Reveal line,
-the Collector run lines (25), the Correspondent run line (30). Everything else is taken as passed.
+the Collector run lines (25), the Correspondent run line (30), the Activity frequency word and the Changes lines (34, 35). Everything else is taken as passed.

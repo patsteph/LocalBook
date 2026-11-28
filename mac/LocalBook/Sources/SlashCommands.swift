@@ -65,6 +65,9 @@ enum SlashCommands {
         SlashCommand(name: "collect", title: "Collect Now", symbol: "binoculars", hint: "Press Return to run this notebook's Collector", group: .agent) { _, model in
             model.selection = .collector; model.collectorRequest = .collect
         },
+        SlashCommand(name: "people", title: "People", symbol: "person.2", hint: "Press Return to open this notebook's people; a name adds someone", group: .agent) { text, model in
+            model.selection = .people; model.peopleRequest = text.isEmpty ? .show : .add(text)
+        },
     ]
 
     /// The commands whose name starts with what was typed after the slash (everything, for an empty prefix).

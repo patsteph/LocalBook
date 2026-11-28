@@ -49,4 +49,5 @@ public enum Agents {
     public static let curator = CuratorEngine()
     public static let research = ResearchEngine()
     public static let correspondent = CorrespondentEngine()
+    public static let people = PeopleEngine()
 }
