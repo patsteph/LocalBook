@@ -113,7 +113,7 @@ public final class PeopleEngine {
         Task { try? await Task.sleep(for: .seconds(150)); await runDue() }
     }
     public func runDue() async {
-        guard let library else { return }
+        guard let library, Agents.schedulesRunHere else { return }
         for id in PeopleStore.notebooks() where config(id).isDue() {
             guard let nb = library.notebooks.first(where: { $0.id == id }) else { continue }
             await collectAll(notebook: nb, library: library, trigger: "schedule")

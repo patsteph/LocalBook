@@ -1,6 +1,6 @@
-# Flights 1–8 + visuals close-out: one sitting (2026-11-27)
+# Flights 1–9 + visuals close-out: one sitting (2026-11-27)
 
-About 85 minutes at the Mac, plus two unattended runs. Everything below is in the Swift Mac app unless it says "old app".
+About 85 minutes at the Mac, plus two unattended runs, plus an optional 10 minutes with a second Mac (section K). Everything below is in the Swift Mac app unless it says "old app".
 
 **Before:** `git pull origin dev && git log --oneline -1` (expect the latest dev commit, at or after `bdd7b87`), rebuild the
 Mac app in Xcode. Test files: `testdata/flights/` (this folder) and `testdata/phase3/`. Old app quit unless a step says otherwise
@@ -181,7 +181,25 @@ and delete `testdata/flights/mail/outbox/` when done (it is git-ignored).
     brings the window back. Turn on **Open LocalBook when I log in**: System Settings › General › Login Items lists LocalBook (macOS may
     ask you to allow it there first). Turn it off again if you do not want it.
 
+## K. Flight 9: Mac-to-Mac sync (optional, 10 minutes, needs a second Mac with the Swift app built from the same commit)
+
+40. On this Mac (the one with the notebooks, "the hub"): Settings › **Sync**: the first section says "Not paired: this Mac holds its own
+    library"; **Agent schedules** says this Mac runs them. **Let a device pair with this one**. On the second Mac ("the companion"), a
+    fresh Swift app (or Settings › Sync › Remove this Mac… first): **Pair with a Mac…** › choose the hub (or type its address) › the codes
+    match › **Codes match** on the hub. **Pass:** the companion's sheet closes within a minute with the first notebook, the rest keeps
+    copying; the hub's paired-devices list shows the companion with a laptop icon; the companion's Settings › Sync says "Paired with"
+    the hub and **Agent schedules** says the paired Mac runs them, with the toggle off.
+41. On the companion: open Harbor Insights, ask "Who runs the Mountain region?" **Pass:** an answer with citations, nothing waits on the hub
+    (quit the hub's app and ask again: still answers; the sidebar says "Mac not reachable, showing local copy"). Reopen the hub's app.
+42. On the companion: add a note "Written on the companion" in Harbor Insights, rename the notebook "Harbor Insights 2", **Sync Now**.
+    On the hub: **Pass:** the note is in Harbor Insights 2's sources and the notebook is renamed, within one sync (the hub's Settings ›
+    Sync › Sync Now, or wait for the clock). Rename it back on the hub; on the companion, Sync Now: **Pass:** renamed back.
+43. Schedules: on the companion, Sidebar › **Collector** › Harbor Insights shows no Collector set up (agent configs stay on the Mac that
+    made them; what they bring in syncs as sources), and nothing runs on the companion's clock. Settings › Sync: turn **Run the agents'
+    schedules on this Mac too** on and back off; the line under it changes each way. **Send back:** anything that did not match, with the
+    Mac it happened on.
+
 ## What to send back, in one message
 
 The step numbers that did not pass with what you saw (one line each), the C4 rate and three differences, the C6 Reveal line,
-the Collector run lines (25), the Correspondent run line (30), the Activity frequency word and the Changes lines (34, 35), the FileVault line (38). Everything else is taken as passed.
+the Collector run lines (25), the Correspondent run line (30), the Activity frequency word and the Changes lines (34, 35), the FileVault line (38), and section K's lines if you ran it. Everything else is taken as passed.

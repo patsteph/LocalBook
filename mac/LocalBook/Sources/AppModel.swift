@@ -93,8 +93,19 @@ final class AppModel {
         }
     }
 
-    /// Paired with a Python Mac and the code confirmed there. Mirrors `MacLink.paired` so views can observe it.
+    /// Paired with the Mac that holds the library (the old app's, or another Swift Mac) and the code confirmed there.
+    /// Mirrors `MacLink.paired` so views can observe it.
     var paired = MacLink.paired?.verified == true
+
+    /// Library Mac or companion (see `SyncRole`): a companion runs the agents' schedules only when asked.
+    var syncRole: SyncRole { SyncRole.role(pairedWithAnotherMac: paired) }
+    var companionRunsSchedules = UserDefaults.standard.bool(forKey: SyncRole.companionRunsSchedulesKey) {
+        didSet { UserDefaults.standard.set(companionRunsSchedules, forKey: SyncRole.companionRunsSchedulesKey); applyScheduleRole() }
+    }
+    /// Tells the engines whether their clocks run on this Mac. Called at launch and whenever the pairing changes.
+    func applyScheduleRole() {
+        Agents.schedulesRunHere = SyncRole.runsSchedules(role: syncRole, companionOptedIn: companionRunsSchedules)
+    }
     /// The pairing sheet (menu: Notebook › Pair with a Mac…, or the empty states).
     var showPairing = false
     /// The import sheet: move the library of the LocalBook already on this Mac into this app.
@@ -243,6 +254,7 @@ final class AppModel {
         syncSelectionToScope()
         Task { await phoneHost.start() }         // the iPhone can find this Mac from the first second
         Task { await localAPI.start() }          // and so can the agents and the browser extension on it
+        applyScheduleRole()                       // a companion Mac leaves the clocks to the library Mac
         Agents.collector.startSchedule(library: library)   // due Collectors run while the app is open
         Agents.correspondent.mailFolder = MailFolderAccess.restore()
         Agents.correspondent.startSchedule(library: library)
@@ -290,6 +302,7 @@ final class AppModel {
     /// The pairing sheet finished: the first notebook is here, the rest keeps copying.
     func pairingDone() {
         paired = MacLink.paired?.verified == true
+        applyScheduleRole()
         showPairing = false
         syncSelectionToScope()
         Task { await startModels() }
@@ -317,6 +330,7 @@ final class AppModel {
         await library.wipeLibrary()
         MacLink.paired = nil
         paired = false
+        applyScheduleRole()
         selection = nil
     }
 

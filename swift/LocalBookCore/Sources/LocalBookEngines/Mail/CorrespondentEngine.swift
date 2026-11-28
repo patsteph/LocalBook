@@ -89,7 +89,8 @@ public final class CorrespondentEngine {
     // MARK: schedule
 
     /// Every half hour: poll the accounts whose interval has passed, send journals that are due. Only while the app
-    /// is open; the launch agent (flight 8) covers the rest.
+    /// is running (the menu bar item keeps it running with the window closed), and only on the Mac that holds the
+    /// library unless a paired Mac is told to run schedules too (`Agents.schedulesRunHere`).
     public func startSchedule(library: LibraryModel) {
         guard timer == nil else { return }
         timer = Timer.scheduledTimer(withTimeInterval: 1_800, repeats: true) { [weak self] _ in Task { @MainActor in await self?.runDue(library: library) } }
@@ -97,6 +98,7 @@ public final class CorrespondentEngine {
     }
 
     public func runDue(library: LibraryModel) async {
+        guard Agents.schedulesRunHere else { return }
         for a in state.accounts where a.enabled && a.isConfigured {
             let due = a.lastPolledAt.map { Date().timeIntervalSince($0) >= Double(state.pollHours) * 3_600 } ?? true
             if due { await poll(a, library: library, trigger: "schedule") }

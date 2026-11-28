@@ -2,8 +2,9 @@ import LocalBookCore
 import LocalBookEngines
 import SwiftUI
 
-/// Pair this Mac with the Mac that runs LocalBook today, over the same link the phone uses: find it on the network,
-/// compare the six-digit code, copy the first notebook. The phone's `OnboardingView`, laid out as a sheet.
+/// Pair this Mac with the Mac that holds the library (the old app's, or another Swift Mac), over the same link the
+/// phone uses: find it on the network, compare the six-digit code, copy the first notebook. The phone's
+/// `OnboardingView`, laid out as a sheet.
 struct PairingSheet: View {
     let model: AppModel
     @Environment(\.dismiss) private var dismiss
@@ -56,7 +57,7 @@ struct PairingSheet: View {
     private var findMac: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("Choose the Mac that holds your notebooks").font(.title2.bold())
-            Text("On that Mac, open LocalBook › Settings › Sync, turn Sync on, and click “Let another device pair with this one”. Your library is copied over your own network; nothing goes to the cloud.")
+            Text("On that Mac, open LocalBook › Settings › Sync and click “Let a device pair with this one” (in the old app: turn Sync on, then “Let another device pair with this one”). Your library is copied over your own network; nothing goes to the cloud.")
                 .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             if browser.macs.isEmpty {
                 HStack { ProgressView().controlSize(.small); Text("Looking on this network…").foregroundStyle(.secondary) }

@@ -46,7 +46,7 @@ public final class CollectorEngine {
     }
 
     public func runDue() async {
-        guard let library else { return }
+        guard let library, Agents.schedulesRunHere else { return }
         for id in CollectorStore.notebooks() where state(id).isDue() && !running.contains(id) {
             guard let nb = library.notebooks.first(where: { $0.id == id }) else { continue }
             await collect(notebook: nb, library: library, trigger: "schedule")

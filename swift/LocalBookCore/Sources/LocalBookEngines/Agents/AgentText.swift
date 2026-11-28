@@ -45,6 +45,9 @@ enum AgentText {
 /// The agents the app runs, one of each, shared by the panes, the Ask field and the local API.
 @MainActor
 public enum Agents {
+    /// Whether the clocks run on this Mac (see `SyncRole`): true on the Mac that holds the library, false on a Mac
+    /// paired with it unless its owner turns the schedules on there too. The Now buttons ignore this.
+    @MainActor public static var schedulesRunHere = true
     public static let collector = CollectorEngine()
     public static let curator = CuratorEngine()
     public static let research = ResearchEngine()

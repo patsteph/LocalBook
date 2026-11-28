@@ -79,8 +79,10 @@ struct ReadAloudSettings: View {
     }
 }
 
-/// Phase 2 (peer): the Mac this one is paired with and what has been copied. Phase 4 adds hosting: paired devices,
-/// what syncs and what stays local, the phone link.
+/// Settings › Sync. Two directions over one link: this Mac as a copy of another Mac's library (the old app's or a
+/// Swift one: `MacLink`, the phone's side of the link), and this Mac as the host other devices copy from
+/// (`PhoneHost`: the iPhone and other Macs). Mac-to-Mac sync is the second Mac pairing like a phone; which Mac runs
+/// the agents' schedules is `SyncRole`.
 struct SyncSettings: View {
     @Environment(AppModel.self) private var model
     @State private var confirmForget = false
@@ -92,15 +94,18 @@ struct SyncSettings: View {
 
     var body: some View {
         Form {
-            Section("Your Mac") {
+            Section {
                 if model.paired, let mac = MacLink.paired {
                     LabeledContent("Paired with", value: mac.name)
                     LabeledContent("This Mac", value: PhoneIdentity.deviceName)
                     LabeledContent("Pairing key", value: PhoneIdentity.keyIsHardware ? "Secure Enclave" : "Software")
                 } else {
-                    Text("Not paired. Pair with the Mac that holds your notebooks to copy them here.").foregroundStyle(.secondary)
+                    Text("Not paired: this Mac holds its own library, and the devices below copy from it. To make this Mac a copy of another Mac's library instead, pair with that Mac.").foregroundStyle(.secondary)
                     Button("Pair with a Mac…") { showPairing = true }
                 }
+            } header: { Text("The Mac that holds your library") } footer: {
+                Text("A second Mac pairs with the first the way the iPhone does (that Mac: Let a device pair with this one), copies the notebooks it is given over your own network, and sends its notes, Studio items and edits back. Only what changed moves, in either direction.")
+                    .font(.footnote)
             }
             Section {
                 HStack {
@@ -111,6 +116,12 @@ struct SyncSettings: View {
                 }
             } header: { Text("From the LocalBook on this Mac") }
             PhoneHostSections()
+            Section {
+                if model.paired {
+                    Toggle("Run the agents' schedules on this Mac too", isOn: Binding(get: { model.companionRunsSchedules }, set: { model.companionRunsSchedules = $0 }))
+                }
+                Text(SyncRole.line(role: model.syncRole, companionOptedIn: model.companionRunsSchedules)).font(.callout).foregroundStyle(.secondary)
+            } header: { Text("Agent schedules") }
             if model.paired {
                 Section("On this Mac") {
                     LabeledContent("Notebooks", value: "\(library.notebooks.count)")
@@ -182,7 +193,7 @@ struct PhoneHostSections: View {
             }
             if host.pairingOpen, let until = host.pairingOpenUntil {
                 let left = max(0, Int(until.timeIntervalSince(now)))
-                Text("Open for \(left / 60):\(String(format: "%02d", left % 60)). On the iPhone: Find my Mac, then choose “\(PhoneIdentity.deviceName)”."
+                Text("Open for \(left / 60):\(String(format: "%02d", left % 60)). On the iPhone: Find my Mac; on another Mac: Settings › Sync › Pair with a Mac…; then choose “\(PhoneIdentity.deviceName)”."
                      + (host.addresses.isEmpty ? "" : " Its address, if the phone does not find it: \(host.addresses.joined(separator: ", "))."))
                     .font(.footnote).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
@@ -208,7 +219,7 @@ struct PhoneHostSections: View {
                 }
             }
         } header: { Text("Devices paired with this Mac") } footer: {
-            Text("Paired devices copy the notebooks below over your own network and send their notes and Studio items back here. Nothing goes to the cloud.")
+            Text("Paired devices (iPhones and other Macs) copy the notebooks below over your own network and send their notes, Studio items and edits back here. Nothing goes to the cloud.")
                 .font(.footnote)
         }
         if !model.library.notebooks.isEmpty {
@@ -236,7 +247,7 @@ struct PhoneHostSections: View {
 
     private var statusLine: String {
         switch host.status {
-        case .listening: host.phones.isEmpty ? "Ready for your iPhone to pair" : "Listening for \(host.phones.count) paired device\(host.phones.count == 1 ? "" : "s")"
+        case .listening: host.phones.isEmpty ? "Ready for your iPhone or another Mac to pair" : "Listening for \(host.phones.count) paired device\(host.phones.count == 1 ? "" : "s")"
         case .off: "Not listening"
         case .failed(let why): "Phone link off: \(why)"
         }
