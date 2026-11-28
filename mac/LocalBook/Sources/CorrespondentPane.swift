@@ -199,7 +199,7 @@ struct CorrespondentPane: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(a.email.isEmpty ? a.mailboxURL : a.email).font(.headline)
                 Text(Self.detailLine(a)).font(.caption).foregroundStyle(.secondary)
-                if let p = a.lastPolledAt { Text("Last checked \(p.formatted(date: .abbreviated, time: .shortened))" + (a.lastError.map { " · \($0)" } ?? "")).font(.caption).foregroundStyle(a.lastError == nil ? .secondary : .red).lineLimit(2) }
+                if let p = a.lastPolledAt { Text("Last checked \(p.formatted(date: .abbreviated, time: .shortened))" + (a.lastError.map { " · \($0)" } ?? "")).font(.caption).foregroundStyle(a.lastError == nil ? Color.secondary : Color.red).lineLimit(2) }
                 else { Text("Not checked yet").font(.caption).foregroundStyle(.secondary) }
             }
             Spacer()

@@ -32,7 +32,7 @@ public enum SyncRole: Sendable, Equatable {
         case .library:
             return "This Mac holds the library, so the Collector, the Correspondent and the People profiler run their schedules here. A Mac paired with this one copies what they bring in."
         case .companion where companionOptedIn:
-            return "This Mac runs the schedules as well as the Mac it is paired with. Both poll the same feeds and inboxes; items are matched by their ids and content, so duplicates are rare but the work is done twice."
+            return "The Collector, the Correspondent and the People profiler run their schedules on this Mac as well as on the Mac it is paired with. Both poll the same feeds and inboxes; items are matched by their ids and content, so duplicates are rare but the work is done twice."
         case .companion:
             return "This Mac is a copy of the library on the Mac it is paired with, which runs the Collector, the Correspondent and the People profiler. What they bring in reaches this Mac with the next sync; the Now buttons still work here."
         }
