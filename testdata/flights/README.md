@@ -1,4 +1,4 @@
-# Flight test files (flights 1 to 5, 2026-11-27)
+# Flight test files (flights 1 to 6, 2026-11-27)
 
 Made-up data in the Harbor Lights Coffee universe of `testdata/phase3`; nothing here is real.
 
@@ -46,3 +46,20 @@ Feed items: the Denver roastery and the shipping policy (both on subject, stored
 "Ten cold brew recipes for summer" is bait for the excluded topic `recipes` and must be skipped. The pages are the Harbor
 Lights universe again (shipping rates, the Portland, Austin and Denver roasteries), so once approved they sit beside the
 Harbor Insights files that say the same things, and the Curator's Patterns has pairs to find.
+
+## `mail/*.eml` + `scripts/flights_mailserver.py` — the Correspondent's inbox, served from this Mac
+
+`python3 scripts/flights_mailserver.py testdata/flights/mail` serves the five `.eml` files as an unread INBOX over plain IMAP on
+127.0.0.1:1143 and accepts anything over plain SMTP on 127.0.0.1:1025, writing each sent message to `mail/outbox/` (git-ignored).
+Any user name and password sign in. In the Correspondent: Add an inbox › IMAP account, hosts 127.0.0.1, ports 1143 and 1025, TLS off.
+
+| File | What it is | Expected after Check mail now |
+|---|---|---|
+| `01-newsletter.eml` | Harbor Lights newsletter (List-Id), the Denver roastery | Newsletter: a source of Harbor Lights, or waiting with "best match: Harbor Lights" |
+| `02-forward.eml` | `Fwd: Shipping policy … #harbor-insights`, a forwarded-message block from Daniel Okafor | Forward: a source of Harbor Insights; a confirmation reply in `mail/outbox/`; deleted from the inbox |
+| `03-personal.eml` | Rosa Alvarez, "Lunch Thursday?" | Personal: moved to `LocalBook/Personal` on the server, never read into a notebook |
+| `04-receipt.eml` | `no-reply@` receipt for an order | Transactional: marked read, left alone |
+| `05-newsletter-unrelated.eml` | Knit Notes, cable patterns | Newsletter with no matching notebook: waiting with a low percent |
+
+A second Check mail now finds nothing new (Message-ID and content hash are both remembered). The server logs every
+move, flag and sent message; Ctrl-C stops it, and a restart puts all five back unread.

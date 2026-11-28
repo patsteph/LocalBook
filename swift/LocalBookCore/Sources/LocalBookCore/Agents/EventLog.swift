@@ -25,7 +25,8 @@ public enum EventLog {
         ("studio_made", "A Studio item was made"), ("insight_made", "An insight was made"),
         ("collector_found", "The Collector queued an item for approval"), ("collector_stored", "The Collector added a source on its own"),
         ("brief_written", "The Curator wrote a brief"), ("connection_found", "The Curator found a cross-notebook connection"),
-        ("research_done", "A research job finished")]
+        ("research_done", "A research job finished"), ("mail_ingested", "The Correspondent added a newsletter or forward to a notebook"),
+        ("mail_queued", "The Correspondent is waiting for a notebook to be picked"), ("journal_sent", "The weekly journal was mailed")]
 
     public static var folder: URL {
         let dir = AppFolders.base.appendingPathComponent("Events", isDirectory: true)

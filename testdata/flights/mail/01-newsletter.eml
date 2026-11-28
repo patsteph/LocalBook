@@ -1,0 +1,28 @@
+Message-ID: <hl-news-2026-11-26@harborlights.example>
+From: Harbor Lights News <news@harborlights.example>
+To: you@example.com
+Subject: Harbor Lights opens its Denver roastery
+Date: Wed, 26 Nov 2026 09:00:00 -0800
+List-Id: Harbor Lights News <news.harborlights.example>
+List-Unsubscribe: <https://harborlights.example/unsubscribe>
+Precedence: bulk
+MIME-Version: 1.0
+Content-Type: multipart/alternative; boundary="hl1"
+
+--hl1
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: quoted-printable
+
+Harbor Lights Coffee opened its third roastery in Denver on Tuesday, bringing t=
+he company to 71 employees across Portland, Austin and Denver. The Mountain regi=
+on, run by Priya Raman, now accounts for 40 percent of wholesale accounts.
+
+Also this week: the shipping policy changes on December 1 (free over $40), and =
+Dr. Hana Sato's wellness programme adds a second clinic day.
+
+=E2=80=94 The Harbor Lights team
+--hl1
+Content-Type: text/html; charset=utf-8
+
+<html><body><h1>Harbor Lights opens its Denver roastery</h1><p>Harbor Lights Coffee opened its third roastery in Denver on Tuesday, bringing the company to <b>71 employees</b> across Portland, Austin and Denver. The Mountain region, run by Priya Raman, now accounts for 40 percent of wholesale accounts.</p><p>Also this week: the <a href="https://harborlights.example/shipping">shipping policy</a> changes on December 1 (free over $40), and Dr. Hana Sato's wellness programme adds a second clinic day.</p><img src="https://harborlights.example/t.gif" width="1" height="1"><p>&mdash; The Harbor Lights team</p></body></html>
+--hl1--

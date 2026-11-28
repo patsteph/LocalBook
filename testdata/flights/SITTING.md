@@ -1,10 +1,11 @@
-# Flights 1–5 + visuals close-out: one sitting (2026-11-27)
+# Flights 1–6 + visuals close-out: one sitting (2026-11-27)
 
-About 60 minutes at the Mac, plus two unattended runs. Everything below is in the Swift Mac app unless it says "old app".
+About 70 minutes at the Mac, plus two unattended runs. Everything below is in the Swift Mac app unless it says "old app".
 
 **Before:** `git pull origin dev && git log --oneline -1` (expect the latest dev commit, at or after `bdd7b87`), rebuild the
 Mac app in Xcode. Test files: `testdata/flights/` (this folder) and `testdata/phase3/`. Old app quit unless a step says otherwise
 (both apps listen on port 8000). For section G, a second Terminal: `cd testdata/flights && python3 -m http.server 8765`, left running.
+For section H, a third Terminal: `python3 scripts/flights_mailserver.py testdata/flights/mail` (a throwaway IMAP + SMTP server on this Mac), left running.
 
 ## A. Unattended first (10 minutes of clicks, then walk away)
 
@@ -115,7 +116,37 @@ Mac app in Xcode. Test files: `testdata/flights/` (this folder) and `testdata/ph
     **Pass:** JSON events of kinds source_added, question_asked, collected, approved … Same with `"name":"todays_digest"`: the brief's text.
     `/brief`, `/research <topic>` and `/collect` in the Ask field open the right pane and run.
 
+## H. Flight 6: the Correspondent (10 minutes; the mail server from "Before" is running; Harbor Lights and Harbor Insights exist)
+
+29. Sidebar › **Correspondent** (⌥⌘9) › **Inboxes** › **Add an inbox** › **IMAP account**: email `you@example.com`, IMAP host `127.0.0.1`,
+    port `1143`, **TLS off**, any app password; SMTP host `127.0.0.1`, port `1025`, **TLS off**. Both toggles on, "Forwards with no match go to"
+    the waiting list. **Test**. **Pass:** "Signed in; 5 unread messages waiting". **Add**. (The server accepts any user and password;
+    the real thing wants TLS on and port 993 / 465, and refuses a plain connection to anything but this Mac.)
+30. **Check mail now** (or ⌥⇧⌘M, or `/mail`). The status line walks through Opening, Looking, Reading, Sorting, Adding. **History**: one run
+    "5 looked at · … · 1 forward added · … queued". **Pass**, message by message (the server's Terminal prints each move):
+    `02-forward` (Fwd: shipping policy `#harbor-insights`) lands in **Harbor Insights** as a source titled "Shipping policy: free over $40 from
+    December", and a confirmation reply appears as `testdata/flights/mail/outbox/<stamp>.eml` reading "Got it — ingested into Harbor Insights
+    as source …"; `01-newsletter` (Denver roastery) is either a new source of Harbor Lights or under **Waiting** with a percent and "best match:
+    Harbor Lights" (the 75 percent line decides); `05-newsletter-unrelated` (Knit Notes) is under **Waiting** with a low percent, never a source;
+    `03-personal` (Rosa's lunch) is **moved to LocalBook/Personal** on the server and nowhere in the app; `04-receipt` is marked read and left.
+    The server's Terminal shows `03-personal.eml -> LocalBook/Personal`, `flags of 04-receipt.eml -> ['\\Seen']`, and the forward deleted
+    (`-> [Gmail]/Trash` is only for Gmail; here it is flagged Deleted and expunged). **Check mail now** again: "0 looked at", nothing twice.
+31. **Waiting**: on the Knit Notes card pick Harbor Lights in the Notebook picker › **Approve**: it becomes a source there, and the card goes.
+    **Dismiss** the other (if any). The approval teaches the Correspondent: that sender now leans 25 percent toward Harbor Lights next time.
+32. **Journal**: the preview "This week's letter" names today's sources (the forward, the Collector's) and the questions asked; **Send now**.
+    **Pass:** a second `.eml` in `mail/outbox/` with the letter as text and HTML. (The timer sends it on its own once a week, mornings only,
+    when something happened; empty weeks send nothing.)
+33. **Mail on this Mac** (optional, 3 minutes, only if Mail.app has an account on this Mac): **Add an inbox** › **Mail on this Mac** ›
+    **Choose Mail folder…** › `~/Library/Mail` › if the orange line asks for it, **Open Full Disk Access settings**, tick LocalBook, come back
+    › pick an inbox › **Test**: "Mail's index opens; the inbox is at message N" › **Add**, then **Check now** on that row. The first run looks
+    only at mail that arrives after you added it (nothing old is read), so forward yourself one message with `#harbor-lights` in the subject
+    and check again; macOS asks once to let LocalBook control Mail. **Send back:** the Test line and whether the forward landed.
+    Delete that inbox afterwards (trash icon) if you do not want it polling every 8 hours.
+
+**Send back:** the History run line from 30, which of 01 / 05 landed where, and any of 29–33 that did not happen. Ctrl-C the mail server
+and delete `testdata/flights/mail/outbox/` when done (it is git-ignored).
+
 ## What to send back, in one message
 
 The step numbers that did not pass with what you saw (one line each), the C4 rate and three differences, the C6 Reveal line,
-the Collector run lines (25). Everything else is taken as passed.
+the Collector run lines (25), the Correspondent run line (30). Everything else is taken as passed.

@@ -59,6 +59,9 @@ enum SlashCommands {
         SlashCommand(name: "research", title: "Research", symbol: "magnifyingglass.circle", hint: "A topic to research into this notebook's Collector queue", group: .agent) { text, model in
             model.selection = .collector; model.collectorRequest = .research(text)
         },
+        SlashCommand(name: "mail", title: "Check Mail Now", symbol: "envelope", hint: "Press Return to read your inboxes now", group: .agent) { _, model in
+            model.selection = .correspondent; model.correspondentRequest = .checkMail
+        },
         SlashCommand(name: "collect", title: "Collect Now", symbol: "binoculars", hint: "Press Return to run this notebook's Collector", group: .agent) { _, model in
             model.selection = .collector; model.collectorRequest = .collect
         },

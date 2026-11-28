@@ -69,7 +69,15 @@ library import; the iPhone host (pairing, sync, notes, Studio both ways); keyboa
 | 63 Research jobs, intent routers | None | Done for research: `ResearchEngine` (Collector › Research, `/research <topic>`): web search (the sites `SiteSearchClient` knows, the model picks which), site search, deep dive (reads the top pages, `ResearchQuality` scores length, links, recency and topical fit, the model summarizes the keepers); results land in that notebook's Collector queue. The intent routers are not ported: the Swift app's slash commands are the routing |
 | 64 Event bus | None | Done: `EventLog` (Core, `Events/events.jsonl`): source_added, question_asked, studio_made, insight_made, collected, approved, research_done; read by the Brief and by the MCP tools |
 | 74 Curator-only MCP tools | Answered "not in this version yet" | Done: `events_since`, `event_kinds`, `curator_insights`, `todays_digest`, `start_research`, `get_job` are real in `LocalAPIBridge`; `MCPCatalog.notYet` is empty |
-| 59 Correspondent, 60 People profiler | None | Deferred: both need Patrick's choice (Mail.app vs IMAP; which coaching sites) and a Mac with the accounts on it |
+| 60 People profiler | None | Deferred to flight 7 |
+
+### Flight 6: the Correspondent — built 2026-11-27, untested on a Mac
+
+Patrick's decision (2026-11-27): both paths, chosen per inbox by the user's own setup.
+
+| Row | Gap | Swift approach |
+|---|---|---|
+| 59 Correspondent | None | Done: `CorrespondentEngine` over `Correspondent.swift` (Core) and one `Mailbox` protocol with two implementations. **Mail on this Mac** (`MailAppStore` + `MailAppBridge`): reads Mail's Envelope Index read-only (`immutable=1`) and the `.emlx` files under the chosen `~/Library/Mail` (security-scoped bookmark, Full Disk Access asked for once), and asks Mail by Apple event to mark read, move (creating the mailbox first) and send; entitlements `automation.apple-events` + the Mail exception. **IMAP account** (`IMAPClient` + `SMTPClient` on Network.framework, no dependency): implicit TLS, LOGIN with a non-synchronising literal, UID SEARCH UNSEEN from the last UID, BODY.PEEK fetch, STORE, MOVE or COPY + \\Deleted + EXPUNGE, CREATE; SMTP AUTH PLAIN or LOGIN on 465 (STARTTLS not supported; plain only to loopback for the test server). Passwords live in the Keychain (`MailSecrets`), never in `Mail/correspondent.json`. Rules ported verbatim: the three-way classification prompt (personal is the safe default, never ingested, moved to `LocalBook/Personal`; transactional marked read), forwards by two of three signals with `#slug` routing, the digest router (cosine ≥ 0.75 routes, else the waiting list; sender bias +0.25 from approvals, capped 0.5), Message-ID and SHA-256 dedupe, delete after ingest (Gmail → `[Gmail]/Trash`, iCloud → `Deleted Messages`), the "Got it — ingested into …" confirmation, the weekly journal (07–11 UTC, ≥ 7 days, from the event log, never empty). Sidebar › Correspondent (⌥⌘9): Waiting, Inboxes, Journal, History; Check mail now (⌥⇧⌘M, `/mail`); a 30-minute timer polls each inbox every 8 hours while the app is open. `MailParser` (MIME, RFC 2047, quoted-printable, base64, HTML to text), `IMAPWire`/`SMTPWire` (protocol text) and the rules are tested in `MailTests`. Fixtures: `testdata/flights/mail/` + `scripts/flights_mailserver.py` |
 
 ### Later, with a second Mac on hand
 

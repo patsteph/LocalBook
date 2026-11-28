@@ -79,6 +79,9 @@ struct LocalBookCommands: Commands {
             Divider()
             Button("Collect Now") { NotificationCenter.default.post(name: .collectorAction, object: "collect") }
             Button("Research…") { NotificationCenter.default.post(name: .collectorAction, object: "research:") }
+            Divider()
+            Button("Check Mail Now") { NotificationCenter.default.post(name: .correspondentAction, object: "check") }
+                .keyboardShortcut(Shortcuts.checkMail.keys)
         }
 
         // Record
@@ -106,11 +109,15 @@ struct LocalBookCommands: Commands {
                 .keyboardShortcut(Shortcuts.showConstellation.keys)
             Button("Show Curator") { NotificationCenter.default.post(name: .showCurator, object: nil) }
                 .keyboardShortcut(Shortcuts.showCurator.keys)
+            Group {
             Button("Show Collector") { NotificationCenter.default.post(name: .showCollector, object: nil) }
                 .keyboardShortcut(Shortcuts.showCollector.keys)
+            Button("Show Correspondent") { NotificationCenter.default.post(name: .showCorrespondent, object: nil) }
+                .keyboardShortcut(Shortcuts.showCorrespondent.keys)
             Divider()
             Button("Show Inspector") { NotificationCenter.default.post(name: .toggleInspector, object: nil) }
                 .keyboardShortcut(Shortcuts.toggleInspector.keys)
+            }
         }
 
         // Window and Help, grouped: a Commands body holds ten entries at most.

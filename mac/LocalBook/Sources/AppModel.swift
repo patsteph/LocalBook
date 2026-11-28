@@ -51,6 +51,8 @@ final class AppModel {
         /// The Curator (⌥⌘7) and the Collector (⌥⌘8).
         case curator
         case collector
+        /// The Correspondent (⌥⌘9).
+        case correspondent
     }
 
     var selection: Destination? {
@@ -110,6 +112,8 @@ final class AppModel {
     var curatorRequest: CuratorPiece.Kind?
     enum CollectorRequest: Equatable { case collect, research(String), show }
     var collectorRequest: CollectorRequest?
+    enum CorrespondentRequest: Equatable { case checkMail, show }
+    var correspondentRequest: CorrespondentRequest?
     var insightOpenRequest: String?
     /// The subject typed after a `/briefing`-style command in the Ask field; the make sheet opens with it filled in.
     var makeSubject = ""
@@ -234,6 +238,8 @@ final class AppModel {
         Task { await phoneHost.start() }         // the iPhone can find this Mac from the first second
         Task { await localAPI.start() }          // and so can the agents and the browser extension on it
         Agents.collector.startSchedule(library: library)   // due Collectors run while the app is open
+        Agents.correspondent.mailFolder = MailFolderAccess.restore()
+        Agents.correspondent.startSchedule(library: library)
         if paired { Task { await runSync(); await loadSections() } }
         // A library moved over from the old app answers without a pairing; the models warm for it too.
         if paired || !library.notebooks.isEmpty { await startModels() }

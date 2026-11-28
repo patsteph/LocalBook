@@ -99,6 +99,10 @@ targets:
         com.apple.security.device.camera: true
         # Letting the user grant a folder once (the folder watcher) and keep it across launches.
         com.apple.security.files.bookmarks.app-scope: true
+        # The Correspondent asks Mail to move, mark, delete and send messages (the Mail-on-this-Mac path).
+        com.apple.security.automation.apple-events: true
+        com.apple.security.temporary-exception.apple-events:
+          - com.apple.mail
         # The pairing key lives in the Secure Enclave, in the data-protection Keychain. macOS opens that only to an
         # app whose App ID entitlement is authorised by a provisioning profile; a Team alone is not enough, since
         # Xcode embeds a profile in a Mac app only for a capability that needs one. Keychain Sharing, with just our
@@ -124,6 +128,7 @@ targets:
         NSMicrophoneUsageDescription: LocalBook listens when you dictate a note or record a meeting.
         NSSpeechRecognitionUsageDescription: LocalBook turns your dictation into text, on this Mac.
         NSCameraUsageDescription: LocalBook photographs pages and whiteboards so the text can be added to a notebook.
+        NSAppleEventsUsageDescription: LocalBook asks Mail to file, mark and send messages for the Correspondent.
         # "Open with LocalBook" in the Finder and drops on the Dock icon: the kinds a notebook drop takes. Alternate
         # rank, so LocalBook never becomes a file's default app.
         CFBundleDocumentTypes:

@@ -92,6 +92,8 @@ enum Shortcuts {
     static let showConstellation = KeyShortcut("Show Constellation", "6", [.command, .option])
     static let showCurator = KeyShortcut("Show Curator", "7", [.command, .option])
     static let showCollector = KeyShortcut("Show Collector", "8", [.command, .option])
+    static let showCorrespondent = KeyShortcut("Show Correspondent", "9", [.command, .option])
+    static let checkMail = KeyShortcut("Check Mail Now", "m", [.command, .option, .shift])
     static let morningBrief = KeyShortcut("Morning Brief", "b", [.command, .option])
     static let writingAssistant = KeyShortcut("Writing Assistant", "w", [.command, .option])
     static let toggleInspector = KeyShortcut("Show or Hide Inspector", "i", [.command, .option])
@@ -115,9 +117,9 @@ enum Shortcuts {
                                       KeyShortcut("Previous or next flashcard", display: "← →")]),
         Group(name: "Record", items: [startRecording, voiceNote]),
         Group(name: "View", items: [KeyShortcut("Show or Hide Sidebar", "s", [.command, .control]),
-                                    showSources, showStudio, showMeetings, showInsights, showCanvas, showConstellation, showCurator, showCollector, toggleInspector]),
+                                    showSources, showStudio, showMeetings, showInsights, showCanvas, showConstellation, showCurator, showCollector, showCorrespondent, toggleInspector]),
         Group(name: "Insights", items: [writingAssistant]),
-        Group(name: "Agents", items: [morningBrief, KeyShortcut("Ask every notebook at once", display: "@curator …"), KeyShortcut("Research a topic into the Collector queue", display: "/research …")]),
+        Group(name: "Agents", items: [morningBrief, checkMail, KeyShortcut("Ask every notebook at once", display: "@curator …"), KeyShortcut("Research a topic into the Collector queue", display: "/research …")]),
         Group(name: "Sources", items: [KeyShortcut("Quick Look the selected source", display: "Space"),
                                        KeyShortcut("Open the selected source in its own window", display: "⌘↓")]),
         Group(name: "Notes", items: [KeyShortcut("Edit the selected note", "e"),

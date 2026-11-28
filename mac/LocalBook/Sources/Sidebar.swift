@@ -48,6 +48,7 @@ struct Sidebar: View {
                 Section("Agents") {
                     Label("Curator", systemImage: "wand.and.stars").tag(AppModel.Destination.curator)
                     Label("Collector", systemImage: "binoculars").tag(AppModel.Destination.collector)
+                    Label("Correspondent", systemImage: "envelope").tag(AppModel.Destination.correspondent)
                     Label("Meetings", systemImage: "waveform").tag(AppModel.Destination.meetings)
                     Label("Notes", systemImage: "note.text").tag(AppModel.Destination.notes)
                 }
